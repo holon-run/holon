@@ -214,6 +214,7 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    let config = state.host.config();
     Router::new()
         .route("/", get(root))
         .route("/handshake", get(handshake))
@@ -370,7 +371,7 @@ pub fn router(state: AppState) -> Router {
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default))
         .fallback(not_found_handler)
-        .layer(api_cors_layer(&state.host.config().api_cors))
+        .layer(api_cors_layer(&config.api_cors))
         .layer(CompressionLayer::new())
         .layer(
             TraceLayer::new_for_http()
@@ -1209,7 +1210,7 @@ pub async fn runtime_config(
     Ok(Json(RuntimeConfigReadResponse {
         ok: true,
         config_file_path: config.config_file_path.clone(),
-        runtime_surface: RuntimeConfigSurface::new(config),
+        runtime_surface: RuntimeConfigSurface::new(&config),
     }))
 }
 
@@ -1272,7 +1273,7 @@ pub async fn runtime_config_update(
             &mut results,
             "batch rejected; no runtime config updates were persisted",
         );
-    } else if let Err(error) = validate_runtime_config_candidate(config, &candidate) {
+    } else if let Err(error) = validate_runtime_config_candidate(&config, &candidate) {
         reject_accepted_runtime_config_results(
             &mut results,
             &format!("updated config is invalid: {error}"),
@@ -1288,24 +1289,35 @@ pub async fn runtime_config_update(
         // Hot-reload the runtime so the new config takes effect immediately.
         // The current turn (if any) completes with the old provider; the next
         // turn picks up the new config automatically.
-        if let Err(e) = state.host.reload_all_agents_config().await {
-            tracing::warn!(error = %e, "config saved but hot-reload failed; restart needed");
-        }
-        // Mark results as reloaded instead of requiring restart.
-        for result in &mut results {
-            if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
-                result.effect = RuntimeConfigUpdateEffect::AcceptedReloaded;
-                result.reason = "applied via hot-reload".into();
+        match state.host.reload_all_agents_config().await {
+            Ok(()) => {
+                // Mark results as reloaded instead of requiring restart.
+                for result in &mut results {
+                    if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                        result.effect = RuntimeConfigUpdateEffect::AcceptedReloaded;
+                        result.reason = "applied via hot-reload".into();
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "config saved but hot-reload failed; restart needed");
+                for result in &mut results {
+                    if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                        result.reason =
+                            format!("persisted in config.json, but hot-reload failed: {e}");
+                    }
+                }
             }
         }
     }
+    let config = state.host.config();
 
     Ok(Json(RuntimeConfigUpdateResponse {
         ok: true,
         changed,
         config_file_path: config.config_file_path.clone(),
         results,
-        runtime_surface: RuntimeConfigSurface::new(config),
+        runtime_surface: RuntimeConfigSurface::new(&config),
     }))
 }
 
@@ -1454,7 +1466,7 @@ fn runtime_surfaces(
         control_token_configured: config.control_token.is_some(),
         control_auth_mode: config.control_auth_mode.into(),
     };
-    (startup_surface, RuntimeConfigSurface::new(config))
+    (startup_surface, RuntimeConfigSurface::new(&config))
 }
 
 pub async fn runtime_shutdown(
@@ -4071,9 +4083,8 @@ fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result<()> {
     if !state.require_control_token {
         return Ok(());
     }
-    let expected_token = state
-        .host
-        .config()
+    let config = state.host.config();
+    let expected_token = config
         .control_token
         .as_deref()
         .ok_or_else(|| anyhow!("control token required but not configured"))?;

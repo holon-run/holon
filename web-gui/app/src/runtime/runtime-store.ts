@@ -26,6 +26,7 @@ import type {
   RouteKey,
   RuntimeBootstrap,
   RuntimeConnectionConfig,
+  RuntimeConnectionProfile,
   RuntimeConfigState,
   CredentialProfileStatus,
   CredentialStoreState,
@@ -351,6 +352,16 @@ function writeStoredRemoteProfile(config: RuntimeConnectionConfig): void {
   }
 }
 
+export function readStoredRemoteConnectionProfiles(): RuntimeConnectionProfile[] {
+  return Object.values(readStoredRemoteProfiles())
+    .filter((profile): profile is RuntimeConnectionConfig & { mode: "remote"; baseUrl: string } => profile.mode === "remote" && Boolean(profile.baseUrl))
+    .map((profile) => ({
+      baseUrl: profile.baseUrl,
+      hasToken: Boolean(profile.token),
+    }))
+    .sort((left, right) => left.baseUrl.localeCompare(right.baseUrl));
+}
+
 function normalizeConnectionBaseUrl(value: string | undefined): string {
   return value?.trim().replace(/\/+$/, "") ?? "";
 }
@@ -605,11 +616,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         : undefined;
     const normalizedConfig: RuntimeConnectionConfig =
       config.mode === "remote"
-        ? {
-            mode: "remote",
-            baseUrl: normalizedBaseUrl,
-            token: config.token?.trim() || retainedToken,
-          }
+        ? withStoredRemoteProfileToken({
+          mode: "remote",
+          baseUrl: normalizedBaseUrl,
+          token: config.token?.trim() || retainedToken,
+        })
         : { mode: "local" };
     runtimeConnectionConfig = normalizedConfig;
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
@@ -756,6 +767,20 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     try {
       const runtimeConfig = await runtimeClient.updateRuntimeConfig(updates);
       set({ runtimeConfig, runtimeConfigSaving: false, runtimeConfigError: runtimeConfig.error });
+      if (runtimeConfig.changed && !runtimeConfig.error) {
+        set({ modelCatalogLoading: true, modelCatalogError: undefined });
+        try {
+          const modelCatalog = await runtimeClient.getModels();
+          set({ modelCatalog, modelCatalogLoading: false, modelCatalogError: modelCatalog.error });
+        } catch (modelError) {
+          const message = modelError instanceof Error ? modelError.message : String(modelError);
+          set((state) => ({
+            modelCatalog: { ...state.modelCatalog, error: message },
+            modelCatalogLoading: false,
+            modelCatalogError: message,
+          }));
+        }
+      }
       return runtimeConfig;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -783,8 +808,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   setCredential: async (profile, kind, material) => {
     try {
       const result = await runtimeClient.setCredential(profile, kind, material);
-      const credentialStore = await runtimeClient.listCredentials();
-      set({ credentialStore, credentialStoreError: undefined });
+      const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
+        runtimeClient.listCredentials(),
+        runtimeClient.getRuntimeConfig(),
+        runtimeClient.getModels(),
+      ]);
+      set({
+        credentialStore,
+        credentialStoreError: undefined,
+        runtimeConfig,
+        runtimeConfigError: runtimeConfig.error,
+        modelCatalog,
+        modelCatalogError: modelCatalog.error,
+      });
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -796,8 +832,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   deleteCredential: async (profile) => {
     try {
       await runtimeClient.deleteCredential(profile);
-      const credentialStore = await runtimeClient.listCredentials();
-      set({ credentialStore, credentialStoreError: undefined });
+      const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
+        runtimeClient.listCredentials(),
+        runtimeClient.getRuntimeConfig(),
+        runtimeClient.getModels(),
+      ]);
+      set({
+        credentialStore,
+        credentialStoreError: undefined,
+        runtimeConfig,
+        runtimeConfigError: runtimeConfig.error,
+        modelCatalog,
+        modelCatalogError: modelCatalog.error,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ credentialStoreError: message });

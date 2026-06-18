@@ -639,6 +639,32 @@ impl AppConfig {
         Self::load_with_home_and_mode(home_override, ConfigLoadMode::ConfigInspection)
     }
 
+    pub fn reload_runtime_config(&self) -> Result<Self> {
+        let mut reloaded =
+            Self::load_with_home_and_mode(Some(self.home_dir.clone()), ConfigLoadMode::Runtime)?;
+        reloaded.default_agent_id = self.default_agent_id.clone();
+        reloaded.http_addr = self.http_addr.clone();
+        reloaded.callback_base_url = self.callback_base_url.clone();
+        reloaded.home_dir = self.home_dir.clone();
+        reloaded.data_dir = self.data_dir.clone();
+        reloaded.socket_path = self.socket_path.clone();
+        reloaded.workspace_dir = self.workspace_dir.clone();
+        reloaded.context_window_messages = self.context_window_messages;
+        reloaded.context_window_briefs = self.context_window_briefs;
+        reloaded.compaction_trigger_messages = self.compaction_trigger_messages;
+        reloaded.compaction_keep_recent_messages = self.compaction_keep_recent_messages;
+        reloaded.prompt_budget_estimated_tokens = self.prompt_budget_estimated_tokens;
+        reloaded.compaction_trigger_estimated_tokens = self.compaction_trigger_estimated_tokens;
+        reloaded.compaction_keep_recent_estimated_tokens =
+            self.compaction_keep_recent_estimated_tokens;
+        reloaded.recent_episode_candidates = self.recent_episode_candidates;
+        reloaded.max_relevant_episodes = self.max_relevant_episodes;
+        reloaded.control_token = self.control_token.clone();
+        reloaded.control_auth_mode = self.control_auth_mode;
+        reloaded.config_file_path = self.config_file_path.clone();
+        Ok(reloaded)
+    }
+
     fn load_with_home_and_mode(
         home_override: Option<PathBuf>,
         mode: ConfigLoadMode,
@@ -3385,13 +3411,6 @@ fn built_in_provider_registry_with_settings(
     )?;
     insert_openai_compatible_provider(
         &mut registry,
-        "qwen",
-        "https://coding-intl.dashscope.aliyuncs.com/v1",
-        &["QWEN_API_KEY", "DASHSCOPE_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        &mut registry,
         "stepfun",
         "https://api.stepfun.ai/v1",
         &["STEPFUN_API_KEY"],
@@ -6066,9 +6085,7 @@ mod tests {
         assert_eq!(gemini.auth.env.as_deref(), Some("GEMINI_API_KEY"));
         assert_eq!(gemini.credential.as_deref(), Some("gemini-key"));
 
-        let qwen = providers.get(&ProviderId::parse("qwen").unwrap()).unwrap();
-        assert_eq!(qwen.auth.env.as_deref(), Some("DASHSCOPE_API_KEY"));
-        assert_eq!(qwen.credential.as_deref(), Some("dashscope-key"));
+        assert!(providers.get(&ProviderId::parse("qwen").unwrap()).is_none());
 
         let dashscope = providers
             .get(&ProviderId::parse("dashscope").unwrap())

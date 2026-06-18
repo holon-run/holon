@@ -210,7 +210,7 @@ impl RuntimeHost {
         Ok(host)
     }
 
-    pub fn config(&self) -> &AppConfig {
+    pub fn config(&self) -> Arc<AppConfig> {
         self.inner.registry.config()
     }
 
@@ -221,8 +221,11 @@ impl RuntimeHost {
     /// the config snapshot. In-progress turns are unaffected; the next
     /// turn picks up the new config.
     pub async fn reload_all_agents_config(&self) -> Result<()> {
-        let new_config = crate::config::AppConfig::load()
+        let new_config = self
+            .config()
+            .reload_runtime_config()
             .map_err(|e| anyhow!("failed to reload config: {}", e))?;
+        self.inner.registry.replace_config(new_config.clone());
         let agent_handles: Vec<RuntimeHandle> = {
             let agents = self.inner.agents.read().await;
             agents.values().map(|entry| entry.runtime.clone()).collect()
@@ -756,7 +759,7 @@ impl RuntimeHost {
             }
         };
         let model = crate::runtime::agent_model_state_for_catalog(
-            &RuntimeModelCatalog::from_config(self.config()),
+            &RuntimeModelCatalog::from_config(&self.config()),
             &self.runtime_context_config(),
             &agent,
         );
@@ -932,7 +935,8 @@ impl RuntimeHost {
             std::env::var_os("HOME").map(PathBuf::from).as_deref(),
             agent_home.as_path(),
         );
-        let model_catalog = RuntimeModelCatalog::from_config(self.config());
+        let config = self.config();
+        let model_catalog = RuntimeModelCatalog::from_config(&config);
         let model_ref = model_catalog
             .provider_chain_for_turn(
                 state.model_override.as_ref(),
@@ -953,7 +957,7 @@ impl RuntimeHost {
             .static_provider
             .clone()
             .map(Ok)
-            .unwrap_or_else(|| build_provider_from_config(self.config()))?;
+            .unwrap_or_else(|| build_provider_from_config(&config))?;
         let apply_patch_surface = ApplyPatchSurface::for_model_ref(&model_ref.as_string());
         let registry = ToolRegistry::new(execution.execution_root.clone());
         let available_tools = registry
@@ -1640,36 +1644,36 @@ impl RuntimeHost {
     }
 
     fn runtime_context_config(&self) -> ContextConfig {
+        let config = self.config();
         let base = ContextConfig {
-            recent_messages: self.config().context_window_messages,
-            recent_briefs: self.config().context_window_briefs,
-            compaction_trigger_messages: self.config().compaction_trigger_messages,
-            compaction_keep_recent_messages: self.config().compaction_keep_recent_messages,
-            prompt_budget_estimated_tokens: self.config().prompt_budget_estimated_tokens,
-            compaction_trigger_estimated_tokens: self.config().compaction_trigger_estimated_tokens,
-            compaction_keep_recent_estimated_tokens: self
-                .config()
-                .compaction_keep_recent_estimated_tokens,
-            recent_episode_candidates: self.config().recent_episode_candidates,
-            max_relevant_episodes: self.config().max_relevant_episodes,
+            recent_messages: config.context_window_messages,
+            recent_briefs: config.context_window_briefs,
+            compaction_trigger_messages: config.compaction_trigger_messages,
+            compaction_keep_recent_messages: config.compaction_keep_recent_messages,
+            prompt_budget_estimated_tokens: config.prompt_budget_estimated_tokens,
+            compaction_trigger_estimated_tokens: config.compaction_trigger_estimated_tokens,
+            compaction_keep_recent_estimated_tokens: config.compaction_keep_recent_estimated_tokens,
+            recent_episode_candidates: config.recent_episode_candidates,
+            max_relevant_episodes: config.max_relevant_episodes,
             ..ContextConfig::default()
         };
-        RuntimeModelCatalog::from_config(self.config()).resolved_context_config(&base, None)
+        RuntimeModelCatalog::from_config(&config).resolved_context_config(&base, None)
     }
 
     fn spawn_runtime(&self, agent_id: &str) -> Result<(RuntimeHandle, JoinHandle<()>)> {
+        let config = self.config();
         let runtime = if let Some(provider) = self.inner.static_provider.as_ref() {
             RuntimeHandle::new_static_with_host_bridge(
                 agent_id.to_string(),
                 self.agent_data_dir(agent_id),
                 InitialWorkspaceBinding::Detached,
-                self.config().callback_base_url.clone(),
+                config.callback_base_url.clone(),
                 provider.clone(),
-                self.config().default_agent_id.clone(),
+                config.default_agent_id.clone(),
                 self.runtime_context_config(),
                 self.inner.runtime_db.clone(),
                 self.bridge(),
-                RuntimeModelCatalog::from_config(self.config()),
+                RuntimeModelCatalog::from_config(&config),
                 self.inner.event_bus.clone(),
             )?
         } else {
@@ -1677,9 +1681,9 @@ impl RuntimeHost {
                 agent_id.to_string(),
                 self.agent_data_dir(agent_id),
                 InitialWorkspaceBinding::Detached,
-                self.config().callback_base_url.clone(),
-                self.config().clone(),
-                self.config().default_agent_id.clone(),
+                config.callback_base_url.clone(),
+                (*config).clone(),
+                config.default_agent_id.clone(),
                 self.runtime_context_config(),
                 self.inner.runtime_db.clone(),
                 self.bridge(),
@@ -3533,7 +3537,7 @@ mod tests {
     #[tokio::test]
     async fn host_bootstrap_keeps_interrupted_supervised_child_active() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
@@ -3609,7 +3613,7 @@ mod tests {
     #[tokio::test]
     async fn recovered_runtime_reattaches_supervised_child_monitor() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
@@ -3729,7 +3733,7 @@ mod tests {
     #[tokio::test]
     async fn recovered_child_monitor_waits_for_active_child_tasks() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
@@ -3826,7 +3830,7 @@ mod tests {
     #[tokio::test]
     async fn recovered_child_monitor_waits_for_active_child_task_result_wait() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
@@ -3931,7 +3935,7 @@ mod tests {
     #[tokio::test]
     async fn host_bootstrap_archives_orphaned_private_child_identity() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
 
         let child = AgentIdentityRecord::new(
@@ -3965,7 +3969,7 @@ mod tests {
     #[tokio::test]
     async fn archived_private_child_identity_cannot_restart_runtime() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
 
         let child = AgentIdentityRecord::new(
@@ -3994,7 +3998,7 @@ mod tests {
     #[tokio::test]
     async fn host_bootstrap_does_not_recreate_missing_parent_storage_when_archiving_child() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
 
         let parent = AgentIdentityRecord::new(
             "parent_missing",
@@ -4039,7 +4043,7 @@ mod tests {
     #[tokio::test]
     async fn stop_task_cleans_up_interrupted_supervised_child_after_restart() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
         let parent_storage = AppStorage::new(host.agent_data_dir(&parent_agent_id)).unwrap();
         parent_storage
@@ -4254,7 +4258,7 @@ mod tests {
     #[tokio::test]
     async fn daemon_style_shutdown_does_not_strand_public_agent_on_restart() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let agent_id = config.default_agent_id.clone();
         let runtime = host.default_runtime().await.unwrap();
 
@@ -4308,7 +4312,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_agent_stop_remains_durable_across_restart() {
         let (_home, host) = test_host();
-        let config = host.config().clone();
+        let config = host.config().as_ref().clone();
         let runtime = host.default_runtime().await.unwrap();
         runtime.control(ControlAction::Stop).await.unwrap();
         host.unload_runtime(&config.default_agent_id).await;

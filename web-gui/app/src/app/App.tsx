@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
+import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -11,10 +12,10 @@ import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
-import { useRuntimeStore } from "../runtime/runtime-store";
+import { readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig } from "../runtime/types";
+import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
 import { pushBrowserRoute, routeFromLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
@@ -183,20 +184,47 @@ export function App() {
       data-nav-collapsed={navCollapsed}
     >
       <aside className="sidebar" aria-label="Holon navigation">
-        <div className="window-controls" aria-hidden="true">
-          <span />
-          <span />
-          <span />
+        <div className="sidebar-brand">
+          <a
+            className="brand-link"
+            href="https://holon.run"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open Holon website"
+            title="Open Holon website"
+          >
+            <span className="brand-mark" aria-hidden="true">
+              <img src={holonMarkUrl} alt="" />
+            </span>
+            <span className="brand-name">Holon</span>
+          </a>
+          <a
+            className="brand-icon-link"
+            href="https://github.com/holon-run/holon"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open Holon on GitHub"
+            title="Open Holon on GitHub"
+          >
+            <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
+              <path
+                fill="currentColor"
+                fillRule="evenodd"
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </a>
+          <button
+            className="nav-collapse"
+            type="button"
+            aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+            title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+            onClick={toggleNavCollapsed}
+          >
+            ‹
+          </button>
         </div>
-        <button
-          className="nav-collapse"
-          type="button"
-          aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
-          title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
-          onClick={toggleNavCollapsed}
-        >
-          ‹
-        </button>
 
         <nav className="global-nav" aria-label="Global navigation">
           {globalRoutes.map((item) => (
@@ -438,16 +466,46 @@ function ConnectionSwitcher({
   const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | undefined>();
+  const [savedRemotes, setSavedRemotes] = useState<RuntimeConnectionProfile[]>(() => readStoredRemoteConnectionProfiles());
+  const switcherRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (connection.mode === "remote") setBaseUrl(connection.baseUrl ?? "");
   }, [connection.baseUrl, connection.mode]);
+
+  useEffect(() => {
+    if (!compact || !open) return;
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!switcherRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [compact, open]);
+
+  function toggleOpen() {
+    setOpen((value) => {
+      const nextOpen = !value;
+      if (nextOpen) {
+        setSavedRemotes(readStoredRemoteConnectionProfiles());
+        setFormError(undefined);
+      }
+      return nextOpen;
+    });
+  }
 
   async function applyConnection(config: RuntimeConnectionConfig) {
     setSaving(true);
     setFormError(undefined);
     try {
       await onSetConnection(config);
+      setSavedRemotes(readStoredRemoteConnectionProfiles());
       if (compact) setOpen(false);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : String(error));
@@ -457,8 +515,14 @@ function ConnectionSwitcher({
   }
 
   return (
-    <div className={`connection-switcher ${open ? "is-open" : ""}`}>
-      <button className="connection-status" type="button" onClick={() => setOpen((value) => !value)}>
+    <div className={`connection-switcher ${open ? "is-open" : ""} ${compact ? "is-popover" : ""}`} ref={switcherRef}>
+      <button
+        className="connection-status"
+        type="button"
+        aria-expanded={open}
+        aria-haspopup={compact ? "dialog" : undefined}
+        onClick={toggleOpen}
+      >
         <span className={`runtime-dot ${connection.error ? "error" : ""}`} />
         <span>
           <strong>{connection.mode}</strong>
@@ -468,6 +532,8 @@ function ConnectionSwitcher({
       {open ? (
         <form
           className="connection-panel"
+          role={compact ? "dialog" : undefined}
+          aria-label="Runtime connection"
           onSubmit={(event) => {
             event.preventDefault();
             const trimmedBaseUrl = baseUrl.trim();
@@ -478,6 +544,56 @@ function ConnectionSwitcher({
             void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token: token.trim() || undefined });
           }}
         >
+          <div className="connection-panel-head">
+            <div>
+              <strong>Runtime connection</strong>
+              <span>Switch local or saved remote without leaving this page.</span>
+            </div>
+            {compact ? (
+              <button type="button" aria-label="Close connection panel" onClick={() => setOpen(false)}>
+                ×
+              </button>
+            ) : null}
+          </div>
+          <button
+            className={`saved-remote-row ${connection.mode === "local" ? "is-selected" : ""}`}
+            type="button"
+            disabled={saving}
+            onClick={() => void applyConnection({ mode: "local" })}
+          >
+            <span>
+              <strong>Localhost</strong>
+              <small>Local runtime on this machine</small>
+            </span>
+            <span>{connection.mode === "local" ? "Current" : "Use"}</span>
+          </button>
+          <div className="saved-remotes" aria-label="Saved remotes">
+            <span className="connection-section-label">Saved remotes</span>
+            {savedRemotes.length > 0 ? (
+              savedRemotes.map((remote) => {
+                const selected = connection.mode === "remote" && connection.baseUrl === remote.baseUrl;
+                return (
+                  <button
+                    className={`saved-remote-row ${selected ? "is-selected" : ""}`}
+                    type="button"
+                    key={remote.baseUrl}
+                    title={remote.baseUrl}
+                    disabled={saving}
+                    onClick={() => void applyConnection({ mode: "remote", baseUrl: remote.baseUrl })}
+                  >
+                    <span>
+                      <strong>{remoteLabel(remote.baseUrl)}</strong>
+                      <small>{remote.baseUrl}</small>
+                    </span>
+                    <span>{selected ? "Current" : remote.hasToken ? "Saved token" : "Use"}</span>
+                  </button>
+                );
+              })
+            ) : (
+              <p className="saved-remotes-empty">No saved remotes yet. Add one below to reuse it later.</p>
+            )}
+          </div>
+          <span className="connection-section-label">Add remote</span>
           <label>
             Remote URL
             <input
@@ -498,9 +614,6 @@ function ConnectionSwitcher({
           </label>
           {formError ? <span className="connection-error">{formError}</span> : null}
           <div className="connection-actions">
-            <Button type="button" size="sm" variant="secondary" disabled={saving} onClick={() => void applyConnection({ mode: "local" })}>
-              Localhost
-            </Button>
             <Button type="submit" size="sm" disabled={saving}>
               {saving ? "Connecting…" : "Use remote"}
             </Button>
@@ -509,6 +622,14 @@ function ConnectionSwitcher({
       ) : null}
     </div>
   );
+}
+
+function remoteLabel(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
 }
 
 function MissingAgentPage({ agentId, loading }: { agentId: string; loading: boolean }) {

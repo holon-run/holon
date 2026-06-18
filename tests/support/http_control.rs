@@ -1308,9 +1308,84 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         valid_model_payload["results"][0]["effect"],
         "accepted_reloaded"
     );
+    assert_eq!(
+        valid_model_payload["runtime_surface"]["model_default"],
+        "openai/gpt-4.1"
+    );
+    assert_eq!(host.config().default_model.as_string(), "openai/gpt-4.1");
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
     assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
+
+    let provider_config_response = client
+        .patch(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "providers.openai.auth.env", "value": "OPENAI_API_KEY_TEST" }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(
+        provider_config_response.status().is_success(),
+        "valid provider config update failed: {:?}",
+        provider_config_response.text().await?
+    );
+    let provider_config_payload: serde_json::Value = provider_config_response.json().await?;
+    assert_eq!(provider_config_payload["changed"], true);
+    assert_eq!(
+        provider_config_payload["results"][0]["effect"],
+        "accepted_reloaded"
+    );
+    assert_eq!(
+        provider_config_payload["runtime_surface"]["providers"]
+            .as_array()
+            .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
+            .and_then(|provider| provider["credential_env"].as_str()),
+        Some("OPENAI_API_KEY_TEST")
+    );
+    assert_eq!(
+        provider_config_payload["runtime_surface"]["providers"]
+            .as_array()
+            .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
+            .and_then(|provider| provider["configured_in_config"].as_bool()),
+        Some(true)
+    );
+
+    let provider_remove_response = client
+        .patch(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "providers.openai", "unset": true }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(
+        provider_remove_response.status().is_success(),
+        "provider config removal failed: {:?}",
+        provider_remove_response.text().await?
+    );
+    let provider_remove_payload: serde_json::Value = provider_remove_response.json().await?;
+    assert_eq!(provider_remove_payload["changed"], true);
+    assert_eq!(
+        provider_remove_payload["results"][0]["effect"],
+        "accepted_reloaded"
+    );
+    assert_eq!(
+        provider_remove_payload["runtime_surface"]["providers"]
+            .as_array()
+            .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
+            .and_then(|provider| provider["configured_in_config"].as_bool()),
+        Some(false)
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert!(!persisted
+        .providers
+        .contains_key(&holon::config::ProviderId::parse("openai")?));
 
     let valid_cors_response = client
         .patch(format!("http://{addr}/control/runtime/config"))

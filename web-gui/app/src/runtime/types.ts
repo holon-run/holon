@@ -17,6 +17,11 @@ export interface RuntimeConnectionConfig {
   token?: string;
 }
 
+export interface RuntimeConnectionProfile {
+  baseUrl: string;
+  hasToken: boolean;
+}
+
 export interface WorkItemSummary {
   id: string;
   objective: string;
@@ -151,6 +156,7 @@ export interface RuntimeProviderSummary {
   credentialProfile?: string;
   credentialExternal?: string;
   credentialConfigured: boolean;
+  configuredInConfig: boolean;
 }
 
 export interface RuntimeConfigSurface {
@@ -183,6 +189,7 @@ export interface RuntimeWebSearchProviderSummary {
   kind: string;
   baseUrl?: string;
   credentialProfile?: string;
+  credentialConfigured: boolean;
 }
 
 export interface RuntimeConfigUpdateResult {

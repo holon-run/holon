@@ -479,6 +479,27 @@ fn catalog_model(
     }
 }
 
+fn mirror_catalog_models(
+    entries: &[BuiltInModelMetadata],
+    source_provider: &str,
+    target_provider: &str,
+) -> Vec<BuiltInModelMetadata> {
+    let source_provider = provider_id(source_provider);
+    let target_provider = provider_id(target_provider);
+    entries
+        .iter()
+        .filter(|entry| entry.model_ref.provider == source_provider)
+        .map(|entry| {
+            let mut mirrored = entry.clone();
+            mirrored.model_ref = ModelRef::new(target_provider.clone(), &entry.model_ref.model);
+            mirrored.description = mirrored
+                .description
+                .replace(source_provider.as_str(), target_provider.as_str());
+            mirrored
+        })
+        .collect()
+}
+
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
         BuiltInModelMetadata {
@@ -1263,7 +1284,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.7-plus",
             "qwen3.7-plus",
             1_000_000,
@@ -1272,7 +1293,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.7-plus-2026-05-26",
             "qwen3.7-plus-2026-05-26",
             1_000_000,
@@ -1281,7 +1302,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.7-max",
             "qwen3.7-max",
             1_000_000,
@@ -1290,7 +1311,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.7-max-2026-06-08",
             "qwen3.7-max-2026-06-08",
             1_000_000,
@@ -1299,7 +1320,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.7-max-2026-05-20",
             "qwen3.7-max-2026-05-20",
             1_000_000,
@@ -1308,7 +1329,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.5-plus",
             "qwen3.5-plus",
             1_000_000,
@@ -1317,7 +1338,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.6-plus",
             "qwen3.6-plus",
             1_000_000,
@@ -1326,7 +1347,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.6-flash",
             "qwen3.6-flash",
             1_000_000,
@@ -1335,7 +1356,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3.5-flash",
             "qwen3.5-flash",
             1_000_000,
@@ -1344,7 +1365,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3-max-2026-01-23",
             "qwen3-max-2026-01-23",
             262_144,
@@ -1353,7 +1374,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3-coder-next",
             "qwen3-coder-next",
             262_144,
@@ -1362,7 +1383,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3-coder-plus",
             "qwen3-coder-plus",
             1_000_000,
@@ -1371,7 +1392,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "qwen",
+            "dashscope",
             "qwen3-coder-flash",
             "qwen3-coder-flash",
             1_000_000,
@@ -1931,15 +1952,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model("zai", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false),
-        catalog_model(
-            "bigmodel", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false,
-        ),
         catalog_model("zai", "glm-5.1", "GLM-5.1", 202_800, 131_100, true, false),
-        catalog_model(
-            "bigmodel", "glm-5.1", "GLM-5.1", 202_800, 131_100, true, false,
-        ),
         catalog_model("zai", "glm-5", "GLM-5", 202_800, 131_100, true, false),
-        catalog_model("bigmodel", "glm-5", "GLM-5", 202_800, 131_100, true, false),
         catalog_model(
             "zai",
             "glm-5-turbo",
@@ -2000,16 +2014,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model("zai", "glm-4.5v", "GLM-4.5V", 64_000, 16_384, true, true),
     ];
+    entries.extend(mirror_catalog_models(&entries, "zai", "bigmodel"));
     entries.extend([
-        catalog_model(
-            "dashscope",
-            "qwen3.7-plus",
-            "Qwen3.7 Plus",
-            1_000_000,
-            65_536,
-            true,
-            true,
-        ),
         catalog_model(
             "dashscope",
             "deepseek-v4-pro",
@@ -2294,19 +2300,33 @@ mod tests {
                 .as_string(),
             "bigmodel/glm-5.2"
         );
+
+        let zai_provider = ProviderId::parse("zai").unwrap();
+        let bigmodel_provider = ProviderId::parse("bigmodel").unwrap();
+        let zai_models = catalog
+            .list()
+            .into_iter()
+            .filter(|model| model.model_ref.provider == zai_provider)
+            .collect::<Vec<_>>();
+        assert!(zai_models.len() >= 10);
+        for zai_model in zai_models {
+            let bigmodel_ref = ModelRef::new(bigmodel_provider.clone(), &zai_model.model_ref.model);
+            assert!(
+                catalog.get(&bigmodel_ref).is_some(),
+                "{} should mirror {}",
+                bigmodel_ref.as_string(),
+                zai_model.model_ref.as_string()
+            );
+        }
     }
 
     #[test]
-    fn qwen_catalog_is_limited_to_qwen_models_and_dashscope_covers_platform_models() {
+    fn dashscope_covers_qwen_models_without_separate_qwen_provider() {
         let catalog = BuiltInModelCatalog::new();
 
-        assert_eq!(
-            catalog
-                .preferred_model_for_provider(&ProviderId::parse("qwen").unwrap())
-                .unwrap()
-                .as_string(),
-            "qwen/qwen3.7-plus"
-        );
+        assert!(catalog
+            .preferred_model_for_provider(&ProviderId::parse("qwen").unwrap())
+            .is_none());
         assert_eq!(
             catalog
                 .preferred_model_for_provider(&ProviderId::parse("dashscope").unwrap())
@@ -2317,22 +2337,13 @@ mod tests {
 
         assert!(catalog
             .get(&ModelRef::parse("qwen/qwen3.7-plus").unwrap())
-            .is_some());
-        assert!(catalog
-            .get(&ModelRef::parse("qwen/qwen3.7-max").unwrap())
-            .is_some());
-        assert!(catalog
-            .get(&ModelRef::parse("qwen/MiniMax-M2.5").unwrap())
-            .is_none());
-        assert!(catalog
-            .get(&ModelRef::parse("qwen/glm-5").unwrap())
-            .is_none());
-        assert!(catalog
-            .get(&ModelRef::parse("qwen/kimi-k2.5").unwrap())
             .is_none());
 
         assert!(catalog
             .get(&ModelRef::parse("dashscope/qwen3.7-plus").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope/qwen3.7-max").unwrap())
             .is_some());
         assert!(catalog
             .get(&ModelRef::parse("dashscope/MiniMax-M2.5").unwrap())

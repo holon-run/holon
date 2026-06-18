@@ -897,7 +897,7 @@ pub async fn events_stream_requires_control_auth_when_configured() -> Result<()>
 pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
     let (host, _base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
-    let config = host.config().clone();
+    let config = (*host.config()).clone();
     let now = chrono::Utc::now();
 
     let task = TaskRecord {

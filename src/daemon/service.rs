@@ -105,6 +105,7 @@ pub struct RuntimeProviderSummary {
     pub credential_profile: Option<String>,
     pub credential_external: Option<String>,
     pub credential_configured: bool,
+    pub configured_in_config: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -124,6 +125,7 @@ pub struct RuntimeWebSearchProviderSummary {
     pub kind: String,
     pub base_url: Option<String>,
     pub credential_profile: Option<String>,
+    pub credential_configured: bool,
 }
 
 impl RuntimeConfigSurface {
@@ -161,6 +163,7 @@ impl RuntimeConfigSurface {
                     credential_profile: provider.auth.profile.clone(),
                     credential_external: provider.auth.external.clone(),
                     credential_configured: provider.has_configured_credential(),
+                    configured_in_config: config.stored_config.providers.contains_key(&provider.id),
                 })
                 .collect(),
             web_search: RuntimeWebSearchSummary {
@@ -182,6 +185,12 @@ impl RuntimeConfigSurface {
                     kind: provider.kind.as_str().to_string(),
                     base_url: provider.base_url.clone(),
                     credential_profile: provider.credential_profile.clone(),
+                    credential_configured: config
+                        .web_config
+                        .providers
+                        .get(id)
+                        .map(|provider| !provider.api_key.is_empty())
+                        .unwrap_or(false),
                 })
                 .collect(),
         }

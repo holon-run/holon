@@ -1397,6 +1397,9 @@
                     "base_url": {
                       "type": "string"
                     },
+                    "configured_in_config": {
+                      "type": "boolean"
+                    },
                     "credential_configured": {
                       "type": "boolean"
                     },
@@ -1437,7 +1440,8 @@
                     "base_url",
                     "credential_source",
                     "credential_kind",
-                    "credential_configured"
+                    "credential_configured",
+                    "configured_in_config"
                   ],
                   "type": "object"
                 },
@@ -1508,6 +1512,9 @@
                         "null"
                       ]
                     },
+                    "credential_configured": {
+                      "type": "boolean"
+                    },
                     "credential_profile": {
                       "type": [
                         "string",
@@ -1523,7 +1530,8 @@
                   },
                   "required": [
                     "id",
-                    "kind"
+                    "kind",
+                    "credential_configured"
                   ],
                   "type": "object"
                 },
@@ -1658,6 +1666,9 @@
                     "base_url": {
                       "type": "string"
                     },
+                    "configured_in_config": {
+                      "type": "boolean"
+                    },
                     "credential_configured": {
                       "type": "boolean"
                     },
@@ -1698,7 +1709,8 @@
                     "base_url",
                     "credential_source",
                     "credential_kind",
-                    "credential_configured"
+                    "credential_configured",
+                    "configured_in_config"
                   ],
                   "type": "object"
                 },
@@ -1769,6 +1781,9 @@
                         "null"
                       ]
                     },
+                    "credential_configured": {
+                      "type": "boolean"
+                    },
                     "credential_profile": {
                       "type": [
                         "string",
@@ -1784,7 +1799,8 @@
                   },
                   "required": [
                     "id",
-                    "kind"
+                    "kind",
+                    "credential_configured"
                   ],
                   "type": "object"
                 },

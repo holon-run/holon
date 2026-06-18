@@ -4,7 +4,15 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
-import type { RuntimeConfigState, RuntimeConnection, RuntimeModelCatalog, RuntimeModelOption, RuntimeProviderSummary, CredentialStoreState } from "../../runtime/types";
+import type {
+  CredentialStoreState,
+  RuntimeConfigState,
+  RuntimeConnection,
+  RuntimeModelCatalog,
+  RuntimeModelOption,
+  RuntimeProviderSummary,
+  RuntimeWebSearchProviderSummary,
+} from "../../runtime/types";
 
 interface SettingsPageProps {
   connection: RuntimeConnection;
@@ -37,13 +45,124 @@ function numberFromInput(value: string): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const trimmed = visionDefault.trim();
+  return [trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }];
+}
+
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
   "transport" | "baseUrl" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
 >;
 
+type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "credentialProfile">;
+
+type StandardSearchProviderDefinition = {
+  id: string;
+  kind: string;
+  label: string;
+  description: string;
+  requiresApiKey: boolean;
+  defaultCredentialProfile?: string;
+  baseUrlPlaceholder?: string;
+};
+
 const credentialSources = ["env", "credential_profile", "external_cli", "credential_process", "none"];
 const credentialKinds = ["api_key", "bearer_token", "oauth", "session_token", "aws_sdk", "none"];
+const webSearchProviderKinds = [
+  "duck_duck_go",
+  "searxng",
+  "brave",
+  "tavily",
+  "exa",
+  "perplexity",
+  "firecrawl",
+  "open_ai_native",
+  "anthropic_native",
+  "gemini_native",
+  "command",
+];
+
+const standardSearchProviders: StandardSearchProviderDefinition[] = [
+  {
+    id: "brave",
+    kind: "brave",
+    label: "Brave Search",
+    description: "Good general-purpose web results. Requires a Brave Search API key.",
+    requiresApiKey: true,
+    defaultCredentialProfile: "brave:default",
+  },
+  {
+    id: "tavily",
+    kind: "tavily",
+    label: "Tavily",
+    description: "Search API optimized for agent and RAG workflows. Requires a Tavily API key.",
+    requiresApiKey: true,
+    defaultCredentialProfile: "tavily:default",
+  },
+  {
+    id: "exa",
+    kind: "exa",
+    label: "Exa",
+    description: "Neural search API for high-relevance web retrieval. Requires an Exa API key.",
+    requiresApiKey: true,
+    defaultCredentialProfile: "exa:default",
+  },
+  {
+    id: "perplexity",
+    kind: "perplexity",
+    label: "Perplexity",
+    description: "Perplexity search-backed answers. Requires a Perplexity API key.",
+    requiresApiKey: true,
+    defaultCredentialProfile: "perplexity:default",
+  },
+  {
+    id: "firecrawl",
+    kind: "firecrawl",
+    label: "Firecrawl",
+    description: "Search and crawl provider for page extraction workflows. Requires a Firecrawl API key.",
+    requiresApiKey: true,
+    defaultCredentialProfile: "firecrawl:default",
+  },
+  {
+    id: "searxng",
+    kind: "searxng",
+    label: "SearXNG",
+    description: "Use a self-hosted or trusted SearXNG instance. No API key is needed.",
+    requiresApiKey: false,
+    baseUrlPlaceholder: "https://search.example.com",
+  },
+];
+
+const standardSearchProviderById = new Map(standardSearchProviders.map((provider) => [provider.id, provider]));
+const standardSearchProviderIds = new Set(standardSearchProviders.map((provider) => provider.id));
+
+type SettingsTabKey = "general" | "models" | "vision" | "search" | "advanced";
+
+const settingsTabs: Array<{ key: SettingsTabKey; label: string; description: string }> = [
+  { key: "general", label: "General", description: "connection and runtime basics" },
+  { key: "models", label: "Models", description: "defaults and provider keys" },
+  { key: "vision", label: "Vision", description: "image observation model" },
+  { key: "search", label: "Search", description: "routing and search providers" },
+  { key: "advanced", label: "Advanced", description: "diagnostics and raw config" },
+];
+
+function defaultSearchProviderDraft(providerId: string): SearchProviderDraft {
+  const definition = standardSearchProviderById.get(providerId);
+  return {
+    kind: definition?.kind ?? "brave",
+    baseUrl: "",
+    credentialProfile: definition?.requiresApiKey ? definition.defaultCredentialProfile ?? `${providerId}:default` : "",
+  };
+}
+
+export function buildSearchProviderConfigUpdates(providerId: string, draft: SearchProviderDraft): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  return [
+    { key: `web.providers.${providerId}.kind`, value: draft.kind },
+    { key: `web.providers.${providerId}.base_url`, value: draft.baseUrl?.trim() ?? "" },
+    { key: `web.providers.${providerId}.credential_profile`, value: draft.credentialProfile?.trim() ?? "" },
+  ];
+}
 
 export function SettingsPage({
   connection,
@@ -81,18 +200,33 @@ export function SettingsPage({
   const [searchProviders, setSearchProviders] = useState("");
   const [searchMaxResults, setSearchMaxResults] = useState("");
   const [searchMaxProviderAttempts, setSearchMaxProviderAttempts] = useState("");
+  const [searchProviderDrafts, setSearchProviderDrafts] = useState<Record<string, SearchProviderDraft>>({});
+  const [newSearchProviderId, setNewSearchProviderId] = useState("");
+  const [newSearchProviderKind, setNewSearchProviderKind] = useState("brave");
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
   const [saveMessage, setSaveMessage] = useState<string | undefined>();
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
+  const [searchProviderSaveMessage, setSearchProviderSaveMessage] = useState<string | undefined>();
   const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>("models");
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
+  const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
+  const [searchCredentialMessages, setSearchCredentialMessages] = useState<Record<string, string>>({});
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
   const providersWithModels = useMemo(
     () => new Set(modelCatalog.options.map((m) => m.provider)),
     [modelCatalog.options],
+  );
+  const sortedProviders = useMemo(
+    () => sortProvidersForSettings(surface?.providers ?? []),
+    [surface?.providers],
+  );
+  const sortedSearchProviders = useMemo(
+    () => sortSearchProvidersForSettings(surface?.webSearchProviders ?? []),
+    [surface?.webSearchProviders],
   );
 
   useEffect(() => {
@@ -113,6 +247,18 @@ export function SettingsPage({
       setSearchMaxResults(String(surface.webSearch.maxResults));
       setSearchMaxProviderAttempts(String(surface.webSearch.maxProviderAttempts));
     }
+    setSearchProviderDrafts(
+      Object.fromEntries(
+        surface.webSearchProviders.map((provider) => [
+          provider.id,
+          {
+            kind: provider.kind,
+            baseUrl: provider.baseUrl ?? "",
+            credentialProfile: provider.credentialProfile ?? "",
+          },
+        ]),
+      ),
+    );
     setProviderDrafts(
       Object.fromEntries(
         surface.providers.map((provider) => [
@@ -131,6 +277,7 @@ export function SettingsPage({
     );
     setSaveMessage(undefined);
     setSearchSaveMessage(undefined);
+    setSearchProviderSaveMessage(undefined);
     setVisionSaveMessage(undefined);
     setProviderSaveMessage(undefined);
   }, [surface]);
@@ -170,6 +317,7 @@ export function SettingsPage({
   const rejectedResults = runtimeConfig.results?.filter((result) => result.effect === "rejected") ?? [];
   const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
   const searchProviderCount = surface?.webSearchProviders.length ?? 0;
+  const configuredSearchProviderCount = surface?.webSearchProviders.filter((provider) => provider.credentialConfigured).length ?? 0;
   const visionProviderReady = visionDefault ? surface?.providers.find((provider) => provider.id === visionDefault.split("/")[0])?.credentialConfigured : undefined;
 
   async function saveRuntimeConfig() {
@@ -216,10 +364,88 @@ export function SettingsPage({
     );
   }
 
+  function updateSearchProviderDraft(providerId: string, patch: Partial<SearchProviderDraft>) {
+    setSearchProviderDrafts((drafts) => ({
+      ...drafts,
+      [providerId]: {
+        ...(drafts[providerId] ?? defaultSearchProviderDraft(providerId)),
+        ...patch,
+      },
+    }));
+  }
+
+  function addSearchProviderDraft() {
+    const providerId = newSearchProviderId.trim();
+    if (!providerId) return;
+    updateSearchProviderDraft(providerId, {
+      kind: newSearchProviderKind,
+      credentialProfile: `${providerId}:default`,
+    });
+    setNewSearchProviderId("");
+    setSearchProviderSaveMessage(`Prepared ${providerId}. Review and save the provider config below.`);
+  }
+
+  async function saveSearchProviderConfig(providerId: string) {
+    const draft = searchProviderDrafts[providerId] ?? defaultSearchProviderDraft(providerId);
+    setSearchProviderSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig(buildSearchProviderConfigUpdates(providerId, draft));
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setSearchProviderSaveMessage(
+      rejected.length
+        ? `${rejected.length} search provider setting${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? `Saved ${providerId} search provider settings to config.json. Changes applied via hot-reload.`
+          : "No search provider config changes were persisted.",
+    );
+  }
+
+  async function removeSearchProviderConfig(providerId: string) {
+    const confirmed = window.confirm(
+      `Remove ${providerId} from web.providers in config.json? This does not delete credentials.`,
+    );
+    if (!confirmed) return;
+
+    setSearchProviderSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig([{ key: `web.providers.${providerId}`, unset: true }]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setSearchProviderSaveMessage(
+      rejected.length
+        ? `${rejected.length} search provider removal${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? `Removed ${providerId} search provider config from config.json. Credentials were not deleted.`
+          : `No persisted ${providerId} search provider config was removed.`,
+    );
+  }
+
+  async function saveSearchApiKey(providerId: string, credentialProfile: string) {
+    const key = searchApiKeyDrafts[providerId]?.trim();
+    if (!key || !credentialProfile) return;
+    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
+    const result = await onSetCredential(credentialProfile, "api_key", key);
+    if (result) {
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "API key saved to credential store." }));
+      setSearchApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
+    } else {
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to save API key." }));
+    }
+  }
+
+  async function removeSearchApiKey(providerId: string, credentialProfile: string) {
+    if (!credentialProfile) return;
+    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Removing…" }));
+    try {
+      await onDeleteCredential(credentialProfile);
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "API key removed from credential store." }));
+    } catch {
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to remove API key." }));
+    }
+  }
+
   async function saveVisionConfig() {
     setVisionSaveMessage(undefined);
-    const trimmed = visionDefault.trim();
-    const result = await onUpdateRuntimeConfig([trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }]);
+    const result = await onUpdateRuntimeConfig(buildVisionConfigUpdates(visionDefault));
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setVisionSaveMessage(
@@ -272,6 +498,25 @@ export function SettingsPage({
     );
   }
 
+  async function removeProviderConfig(providerId: string) {
+    const confirmed = window.confirm(
+      `Remove ${providerId} from config.json? This only removes persisted provider config; it does not delete credentials or disable built-in provider defaults.`,
+    );
+    if (!confirmed) return;
+
+    setProviderSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig([{ key: `providers.${providerId}`, unset: true }]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setProviderSaveMessage(
+      rejected.length
+        ? `${rejected.length} provider config removal${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? `Removed ${providerId} provider config from config.json. Built-in providers may fall back to defaults; credentials were not deleted.`
+          : `No persisted ${providerId} provider config was removed.`,
+    );
+  }
+
   return (
     <section className="page settings-page" aria-label="Settings">
       <div className="page-inner settings-inner">
@@ -279,7 +524,7 @@ export function SettingsPage({
           <span className="eyebrow">Runtime configuration</span>
           <h1>Settings</h1>
           <p>
-            Configure common runtime defaults from the Web GUI. Saved model defaults are persisted to config.json
+            Configure common runtime defaults from the Web GUI. Saved model and vision defaults are persisted to config.json
             and take effect immediately via hot-reload.
           </p>
           <div className="settings-quickstart" aria-label="Settings overview">
@@ -299,7 +544,9 @@ export function SettingsPage({
               <span>Web search</span>
               <strong>{surface?.webSearch?.enabled ? "Enabled" : "Disabled"}</strong>
               <small>
-                {searchProviderCount ? `${searchProviderCount} configured provider${searchProviderCount === 1 ? "" : "s"}` : "Using builtin provider defaults"}
+                {searchProviderCount
+                  ? `${configuredSearchProviderCount}/${searchProviderCount} search provider${searchProviderCount === 1 ? "" : "s"} ready`
+                  : "Using builtin provider defaults"}
               </small>
             </div>
             <div>
@@ -310,13 +557,78 @@ export function SettingsPage({
           </div>
         </Card>
 
+        <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+          {settingsTabs.map((tab) => (
+            <button
+              aria-selected={activeTab === tab.key}
+              className={`settings-tab ${activeTab === tab.key ? "active" : ""}`}
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              role="tab"
+              type="button"
+            >
+              <span>{tab.label}</span>
+              <small>{tab.description}</small>
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "general" ? (
+          <div className="settings-grid">
+            <Card className="settings-card settings-primary-card">
+              <div className="settings-card-head">
+                <div>
+                  <span className="eyebrow">General</span>
+                  <h2>Runtime overview</h2>
+                </div>
+                <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
+                  {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+                </Button>
+              </div>
+              {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
+              <dl className="settings-list compact">
+                <div>
+                  <dt>Connection</dt>
+                  <dd>{connection.source === "http" ? "Live runtime" : "Preview data"}</dd>
+                </div>
+                <div>
+                  <dt>API base</dt>
+                  <dd>{connection.baseUrl ?? "not configured"}</dd>
+                </div>
+                <div>
+                  <dt>Config file</dt>
+                  <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
+                </div>
+                <div>
+                  <dt>Provider fallback</dt>
+                  <dd>{surface?.disableProviderFallback ? "disabled" : "enabled"}</dd>
+                </div>
+                <div>
+                  <dt>Model providers</dt>
+                  <dd>
+                    {configuredProviderCount}/{surface?.providers.length ?? 0} credential ready
+                  </dd>
+                </div>
+                <div>
+                  <dt>Search</dt>
+                  <dd>{surface?.webSearch?.enabled ? "enabled" : "disabled"}</dd>
+                </div>
+                <div>
+                  <dt>Vision</dt>
+                  <dd>{surface?.visionDefault ? surface.visionDefault : "auto-discovery"}</dd>
+                </div>
+              </dl>
+            </Card>
+          </div>
+        ) : null}
+
         <div className="settings-grid">
-          {/* ── Model & Vision ── */}
-          <Card className="settings-card">
+          {/* ── Model defaults ── */}
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "models"}>
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Runtime defaults</span>
-                <h2>Model &amp; Vision</h2>
+                <h2>Model</h2>
               </div>
               <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
                 {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
@@ -350,17 +662,6 @@ export function SettingsPage({
                 <details className="settings-advanced">
                   <summary>Advanced</summary>
                   <label>
-                    <span>Vision default model</span>
-                    <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
-                    <datalist id="vision-models">
-                      {visionModels.map((model) => (
-                        <option key={model.model} value={model.model}>
-                          {model.displayName}
-                        </option>
-                      ))}
-                    </datalist>
-                  </label>
-                  <label>
                     <span>Fallback models</span>
                     <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
                   </label>
@@ -392,7 +693,6 @@ export function SettingsPage({
                     {runtimeConfigSaving ? "Saving…" : "Save"}
                   </Button>
                   {saveMessage ? <span>{saveMessage}</span> : null}
-                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
                 </div>
                 {rejectedResults.length ? (
                   <div className="settings-error-banner">
@@ -421,8 +721,62 @@ export function SettingsPage({
             </dl>
           </Card>
 
+          {/* ── Vision defaults ── */}
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "vision"}>
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">Vision</span>
+                <h2>Image observation</h2>
+              </div>
+            </div>
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>Vision config unavailable</strong>
+                <span>Connect to a live runtime and refresh this page to edit the Vision default model.</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveVisionConfig();
+                }}
+              >
+                <label>
+                  <span>Vision default model</span>
+                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                  <datalist id="vision-models">
+                    {visionModels.map((model) => (
+                      <option key={model.model} value={model.model}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                  </datalist>
+                </label>
+                <p className="settings-hint">
+                  Leave empty to let ViewImage auto-discover an authenticated image-capable model.
+                </p>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? "Saving…" : "Save Vision"}
+                  </Button>
+                  {visionDefault ? (
+                    <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"}>
+                      {visionProviderReady ? "provider ready" : "provider credential missing"}
+                    </StatusChip>
+                  ) : (
+                    <StatusChip className="settings-status available" tone="success">
+                      auto-discovery
+                    </StatusChip>
+                  )}
+                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
+                </div>
+              </form>
+            )}
+          </Card>
+
           {/* ── Web search ── */}
-          <Card className="settings-card">
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "search"}>
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Runtime defaults</span>
@@ -447,28 +801,34 @@ export function SettingsPage({
                   <span>Enable WebSearch</span>
                 </label>
                 <label>
-                  <span>Default provider</span>
-                  <input list="web-search-providers" value={searchProvider} onChange={(event) => setSearchProvider(event.target.value)} />
-                  <datalist id="web-search-providers">
-                    <option value="auto">auto</option>
-                    <option value="duckduckgo">duckduckgo</option>
-                    {surface.webSearchProviders.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.kind}
-                      </option>
-                    ))}
-                  </datalist>
+                  <span>Routing</span>
+                  <select value={searchProvider || "auto"} onChange={(event) => setSearchProvider(event.target.value)}>
+                    <option value="auto">Auto — use configured providers, then DuckDuckGo</option>
+                    <option value="duckduckgo">DuckDuckGo — builtin, no API key</option>
+                    {standardSearchProviders.map((provider) => {
+                      const configured = surface.webSearchProviders.find((entry) => entry.id === provider.id);
+                      const ready = provider.requiresApiKey ? configured?.credentialConfigured : Boolean(configured);
+                      return (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}{ready ? " — ready" : provider.requiresApiKey ? " — API key needed" : ""}
+                        </option>
+                      );
+                    })}
+                  </select>
                 </label>
+                <label className="settings-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={searchBuiltinProviderEnabled}
+                    onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
+                  />
+                  <span>Allow model-native search when available</span>
+                </label>
+                <p className="settings-hint">
+                  DuckDuckGo and native search do not need API keys. Add keys only for API-backed providers below.
+                </p>
                 <details className="settings-advanced">
                   <summary>Advanced</summary>
-                  <label className="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={searchBuiltinProviderEnabled}
-                      onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
-                    />
-                    <span>Allow provider-native search when available</span>
-                  </label>
                   <div className="settings-form-row">
                     <label>
                       <span>Mode</span>
@@ -509,8 +869,259 @@ export function SettingsPage({
           </Card>
         </div>
 
+        {/* ── Web search providers ── */}
+        <Card className="settings-card" hidden={activeTab !== "search"}>
+          <div className="settings-card-head">
+            <div>
+              <span className="eyebrow">Provider accounts</span>
+              <h2>Web search providers</h2>
+            </div>
+          </div>
+          {!surface ? (
+            <div className="settings-callout">
+              <strong>Search provider config unavailable</strong>
+              <span>Connect to a live runtime and refresh this page to edit web search provider credentials.</span>
+            </div>
+          ) : (
+            <div className="settings-provider-list">
+              <p className="settings-muted">
+                Standard providers are shown as product choices. The UI creates the matching <code>web.providers.&lt;id&gt;</code> entry and stores API keys in the existing credential store.
+              </p>
+              <div className="settings-builtins">
+                <div>
+                  <strong>Native search</strong>
+                  <span>Uses model-provider native search when the runtime can route to it. No API key is configured here.</span>
+                </div>
+                <StatusChip className={`settings-status ${searchBuiltinProviderEnabled ? "available" : "unavailable"}`} tone={searchBuiltinProviderEnabled ? "success" : "error"}>
+                  {searchBuiltinProviderEnabled ? "allowed" : "disabled"}
+                </StatusChip>
+                <div>
+                  <strong>DuckDuckGo</strong>
+                  <span>Built in and ready by default. No provider id, kind, or API key is required.</span>
+                </div>
+                <StatusChip className="settings-status available" tone="success">
+                  ready
+                </StatusChip>
+              </div>
+              {standardSearchProviders.map((definition) => {
+                const provider = surface.webSearchProviders.find((entry) => entry.id === definition.id);
+                const draft = searchProviderDrafts[definition.id] ?? defaultSearchProviderDraft(definition.id);
+                const credentialProfile = draft.credentialProfile?.trim() ?? definition.defaultCredentialProfile ?? "";
+                const credentialReady = credentialProfile ? isCredentialProfileConfigured(credentialProfile) : false;
+                const providerReady = definition.requiresApiKey ? credentialReady : Boolean(provider);
+                return (
+                  <form
+                    className="settings-provider-editor"
+                    key={definition.id}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveSearchProviderConfig(definition.id);
+                    }}
+                  >
+                    <header>
+                      <div>
+                        <strong>{definition.label}</strong>
+                        <small>
+                          {definition.description}
+                        </small>
+                      </div>
+                      <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"}>
+                        {providerReady ? "ready" : definition.requiresApiKey ? "key needed" : "not configured"}
+                      </StatusChip>
+                    </header>
+                    {!definition.requiresApiKey ? (
+                      <div className="settings-form-row">
+                        <label>
+                          <span>Base URL</span>
+                          <input
+                            value={draft.baseUrl ?? ""}
+                            onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })}
+                            placeholder={definition.baseUrlPlaceholder ?? "Optional provider base URL"}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                    {definition.requiresApiKey ? (
+                      <label>
+                        <span>Credential profile</span>
+                        <input
+                          value={credentialProfile}
+                          onChange={(event) => updateSearchProviderDraft(definition.id, { credentialProfile: event.target.value })}
+                          placeholder={definition.defaultCredentialProfile}
+                        />
+                      </label>
+                    ) : null}
+                    {definition.requiresApiKey && credentialProfile ? (
+                      <div className="settings-api-key-section">
+                        <div className="settings-api-key-header">
+                          <span>API Key for &quot;{credentialProfile}&quot;</span>
+                          <StatusChip
+                            className={`settings-status ${credentialReady ? "available" : "unavailable"}`}
+                            tone={credentialReady ? "success" : "error"}
+                          >
+                            {credentialReady ? "key set" : "no key"}
+                          </StatusChip>
+                        </div>
+                        <div className="settings-form-row">
+                          <label>
+                            <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
+                            <input
+                              type="password"
+                              placeholder="Paste API key for this search provider"
+                              value={searchApiKeyDrafts[definition.id] ?? ""}
+                              onChange={(event) => setSearchApiKeyDrafts((prev) => ({ ...prev, [definition.id]: event.target.value }))}
+                            />
+                          </label>
+                        </div>
+                        <div className="settings-actions">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={!searchApiKeyDrafts[definition.id]?.trim()}
+                            onClick={() => void saveSearchApiKey(definition.id, credentialProfile)}
+                          >
+                            Save API Key
+                          </Button>
+                          {credentialReady ? (
+                            <Button type="button" variant="secondary" onClick={() => void removeSearchApiKey(definition.id, credentialProfile)}>
+                              Remove Key
+                            </Button>
+                          ) : null}
+                          {searchCredentialMessages[definition.id] ? (
+                            <span className="settings-save-message">{searchCredentialMessages[definition.id]}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    <details className="settings-advanced">
+                      <summary>Advanced</summary>
+                      <div className="settings-form-row">
+                        <label>
+                          <span>Provider id</span>
+                          <input value={definition.id} readOnly disabled />
+                        </label>
+                        <label>
+                          <span>Kind</span>
+                          <input value={definition.kind} readOnly disabled />
+                        </label>
+                        {definition.requiresApiKey ? (
+                          <label>
+                            <span>Base URL</span>
+                            <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder="Optional provider default" />
+                          </label>
+                        ) : null}
+                      </div>
+                    </details>
+                    <div className="settings-actions">
+                      <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                        {runtimeConfigSaving ? "Saving…" : provider ? `Save ${definition.label}` : `Enable ${definition.label}`}
+                      </Button>
+                      {provider ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={runtimeConfigSaving || runtimeConfigLoading}
+                          onClick={() => void removeSearchProviderConfig(definition.id)}
+                        >
+                          Remove Config
+                        </Button>
+                      ) : null}
+                    </div>
+                  </form>
+                );
+              })}
+              {sortedSearchProviders
+                .filter((provider) => !standardSearchProviderIds.has(provider.id))
+                .map((provider) => provider.id)
+                .concat(Object.keys(searchProviderDrafts).filter((providerId) => !surface.webSearchProviders.some((provider) => provider.id === providerId) && !standardSearchProviderIds.has(providerId)))
+                .map((providerId) => {
+                  const draft = searchProviderDrafts[providerId];
+                  if (!draft) return null;
+                  return (
+                    <form
+                      className="settings-provider-editor"
+                      key={providerId}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void saveSearchProviderConfig(providerId);
+                      }}
+                    >
+                      <header>
+                        <div>
+                          <strong>{providerId}</strong>
+                          <small>Unsaved search provider</small>
+                        </div>
+                        <StatusChip className="settings-status unavailable" tone="error">
+                          not saved
+                        </StatusChip>
+                      </header>
+                      <div className="settings-form-row">
+                        <label>
+                          <span>Kind</span>
+                          <select value={draft.kind} onChange={(event) => updateSearchProviderDraft(providerId, { kind: event.target.value })}>
+                            {webSearchProviderKinds.map((kind) => (
+                              <option key={kind} value={kind}>
+                                {kind}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Base URL</span>
+                          <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { baseUrl: event.target.value })} />
+                        </label>
+                        <label>
+                          <span>Credential profile</span>
+                          <input value={draft.credentialProfile ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { credentialProfile: event.target.value })} />
+                        </label>
+                      </div>
+                      <div className="settings-actions">
+                        <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                          {runtimeConfigSaving ? "Saving…" : `Save ${providerId}`}
+                        </Button>
+                      </div>
+                    </form>
+                  );
+                })}
+              <details className="settings-advanced">
+                <summary>Advanced custom provider</summary>
+                <div className="settings-provider-editor">
+                  <header>
+                    <div>
+                      <strong>Add custom search provider</strong>
+                      <small>Only use this for custom ids, command providers, or experimental provider kinds.</small>
+                    </div>
+                  </header>
+                  <div className="settings-form-row">
+                    <label>
+                      <span>Provider id</span>
+                      <input value={newSearchProviderId} onChange={(event) => setNewSearchProviderId(event.target.value)} placeholder="custom_search" />
+                    </label>
+                    <label>
+                      <span>Kind</span>
+                      <select value={newSearchProviderKind} onChange={(event) => setNewSearchProviderKind(event.target.value)}>
+                        {webSearchProviderKinds.map((kind) => (
+                          <option key={kind} value={kind}>
+                            {kind}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="settings-actions">
+                    <Button type="button" variant="secondary" disabled={!newSearchProviderId.trim()} onClick={addSearchProviderDraft}>
+                      Add custom draft
+                    </Button>
+                  </div>
+                </div>
+              </details>
+              {searchProviderSaveMessage ? <span className="settings-save-message">{searchProviderSaveMessage}</span> : null}
+            </div>
+          )}
+        </Card>
+
         {/* ── Model providers ── */}
-        <Card className="settings-card">
+        <Card className="settings-card" hidden={activeTab !== "models"}>
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Provider accounts</span>
@@ -527,7 +1138,7 @@ export function SettingsPage({
               <p className="settings-muted">
                 Configure each provider account. Enter the API key in the primary section; expand Advanced for transport and credential details.
               </p>
-              {surface.providers.map((provider) => {
+              {sortedProviders.map((provider) => {
                 const draft = providerDrafts[provider.id];
                 if (!draft) return null;
                 return (
@@ -668,6 +1279,19 @@ export function SettingsPage({
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
                         {runtimeConfigSaving ? "Saving…" : `Save ${provider.id}`}
                       </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={runtimeConfigSaving || runtimeConfigLoading || !provider.configuredInConfig}
+                        title={
+                          provider.configuredInConfig
+                            ? "Remove this provider from config.json"
+                            : "This provider is currently using built-in defaults; no persisted config exists to remove."
+                        }
+                        onClick={() => void removeProviderConfig(provider.id)}
+                      >
+                        Remove Config
+                      </Button>
                     </div>
                   </form>
                 );
@@ -677,8 +1301,40 @@ export function SettingsPage({
           )}
         </Card>
 
+        <Card className="settings-card" hidden={activeTab !== "advanced"}>
+          <div className="settings-card-head">
+            <div>
+              <span className="eyebrow">Advanced</span>
+              <h2>Raw config</h2>
+            </div>
+            <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
+              {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+            </Button>
+          </div>
+          <div className="settings-callout">
+            <strong>Raw config editing is not exposed in the Web GUI yet.</strong>
+            <span>Use the focused tabs for common changes, or edit the config file directly for uncommon runtime fields.</span>
+          </div>
+          <dl className="settings-list compact">
+            <div>
+              <dt>Config file</dt>
+              <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
+            </div>
+            <div>
+              <dt>Model catalog</dt>
+              <dd>
+                {modelCatalog.options.length} model{modelCatalog.options.length === 1 ? "" : "s"} across {groupedModels.length} provider{groupedModels.length === 1 ? "" : "s"}
+              </dd>
+            </div>
+            <div>
+              <dt>Search providers</dt>
+              <dd>{surface?.webSearchProviders.map((provider) => provider.id).join(", ") || "builtin defaults"}</dd>
+            </div>
+          </dl>
+        </Card>
+
         {/* ── Model catalog diagnostics ── */}
-        <Card className="settings-card settings-models">
+        <Card className="settings-card settings-models" hidden={activeTab !== "advanced"}>
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Models / Providers</span>
@@ -747,4 +1403,24 @@ function groupModelsByProvider(options: RuntimeModelOption[]): Array<[string, Ru
     grouped.set(option.provider, models);
   }
   return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right));
+}
+
+export function sortProvidersForSettings(providers: RuntimeProviderSummary[]): RuntimeProviderSummary[] {
+  return providers
+    .map((provider, index) => ({ provider, index }))
+    .sort((a, b) => {
+      const credentialRank = Number(b.provider.credentialConfigured) - Number(a.provider.credentialConfigured);
+      return credentialRank || a.index - b.index;
+    })
+    .map(({ provider }) => provider);
+}
+
+export function sortSearchProvidersForSettings(providers: RuntimeWebSearchProviderSummary[]): RuntimeWebSearchProviderSummary[] {
+  return providers
+    .map((provider, index) => ({ provider, index }))
+    .sort((a, b) => {
+      const credentialRank = Number(b.provider.credentialConfigured) - Number(a.provider.credentialConfigured);
+      return credentialRank || a.index - b.index;
+    })
+    .map(({ provider }) => provider);
 }

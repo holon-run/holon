@@ -409,6 +409,7 @@ interface RuntimeProviderSummaryDto {
   credential_profile?: string;
   credential_external?: string;
   credential_configured?: boolean;
+  configured_in_config?: boolean;
 }
 
 interface RuntimeConfigUpdateResultDto {
@@ -449,6 +450,7 @@ interface RuntimeWebSearchProviderSummaryDto {
   kind?: string;
   base_url?: string;
   credential_profile?: string;
+  credential_configured?: boolean;
 }
 
 interface SearchResponseDto {
@@ -1137,6 +1139,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       credentialProfile: provider.credential_profile,
       credentialExternal: provider.credential_external,
       credentialConfigured: provider.credential_configured ?? false,
+      configuredInConfig: provider.configured_in_config ?? false,
     })),
     webSearch: surface.web_search
       ? {
@@ -1154,6 +1157,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       kind: provider.kind ?? "unknown",
       baseUrl: provider.base_url,
       credentialProfile: provider.credential_profile,
+      credentialConfigured: provider.credential_configured ?? false,
     })),
   };
 }
