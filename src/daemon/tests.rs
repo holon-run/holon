@@ -794,7 +794,7 @@ async fn daemon_stop_uses_recorded_runtime_http_addr_when_socket_is_missing() {
         let mut request = [0_u8; 2048];
         let read = stream.read(&mut request).await.unwrap();
         let request = String::from_utf8_lossy(&request[..read]);
-        assert!(request.starts_with("POST /control/runtime/shutdown "));
+        assert!(request.starts_with("POST /api/control/runtime/shutdown "));
         child.kill().unwrap();
         child.wait().unwrap();
         let body = serde_json::json!({

@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    path::{Component, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -8,11 +9,12 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{
-        header::{AUTHORIZATION, CONTENT_TYPE},
+        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
         HeaderMap, HeaderName, HeaderValue, Method, Request as AxumRequest, Response, StatusCode,
+        Uri,
     },
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -23,6 +25,8 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
+use percent_encoding::percent_decode_str;
+use rust_embed::RustEmbed;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -36,8 +40,6 @@ use tower_http::{
 };
 use tracing::{error, info, warn, Span};
 
-#[cfg(unix)]
-use axum::body::Body;
 #[cfg(unix)]
 use hyper::{body::Incoming, service::service_fn, Request};
 #[cfg(unix)]
@@ -99,6 +101,10 @@ const HTTP_LARGE_RESPONSE_WARN_BYTES: usize = 128 * 1024;
 
 static HTTP_IN_FLIGHT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
+#[derive(RustEmbed)]
+#[folder = "web-gui/app/dist/"]
+struct EmbeddedWebAssets;
+
 fn decrement_http_in_flight_requests() -> usize {
     let mut current = HTTP_IN_FLIGHT_REQUESTS.load(Ordering::Relaxed);
     loop {
@@ -123,6 +129,7 @@ pub struct AppState {
     pub require_control_token: bool,
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
+    pub web_dist: Option<Arc<PathBuf>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -186,6 +193,7 @@ impl AppState {
             require_control_token,
             runtime_service,
             advertise_url: None,
+            web_dist: None,
         }
     }
 
@@ -203,6 +211,7 @@ impl AppState {
             require_control_token: false,
             runtime_service,
             advertise_url: None,
+            web_dist: None,
         }
     }
 
@@ -210,11 +219,16 @@ impl AppState {
         self.advertise_url = advertise_url;
         self
     }
+
+    pub fn with_web_dist(mut self, web_dist: Option<PathBuf>) -> Self {
+        self.web_dist = web_dist.map(Arc::new);
+        self
+    }
 }
 
 pub fn router(state: AppState) -> Router {
     let config = state.host.config();
-    Router::new()
+    let api_routes = Router::new()
         .route("/", get(root))
         .route("/handshake", get(handshake))
         .route("/models", get(models_handler))
@@ -368,8 +382,12 @@ pub fn router(state: AppState) -> Router {
         .route("/briefs", get(briefs_default))
         .route("/state", get(state_default))
         .route("/transcript", get(transcript_default))
-        .route("/worktree-summary", get(worktree_summary_default))
-        .fallback(not_found_handler)
+        .route("/worktree-summary", get(worktree_summary_default));
+
+    Router::new()
+        .merge(api_routes.clone())
+        .nest("/api", api_routes)
+        .fallback(web_or_not_found_handler)
         .layer(api_cors_layer(&config.api_cors))
         .layer(CompressionLayer::new())
         .layer(
@@ -938,12 +956,18 @@ pub struct CreateAgentRequest {
 pub async fn root(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    if accepts_html(&headers) {
+        if let Some(response) = web_asset_response(&state, "index.html", false).await {
+            return Ok(response);
+        }
+    }
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     Ok(Json(json!({
         "ok": true,
         "default_agent": state.host.config().default_agent_id,
-    })))
+    }))
+    .into_response())
 }
 
 pub async fn models_handler(
@@ -2522,8 +2546,78 @@ fn event_seq_not_found(after_seq: u64) -> (StatusCode, Json<Value>) {
     )
 }
 
-async fn not_found_handler() -> (StatusCode, Json<Value>) {
-    not_found("Not Found")
+async fn web_or_not_found_handler(
+    State(state): State<Arc<AppState>>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+) -> AxumResponse {
+    if matches!(method, Method::GET | Method::HEAD) {
+        let head_only = method == Method::HEAD;
+        let request_path = uri.path().trim_start_matches('/');
+        if !request_path.is_empty() {
+            if let Some(response) = web_asset_response(&state, request_path, head_only).await {
+                return response;
+            }
+        }
+        if accepts_html(&headers) {
+            if let Some(response) = web_asset_response(&state, "index.html", head_only).await {
+                return response;
+            }
+        }
+    }
+    not_found("Not Found").into_response()
+}
+
+fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| {
+            accept
+                .split(',')
+                .any(|part| part.trim_start().starts_with("text/html"))
+        })
+}
+
+async fn web_asset_response(
+    state: &AppState,
+    request_path: &str,
+    head_only: bool,
+) -> Option<AxumResponse> {
+    let path = normalize_web_asset_path(request_path)?;
+    let bytes = if let Some(web_dist) = &state.web_dist {
+        tokio::fs::read(web_dist.join(&path)).await.ok()?
+    } else {
+        EmbeddedWebAssets::get(&path)?.data.into_owned()
+    };
+    let content_type = mime_guess::from_path(&path).first_or_octet_stream();
+    let body = if head_only {
+        Body::empty()
+    } else {
+        Body::from(bytes)
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type.as_ref())
+        .body(body)
+        .ok()
+}
+
+fn normalize_web_asset_path(request_path: &str) -> Option<String> {
+    let decoded = percent_decode_str(request_path).decode_utf8().ok()?;
+    let decoded = decoded.trim_start_matches('/');
+    if decoded.is_empty() || decoded.contains('\\') {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in std::path::Path::new(decoded).components() {
+        match component {
+            Component::Normal(segment) => normalized.push(segment),
+            _ => return None,
+        }
+    }
+    normalized.to_str().map(|path| path.replace('\\', "/"))
 }
 
 pub async fn transcript(

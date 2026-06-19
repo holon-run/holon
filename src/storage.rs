@@ -558,11 +558,25 @@ impl AppStorage {
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
         Ok(PollActivityMarker {
             briefs: file_activity_marker(&self.briefs_path)?,
-            tasks: file_activity_marker(&self.tasks_path)?,
+            tasks: self.tasks_activity_marker()?,
             tools: file_activity_marker(&self.tools_path)?,
             events: self.audit_events_activity_marker()?,
             transcript: file_activity_marker(&self.transcript_path)?,
         })
+    }
+
+    fn tasks_activity_marker(&self) -> Result<FileActivityMarker> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            let (task_count, latest_updated_ms) = runtime_db
+                .tasks()
+                .activity_watermark_for_agent(self.current_agent_id()?.as_deref())?;
+            return Ok(FileActivityMarker {
+                exists: task_count > 0,
+                len: task_count,
+                modified_unix_ms: latest_updated_ms,
+            });
+        }
+        file_activity_marker(&self.tasks_path)
     }
 
     fn audit_events_activity_marker(&self) -> Result<FileActivityMarker> {

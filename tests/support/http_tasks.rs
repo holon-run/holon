@@ -194,13 +194,13 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
             }))
     };
 
-    let first: serde_json::Value = create_task("active one", "sleep 30", 1)
+    let first: serde_json::Value = create_task("active one", "sleep 300", 1)
         .send()
         .await?
         .json()
         .await?;
     let first_id = first["id"].as_str().expect("task id").to_string();
-    let second: serde_json::Value = create_task("active two", "sleep 30", 1)
+    let second: serde_json::Value = create_task("active two", "sleep 300", 1)
         .send()
         .await?
         .json()
@@ -762,7 +762,7 @@ pub async fn timer_detail_route_returns_latest_timer_record() -> Result<()> {
     let client = reqwest::Client::new();
 
     let timer = runtime
-        .schedule_timer(5_000, None, Some("inspect lifecycle timer".into()))
+        .schedule_timer(300_000, None, Some("inspect lifecycle timer".into()))
         .await?;
 
     let detail: serde_json::Value = client
@@ -791,7 +791,7 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
     let client = reqwest::Client::new();
 
     let timer = runtime
-        .schedule_timer(5_000, None, Some("cancel lifecycle timer".into()))
+        .schedule_timer(300_000, None, Some("cancel lifecycle timer".into()))
         .await?;
 
     let cancelled_response = client

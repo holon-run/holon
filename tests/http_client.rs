@@ -3,7 +3,7 @@ mod support;
 macro_rules! http_async_tests {
     ($($name:ident),+ $(,)?) => {
         $(
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread")]
             async fn $name() -> anyhow::Result<()> {
                 support::http_client::$name().await
             }

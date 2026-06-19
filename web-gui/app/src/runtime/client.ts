@@ -31,7 +31,7 @@ export interface RuntimeClientOptions {
   fetchImpl?: typeof fetch;
 }
 
-const DEFAULT_DEV_API_BASE = "/holon-api";
+const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
 
@@ -969,7 +969,7 @@ async function fetchRuntimeBootstrap(
     source: "http",
     baseUrl,
     hasToken,
-    summary: `${baseUrl} · ${connectionMode}${hasToken ? " bearer" : ""} · existing /agents routes`,
+    summary: `${baseUrl} · ${connectionMode}${hasToken ? " bearer" : ""} · /api routes`,
   };
 
   return {
@@ -1501,7 +1501,8 @@ function buildMetrics(agentCount: number, attentionCount: number, activeTaskCoun
 function normalizeBaseUrl(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
-  return trimmed.replace(/\/+$/, "");
+  const base = trimmed.replace(/\/+$/, "");
+  return base.endsWith("/api") ? base : `${base}/api`;
 }
 
 function authorizationHeaders(token: string | undefined): Record<string, string> {

@@ -1582,6 +1582,45 @@ impl TaskRepository<'_> {
         self.query_for_agent(agent_id, "owner_agent_id = ?1", [agent_id], limit)
     }
 
+    pub fn activity_watermark_for_agent(&self, agent_id: Option<&str>) -> Result<(u64, u128)> {
+        let connection = self.db.connection()?;
+        let mut hasher = Sha256::new();
+        let mut count = 0u64;
+        if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM tasks
+                 WHERE owner_agent_id = ?1
+                 ORDER BY task_id ASC",
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let payload = row?;
+                count += 1;
+                hasher.update(payload.as_bytes());
+                hasher.update(b"\n");
+            }
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM tasks
+                 ORDER BY task_id ASC",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let payload = row?;
+                count += 1;
+                hasher.update(payload.as_bytes());
+                hasher.update(b"\n");
+            }
+        }
+
+        let digest = hasher.finalize();
+        let mut marker_bytes = [0u8; 16];
+        marker_bytes.copy_from_slice(&digest[..16]);
+        Ok((count, u128::from_be_bytes(marker_bytes)))
+    }
+
     pub fn active_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
         self.query_for_agent(
             agent_id,

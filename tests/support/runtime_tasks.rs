@@ -684,7 +684,7 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
         20
     );
     assert!(
-        runtime.latest_task_records_snapshot()?.is_empty(),
+        runtime.latest_task_records_snapshot().await?.is_empty(),
         "batch items should not promote into command_task records"
     );
     Ok(())

@@ -247,6 +247,8 @@ pub struct ServeOptions {
     pub token: Option<String>,
     #[arg(long)]
     pub token_file: Option<PathBuf>,
+    #[arg(long)]
+    pub web_dist: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

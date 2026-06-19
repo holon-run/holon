@@ -231,6 +231,16 @@ impl LocalHttpError {
     }
 }
 
+fn api_path(path: &str) -> String {
+    if path == "/" {
+        "/api/".to_string()
+    } else if path.starts_with("/api/") {
+        path.to_string()
+    } else {
+        format!("/api{path}")
+    }
+}
+
 impl std::fmt::Display for LocalHttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -408,7 +418,7 @@ impl LocalClient {
     #[cfg(unix)]
     pub async fn runtime_readiness_unix_only(&self) -> Result<RuntimeStatusResponse> {
         let body = self
-            .send_unix(RequestSpec::get("/control/runtime/readiness"), true)
+            .send_unix(RequestSpec::get("/api/control/runtime/readiness"), true)
             .await?;
         serde_json::from_slice(&body).with_context(|| {
             "failed to decode response body for GET /control/runtime/readiness over unix socket"
@@ -679,18 +689,10 @@ impl LocalClient {
     }
 
     pub async fn list_skills(&self, agent_id: &str) -> Result<Value> {
-        let body = self
-            .send(
-                RequestSpec::get(&format!("/agents/{}/skills", agent_id)),
-                false,
-            )
-            .await?;
-        serde_json::from_slice(&body).with_context(|| {
-            format!(
-                "failed to decode response body for GET /agents/{}/skills",
-                agent_id
-            )
-        })
+        let path = api_path(&format!("/agents/{}/skills", agent_id));
+        let body = self.send(RequestSpec::get(&path), false).await?;
+        serde_json::from_slice(&body)
+            .with_context(|| format!("failed to decode response body for GET {}", path))
     }
 
     pub async fn install_skill(
@@ -778,7 +780,8 @@ impl LocalClient {
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let body = self.send(RequestSpec::get(path), false).await?;
+        let path = api_path(path);
+        let body = self.send(RequestSpec::get(&path), false).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
     }
@@ -788,15 +791,17 @@ impl LocalClient {
         path: &str,
         payload: &B,
     ) -> Result<T> {
+        let path = api_path(path);
         let body = self
-            .send(RequestSpec::post_json(path, payload)?, false)
+            .send(RequestSpec::post_json(&path, payload)?, false)
             .await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for POST {}", path))
     }
 
     async fn get_control_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let body = self.send(RequestSpec::get(path), true).await?;
+        let path = api_path(path);
+        let body = self.send(RequestSpec::get(&path), true).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
     }
@@ -806,8 +811,9 @@ impl LocalClient {
         path: &str,
         payload: &B,
     ) -> Result<T> {
+        let path = api_path(path);
         let body = self
-            .send(RequestSpec::post_json(path, payload)?, true)
+            .send(RequestSpec::post_json(&path, payload)?, true)
             .await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for POST {}", path))
@@ -818,8 +824,9 @@ impl LocalClient {
         path: &str,
         payload: &B,
     ) -> Result<T> {
+        let path = api_path(path);
         let body = self
-            .send(RequestSpec::patch_json(path, payload)?, true)
+            .send(RequestSpec::patch_json(&path, payload)?, true)
             .await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for PATCH {}", path))
@@ -1309,7 +1316,7 @@ fn event_stream_path(agent_id: &str, request: &EventStreamRequest) -> Result<Str
         path.push('?');
         path.push_str(query);
     }
-    Ok(path)
+    Ok(api_path(&path))
 }
 
 fn event_page_path(agent_id: &str, request: &EventPageRequest) -> Result<String> {
@@ -1341,7 +1348,7 @@ fn event_page_path(agent_id: &str, request: &EventPageRequest) -> Result<String>
         path.push('?');
         path.push_str(query);
     }
-    Ok(path)
+    Ok(api_path(&path))
 }
 
 fn validate_unix_request_target(path: &str) -> Result<()> {
@@ -1671,7 +1678,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(path, "/agents/default/events/stream?limit=20&after_seq=123");
+        assert_eq!(
+            path,
+            "/api/agents/default/events/stream?limit=20&after_seq=123"
+        );
     }
 
     #[test]
@@ -1684,7 +1694,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(path, "/agents/default/events/stream?after_seq=42");
+        assert_eq!(path, "/api/agents/default/events/stream?after_seq=42");
     }
 
     #[test]
