@@ -627,6 +627,47 @@ impl RuntimeHandle {
         .await?
     }
 
+    pub async fn search_memory_for_agents(
+        &self,
+        query: &str,
+        limit: usize,
+        include_all_workspaces: bool,
+        agent_ids: &[String],
+    ) -> Result<crate::memory::MemorySearchQueryResult> {
+        let active_workspace_id = self
+            .agent_state()
+            .await?
+            .active_workspace_entry
+            .map(|entry| entry.workspace_id);
+        let storage = self.inner.storage.clone();
+        let agent_storages = self
+            .inner
+            .host_bridge
+            .as_ref()
+            .map(|bridge| {
+                agent_ids
+                    .iter()
+                    .map(|agent_id| bridge.agent_storage(agent_id))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let query = query.to_string();
+        let agent_ids = agent_ids.to_vec();
+        tokio::task::spawn_blocking(move || {
+            crate::memory::search_memory_query_for_agent_storages(
+                &storage,
+                &query,
+                limit,
+                active_workspace_id.as_deref(),
+                include_all_workspaces,
+                &agent_ids,
+                &agent_storages,
+            )
+        })
+        .await?
+    }
+
     pub async fn get_memory(
         &self,
         source_ref: &str,

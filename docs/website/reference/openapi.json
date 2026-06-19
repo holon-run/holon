@@ -1835,6 +1835,16 @@
       },
       "SearchRequest": {
         "properties": {
+          "agent_ids": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "include_all_workspaces": {
             "default": false,
             "type": "boolean"
