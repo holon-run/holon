@@ -89,6 +89,37 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["/api/handshake", "/api/agents/list"]);
   });
 
+  it("reports structured auth failures before fetching runtime data", async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("/handshake")) {
+        return Response.json({ ok: false, error: "missing bearer token", code: "auth_required" }, { status: 403 });
+      }
+      return Response.json([]);
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const bootstrap = await client.getBootstrap();
+
+    expect(bootstrap.connection).toEqual(
+      expect.objectContaining({
+        mode: "remote",
+        source: "fixture",
+        baseUrl: "http://example.test:7878/api",
+        authRequired: true,
+        error: "GET /handshake failed with 403: missing bearer token",
+      }),
+    );
+    expect(seen).toEqual(["http://example.test:7878/api/handshake"]);
+  });
+
   it("fetches full tool execution detail for inspector hydration", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {

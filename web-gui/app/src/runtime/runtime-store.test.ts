@@ -100,6 +100,20 @@ describe("runtime connection storage", () => {
     });
   });
 
+  it("keeps same-origin runtime tokens in the active window session", () => {
+    const sharedLocalStorage = new MemoryStorage();
+    const windowSession = new MemoryStorage();
+
+    installWindow(sharedLocalStorage, windowSession, "100.92.113.47");
+    writeStoredRuntimeConnectionConfig({ mode: "local", token: "same-origin-token" });
+
+    expect(readStoredRuntimeConnectionConfig()).toEqual({
+      mode: "local",
+      token: "same-origin-token",
+    });
+    expect(readStoredRemoteConnectionProfiles()).toEqual([]);
+  });
+
   it("detects loopback page origins as eligible for remote runtime connections", () => {
     expect(isLoopbackWebHostname("localhost")).toBe(true);
     expect(isLoopbackWebHostname("127.0.0.1")).toBe(true);

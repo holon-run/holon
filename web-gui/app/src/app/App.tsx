@@ -469,6 +469,7 @@ function ConnectionSwitcher({
   const remoteConnectionsAllowed = canUseRemoteRuntimeConnections();
   const [savedRemotes, setSavedRemotes] = useState<RuntimeConnectionProfile[]>(() => readStoredRemoteConnectionProfiles());
   const switcherRef = useRef<HTMLDivElement>(null);
+  const authRequired = Boolean(connection.authRequired);
 
   useEffect(() => {
     if (connection.mode === "remote") setBaseUrl(connection.baseUrl ?? "");
@@ -507,7 +508,7 @@ function ConnectionSwitcher({
     try {
       await onSetConnection(config);
       setSavedRemotes(readStoredRemoteConnectionProfiles());
-      if (compact) setOpen(false);
+      if (compact && !connection.authRequired) setOpen(false);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -538,19 +539,34 @@ function ConnectionSwitcher({
           aria-label="Runtime connection"
           onSubmit={(event) => {
             event.preventDefault();
+            if (authRequired) {
+              const trimmedToken = token.trim();
+              if (!trimmedToken) {
+                setFormError("Bearer token is required.");
+                return;
+              }
+              const retryConfig: RuntimeConnectionConfig =
+                connection.mode === "remote"
+                  ? { mode: "remote", baseUrl: baseUrl.trim() || connection.baseUrl, token: trimmedToken }
+                  : { mode: "local", token: trimmedToken };
+              void applyConnection(retryConfig);
+              return;
+            }
             const trimmedBaseUrl = baseUrl.trim();
             if (!trimmedBaseUrl) {
               setFormError("Remote URL is required.");
               return;
             }
-            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token: token.trim() || undefined });
+            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl });
           }}
         >
           <div className="connection-panel-head">
             <div>
               <strong>Runtime connection</strong>
               <span>
-                {remoteConnectionsAllowed
+                {authRequired
+                  ? "This Holon runtime requires a bearer token before the Web GUI can connect."
+                  : remoteConnectionsAllowed
                   ? "Switch local or saved remote without leaving this page."
                   : "This embedded page is locked to its same-origin Holon runtime."}
               </span>
@@ -569,7 +585,7 @@ function ConnectionSwitcher({
           >
             <span>
               <strong>Localhost</strong>
-              <small>Local runtime on this machine</small>
+              <small>{remoteConnectionsAllowed ? "Local runtime on this machine" : "Same-origin embedded runtime"}</small>
             </span>
             <span>{connection.mode === "local" ? "Current" : "Use"}</span>
           </button>
@@ -611,24 +627,28 @@ function ConnectionSwitcher({
                   inputMode="url"
                 />
               </label>
-              <label>
-                Bearer token
-                <input
-                  value={token}
-                  onChange={(event) => setToken(event.target.value)}
-                  placeholder={connection.hasToken ? "saved token retained unless replaced" : "optional for trusted local networks"}
-                  type="password"
-                />
-              </label>
             </>
           ) : (
             <p className="saved-remotes-empty">Remote runtime switching is only available from localhost pages.</p>
           )}
+          {authRequired ? (
+            <label>
+              Bearer token
+              <input
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+                placeholder={connection.hasToken ? "replace saved token" : "paste runtime token"}
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+              />
+            </label>
+          ) : null}
           {formError ? <span className="connection-error">{formError}</span> : null}
-          {remoteConnectionsAllowed ? (
+          {remoteConnectionsAllowed || authRequired ? (
             <div className="connection-actions">
               <Button type="submit" size="sm" disabled={saving}>
-                {saving ? "Connecting…" : "Use remote"}
+                {saving ? "Connecting…" : authRequired ? "Retry with token" : "Use remote"}
               </Button>
             </div>
           ) : null}

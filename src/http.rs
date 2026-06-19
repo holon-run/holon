@@ -962,7 +962,7 @@ pub async fn root(
             return Ok(response);
         }
     }
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     Ok(Json(json!({
         "ok": true,
         "default_agent": state.host.config().default_agent_id,
@@ -975,7 +975,7 @@ pub async fn models_handler(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state.host.default_runtime().await.map_err(error_response)?;
     let available_models = runtime.available_models().await.map_err(error_response)?;
     let model_availability = runtime.model_availability().await.map_err(error_response)?;
@@ -995,7 +995,7 @@ pub async fn search(
     Json(request): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let query = request.query.trim().to_string();
     if query.is_empty() {
         return Err(bad_request("query must not be empty"));
@@ -1059,7 +1059,7 @@ pub async fn handshake(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let config = state.host.config();
     Ok(Json(json!({
         "ok": true,
@@ -1093,7 +1093,7 @@ pub async fn list_agent_entries(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let agents = state
         .host
         .list_agent_entries()
@@ -1107,7 +1107,7 @@ pub async fn runtime_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime_service = state
         .runtime_service
         .as_ref()
@@ -1136,7 +1136,7 @@ pub async fn runtime_readiness(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime_service = state
         .runtime_service
         .as_ref()
@@ -1151,7 +1151,7 @@ pub async fn runtime_performance(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     Ok(Json(diagnostics::performance_snapshot()))
 }
 
@@ -1206,7 +1206,7 @@ pub async fn runtime_config(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let config = state.host.config();
     Ok(Json(RuntimeConfigReadResponse {
         ok: true,
@@ -1220,7 +1220,7 @@ pub async fn runtime_config_update(
     headers: HeaderMap,
     Json(request): Json<RuntimeConfigUpdateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let config = state.host.config();
     let stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
     let mut candidate = stored.clone();
@@ -1389,7 +1389,7 @@ pub async fn list_credentials(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let profiles = list_credential_profiles_at(&path).map_err(error_response)?;
@@ -1414,7 +1414,7 @@ pub async fn set_credential(
     Path(profile): Path<String>,
     Json(request): Json<SetCredentialRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let kind = CredentialKind::parse(&request.kind).map_err(error_response)?;
@@ -1441,7 +1441,7 @@ pub async fn delete_credential(
     headers: HeaderMap,
     Path(profile): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let profile_status = remove_credential_profile_at(&path, &profile).map_err(error_response)?;
@@ -1474,7 +1474,7 @@ pub async fn runtime_shutdown(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime_service = state
         .runtime_service
         .as_ref()
@@ -1490,7 +1490,7 @@ pub async fn enqueue_default(
     headers: HeaderMap,
     Json(request): Json<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let agent_id = state.host.config().default_agent_id.clone();
     enqueue_internal(state, agent_id, request, EnqueueIngress::Public).await
 }
@@ -1501,7 +1501,7 @@ pub async fn enqueue(
     headers: HeaderMap,
     Json(request): Json<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     enqueue_internal(state, agent_id, request, EnqueueIngress::Public).await
 }
 
@@ -1664,7 +1664,7 @@ pub async fn status(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_agent_for_local_status(&agent_id)
@@ -1692,7 +1692,7 @@ pub async fn agent_state(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2127,7 +2127,7 @@ pub async fn briefs(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2145,7 +2145,7 @@ pub async fn brief(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2205,7 +2205,7 @@ pub async fn events(
         .await
         .map_err(agent_access_error)?;
     if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
     let cursor_seq = runtime
         .storage()
@@ -2269,7 +2269,7 @@ pub async fn message(
         .await
         .map_err(agent_access_error)?;
     if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
     let Some(message) = runtime
         .storage()
@@ -2296,7 +2296,7 @@ pub async fn messages_batch_get(
         .await
         .map_err(agent_access_error)?;
     if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
     let mut messages = Vec::new();
     let mut missing_message_ids = Vec::new();
@@ -2333,7 +2333,7 @@ pub async fn events_stream(
         .await
         .map_err(agent_access_error)?;
     if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
     let mut live_rx = runtime
         .storage()
@@ -2389,7 +2389,7 @@ pub async fn global_events_stream(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
     let mut rx = state.host.subscribe_events();
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
@@ -2626,7 +2626,7 @@ pub async fn transcript(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2644,7 +2644,7 @@ pub async fn transcript_entry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2667,7 +2667,7 @@ pub async fn transcript_batch_get(
     headers: HeaderMap,
     Json(request): Json<BatchGetTranscriptEntriesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2696,7 +2696,7 @@ pub async fn worktree_summary(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2718,7 +2718,7 @@ pub async fn tasks(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2737,7 +2737,7 @@ pub async fn task_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2765,7 +2765,7 @@ pub async fn task_output(
     headers: HeaderMap,
     Query(query): Query<TaskOutputQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2796,7 +2796,7 @@ pub async fn tool_execution(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2821,7 +2821,7 @@ pub async fn task_input(
     headers: HeaderMap,
     Json(request): Json<TaskInputRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2852,7 +2852,7 @@ pub async fn task_stop(
     headers: HeaderMap,
     Json(request): Json<TaskStopRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2900,7 +2900,7 @@ pub async fn create_command_task(
     headers: HeaderMap,
     Json(request): Json<CreateCommandTaskRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let effective_trust = provided_trust
@@ -2955,7 +2955,7 @@ pub async fn create_work_item(
     headers: HeaderMap,
     Json(request): Json<CreateWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let objective = request.objective.trim().to_string();
@@ -2991,7 +2991,7 @@ pub async fn pick_work_item(
     headers: HeaderMap,
     Json(request): Json<PickWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -3039,7 +3039,7 @@ pub async fn update_work_item(
     headers: HeaderMap,
     Json(request): Json<UpdateWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let objective = request
@@ -3115,7 +3115,7 @@ pub async fn complete_work_item(
     headers: HeaderMap,
     Json(request): Json<CompleteWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -3151,7 +3151,7 @@ pub async fn work_items(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3170,7 +3170,7 @@ pub async fn work_item(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3193,7 +3193,7 @@ pub async fn timers(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3212,7 +3212,7 @@ pub async fn timer(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3235,7 +3235,7 @@ pub async fn create_timer(
     headers: HeaderMap,
     Json(request): Json<CreateTimerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -3271,7 +3271,7 @@ pub async fn cancel_timer(
     headers: HeaderMap,
     Json(request): Json<CancelTimerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -3317,7 +3317,7 @@ pub async fn list_skills(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3338,7 +3338,7 @@ pub async fn install_skill(
     headers: HeaderMap,
     Json(request): Json<crate::types::InstallSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3372,7 +3372,7 @@ pub async fn uninstall_skill(
     headers: HeaderMap,
     Json(request): Json<crate::types::UninstallSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3402,7 +3402,7 @@ pub async fn create_agent(
     headers: HeaderMap,
     Json(request): Json<CreateAgentRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let agent = state
@@ -3438,7 +3438,7 @@ pub async fn control(
     headers: HeaderMap,
     Json(request): Json<ControlRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let action = request.action.clone();
@@ -3471,7 +3471,7 @@ pub async fn abort_current_run(
     headers: HeaderMap,
     Json(request): Json<AbortCurrentRunRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let mode = match request.mode.as_deref().unwrap_or("stop_after_abort") {
         "stop_after_abort" => CurrentRunAbortMode::StopAfterAbort,
         "pause_after_abort" => CurrentRunAbortMode::StopAfterAbort,
@@ -3512,7 +3512,7 @@ pub async fn attach_workspace(
     headers: HeaderMap,
     Json(request): Json<AttachWorkspaceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let workspace = state
@@ -3557,7 +3557,7 @@ pub async fn exit_workspace(
     headers: HeaderMap,
     Json(request): Json<ExitWorkspaceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -3592,7 +3592,7 @@ pub async fn detach_workspace(
     headers: HeaderMap,
     Json(request): Json<DetachWorkspaceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let workspace_id = request.workspace_id.trim().to_string();
@@ -3633,7 +3633,7 @@ pub async fn set_agent_model(
     headers: HeaderMap,
     Json(request): Json<SetAgentModelRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     if let Some(reasoning_effort) = request.reasoning_effort.as_deref() {
         validate_reasoning_effort(reasoning_effort)?;
     }
@@ -3669,7 +3669,7 @@ pub async fn clear_agent_model(
     headers: HeaderMap,
     Json(_request): Json<ClearAgentModelRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -3692,7 +3692,7 @@ pub async fn control_prompt(
     headers: HeaderMap,
     Json(request): Json<ControlPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     enqueue_internal(
         state,
@@ -3725,7 +3725,7 @@ pub async fn create_operator_transport_binding(
     headers: HeaderMap,
     Json(request): Json<OperatorTransportBindingRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let target_agent_id = request.target_agent_id.unwrap_or_else(|| agent_id.clone());
     if target_agent_id != agent_id {
         return Err(bad_request(
@@ -3774,7 +3774,7 @@ pub async fn operator_ingress(
     headers: HeaderMap,
     Json(request): Json<OperatorIngressRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let text = require_non_empty(request.text, "text")?;
     let actor_id = require_non_empty(request.actor_id, "actor_id")?;
     let binding_id = require_non_empty(request.binding_id, "binding_id")?;
@@ -3860,7 +3860,7 @@ pub async fn control_debug_prompt(
     headers: HeaderMap,
     Json(request): Json<DebugPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let effective_trust = request
         .authority_class
@@ -3891,7 +3891,7 @@ pub async fn control_wake(
     headers: HeaderMap,
     Json(request): Json<ControlWakeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     if request.reason.trim().is_empty() {
         return Err(forbidden("wake reason may not be empty"));
     }
@@ -4123,7 +4123,7 @@ pub async fn generic_webhook(
     headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     enqueue_internal(
         state,
         agent_id,
@@ -4252,6 +4252,15 @@ fn validate_operator_transport_delivery_auth(
 
 fn forbidden(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(StatusCode::FORBIDDEN, HttpErrorEnvelope::new(reason))
+}
+
+fn auth_required(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
+    http_error(
+        StatusCode::FORBIDDEN,
+        HttpErrorEnvelope::new(reason)
+            .code("auth_required")
+            .hint("retry with an Authorization: Bearer <token> header"),
+    )
 }
 
 fn bad_request(reason: impl Into<String>) -> (StatusCode, Json<Value>) {

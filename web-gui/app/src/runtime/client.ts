@@ -510,7 +510,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders, connectionMode, hasToken);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken);
+        return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken, isAuthRequiredError(error));
       }
     },
     async getAgentDetail(agentId: string, displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {
@@ -955,10 +955,8 @@ async function fetchRuntimeBootstrap(
   connectionMode: "local" | "remote",
   hasToken: boolean,
 ): Promise<RuntimeBootstrap> {
-  const [handshake, agentEntries] = await Promise.all([
-    getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake", { headers }),
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers }),
-  ]);
+  await getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake", { headers });
+  const agentEntries = await getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers });
 
   const agents = agentEntries.map((entry) => projectAgent(entry));
   const attentionCount = agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
@@ -1001,7 +999,7 @@ async function getJson<T>(
     signal: controller.signal,
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
-    throw new Error(`GET ${path} failed with ${response.status}`);
+    throw await httpRequestError("GET", path, response);
   }
   return (await response.json()) as T;
 }
@@ -1026,7 +1024,7 @@ async function postJson<T>(
     signal: controller.signal,
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
-    throw new Error(`POST ${path} failed with ${response.status}`);
+    throw await httpRequestError("POST", path, response);
   }
 
   const text = await response.text();
@@ -1053,7 +1051,7 @@ async function patchJson<T>(
     signal: controller.signal,
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
-    throw new Error(`PATCH ${path} failed with ${response.status}`);
+    throw await httpRequestError("PATCH", path, response);
   }
 
   const text = await response.text();
@@ -1081,7 +1079,7 @@ async function putJson<T>(
     signal: controller.signal,
   }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
-    throw new Error(`PUT ${path} failed with ${response.status}`);
+    throw await httpRequestError("PUT", path, response);
   }
 
   const text = await response.text();
@@ -1105,7 +1103,7 @@ async function deleteJson<T>(
     signal: controller.signal,
   }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
-    throw new Error(`DELETE ${path} failed with ${response.status}`);
+    throw await httpRequestError("DELETE", path, response);
   }
 
   const text = await response.text();
@@ -1476,11 +1474,45 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+class RuntimeHttpError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(method: string, path: string, status: number, reason?: string, code?: string) {
+    super(reason ? `${method} ${path} failed with ${status}: ${reason}` : `${method} ${path} failed with ${status}`);
+    this.name = "RuntimeHttpError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function httpRequestError(method: string, path: string, response: Response): Promise<RuntimeHttpError> {
+  const envelope = await readErrorEnvelope(response);
+  return new RuntimeHttpError(method, path, response.status, envelope?.error, envelope?.code);
+}
+
+async function readErrorEnvelope(response: Response): Promise<{ error?: string; code?: string } | undefined> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return undefined;
+  try {
+    const value = await response.json();
+    const record = asRecord(value);
+    return record ? { error: stringValue(record.error), code: stringValue(record.code) } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAuthRequiredError(error: unknown): boolean {
+  return error instanceof RuntimeHttpError && error.code === "auth_required";
+}
+
 function buildDisconnectedBootstrap(
   baseUrl: string | undefined,
   error: string,
   mode: "local" | "remote" = "local",
   hasToken = false,
+  authRequired = false,
 ): RuntimeBootstrap {
   return {
     attentionCount: 0,
@@ -1489,6 +1521,7 @@ function buildDisconnectedBootstrap(
       mode,
       baseUrl,
       hasToken,
+      authRequired,
       error,
       summary: baseUrl ? `${baseUrl} unavailable` : "Holon API unavailable",
     },

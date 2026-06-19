@@ -243,7 +243,9 @@ let sessionCacheWriter: SessionCacheWriter | null = null;
 let sessionCacheInitPromise: Promise<void> | null = null;
 
 function runtimeClientOptions(config: RuntimeConnectionConfig) {
-  return config.mode === "remote" ? { mode: "remote" as const, baseUrl: config.baseUrl, token: config.token } : { mode: "local" as const };
+  return config.mode === "remote"
+    ? { mode: "remote" as const, baseUrl: config.baseUrl, token: config.token }
+    : { mode: "local" as const, token: config.token };
 }
 
 export function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
@@ -281,7 +283,12 @@ export function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConf
 function coerceRuntimeConnectionConfig(value: unknown): RuntimeConnectionConfig | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const parsed = value as Partial<RuntimeConnectionConfig>;
-  if (parsed.mode === "local") return { mode: "local" };
+  if (parsed.mode === "local") {
+    return {
+      mode: "local",
+      token: typeof parsed.token === "string" && parsed.token.trim() ? parsed.token.trim() : undefined,
+    };
+  }
   if (parsed.mode !== "remote") return undefined;
   const baseUrl = normalizeConnectionBaseUrl(parsed.baseUrl);
   if (!baseUrl) return undefined;
@@ -501,7 +508,7 @@ function pendingBootstrap(config: RuntimeConnectionConfig): RuntimeBootstrap {
       mode: config.mode,
       source: "fixture",
       baseUrl: config.mode === "remote" ? config.baseUrl : undefined,
-      hasToken: config.mode === "remote" ? Boolean(config.token?.trim()) : false,
+      hasToken: Boolean(config.token?.trim()),
       summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to local runtime…",
     },
   };
@@ -636,13 +643,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         ? runtimeConnectionConfig.token
         : undefined;
     const normalizedConfig: RuntimeConnectionConfig =
-      config.mode === "remote" && canUseRemoteRuntimeConnections()
-        ? withStoredRemoteProfileToken({
-          mode: "remote",
-          baseUrl: normalizedBaseUrl,
-          token: config.token?.trim() || retainedToken,
-        })
-        : { mode: "local" };
+      config.mode === "remote"
+        ? canUseRemoteRuntimeConnections()
+          ? withStoredRemoteProfileToken({
+              mode: "remote",
+              baseUrl: normalizedBaseUrl,
+              token: config.token?.trim() || retainedToken,
+            })
+          : { mode: "local", token: config.token?.trim() || undefined }
+        : { mode: "local", token: config.token?.trim() || undefined };
     runtimeConnectionConfig = normalizedConfig;
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
     writeStoredRuntimeConnectionConfig(normalizedConfig);
