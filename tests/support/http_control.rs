@@ -22,8 +22,8 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction, MessageBody,
-        MessageDeliverySurface, MessageKind, MessageOrigin, Priority, TodoItem, TodoItemState,
-        WorkItemState,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority, TodoItem,
+        TodoItemState, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -107,6 +107,71 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload.get("operator_notifications").is_none());
     assert!(state_payload.get("execution").is_none());
     assert!(state_payload.get("cursor").is_none());
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn runtime_search_route_returns_memory_search_results() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:test".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "http memory search sentinel issue1879".into(),
+        },
+    );
+    message.id = "msg-http-search-memory-v2".into();
+    runtime.storage().append_message(&message)?;
+
+    let response = client
+        .post(format!("{base}/search"))
+        .json(&serde_json::json!({
+            "query": "issue1879",
+            "limit": 5
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    assert_eq!(payload["query"], "issue1879");
+    assert_eq!(payload["limit"], 5);
+    assert!(payload["index_status"].is_object());
+
+    let http_refs = payload["results"]
+        .as_array()
+        .expect("search results should be an array")
+        .iter()
+        .map(|result| {
+            result["source_ref"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    let tool_result = runtime.search_memory("issue1879", 5, false).await?;
+    assert_eq!(
+        payload["index_status"]["freshness"],
+        serde_json::to_value(tool_result.index_status.freshness)?
+    );
+    let tool_refs = tool_result
+        .results
+        .into_iter()
+        .map(|result| result.source_ref)
+        .collect::<Vec<_>>();
+    assert_eq!(http_refs, tool_refs);
+    assert!(payload["results"].as_array().unwrap().iter().any(|result| {
+        result["kind"] == "message"
+            && result["source_ref"] == "message:msg-http-search-memory-v2"
+            && result["scope_kind"] == "agent"
+    }));
 
     server.abort();
     Ok(())

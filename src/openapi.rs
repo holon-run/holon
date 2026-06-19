@@ -90,7 +90,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List skills", "Return installed skills for an agent.", None, AuthKind::RemoteAccess),
-    route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime history", "Search indexed runtime history across visible agents. First version indexes message bodies and returns message result locators.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
+    route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime memory", "Search the same memory v2 index used by the agent MemorySearch tool.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/agents/{agent_id}/enqueue", "enqueueAgent", "ingress", "Enqueue agent message", "Enqueue a public channel/webhook message for the named agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/webhooks/generic/{agent_id}", "genericWebhook", "ingress", "Generic webhook", "Convert an arbitrary JSON webhook body into a trusted integration message.", Some("GenericJsonPayload"), AuthKind::None),

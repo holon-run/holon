@@ -666,23 +666,30 @@ impl AppStorage {
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        let _guard = self
-            .append_mutex
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
         let mut message = message.clone();
-        let mut counter = self
-            .message_seq_counter
-            .lock()
-            .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
-        *counter += 1;
-        message.message_seq = Some(*counter);
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.messages().upsert(&message)?;
-            return Ok(());
+        {
+            let _guard = self
+                .append_mutex
+                .lock()
+                .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+            let mut counter = self
+                .message_seq_counter
+                .lock()
+                .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
+            *counter += 1;
+            message.message_seq = Some(*counter);
+            drop(counter);
+            if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+                let changes = self.index_changes_for_message(&message)?;
+                runtime_db
+                    .messages()
+                    .upsert_with_index_changes(&message, &changes)?;
+                return Ok(());
+            }
+            let bytes = jsonl_bytes(&message)?;
+            append_jsonl_bytes(&self.messages_path, &bytes)?;
         }
-        let bytes = jsonl_bytes(&message)?;
-        append_jsonl_bytes(&self.messages_path, &bytes)
+        self.enqueue_memory_index_message_best_effort(&message)
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
@@ -954,6 +961,20 @@ impl AppStorage {
         )?])
     }
 
+    fn index_changes_for_message(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<Vec<RuntimeIndexChange>> {
+        Ok(vec![self.runtime_index_upsert(
+            message.agent_id.clone(),
+            "message",
+            message.id.clone(),
+            format!("message:{}", message.id),
+            Some(message.created_at),
+            "message_written",
+        )?])
+    }
+
     fn index_changes_for_task(&self, task: &TaskRecord) -> Result<Vec<RuntimeIndexChange>> {
         Ok(vec![self.runtime_index_upsert(
             task.agent_id.clone(),
@@ -1096,6 +1117,20 @@ impl AppStorage {
     fn enqueue_memory_index_brief_best_effort(&self, brief: &BriefRecord) -> Result<()> {
         let result = self.enqueue_memory_index_brief(brief);
         self.finish_memory_index_enqueue(result, "brief", &brief.id, &format!("brief:{}", brief.id))
+    }
+
+    fn enqueue_memory_index_message(&self, message: &MessageEnvelope) -> Result<()> {
+        self.enqueue_memory_index_source("message", &message.id, &format!("message:{}", message.id))
+    }
+
+    fn enqueue_memory_index_message_best_effort(&self, message: &MessageEnvelope) -> Result<()> {
+        let result = self.enqueue_memory_index_message(message);
+        self.finish_memory_index_enqueue(
+            result,
+            "message",
+            &message.id,
+            &format!("message:{}", message.id),
+        )
     }
 
     fn enqueue_memory_index_task(&self, task: &TaskRecord) -> Result<()> {

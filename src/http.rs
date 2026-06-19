@@ -71,7 +71,6 @@ use crate::{
     },
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
-    runtime_db::{MessageSearchQuery, MessageSearchRow},
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
@@ -518,52 +517,22 @@ fn traced_json<T: Serialize>(
 }
 
 const SEARCH_DEFAULT_LIMIT: usize = 20;
-const SEARCH_MAX_LIMIT: usize = 100;
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SearchItemType {
-    Message,
-}
+const SEARCH_MAX_LIMIT: usize = 50;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct SearchRequest {
     pub query: String,
-    #[serde(default)]
-    pub agent_ids: Vec<String>,
-    #[serde(default)]
-    pub types: Vec<SearchItemType>,
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub include_all_workspaces: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchResponse {
     pub query: String,
     pub limit: usize,
-    pub results: Vec<SearchResultItem>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct SearchResultItem {
-    #[serde(rename = "type")]
-    pub result_type: SearchItemType,
-    pub agent_id: String,
-    pub locator: SearchResultLocator,
-    pub created_at: String,
-    pub kind: String,
-    pub preview: Option<String>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct SearchResultLocator {
-    pub evidence_id: String,
-    pub message_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub work_item_id: Option<String>,
+    pub results: Vec<crate::memory::MemorySearchResult>,
+    pub index_status: crate::memory::MemorySearchIndexStatus,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1005,26 +974,14 @@ pub async fn search(
     if query.is_empty() {
         return Err(bad_request("query must not be empty"));
     }
-    if request
-        .types
-        .iter()
-        .any(|result_type| *result_type != SearchItemType::Message)
-    {
-        return Err(bad_request("only message search is currently supported"));
-    }
     let limit = request
         .limit
         .unwrap_or(SEARCH_DEFAULT_LIMIT)
         .clamp(1, SEARCH_MAX_LIMIT);
-    let rows = state
-        .host
-        .runtime_db()
-        .messages()
-        .search(MessageSearchQuery {
-            query: query.clone(),
-            agent_ids: request.agent_ids,
-            limit,
-        })
+    let runtime = state.host.default_runtime().await.map_err(error_response)?;
+    let search_result = runtime
+        .search_memory(&query, limit, request.include_all_workspaces)
+        .await
         .map_err(error_response)?;
     traced_json(
         "/search",
@@ -1032,26 +989,10 @@ pub async fn search(
         SearchResponse {
             query,
             limit,
-            results: rows.into_iter().map(search_result_from_message).collect(),
+            results: search_result.results,
+            index_status: search_result.index_status,
         },
     )
-}
-
-fn search_result_from_message(row: MessageSearchRow) -> SearchResultItem {
-    SearchResultItem {
-        result_type: SearchItemType::Message,
-        agent_id: row.agent_id,
-        locator: SearchResultLocator {
-            evidence_id: row.evidence_id,
-            message_id: row.message_id,
-            turn_id: row.turn_id,
-            task_id: row.task_id,
-            work_item_id: row.work_item_id,
-        },
-        created_at: row.created_at,
-        kind: row.kind,
-        preview: row.preview,
-    }
 }
 
 pub async fn handshake(
