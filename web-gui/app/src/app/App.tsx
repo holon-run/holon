@@ -522,6 +522,7 @@ function ConnectionSwitcher({
         type="button"
         aria-expanded={open}
         aria-haspopup={compact ? "dialog" : undefined}
+        title={connection.baseUrl ?? connection.summary}
         onClick={toggleOpen}
       >
         <span className={`runtime-dot ${connection.error ? "error" : ""}`} />
@@ -592,7 +593,7 @@ function ConnectionSwitcher({
                           <strong>{remoteLabel(remote.baseUrl)}</strong>
                           <small>{remote.baseUrl}</small>
                         </span>
-                        <span>{selected ? "Current" : remote.hasToken ? "Saved token" : "Use"}</span>
+                        <span>{selected ? "Current" : remote.hasToken ? "Token" : "Use"}</span>
                       </button>
                     );
                   })

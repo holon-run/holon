@@ -969,7 +969,7 @@ async function fetchRuntimeBootstrap(
     source: "http",
     baseUrl,
     hasToken,
-    summary: `${baseUrl} · ${connectionMode}${hasToken ? " bearer" : ""} · /api routes`,
+    summary: `${connectionBaseLabel(baseUrl)} · ${connectionMode}${hasToken ? " · Token" : ""}`,
   };
 
   return {
@@ -978,6 +978,14 @@ async function fetchRuntimeBootstrap(
     metrics: buildMetrics(agents.length, attentionCount, activeTaskCount, currentWorkCount),
     agents,
   };
+}
+
+function connectionBaseLabel(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
 }
 
 async function getJson<T>(
