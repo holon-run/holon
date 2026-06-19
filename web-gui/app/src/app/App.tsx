@@ -24,6 +24,8 @@ const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
   { key: "settings", label: "Settings", icon: "⚙" },
 ];
 
+const APP_WINDOW_TITLE = "Holon";
+
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const route = useRuntimeStore((state) => state.route);
@@ -162,6 +164,10 @@ export function App() {
     if (route !== "settings" || runtimeConfigLoading || runtimeConfig.surface) return;
     void refreshRuntimeConfig();
   }, [refreshRuntimeConfig, route, runtimeConfig.surface, runtimeConfigLoading]);
+
+  useEffect(() => {
+    document.title = browserWindowTitle(bootstrap.connection);
+  }, [bootstrap.connection.baseUrl, bootstrap.connection.mode]);
 
   function navigateRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
@@ -664,6 +670,32 @@ function remoteLabel(baseUrl: string): string {
   } catch {
     return baseUrl;
   }
+}
+
+function browserWindowTitle(connection: RuntimeConnection): string {
+  const runtimeLabel = browserRuntimeTitleLabel(connection);
+  return runtimeLabel ? `${APP_WINDOW_TITLE} · ${runtimeLabel}` : APP_WINDOW_TITLE;
+}
+
+function browserRuntimeTitleLabel(connection: RuntimeConnection): string {
+  const baseUrl = connection.baseUrl?.trim();
+  const host = baseUrl ? browserHostForBaseUrl(baseUrl) : browserWindowHost();
+  if (!host) return connection.mode === "remote" ? "remote" : "";
+  return connection.mode === "remote" ? `remote ${host}` : host;
+}
+
+function browserHostForBaseUrl(baseUrl: string): string | undefined {
+  try {
+    const url = typeof window === "undefined" ? new URL(baseUrl) : new URL(baseUrl, window.location.href);
+    return url.host || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function browserWindowHost(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.location.host || window.location.hostname || undefined;
 }
 
 function MissingAgentPage({ agentId, loading }: { agentId: string; loading: boolean }) {
