@@ -1191,7 +1191,7 @@ impl<'a> BriefTextLookup<'a> {
             crate::types::BriefContentSource::TranscriptEntry { ref entry_id, .. } => {
                 self.0.get(entry_id).map(String::as_str)
             }
-            crate::types::BriefContentSource::Inline => None,
+            crate::types::BriefContentSource::Inline => self.0.get(&brief.id).map(String::as_str),
         }
     }
 
@@ -1201,7 +1201,9 @@ impl<'a> BriefTextLookup<'a> {
             crate::types::BriefContentSource::TranscriptEntry { ref entry_id, .. } => {
                 self.0.get(entry_id).map(String::as_str)
             }
-            crate::types::BriefContentSource::Inline => None,
+            crate::types::BriefContentSource::Inline => {
+                self.0.get(&brief.brief_id).map(String::as_str)
+            }
         }
     }
 }
@@ -3672,6 +3674,39 @@ mod tests {
             } => {
                 assert_eq!(brief_id.as_deref(), Some("brief-1"));
                 assert_eq!(body, "Result brief (22 chars)");
+                assert_eq!(*outcome, Outcome::Success);
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_brief_created_resolves_inline_audit_text() {
+        let event = make_event(
+            "brief_created",
+            "Brief created",
+            json!({
+                "brief_id": "brief-inline-1",
+                "agent_id": "default",
+                "workspace_id": "agent_home",
+                "kind": "result",
+                "created_at": "2026-01-01T00:00:00Z",
+                "content_source": { "kind": "inline" },
+                "content_char_count": 31
+            }),
+        );
+        let brief_texts = std::collections::BTreeMap::from([(
+            "brief-inline-1".to_string(),
+            "resolved inline body sentinel_8429".to_string(),
+        )]);
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event], &BriefTextLookup(&brief_texts));
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult { body, outcome, .. } => {
+                assert_eq!(body, "resolved inline body sentinel_8429");
                 assert_eq!(*outcome, Outcome::Success);
             }
             other => panic!("expected AssistantResult, got {:?}", other),
