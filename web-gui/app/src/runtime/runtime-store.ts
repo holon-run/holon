@@ -249,10 +249,11 @@ function runtimeClientOptions(config: RuntimeConnectionConfig) {
 export function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
   if (typeof window === "undefined") return { mode: "local" };
   const activeConfig = coerceRuntimeConnectionConfig(readStoredJson(window.sessionStorage, ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY));
-  if (activeConfig) return withStoredRemoteProfileToken(activeConfig);
+  if (activeConfig) return remoteConfigAllowed(activeConfig) ? withStoredRemoteProfileToken(activeConfig) : { mode: "local" };
 
   const legacyConfig = coerceRuntimeConnectionConfig(readStoredJson(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY));
   if (legacyConfig?.mode === "remote") {
+    if (!canUseRemoteRuntimeConnections()) return { mode: "local" };
     writeStoredRuntimeConnectionConfig(legacyConfig);
     removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
     return withStoredRemoteProfileToken(legacyConfig);
@@ -269,8 +270,9 @@ export function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
 export function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
   try {
     removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
-    writeActiveRuntimeConnectionConfig(config);
-    if (config.mode === "remote") writeStoredRemoteProfile(config);
+    const allowedConfig = remoteConfigAllowed(config) ? config : { mode: "local" as const };
+    writeActiveRuntimeConnectionConfig(allowedConfig);
+    if (allowedConfig.mode === "remote") writeStoredRemoteProfile(allowedConfig);
   } catch {
     // Ignore storage failures; the in-memory connection still applies.
   }
@@ -353,6 +355,7 @@ function writeStoredRemoteProfile(config: RuntimeConnectionConfig): void {
 }
 
 export function readStoredRemoteConnectionProfiles(): RuntimeConnectionProfile[] {
+  if (!canUseRemoteRuntimeConnections()) return [];
   return Object.values(readStoredRemoteProfiles())
     .filter((profile): profile is RuntimeConnectionConfig & { mode: "remote"; baseUrl: string } => profile.mode === "remote" && Boolean(profile.baseUrl))
     .map((profile) => ({
@@ -377,6 +380,24 @@ function withStoredRemoteProfileToken(config: RuntimeConnectionConfig): RuntimeC
   const profile = readStoredRemoteProfiles()[remoteProfileKey(baseUrl)];
   if (profile?.mode !== "remote" || !profile.token) return config;
   return { ...config, token: profile.token };
+}
+
+function remoteConfigAllowed(config: RuntimeConnectionConfig): boolean {
+  return config.mode !== "remote" || canUseRemoteRuntimeConnections();
+}
+
+export function canUseRemoteRuntimeConnections(): boolean {
+  if (typeof window === "undefined") return false;
+  return isLoopbackWebHostname(window.location?.hostname);
+}
+
+export function isLoopbackWebHostname(hostname: string | undefined): boolean {
+  if (!hostname) return false;
+  const normalized = hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  if (!normalized) return false;
+  if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
+  if (normalized === "::1") return true;
+  return /^127(?:\.\d{1,3}){3}$/.test(normalized);
 }
 
 function readStoredDisplayLevels(): Record<string, DisplayLevel> {
@@ -615,7 +636,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         ? runtimeConnectionConfig.token
         : undefined;
     const normalizedConfig: RuntimeConnectionConfig =
-      config.mode === "remote"
+      config.mode === "remote" && canUseRemoteRuntimeConnections()
         ? withStoredRemoteProfileToken({
           mode: "remote",
           baseUrl: normalizedBaseUrl,

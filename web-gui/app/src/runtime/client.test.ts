@@ -58,6 +58,37 @@ describe("createRuntimeClient", () => {
     );
   });
 
+  it("uses the same-origin /api base for local runtime connections in production builds", async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("/handshake")) {
+        return Response.json({ auth: { mode: "local" } });
+      }
+      if (url.endsWith("/agents/list")) {
+        return Response.json([]);
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "local",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const bootstrap = await client.getBootstrap();
+
+    expect(bootstrap.connection).toEqual(
+      expect.objectContaining({
+        mode: "local",
+        source: "http",
+        baseUrl: "/api",
+      }),
+    );
+    expect(seen).toEqual(["/api/handshake", "/api/agents/list"]);
+  });
+
   it("fetches full tool execution detail for inspector hydration", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {

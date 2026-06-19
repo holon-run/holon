@@ -12,7 +12,7 @@ import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
-import { readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
+import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
@@ -466,6 +466,7 @@ function ConnectionSwitcher({
   const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | undefined>();
+  const remoteConnectionsAllowed = canUseRemoteRuntimeConnections();
   const [savedRemotes, setSavedRemotes] = useState<RuntimeConnectionProfile[]>(() => readStoredRemoteConnectionProfiles());
   const switcherRef = useRef<HTMLDivElement>(null);
 
@@ -547,7 +548,11 @@ function ConnectionSwitcher({
           <div className="connection-panel-head">
             <div>
               <strong>Runtime connection</strong>
-              <span>Switch local or saved remote without leaving this page.</span>
+              <span>
+                {remoteConnectionsAllowed
+                  ? "Switch local or saved remote without leaving this page."
+                  : "This embedded page is locked to its same-origin Holon runtime."}
+              </span>
             </div>
             {compact ? (
               <button type="button" aria-label="Close connection panel" onClick={() => setOpen(false)}>
@@ -567,57 +572,65 @@ function ConnectionSwitcher({
             </span>
             <span>{connection.mode === "local" ? "Current" : "Use"}</span>
           </button>
-          <div className="saved-remotes" aria-label="Saved remotes">
-            <span className="connection-section-label">Saved remotes</span>
-            {savedRemotes.length > 0 ? (
-              savedRemotes.map((remote) => {
-                const selected = connection.mode === "remote" && connection.baseUrl === remote.baseUrl;
-                return (
-                  <button
-                    className={`saved-remote-row ${selected ? "is-selected" : ""}`}
-                    type="button"
-                    key={remote.baseUrl}
-                    title={remote.baseUrl}
-                    disabled={saving}
-                    onClick={() => void applyConnection({ mode: "remote", baseUrl: remote.baseUrl })}
-                  >
-                    <span>
-                      <strong>{remoteLabel(remote.baseUrl)}</strong>
-                      <small>{remote.baseUrl}</small>
-                    </span>
-                    <span>{selected ? "Current" : remote.hasToken ? "Saved token" : "Use"}</span>
-                  </button>
-                );
-              })
-            ) : (
-              <p className="saved-remotes-empty">No saved remotes yet. Add one below to reuse it later.</p>
-            )}
-          </div>
-          <span className="connection-section-label">Add remote</span>
-          <label>
-            Remote URL
-            <input
-              value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
-              placeholder="http://192.168.1.10:7878"
-              inputMode="url"
-            />
-          </label>
-          <label>
-            Bearer token
-            <input
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              placeholder={connection.hasToken ? "saved token retained unless replaced" : "optional for trusted local networks"}
-              type="password"
-            />
-          </label>
+          {remoteConnectionsAllowed ? (
+            <>
+              <div className="saved-remotes" aria-label="Saved remotes">
+                <span className="connection-section-label">Saved remotes</span>
+                {savedRemotes.length > 0 ? (
+                  savedRemotes.map((remote) => {
+                    const selected = connection.mode === "remote" && connection.baseUrl === remote.baseUrl;
+                    return (
+                      <button
+                        className={`saved-remote-row ${selected ? "is-selected" : ""}`}
+                        type="button"
+                        key={remote.baseUrl}
+                        title={remote.baseUrl}
+                        disabled={saving}
+                        onClick={() => void applyConnection({ mode: "remote", baseUrl: remote.baseUrl })}
+                      >
+                        <span>
+                          <strong>{remoteLabel(remote.baseUrl)}</strong>
+                          <small>{remote.baseUrl}</small>
+                        </span>
+                        <span>{selected ? "Current" : remote.hasToken ? "Saved token" : "Use"}</span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="saved-remotes-empty">No saved remotes yet. Add one below to reuse it later.</p>
+                )}
+              </div>
+              <span className="connection-section-label">Add remote</span>
+              <label>
+                Remote URL
+                <input
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  placeholder="http://192.168.1.10:7878"
+                  inputMode="url"
+                />
+              </label>
+              <label>
+                Bearer token
+                <input
+                  value={token}
+                  onChange={(event) => setToken(event.target.value)}
+                  placeholder={connection.hasToken ? "saved token retained unless replaced" : "optional for trusted local networks"}
+                  type="password"
+                />
+              </label>
+            </>
+          ) : (
+            <p className="saved-remotes-empty">Remote runtime switching is only available from localhost pages.</p>
+          )}
           {formError ? <span className="connection-error">{formError}</span> : null}
-          <div className="connection-actions">
-            <Button type="submit" size="sm" disabled={saving}>
-              {saving ? "Connecting…" : "Use remote"}
-            </Button>
-          </div>
+          {remoteConnectionsAllowed ? (
+            <div className="connection-actions">
+              <Button type="submit" size="sm" disabled={saving}>
+                {saving ? "Connecting…" : "Use remote"}
+              </Button>
+            </div>
+          ) : null}
         </form>
       ) : null}
     </div>

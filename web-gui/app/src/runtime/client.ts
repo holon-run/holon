@@ -493,11 +493,11 @@ export interface RuntimeConfigUpdateEntry {
 }
 
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
-  const defaultBaseUrl = import.meta.env.DEV ? DEFAULT_DEV_API_BASE : undefined;
+  const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
+  const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
   const requestHeaders = authorizationHeaders(options.token);
-  const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
   const hasToken = Boolean(options.token?.trim());
 
   return {
