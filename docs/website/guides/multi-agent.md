@@ -36,6 +36,37 @@ When spawning a `private_child`, the parent receives a `task_handle` with a
 - **TaskInput** — Send follow-up input to the child
 - **TaskStop** — Stop the child agent explicitly
 
+### Child Agent Token Usage
+
+Task status and output snapshots include a `token_usage` field with the
+child agent's cumulative token consumption:
+
+```json
+{
+  "total": {
+    "input_tokens": 12450,
+    "output_tokens": 3840,
+    "total_tokens": 16290
+  },
+  "total_model_rounds": 5,
+  "last_turn": {
+    "input_tokens": 2100,
+    "output_tokens": 720,
+    "total_tokens": 2820
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `total` | Cumulative tokens across all child turns |
+| `total_model_rounds` | Number of model round-trips the child has made |
+| `last_turn` | Token usage for the most recent turn (if available) |
+
+Use token usage to estimate child agent costs, detect unexpectedly expensive
+delegations, or decide whether to stop a child that is consuming more tokens
+than its output warrants.
+
 ## Usage Patterns
 
 ### Parallel investigation
