@@ -5341,7 +5341,7 @@ DELETE FROM storage_domains WHERE domain = 'working_memory_deltas';
     },
     Migration {
         version: 15,
-        name: "reserved_message_search_index",
+        name: "message_search_index",
         sql: r#"
 -- Deprecated before release. HTTP and tool search now use memory v2.
 SELECT 1;
@@ -7147,6 +7147,37 @@ CREATE TABLE working_memory_deltas (
 
         let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
         assert!(error.to_string().contains("name mismatch"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_accepts_released_message_search_migration_name() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let connection = open_connection(&db_path)?;
+            ensure_migration_table(&connection)?;
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= 14)
+            {
+                connection.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                    (migration.version, migration.name, Utc::now().to_rfc3339()),
+                )?;
+            }
+            connection.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                (15_i64, "message_search_index", Utc::now().to_rfc3339()),
+            )?;
+        }
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+        assert_eq!(
+            current_schema_version(&connection)?,
+            max_known_migration_version()
+        );
+        assert!(!table_exists(&connection, "message_search_index")?);
         Ok(())
     }
 
