@@ -492,12 +492,14 @@ fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
     let allow_origin = if config.allowed_origins.iter().any(|origin| origin == "*") {
         AllowOrigin::any()
     } else {
-        AllowOrigin::list(
-            config
-                .allowed_origins
-                .iter()
-                .filter_map(|origin| origin.parse::<HeaderValue>().ok()),
-        )
+        let configured_origins = config
+            .allowed_origins
+            .iter()
+            .filter_map(|origin| origin.parse::<HeaderValue>().ok())
+            .collect::<Vec<_>>();
+        AllowOrigin::predicate(move |origin, _| {
+            is_default_localhost_cors_origin(origin) || configured_origins.contains(origin)
+        })
     };
 
     let mut layer = CorsLayer::new()
@@ -511,6 +513,27 @@ fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
     }
 
     layer
+}
+
+fn is_default_localhost_cors_origin(origin: &HeaderValue) -> bool {
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(origin.scheme(), "http" | "https") {
+        return false;
+    }
+    if origin.path() != "/" || origin.query().is_some() || origin.fragment().is_some() {
+        return false;
+    }
+    match origin.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr == std::net::Ipv4Addr::LOCALHOST,
+        Some(url::Host::Ipv6(addr)) => addr == std::net::Ipv6Addr::LOCALHOST,
+        None => false,
+    }
 }
 
 fn traced_json<T: Serialize>(

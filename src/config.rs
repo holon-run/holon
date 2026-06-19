@@ -299,7 +299,7 @@ impl ApiCorsConfigFile {
     }
 
     pub fn enabled(&self) -> bool {
-        self.enabled.unwrap_or(false)
+        self.enabled.unwrap_or(true)
     }
 
     pub fn allow_credentials(&self) -> bool {
@@ -1964,14 +1964,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "api.cors.enabled",
             kind: "boolean",
-            description: "Enable CORS responses on the HTTP/control API. Disabled by default.",
-            default: json!(false),
+            description: "Enable CORS responses on the HTTP/control API. Enabled by default for localhost/loopback browser origins.",
+            default: json!(true),
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
             key: "api.cors.allowed_origins",
             kind: "string_list",
-            description: "Allowed browser origins for HTTP/control API CORS. Use explicit origins for LAN Web UI access; wildcard is rejected when credentials are enabled.",
+            description: "Additional browser origins for HTTP/control API CORS. Localhost/loopback origins are allowed by default; wildcard is rejected when credentials are enabled.",
             default: json!([]),
             allowed_values: vec![],
         },

@@ -1651,6 +1651,65 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     Ok(())
 }
 
+pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
+    let config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let router: Router = http::router(AppState::for_tcp(host));
+    let listener = TcpListener::bind(&config.http_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client = reqwest::Client::new();
+    for origin in [
+        "http://localhost:5173",
+        "https://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://[::1]:8080",
+    ] {
+        let allowed = client
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://{addr}/control/runtime/status"),
+            )
+            .header("origin", origin)
+            .header("access-control-request-method", "GET")
+            .header("access-control-request-headers", "authorization")
+            .send()
+            .await?;
+        assert!(allowed.status().is_success());
+        assert_eq!(
+            allowed
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some(origin)
+        );
+    }
+
+    let denied = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://{addr}/control/runtime/status"),
+        )
+        .header("origin", "http://evil.example")
+        .header("access-control-request-method", "GET")
+        .send()
+        .await?;
+    assert!(denied
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn cors_preflight_respects_configured_origin() -> Result<()> {
     let mut config = test_config();
     config.api_cors = ApiCorsConfigFile {

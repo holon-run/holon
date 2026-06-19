@@ -58,13 +58,19 @@ The `models.catalog` key lets you override runtime metadata for specific provide
 
 ### HTTP API CORS
 
-CORS is disabled by default. Enable it only for browser-based Web UI origins
-that should call the Holon HTTP/control API. For LAN access, the API must also
-bind to a reachable address such as `0.0.0.0:7878` or a specific LAN IP; a
-`127.0.0.1` bind is not reachable from other devices.
+CORS is enabled by default for localhost/loopback browser origins on any port:
+`http://localhost:<port>`, `https://localhost:<port>`,
+`http://127.0.0.1:<port>`, and `http://[::1]:<port>`. This lets local Web UIs
+call a local or remote Holon HTTP/control API when they provide the required
+`Authorization: Bearer <token>` header.
+
+Configure `api.cors.allowed_origins` to add non-local browser origins such as a
+LAN-hosted Web UI. These origins are added to the built-in localhost/loopback
+allowlist. For LAN access, the API must also bind to a reachable address such
+as `0.0.0.0:7878` or a specific LAN IP; a `127.0.0.1` bind is not reachable
+from other devices. Set `api.cors.enabled=false` to disable CORS entirely.
 
 ```bash
-holon config set api.cors.enabled true
 holon config set api.cors.allowed_origins '["http://192.168.1.10:5173"]'
 holon config set api.cors.allowed_methods '["GET","POST","PATCH","DELETE","OPTIONS"]'
 holon config set api.cors.allowed_headers '["content-type","authorization"]'
@@ -266,8 +272,8 @@ TUI debug instrumentation is controlled by environment variables:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `api.cors.enabled` | boolean | `false` | Enable CORS responses on the HTTP/control API |
-| `api.cors.allowed_origins` | string_list | `[]` | Explicit browser origins allowed to call the API |
+| `api.cors.enabled` | boolean | `true` | Enable CORS responses on the HTTP/control API; localhost/loopback origins are allowed by default |
+| `api.cors.allowed_origins` | string_list | `[]` | Additional explicit browser origins allowed to call the API |
 | `api.cors.allowed_methods` | string_list | `["GET","POST","PATCH","DELETE","OPTIONS"]` | HTTP methods allowed by CORS preflight |
 | `api.cors.allowed_headers` | string_list | `["content-type","authorization"]` | Request headers allowed by CORS preflight |
 | `api.cors.allow_credentials` | boolean | `false` | Allow credentialed CORS requests; incompatible with wildcard origins |
