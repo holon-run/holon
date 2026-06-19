@@ -53,6 +53,7 @@ running Holon.
 | `volcengine-coding` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
 | `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
+| `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
 | `zai` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
 
 ## Model Catalog
