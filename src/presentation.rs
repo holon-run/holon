@@ -1504,9 +1504,16 @@ fn final_brief_texts(
                     text: normalized_text(text),
                 });
             }
-            let _brief =
+            let brief =
                 serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
-            None
+            // Resolve text from the hydration cache for TranscriptEntry briefs;
+            // Inline briefs have no text in slimmed audit events.
+            brief_texts.resolve_for_event(event).and_then(|text| {
+                (!text.trim().is_empty()).then_some(FinalBriefText {
+                    agent_id: brief.agent_id,
+                    text: normalized_text(text),
+                })
+            })
         })
         .collect()
 }
