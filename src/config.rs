@@ -3485,6 +3485,13 @@ fn built_in_provider_registry_with_settings(
     )?;
     insert_openai_compatible_provider(
         &mut registry,
+        "xiaomi-token-plan",
+        "https://token-plan-cn.xiaomimimo.com/v1",
+        &["XIAOMI_TOKEN_PLAN_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
         "xai",
         "https://api.x.ai/v1",
         &["XAI_API_KEY"],
@@ -6140,6 +6147,22 @@ mod tests {
         );
         assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
         assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
+
+        let xiaomi_token_plan = providers
+            .get(&ProviderId::parse("xiaomi-token-plan").unwrap())
+            .unwrap();
+        assert_eq!(
+            xiaomi_token_plan.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(
+            xiaomi_token_plan.base_url,
+            "https://token-plan-cn.xiaomimimo.com/v1"
+        );
+        assert_eq!(
+            xiaomi_token_plan.credential.as_deref(),
+            Some("xiaomi-token-plan-key")
+        );
 
         let zai = providers.get(&ProviderId::parse("zai").unwrap()).unwrap();
         assert_eq!(zai.transport, ProviderTransportKind::AnthropicMessages);
