@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { readStoredRuntimeConnectionConfig, writeStoredRuntimeConnectionConfig } from "./runtime-store";
+import {
+  canUseRemoteRuntimeConnections,
+  isLoopbackWebHostname,
+  readStoredRemoteConnectionProfiles,
+  readStoredRuntimeConnectionConfig,
+  writeStoredRuntimeConnectionConfig,
+} from "./runtime-store";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -30,9 +36,10 @@ class MemoryStorage implements Storage {
   }
 }
 
-function installWindow(localStorage: Storage, sessionStorage: Storage) {
+function installWindow(localStorage: Storage, sessionStorage: Storage, hostname = "localhost") {
   vi.stubGlobal("window", {
     clearTimeout: () => undefined,
+    location: { hostname },
     localStorage,
     sessionStorage,
   });
@@ -91,6 +98,46 @@ describe("runtime connection storage", () => {
       baseUrl: "http://remote.example:7878",
       token: "saved-token",
     });
+  });
+
+  it("keeps same-origin runtime tokens in the active window session", () => {
+    const sharedLocalStorage = new MemoryStorage();
+    const windowSession = new MemoryStorage();
+
+    installWindow(sharedLocalStorage, windowSession, "100.92.113.47");
+    writeStoredRuntimeConnectionConfig({ mode: "local", token: "same-origin-token" });
+
+    expect(readStoredRuntimeConnectionConfig()).toEqual({
+      mode: "local",
+      token: "same-origin-token",
+    });
+    expect(readStoredRemoteConnectionProfiles()).toEqual([]);
+  });
+
+  it("detects loopback page origins as eligible for remote runtime connections", () => {
+    expect(isLoopbackWebHostname("localhost")).toBe(true);
+    expect(isLoopbackWebHostname("127.0.0.1")).toBe(true);
+    expect(isLoopbackWebHostname("127.42.0.9")).toBe(true);
+    expect(isLoopbackWebHostname("::1")).toBe(true);
+    expect(isLoopbackWebHostname("100.92.113.47")).toBe(false);
+    expect(isLoopbackWebHostname("holon.example.test")).toBe(false);
+  });
+
+  it("forces same-origin local mode on non-loopback embedded pages", () => {
+    const sharedLocalStorage = new MemoryStorage();
+    const remoteWindowSession = new MemoryStorage();
+
+    installWindow(sharedLocalStorage, remoteWindowSession, "100.92.113.47");
+    expect(canUseRemoteRuntimeConnections()).toBe(false);
+
+    writeStoredRuntimeConnectionConfig({
+      mode: "remote",
+      baseUrl: "http://127.0.0.1:7878",
+      token: "saved-token",
+    });
+
+    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
+    expect(readStoredRemoteConnectionProfiles()).toEqual([]);
   });
 });
 

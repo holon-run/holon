@@ -43,6 +43,7 @@ const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
 const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
 const TOP_SCROLL_THRESHOLD = 16;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
+const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
 
 export function storedComposerDraftKey(agentId: string): string {
   return `${COMPOSER_DRAFT_STORAGE_PREFIX}:${encodeURIComponent(agentId)}`;
@@ -69,6 +70,13 @@ export function writeStoredComposerDraft(agentId: string, prompt: string): void 
   } catch {
     // Ignore storage failures; the in-memory draft still applies.
   }
+}
+
+export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
+  textarea.style.height = "auto";
+  const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_TEXTAREA_MAX_HEIGHT);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > COMPOSER_TEXTAREA_MAX_HEIGHT ? "auto" : "hidden";
 }
 
 export function AgentPage({
@@ -99,6 +107,7 @@ export function AgentPage({
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
   const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
@@ -143,6 +152,13 @@ export function AgentPage({
   useEffect(() => {
     setPrompt(readStoredComposerDraft(activeAgent.id));
   }, [activeAgent.id]);
+
+  useLayoutEffect(() => {
+    const textarea = composerTextareaRef.current;
+    if (textarea) {
+      resizeComposerTextarea(textarea);
+    }
+  }, [prompt, activeAgent.id]);
 
   useLayoutEffect(() => {
     const list = messageListRef.current;
@@ -297,6 +313,7 @@ export function AgentPage({
 
           <form className="composer" aria-label={`Send operator input to ${activeAgent.id}`} onSubmit={handleSubmit}>
             <textarea
+              ref={composerTextareaRef}
               rows={2}
               placeholder={`Send operator input to ${activeAgent.id}...`}
               value={prompt}

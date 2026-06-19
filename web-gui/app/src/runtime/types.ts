@@ -7,6 +7,7 @@ export interface RuntimeConnection {
   summary: string;
   baseUrl?: string;
   hasToken?: boolean;
+  authRequired?: boolean;
   source: "http" | "fixture";
   error?: string;
 }

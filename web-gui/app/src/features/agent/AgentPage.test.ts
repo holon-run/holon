@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { readStoredComposerDraft, storedComposerDraftKey, writeStoredComposerDraft } from "./AgentPage";
+import { readStoredComposerDraft, resizeComposerTextarea, storedComposerDraftKey, writeStoredComposerDraft } from "./AgentPage";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -60,5 +60,25 @@ describe("composer draft storage", () => {
 
     expect(readStoredComposerDraft("agent-a")).toBe("");
     expect(storage.getItem(storedComposerDraftKey("agent-a"))).toBeNull();
+  });
+});
+
+describe("composer textarea resize", () => {
+  it("expands to fit the textarea content", () => {
+    const textarea = { scrollHeight: 144, style: {} } as unknown as HTMLTextAreaElement;
+
+    resizeComposerTextarea(textarea);
+
+    expect(textarea.style.height).toBe("144px");
+    expect(textarea.style.overflowY).toBe("hidden");
+  });
+
+  it("caps very tall content and enables scrolling only past the cap", () => {
+    const textarea = { scrollHeight: 420, style: {} } as unknown as HTMLTextAreaElement;
+
+    resizeComposerTextarea(textarea);
+
+    expect(textarea.style.height).toBe("320px");
+    expect(textarea.style.overflowY).toBe("auto");
   });
 });
