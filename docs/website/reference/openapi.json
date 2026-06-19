@@ -1835,12 +1835,9 @@
       },
       "SearchRequest": {
         "properties": {
-          "agent_ids": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          "include_all_workspaces": {
+            "default": false,
+            "type": "boolean"
           },
           "limit": {
             "format": "uint",
@@ -1852,16 +1849,6 @@
           },
           "query": {
             "type": "string"
-          },
-          "types": {
-            "default": [],
-            "items": {
-              "enum": [
-                "message"
-              ],
-              "type": "string"
-            },
-            "type": "array"
           }
         },
         "required": [
@@ -1872,6 +1859,47 @@
       },
       "SearchResponse": {
         "properties": {
+          "index_status": {
+            "properties": {
+              "consumption_was_limited": {
+                "type": "boolean"
+              },
+              "cursor": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "freshness": {
+                "type": "string"
+              },
+              "high_watermark": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "lag": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "last_indexed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "skipped_error_count": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "freshness",
+              "cursor",
+              "high_watermark",
+              "lag"
+            ],
+            "type": "object"
+          },
           "limit": {
             "format": "uint",
             "minimum": 0,
@@ -1886,64 +1914,53 @@
                 "agent_id": {
                   "type": "string"
                 },
-                "created_at": {
-                  "type": "string"
-                },
                 "kind": {
                   "type": "string"
                 },
-                "locator": {
-                  "properties": {
-                    "evidence_id": {
-                      "type": "string"
-                    },
-                    "message_id": {
-                      "type": "string"
-                    },
-                    "task_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "turn_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "work_item_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "evidence_id",
-                    "message_id"
-                  ],
-                  "type": "object"
+                "metadata": true,
+                "scope_kind": {
+                  "type": "string"
                 },
-                "preview": {
+                "score": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "snippet": {
+                  "type": "string"
+                },
+                "source_path": {
                   "type": [
                     "string",
                     "null"
                   ]
                 },
-                "type": {
-                  "enum": [
-                    "message"
-                  ],
+                "source_ref": {
                   "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
-                "type",
+                "kind",
+                "source_ref",
+                "scope_kind",
                 "agent_id",
-                "locator",
-                "created_at",
-                "kind"
+                "title",
+                "snippet",
+                "score",
+                "updated_at",
+                "metadata"
               ],
               "type": "object"
             },
@@ -1953,7 +1970,8 @@
         "required": [
           "query",
           "limit",
-          "results"
+          "results",
+          "index_status"
         ],
         "title": "SearchResponse",
         "type": "object"
@@ -8259,7 +8277,7 @@
     },
     "/search": {
       "post": {
-        "description": "Search indexed runtime history across visible agents. First version indexes message bodies and returns message result locators.",
+        "description": "Search the same memory v2 index used by the agent MemorySearch tool.",
         "operationId": "runtimeSearch",
         "parameters": [],
         "requestBody": {
@@ -8309,7 +8327,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Search runtime history",
+        "summary": "Search runtime memory",
         "tags": [
           "search"
         ]

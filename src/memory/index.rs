@@ -7,6 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -39,7 +40,7 @@ const MEMORY_INDEX_BACKFILL_CURSOR: &str = "full";
 const MEMORY_INDEX_OUTBOX_CURSOR: &str = "runtime_index_outbox";
 const MEMORY_INDEX_SEARCH_TEXT_MAX_CHARS: usize = 12_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct MemorySearchResult {
     pub kind: String,
@@ -57,7 +58,7 @@ pub struct MemorySearchResult {
     pub metadata: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct MemorySearchIndexStatus {
     pub freshness: String,
@@ -72,7 +73,7 @@ pub struct MemorySearchIndexStatus {
     pub last_indexed_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct MemorySearchQueryResult {
     pub results: Vec<MemorySearchResult>,
@@ -1140,6 +1141,7 @@ fn all_backfill_source_kinds() -> &'static [&'static str] {
     &[
         "agent_memory_markdown",
         "workspace_profile",
+        "message",
         "brief",
         "context_episode",
         "work_item",
@@ -1163,6 +1165,7 @@ fn collect_documents(
     let mut documents = Vec::new();
     documents.extend(agent_memory_documents(storage)?);
     documents.extend(workspace_profile_documents(storage)?);
+    documents.extend(message_documents(storage)?);
     documents.extend(brief_documents(storage, runtime_db.as_ref())?);
     documents.extend(context_episode_documents(storage)?);
     documents.extend(work_item_documents(storage, runtime_db.as_ref())?);
@@ -1183,6 +1186,7 @@ fn document_for_pending_source(
             .transpose()
             .map(|value| value.flatten()),
         "workspace_profile" => workspace_profile_document_by_id(storage, &source.source_id),
+        "message" => message_document_by_id(storage, &source.source_id),
         "brief" => brief_document_by_id(storage, &source.source_id),
         "context_episode" => context_episode_document_by_id(storage, &source.source_id),
         "work_item" => work_item_document_by_id(storage, &source.source_id),
@@ -1405,13 +1409,21 @@ fn message_document_by_id(
         .map(message_document))
 }
 
+fn message_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
+    Ok(storage
+        .read_all_messages()?
+        .into_iter()
+        .map(message_document)
+        .collect())
+}
+
 fn message_document(message: MessageEnvelope) -> MemoryDocument {
     let body = message_document_body(&message);
     let title = format!("Message {}", message.id);
     MemoryDocument {
         source_ref: format!("message:{}", message.id),
         source_kind: "message".into(),
-        scope_kind: "workspace".into(),
+        scope_kind: "agent".into(),
         workspace_id: None,
         agent_id: message.agent_id.clone(),
         source_path: None,
@@ -3275,6 +3287,20 @@ mod tests {
                 "ws-other",
             ))
             .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "searchable operator message sentinel1879".into(),
+            },
+        );
+        message.id = "msg-memory-search".into();
+        storage.append_message(&message).unwrap();
         let mut work_item = WorkItemRecord::new(
             "default",
             "MemorySearch index implementation",
@@ -3359,6 +3385,10 @@ mod tests {
             .any(|result| result.kind == "context_episode"));
         let results = search_memory(&storage, "MemorySearch", 10, Some("ws-holon"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "work_item"));
+        let results = search_memory(&storage, "sentinel1879", 10, Some("ws-holon"), false).unwrap();
+        assert!(results
+            .iter()
+            .any(|result| result.source_ref == "message:msg-memory-search"));
         let results = search_memory(&storage, "checksum", 10, Some("ws-holon"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "work_item"));
         let results = search_memory(&storage, "checklist", 10, Some("ws-holon"), false).unwrap();
