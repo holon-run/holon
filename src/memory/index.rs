@@ -1,12 +1,12 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -182,12 +182,51 @@ pub fn search_memory_query(
     active_workspace_id: Option<&str>,
     include_all_workspaces: bool,
 ) -> Result<MemorySearchQueryResult> {
-    let index = ensure_memory_index_current(storage, active_workspace_id)?;
+    search_memory_query_for_agents(
+        storage,
+        query,
+        limit,
+        active_workspace_id,
+        include_all_workspaces,
+        &[],
+    )
+}
+
+pub fn search_memory_query_for_agents(
+    storage: &AppStorage,
+    query: &str,
+    limit: usize,
+    active_workspace_id: Option<&str>,
+    include_all_workspaces: bool,
+    agent_ids: &[String],
+) -> Result<MemorySearchQueryResult> {
+    search_memory_query_for_agent_storages(
+        storage,
+        query,
+        limit,
+        active_workspace_id,
+        include_all_workspaces,
+        agent_ids,
+        &[],
+    )
+}
+
+pub fn search_memory_query_for_agent_storages(
+    storage: &AppStorage,
+    query: &str,
+    limit: usize,
+    active_workspace_id: Option<&str>,
+    include_all_workspaces: bool,
+    agent_ids: &[String],
+    agent_storages: &[AppStorage],
+) -> Result<MemorySearchQueryResult> {
     let agent_id = storage_agent_id(storage);
+    let agent_filter = normalize_memory_search_agent_filter(&agent_id, agent_ids);
+    let index = ensure_memory_indexes_current(storage, active_workspace_id, agent_storages)?;
     let results = index.search(
         query,
         limit,
-        &agent_id,
+        &agent_filter,
         active_workspace_id,
         include_all_workspaces,
     )?;
@@ -196,6 +235,24 @@ pub fn search_memory_query(
         results,
         index_status,
     })
+}
+
+fn normalize_memory_search_agent_filter(
+    default_agent_id: &str,
+    agent_ids: &[String],
+) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut filter = Vec::new();
+    for agent_id in agent_ids {
+        let agent_id = agent_id.trim();
+        if !agent_id.is_empty() && seen.insert(agent_id.to_string()) {
+            filter.push(agent_id.to_string());
+        }
+    }
+    if filter.is_empty() {
+        filter.push(default_agent_id.to_string());
+    }
+    filter
 }
 
 pub fn get_memory(
@@ -243,11 +300,35 @@ fn ensure_memory_index_current(
     storage: &AppStorage,
     active_workspace_id: Option<&str>,
 ) -> Result<MemoryIndex> {
+    ensure_memory_indexes_current(storage, active_workspace_id, &[])
+}
+
+fn ensure_memory_indexes_current(
+    storage: &AppStorage,
+    active_workspace_id: Option<&str>,
+    agent_storages: &[AppStorage],
+) -> Result<MemoryIndex> {
     log_legacy_index_deprecation(storage);
     let mut index = MemoryIndex::open(storage)?;
+    let mut refreshed_agent_ids = BTreeSet::new();
+    refresh_memory_index_for_storage(&mut index, storage, active_workspace_id)?;
+    refreshed_agent_ids.insert(storage_agent_id(storage));
+    for agent_storage in agent_storages {
+        if refreshed_agent_ids.insert(storage_agent_id(agent_storage)) {
+            refresh_memory_index_for_storage(&mut index, agent_storage, active_workspace_id)?;
+        }
+    }
+    Ok(index)
+}
+
+fn refresh_memory_index_for_storage(
+    index: &mut MemoryIndex,
+    storage: &AppStorage,
+    active_workspace_id: Option<&str>,
+) -> Result<()> {
     index.consume_runtime_outbox(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
     index.consume_pending_sources(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
-    repair_known_markdown_sources(storage, &index)?;
+    repair_known_markdown_sources(storage, index)?;
     if memory_index_is_dirty(storage) {
         let agent_id = storage_agent_id(storage);
         tracing::debug!(
@@ -256,7 +337,7 @@ fn ensure_memory_index_current(
             "memory index remains dirty; search returns bounded stale v2 projection"
         );
     }
-    Ok(index)
+    Ok(())
 }
 
 fn log_legacy_index_deprecation(storage: &AppStorage) {
@@ -830,19 +911,26 @@ impl MemoryIndex {
         &self,
         query: &str,
         limit: usize,
-        agent_id: &str,
+        agent_ids: &[String],
         active_workspace_id: Option<&str>,
         include_all_workspaces: bool,
     ) -> Result<Vec<MemorySearchResult>> {
         let query = search_query(query);
         let limit = limit.clamp(1, SEARCH_LIMIT_MAX);
+        let agent_filter = if agent_ids.is_empty() {
+            "0".to_string()
+        } else {
+            std::iter::repeat_n("?", agent_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let workspace_filter = if include_all_workspaces {
             None
         } else {
             active_workspace_id.map(ToString::to_string)
         };
         let include_all_workspaces = include_all_workspaces as i64;
-        let mut statement = self.connection.prepare(
+        let sql = format!(
             r#"
             SELECT d.source_ref, d.source_kind, d.scope_kind, d.workspace_id, d.agent_id,
                    d.source_path, d.title, d.sanitized_excerpt, d.metadata_json,
@@ -850,40 +938,43 @@ impl MemoryIndex {
             FROM memory_documents_fts
             JOIN memory_documents d ON d.document_key = memory_documents_fts.document_key
             WHERE memory_documents_fts MATCH ?1
-              AND d.agent_id = ?5
-              AND (?3 OR d.scope_kind = 'agent' OR (?2 IS NOT NULL AND d.workspace_id = ?2))
+              AND d.agent_id IN ({agent_filter})
+              AND (? OR d.scope_kind = 'agent' OR (? IS NOT NULL AND d.workspace_id = ?))
             ORDER BY score ASC, d.updated_at DESC
-            LIMIT ?4
+            LIMIT ?
             "#,
-        )?;
-        let rows = statement.query_map(
-            params![
-                query,
-                workspace_filter,
-                include_all_workspaces,
-                limit as i64,
-                agent_id
-            ],
-            |row| {
-                let metadata_json: String = row.get(8)?;
-                let updated_at: String = row.get(9)?;
-                Ok(MemorySearchResult {
-                    kind: row.get(1)?,
-                    source_ref: row.get(0)?,
-                    scope_kind: row.get(2)?,
-                    workspace_id: row.get(3)?,
-                    agent_id: row.get(4)?,
-                    source_path: row.get(5)?,
-                    title: row.get(6)?,
-                    snippet: row.get(7)?,
-                    score: row.get(10)?,
-                    updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
-                })
-            },
-        )?;
+        );
+        let workspace_value = workspace_filter
+            .as_ref()
+            .map(|value| SqlValue::Text(value.clone()))
+            .unwrap_or(SqlValue::Null);
+        let mut sql_params = Vec::with_capacity(agent_ids.len() + 5);
+        sql_params.push(SqlValue::Text(query));
+        sql_params.extend(agent_ids.iter().cloned().map(SqlValue::Text));
+        sql_params.push(SqlValue::Integer(include_all_workspaces));
+        sql_params.push(workspace_value.clone());
+        sql_params.push(workspace_value);
+        sql_params.push(SqlValue::Integer(limit as i64));
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(sql_params), |row| {
+            let metadata_json: String = row.get(8)?;
+            let updated_at: String = row.get(9)?;
+            Ok(MemorySearchResult {
+                kind: row.get(1)?,
+                source_ref: row.get(0)?,
+                scope_kind: row.get(2)?,
+                workspace_id: row.get(3)?,
+                agent_id: row.get(4)?,
+                source_path: row.get(5)?,
+                title: row.get(6)?,
+                snippet: row.get(7)?,
+                score: row.get(10)?,
+                updated_at: DateTime::parse_from_rfc3339(&updated_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
+            })
+        })?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);

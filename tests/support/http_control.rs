@@ -177,6 +177,102 @@ pub async fn runtime_search_route_returns_memory_search_results() -> Result<()> 
     Ok(())
 }
 
+pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("alpha", None).await?;
+    host.create_named_agent("beta", None).await?;
+    let alpha = host.get_or_create_agent("alpha").await?;
+    let beta = host.get_or_create_agent("beta").await?;
+
+    let mut alpha_message = MessageEnvelope::new(
+        "alpha",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:test".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "shared agent search sentinel agentfilter1879 alpha".into(),
+        },
+    );
+    alpha_message.id = "msg-http-search-alpha".into();
+    alpha.storage().append_message(&alpha_message)?;
+
+    let mut beta_message = MessageEnvelope::new(
+        "beta",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:test".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "shared agent search sentinel agentfilter1879 beta".into(),
+        },
+    );
+    beta_message.id = "msg-http-search-beta".into();
+    beta.storage().append_message(&beta_message)?;
+
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("{base}/search"))
+        .json(&serde_json::json!({
+            "query": "agentfilter1879",
+            "limit": 10,
+            "agent_ids": ["alpha"]
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    let results = payload["results"].as_array().expect("results array");
+    assert!(results.iter().any(|result| {
+        result["agent_id"] == "alpha" && result["source_ref"] == "message:msg-http-search-alpha"
+    }));
+    assert!(results.iter().all(|result| result["agent_id"] == "alpha"));
+
+    let response = client
+        .post(format!("{base}/search"))
+        .json(&serde_json::json!({
+            "query": "agentfilter1879",
+            "limit": 10,
+            "agent_ids": ["alpha", "beta"]
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    let refs = payload["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .map(|result| result["source_ref"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(refs.contains(&"message:msg-http-search-alpha"));
+    assert!(refs.contains(&"message:msg-http-search-beta"));
+
+    let response = client
+        .post(format!("{base}/search"))
+        .json(&serde_json::json!({
+            "query": "agentfilter1879",
+            "limit": 10
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(response.json::<serde_json::Value>().await?["results"]
+        .as_array()
+        .expect("results array")
+        .is_empty());
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;

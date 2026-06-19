@@ -1896,6 +1896,10 @@ impl RuntimeHostBridge {
         Ok(RuntimeHost { inner })
     }
 
+    pub(crate) fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
+        self.host()?.agent_storage(agent_id)
+    }
+
     pub(crate) async fn identity_for_agent(
         &self,
         agent_id: &str,

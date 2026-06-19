@@ -15,6 +15,7 @@ http_async_tests!(
     control_prompt_is_open_on_loopback_auto,
     agent_state_route_returns_aggregated_snapshot,
     runtime_search_route_returns_memory_search_results,
+    runtime_search_route_filters_memory_results_by_agent_ids,
     agent_brief_route_returns_full_brief_by_id,
     agent_state_route_scopes_work_items_to_requested_agent,
     agent_state_route_includes_bootstrap_projection_fields_when_present,

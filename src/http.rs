@@ -525,6 +525,8 @@ pub struct SearchRequest {
     pub limit: Option<usize>,
     #[serde(default)]
     pub include_all_workspaces: bool,
+    #[serde(default)]
+    pub agent_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -979,10 +981,25 @@ pub async fn search(
         .unwrap_or(SEARCH_DEFAULT_LIMIT)
         .clamp(1, SEARCH_MAX_LIMIT);
     let runtime = state.host.default_runtime().await.map_err(error_response)?;
-    let search_result = runtime
-        .search_memory(&query, limit, request.include_all_workspaces)
-        .await
-        .map_err(error_response)?;
+    let agent_ids = normalize_search_agent_ids(request.agent_ids)?;
+    let search_result = if agent_ids.is_empty() {
+        runtime
+            .search_memory(&query, limit, request.include_all_workspaces)
+            .await
+            .map_err(error_response)?
+    } else {
+        for agent_id in &agent_ids {
+            state
+                .host
+                .get_public_agent(agent_id)
+                .await
+                .map_err(agent_access_error)?;
+        }
+        runtime
+            .search_memory_for_agents(&query, limit, request.include_all_workspaces, &agent_ids)
+            .await
+            .map_err(error_response)?
+    };
     traced_json(
         "/search",
         started_at,
@@ -993,6 +1010,25 @@ pub async fn search(
             index_status: search_result.index_status,
         },
     )
+}
+
+fn normalize_search_agent_ids(
+    agent_ids: Option<Vec<String>>,
+) -> Result<Vec<String>, (StatusCode, Json<Value>)> {
+    let Some(agent_ids) = agent_ids else {
+        return Ok(Vec::new());
+    };
+    let mut normalized = Vec::new();
+    for agent_id in agent_ids {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            return Err(bad_request("agent_ids must not contain empty agent ids"));
+        }
+        if !normalized.iter().any(|existing| existing == agent_id) {
+            normalized.push(agent_id.to_string());
+        }
+    }
+    Ok(normalized)
 }
 
 pub async fn handshake(
