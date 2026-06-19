@@ -124,6 +124,65 @@ Holon exposes two memory tools for indexed retrieval:
 These tools let the agent pull relevant past context on demand without
 rendering every archived episode into every prompt.
 
+## Agent Memory Auto-Load
+
+Holon automatically injects a compact slice of the agent's curated memory
+files into every turn's system prompt. This gives the agent persistent
+self-knowledge and operator preferences without manual recall or search.
+
+Two files participate in auto-load:
+
+| File | Purpose | Who writes it |
+|------|---------|---------------|
+| `agent_home/memory/operator.md` | Operator preferences, standing instructions | Operator |
+| `agent_home/memory/self.md` | Agent self-knowledge, role facts | Agent |
+
+At turn assembly, each file is read and a **compact slice** is injected under
+a fixed per-file character budget (default 1500 characters). If the file
+exceeds the budget, the injected slice is truncated and the agent receives a
+note that the remainder is retrievable via `MemoryGet`. If the file is empty,
+the agent receives a note that curated content is not yet present.
+
+The auto-loaded sections appear in the prompt as:
+
+- **`agent_memory_operator`** — Curated operator memory, loaded with
+  `Stability::AgentScoped` (changes only when the operator edits the file).
+- **`agent_memory_self`** — Curated self memory, loaded with
+  `Stability::AgentScoped` (changes only when the agent edits the file).
+
+These sections sit between `AGENTS.md` guidance and the workspace scope in
+the prompt hierarchy. They carry lower authority than workspace or turn-scoped
+instructions but provide persistent facts that survive context compaction.
+
+### When to use each file
+
+- **`operator.md`** — Store cross-agent operator preferences: preferred
+  language, naming conventions, tool defaults, communication style. These
+  apply regardless of which agent is running.
+- **`self.md`** — Store agent-specific durable facts: the agent's role,
+  standing responsibilities, past decisions worth remembering, recurring
+  workflow notes.
+
+## Notes Catalog
+
+In addition to curated memory files, Holon can inject a metadata catalog of
+the agent's `notes/` directory into the prompt. The notes catalog acts as a
+bounded reference index, not as instruction content.
+
+The catalog is rendered from each Markdown file in `agent_home/notes/` and
+includes:
+
+- **Title** — extracted from frontmatter, the first heading, or the filename.
+- **Summary** — extracted from frontmatter or the first paragraph excerpt.
+- **Tags** — extracted from frontmatter (lower-cased, deduped).
+
+The catalog is bounded: at most 20 entries and 2000 total characters. Note
+bodies are **never** injected — the catalog is a metadata index only. The
+agent can retrieve full note content by reading the referenced file.
+
+Notes are treated as reference material, not as instructions. They do not
+override operator input, AGENTS.md guidance, or the current WorkItem objective.
+
 ## Memory and Work Items
 
 Memory is tightly coupled to work items:

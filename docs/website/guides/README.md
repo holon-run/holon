@@ -17,6 +17,11 @@ Start here if you want to see what Holon can do with minimal setup.
 - **[Local runtime](/guides/local-runtime)** — conservative workflow for
   running and inspecting Holon from source.
 
+## Use the graphical interface
+
+- **[Web GUI](/guides/web-gui)** — embedded browser interface for agent
+  management, conversation, search, and settings.
+
 ## Automate GitHub work
 
 - **[holon solve](/guides/solve)** — headless automation for GitHub issues and
@@ -64,6 +69,10 @@ Edit and build the Holon documentation website.
 
 - [Local runtime](./local-runtime.md)
   A conservative workflow for running and inspecting Holon locally.
+  <!-- mdorigin:index kind=article -->
+
+- [Web GUI](./web-gui.md)
+  Use Holon's embedded web interface to manage agents, monitor runtime state, and configure settings from a browser.
   <!-- mdorigin:index kind=article -->
 
 - [TUI guide](./tui.md)

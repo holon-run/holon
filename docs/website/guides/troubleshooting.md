@@ -213,6 +213,66 @@ holon config list
 holon config schema
 ```
 
+## Runtime Performance Diagnostics
+
+Holon tracks granular performance metrics across turn lifecycle phases,
+provider interactions, tool execution, and persistence. These metrics are
+cumulative — they cover the entire process lifetime since daemon start.
+
+### Retrieving metrics
+
+```bash
+curl http://127.0.0.1:7878/control/runtime/performance
+```
+
+The response is a JSON snapshot grouped by category:
+
+### Metric groups
+
+| Group | Key metrics | What to watch |
+|-------|-------------|---------------|
+| `turn.*` | `turn.total`, `turn.context_build`, `turn.provider_round`, `turn.tool_execution`, `turn.cleanup` | Slow context builds (growing prompt assembly), dominant tool time |
+| `provider.*` | `provider.request_build`, `provider.round_total`, `provider.retry` | High retry counts or latency point to provider issues |
+| `tool.execution` | Cumulative tool timing | Identify tools with unusually high `avg_ms` |
+| `storage.*` | `storage.append_event`, `storage.persist_state` | Persistence slowdowns suggest DB pressure |
+| `projection.agent_state.*` | `tasks`, `timers`, `work_items`, `waiting_intents`, `external_triggers` | State projection overhead per agent |
+| `projection.agents_list` | Agent list projection time | Dashboard/API list latency |
+| `http.*` | Per-route HTTP timing | Slow endpoints, large payloads |
+| `scheduler.*` | `scheduler.poll.all`, `.message`, `.idle`, `.stopped` | Scheduler health (idle ratio, poll latency) |
+
+Each metric entry contains:
+
+| Field | Description |
+|-------|-------------|
+| `count` | Total calls to this phase |
+| `total_ms` | Cumulative wall-clock time |
+| `max_ms` | Worst single call |
+| `avg_ms` | Average call duration |
+
+### Common diagnosis patterns
+
+**High `turn.tool_execution`** — A specific tool is dominating turn time. Check
+`ToolLatencyMetrics` on the agent status endpoint to identify the tool.
+
+**Frequent `provider.retry`** — The model provider is returning errors or
+timeouts. Check provider logs (`holon daemon logs`) and network connectivity.
+
+**Growing `turn.context_build`** — Prompt assembly is slowing. This may
+indicate accumulated memory that needs compaction. Check agent
+`compacted_message_count` vs `total_message_count`.
+
+**High `scheduler.poll.idle` ratio** — Normal when no agents are awake. If
+agents have pending work, check wake hints and wait conditions.
+
+### Resetting metrics
+
+Metrics reset on daemon restart. To observe a specific scenario, restart the
+daemon, reproduce the issue, then capture the snapshot:
+
+```bash
+holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/control/runtime/performance
+```
+
 ## See Also
 
 - [Configuration Reference](/reference/configuration.md) — Configuration keys and credential management
