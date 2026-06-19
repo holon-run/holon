@@ -270,24 +270,6 @@ impl RuntimeHandle {
                     }
                 }
                 _ = &mut sleep => {
-                    if let Ok(wait_result) = tokio::time::timeout(
-                        PROCESS_STATUS_POLL_INTERVAL,
-                        running.process.wait(),
-                    )
-                    .await
-                    {
-                        let status = wait_result
-                            .context("failed to wait for command status during promotion boundary")?;
-                        collect_remaining_output(&mut running, &mut captured).await;
-                        return self
-                            .complete_exec_command_result(
-                                &captured,
-                                &status,
-                                spec.max_output_tokens,
-                                Some(diagnostics.clone()),
-                            )
-                            .await;
-                    }
                     if let Some(status) = running
                         .process
                         .try_status()
@@ -573,6 +555,14 @@ impl RuntimeHandle {
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (force_stop_tx, force_stop_rx) = oneshot::channel();
+        self.inner.task_handles.lock().await.insert(
+            task.id.clone(),
+            ManagedTaskHandle::Command(CommandTaskHandle {
+                cancel_tx: Some(cancel_tx),
+                force_stop_tx: Some(force_stop_tx),
+                input_tx,
+            }),
+        );
         let runtime = self.clone();
         let task_record = task.clone();
         let task_record_for_error = task.clone();
@@ -580,11 +570,9 @@ impl RuntimeHandle {
         tokio::spawn(async move {
             if let Err(err) = runtime
                 .run_command_task(
-                    agent_id,
                     task_record,
                     resolved,
                     running,
-                    authority_class,
                     cancel_rx,
                     force_stop_rx,
                     input_rx,
@@ -626,25 +614,15 @@ impl RuntimeHandle {
                     .remove(&task_record_for_error.id);
             }
         });
-        self.inner.task_handles.lock().await.insert(
-            task.id.clone(),
-            ManagedTaskHandle::Command(CommandTaskHandle {
-                cancel_tx: Some(cancel_tx),
-                force_stop_tx: Some(force_stop_tx),
-                input_tx,
-            }),
-        );
 
         Ok(task)
     }
 
     async fn run_command_task(
         &self,
-        agent_id: String,
         task_record: TaskRecord,
         resolved: ResolvedCommandTask,
         mut running: RunningCommand,
-        authority_class: AuthorityClass,
         mut cancel_rx: oneshot::Receiver<()>,
         mut force_stop_rx: oneshot::Receiver<()>,
         mut input_rx: mpsc::Receiver<CommandTaskInputRequest>,
@@ -654,11 +632,9 @@ impl RuntimeHandle {
         let mut captured = initial_capture;
         let terminal = match self
             .run_command_task_inner(
-                &agent_id,
                 &task_record,
                 &resolved,
                 &mut running,
-                &authority_class,
                 &mut cancel_rx,
                 &mut force_stop_rx,
                 &mut input_rx,
@@ -736,7 +712,7 @@ impl RuntimeHandle {
                 })
             }),
             ..MessageEnvelope::new(
-                agent_id.clone(),
+                task_record.agent_id.clone(),
                 MessageKind::TaskResult,
                 MessageOrigin::Task {
                     task_id: task_record.id.clone(),
@@ -776,11 +752,9 @@ impl RuntimeHandle {
 
     async fn run_command_task_inner(
         &self,
-        agent_id: &str,
         task_record: &TaskRecord,
         resolved: &ResolvedCommandTask,
         running: &mut RunningCommand,
-        authority_class: &AuthorityClass,
         cancel_rx: &mut oneshot::Receiver<()>,
         force_stop_rx: &mut oneshot::Receiver<()>,
         input_rx: &mut mpsc::Receiver<CommandTaskInputRequest>,
@@ -842,44 +816,24 @@ impl RuntimeHandle {
                     }),
                 ))?;
 
-            let running_message = MessageEnvelope {
-                metadata: Some(serde_json::json!({
-                    "task_id": task_record.id,
-                    "task_kind": task_record.kind,
-                    "task_status": "running",
-                    "task_summary": task_record.summary,
-                    "task_detail": command_task_detail(
-                        resolved,
-                        promoted_from_exec_command,
-                        captured,
-                        None,
-                        None,
-                        false,
-                    ),
-                    "task_recovery": task_record.recovery,
-                    "work_item_id": task_record.work_item_id.clone(),
-                })),
-                ..MessageEnvelope::new(
-                    agent_id.to_string(),
-                    MessageKind::TaskStatus,
-                    MessageOrigin::Task {
-                        task_id: task_record.id.clone(),
-                    },
-                    authority_class.clone(),
-                    Priority::Background,
-                    MessageBody::Text {
-                        text: format!(
-                            "command task started: {}",
-                            task_record.summary.clone().unwrap_or_default()
-                        ),
-                    },
-                )
-                .with_admission(
-                    crate::types::MessageDeliverySurface::TaskRejoin,
-                    crate::types::AdmissionContext::RuntimeOwned,
-                )
+            let running_task = TaskRecord {
+                status: TaskStatus::Running,
+                updated_at: chrono::Utc::now(),
+                detail: Some(command_task_detail(
+                    resolved,
+                    promoted_from_exec_command,
+                    captured,
+                    None,
+                    None,
+                    false,
+                )),
+                ..task_record.clone()
             };
-            self.enqueue(running_message).await?;
+            self.apply_task_transition(task_state_reducer::TaskTransition::new(
+                &running_task,
+                "task_status_updated",
+            ))
+            .await?;
         }
 
         let mut cancelled = false;

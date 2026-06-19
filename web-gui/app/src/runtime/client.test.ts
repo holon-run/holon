@@ -52,7 +52,7 @@ describe("createRuntimeClient", () => {
       expect.objectContaining({
         mode: "remote",
         source: "http",
-        baseUrl: "http://example.test:7878",
+        baseUrl: "http://example.test:7878/api",
         hasToken: true,
       }),
     );
@@ -81,7 +81,7 @@ describe("createRuntimeClient", () => {
         result: expect.objectContaining({ stdout: "full output" }),
       }),
     );
-    expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/tool-executions/tool%2F42"]);
+    expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/tool-executions/tool%2F42"]);
   });
 
   it("fetches task output without blocking for inspector hydration", async () => {
@@ -113,7 +113,7 @@ describe("createRuntimeClient", () => {
         }),
       }),
     );
-    expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
+    expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
   });
 
   it("fetches agent work items from the scoped work-items endpoint", async () => {
@@ -140,7 +140,7 @@ describe("createRuntimeClient", () => {
       expect.objectContaining({ id: "work-current", objective: "Current", state: "open", planStatus: "ready" }),
       expect.objectContaining({ id: "work-done", objective: "Done", state: "completed" }),
     ]);
-    expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/work-items?limit=25"]);
+    expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/work-items?limit=25"]);
   });
 
   it("fetches agent work item details from the scoped detail endpoint", async () => {
@@ -181,6 +181,6 @@ describe("createRuntimeClient", () => {
         resultSummary: "not done yet",
       }),
     );
-    expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/work-items/work%2Fdetail"]);
+    expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/work-items/work%2Fdetail"]);
   });
 });

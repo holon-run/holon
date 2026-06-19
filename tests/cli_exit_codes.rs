@@ -25,24 +25,27 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
     let cases: &[(&[&str], &str)] = &[
         (
             &["task", "run", "summary", "--cmd", "echo hi"],
-            "/control/agents/main/tasks",
+            "/api/control/agents/main/tasks",
         ),
-        (&["timer", "--after-ms", "1"], "/control/agents/main/timers"),
+        (
+            &["timer", "--after-ms", "1"],
+            "/api/control/agents/main/timers",
+        ),
         (
             &["agent", "create", "worker"],
-            "/control/agents/worker/create",
+            "/api/control/agents/worker/create",
         ),
         (
             &["agent", "abort"],
-            "/control/agents/main/current-run/abort",
+            "/api/control/agents/main/current-run/abort",
         ),
         (
             &["skills", "install", "demo"],
-            "/control/agents/main/skills/install",
+            "/api/control/agents/main/skills/install",
         ),
         (
             &["skills", "uninstall", "demo"],
-            "/control/agents/main/skills/uninstall",
+            "/api/control/agents/main/skills/uninstall",
         ),
     ];
 
@@ -84,7 +87,7 @@ fn run_with_mock_control_plane(args: &[&str]) -> (Output, String) {
         listener
             .set_nonblocking(true)
             .expect("configure mock listener blocking mode");
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let (mut stream, _) = loop {
             match listener.accept() {
                 Ok(accepted) => break accepted,

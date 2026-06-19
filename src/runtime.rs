@@ -31,7 +31,7 @@ pub use tasks::{
 pub(crate) use waiting::{WaitForScope, WaitForWakeKind};
 
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -359,6 +359,18 @@ impl AgentRuntimeProjectionCache {
             })
             .cloned()
             .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        take_limit(records, limit)
+    }
+
+    fn latest_tasks(&self, limit: usize) -> Vec<TaskRecord> {
+        let mut records = self.tasks.values().cloned().collect::<Vec<_>>();
         records.sort_by(|left, right| {
             right
                 .updated_at
@@ -801,8 +813,37 @@ impl RuntimeHandle {
         self.inner.storage.read_recent_tool_executions(usize::MAX)
     }
 
-    pub fn latest_task_records_snapshot(&self) -> Result<Vec<TaskRecord>> {
-        let mut tasks = self.inner.storage.latest_task_records()?;
+    pub async fn latest_task_records_snapshot(&self) -> Result<Vec<TaskRecord>> {
+        let mut tasks_by_id = self
+            .inner
+            .storage
+            .latest_task_records()?
+            .into_iter()
+            .map(|task| (task.id.clone(), task))
+            .collect::<HashMap<_, _>>();
+        for task in self
+            .inner
+            .projection_cache
+            .lock()
+            .await
+            .latest_tasks(usize::MAX)
+        {
+            match tasks_by_id.entry(task.id.clone()) {
+                Entry::Occupied(mut entry) => {
+                    if task_state_reducer::should_ignore_task_update(
+                        Some(entry.get().clone()),
+                        &task,
+                    ) {
+                        continue;
+                    }
+                    entry.insert(task);
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(task);
+                }
+            }
+        }
+        let mut tasks = tasks_by_id.into_values().collect::<Vec<_>>();
         tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(tasks)
     }

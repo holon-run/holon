@@ -22,6 +22,7 @@ use holon::{
     host::RuntimeHost,
     http::{self, AppState},
     provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
+    runtime::RuntimeHandle,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
@@ -58,6 +59,17 @@ async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<Ag
         }
     })
     .await?
+}
+
+async fn wait_for_event_type(runtime: &RuntimeHandle, event_type: &str) -> Result<()> {
+    wait_until(|| {
+        Ok(runtime
+            .storage()
+            .read_recent_events(50)?
+            .iter()
+            .any(|event| event.kind == event_type))
+    })
+    .await
 }
 
 pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> Result<()> {
@@ -401,7 +413,7 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
     runtime
         .notify_operator("HTTP state visible operator note".into())
         .await?;
-    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+    wait_for_event_type(&runtime, "operator_notification_requested").await?;
 
     let snapshot = client.agent_state_snapshot("default").await?;
     assert_eq!(snapshot.agent.identity.agent_id, "default");
@@ -411,7 +423,7 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .agent_events_page(
             "default",
             EventPageRequest {
-                limit: Some(1),
+                limit: Some(20),
                 order: Some("desc".into()),
                 ..Default::default()
             },
@@ -472,7 +484,7 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
     client
         .control_prompt("default", "http stream bootstrap")
         .await?;
-    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+    wait_for_event_type(&runtime, "message_admitted").await?;
     let after_seq = client
         .agent_events_page(
             "default",
@@ -525,7 +537,7 @@ pub async fn local_client_over_http_stream_without_cursor_starts_at_tail() -> Re
     client
         .control_prompt("default", "http tail bootstrap")
         .await?;
-    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+    wait_for_event_type(&runtime, "message_admitted").await?;
 
     let mut stream = client
         .stream_agent_events("default", EventStreamRequest::default())
@@ -563,7 +575,7 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_cursor_query()
     client
         .control_prompt("default", "unix stream bootstrap")
         .await?;
-    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+    wait_for_event_type(&runtime, "message_admitted").await?;
     let after_seq = client
         .agent_events_page(
             "default",
@@ -608,7 +620,7 @@ pub async fn local_client_over_unix_socket_stream_without_cursor_starts_at_tail(
     client
         .control_prompt("default", "unix tail bootstrap")
         .await?;
-    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+    wait_for_event_type(&runtime, "message_admitted").await?;
 
     let mut stream = client
         .stream_agent_events("default", EventStreamRequest::default())

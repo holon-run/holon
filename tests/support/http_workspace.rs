@@ -35,11 +35,12 @@ use tokio::{
     net::UnixStream,
 };
 
+use super::runtime_helpers::wait_until_async_for;
 use super::{
     attach_default_workspace, connect_addr, git, init_git_repo, read_next_sse_event, spawn_server,
     spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config,
-    spawn_unix_server, tempdir, test_config, test_config_with_paths, unix_request, wait_until,
-    ParsedSseEvent, RuntimeFailureProvider,
+    spawn_unix_server, tempdir, test_config, test_config_with_paths, unix_request, ParsedSseEvent,
+    RuntimeFailureProvider,
 };
 
 pub async fn workspace_enter_control_route_is_not_exposed() -> Result<()> {
@@ -143,7 +144,7 @@ pub async fn worktree_summary_route_returns_reviewable_candidate_summary() -> Re
         )
         .await?;
 
-    wait_until(|| {
+    wait_until_async_for(Duration::from_secs(10), || async {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|task| {
             task.is_worktree_child_agent_task()

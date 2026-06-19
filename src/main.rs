@@ -626,6 +626,12 @@ fn serve_args_for_options(options: &ServeOptions) -> DaemonServeLaunchOptions {
             token_file.as_os_str().to_os_string(),
         ]);
     }
+    if let Some(web_dist) = &options.web_dist {
+        args.extend([
+            OsString::from("--web-dist"),
+            web_dist.as_os_str().to_os_string(),
+        ]);
+    }
     DaemonServeLaunchOptions {
         args,
         control_token_env: options.token.clone(),
@@ -640,6 +646,7 @@ fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> Serve
     let explicit_listen = explicit.listen.is_some();
     let explicit_port = explicit.port.is_some();
     let explicit_advertise = explicit.advertise.is_some();
+    let explicit_web_dist = explicit.web_dist.is_some();
     let clear_inherited_advertise =
         explicit_access || explicit_host || explicit_listen || explicit_port;
     ServeOptions {
@@ -680,6 +687,11 @@ fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> Serve
         } else {
             inherited.token_file
         },
+        web_dist: if explicit_web_dist {
+            explicit.web_dist
+        } else {
+            inherited.web_dist
+        },
     }
 }
 
@@ -718,7 +730,16 @@ fn restart_serve_launch_options(
 
 async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let serve_args = serve_args_for_options(&options).args;
+    let web_dist = options.web_dist.clone();
     let advertise_url = apply_serve_options(&mut config, options)?;
+    if let Some(web_dist) = &web_dist {
+        if !web_dist.is_dir() {
+            return Err(anyhow!(
+                "--web-dist must point to a directory: {}",
+                web_dist.display()
+            ));
+        }
+    }
     std::fs::create_dir_all(config.agent_root_dir())
         .with_context(|| format!("failed to create {}", config.agent_root_dir().display()))?;
     std::fs::create_dir_all(config.run_dir())
@@ -744,7 +765,8 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
 
     let tcp_router = http::router(
         AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-            .with_advertise_url(advertise_url.clone()),
+            .with_advertise_url(advertise_url.clone())
+            .with_web_dist(web_dist.clone()),
     );
     let listener = TcpListener::bind(&config.http_addr)
         .await
@@ -781,10 +803,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             .with_context(|| format!("failed to bind {}", config.socket_path.display()))?;
         runtime_service.write_state_files(&config)?;
         println!("Holon control socket on {}", config.socket_path.display());
-        let unix_router = http::router(AppState::for_unix_with_runtime_service(
-            host.clone(),
-            Some(runtime_service.clone()),
-        ));
+        let unix_router = http::router(
+            AppState::for_unix_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                .with_web_dist(web_dist.clone()),
+        );
         let tcp_server = axum::serve(listener, tcp_router)
             .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
         let unix_server = http::serve_unix(
@@ -795,7 +817,8 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         let result = if let Some(local) = local_listener {
             let local_router = http::router(
                 AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-                    .with_advertise_url(advertise_url.clone()),
+                    .with_advertise_url(advertise_url.clone())
+                    .with_web_dist(web_dist.clone()),
             );
             let local_server = axum::serve(local, local_router)
                 .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
@@ -817,7 +840,8 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         if let Some(local) = local_listener {
             let local_router = http::router(
                 AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-                    .with_advertise_url(advertise_url.clone()),
+                    .with_advertise_url(advertise_url.clone())
+                    .with_web_dist(web_dist.clone()),
             );
             let local_server = axum::serve(local, local_router)
                 .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
@@ -929,6 +953,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
         )
         .unwrap();
@@ -952,6 +977,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
         )
         .unwrap();
@@ -1305,6 +1331,7 @@ mod tests {
             advertise: None,
             token: Some("secret-token".into()),
             token_file: None,
+            web_dist: None,
         };
 
         let serve_launch = serve_args_for_options(&options);
@@ -1370,6 +1397,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
             Some(&metadata),
         )
@@ -1432,6 +1460,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
             Some(&metadata),
         )
@@ -1480,6 +1509,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
             Some(&metadata),
         )
@@ -1525,6 +1555,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
             Some(&metadata),
         )
@@ -1560,6 +1591,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
             Some(&metadata),
         )
@@ -1600,6 +1632,7 @@ mod tests {
                 advertise: None,
                 token: Some("restart-secret".into()),
                 token_file: None,
+                web_dist: None,
             },
             Some(&metadata),
         )
@@ -1630,6 +1663,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
             Some(&metadata),
         )
@@ -1736,6 +1770,7 @@ mod tests {
                 advertise: Some("http://lab.example.test:7878".into()),
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
         )
         .unwrap();
@@ -1761,6 +1796,7 @@ mod tests {
                 advertise: None,
                 token: None,
                 token_file: None,
+                web_dist: None,
             },
         )
         .unwrap();
@@ -2832,7 +2868,18 @@ async fn post_control_json<T: serde::Serialize>(
     post_json_with_auth(config, path, payload, true).await
 }
 
+fn api_path(path: &str) -> String {
+    if path == "/" {
+        "/api/".to_string()
+    } else if path.starts_with("/api/") {
+        path.to_string()
+    } else {
+        format!("/api{path}")
+    }
+}
+
 async fn get_json(config: &AppConfig, path: &str) -> Result<serde_json::Value> {
+    let path = api_path(path);
     let request = reqwest::Client::new().get(format!("http://{}{}", config.http_addr, path));
     let response = request.send().await.context("HTTP request failed")?;
     if !response.status().is_success() {
@@ -2853,6 +2900,7 @@ async fn post_json_with_auth<T: serde::Serialize>(
     payload: &T,
     include_control_auth: bool,
 ) -> Result<()> {
+    let path = api_path(path);
     let mut request = reqwest::Client::new()
         .post(format!("http://{}{}", config.http_addr, path))
         .json(payload);
@@ -2873,7 +2921,7 @@ async fn post_json_with_auth<T: serde::Serialize>(
     if !status.is_success() {
         anyhow::bail!("POST {path} returned {status}: {body}");
     }
-    let value = parse_json_response_body("POST", path, &body)?;
+    let value = parse_json_response_body("POST", &path, &body)?;
     print_json(&value)?;
     Ok(())
 }

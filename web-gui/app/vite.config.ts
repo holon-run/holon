@@ -15,10 +15,9 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: false,
       proxy: {
-        "/holon-api": {
+        "/api": {
           target: holonApiProxyTarget,
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/holon-api/, ""),
         },
       },
     },

@@ -505,6 +505,13 @@
         "default_value": null,
         "possible_values": null,
         "required": false
+      },
+      {
+        "long": "web-dist",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
       }
     ],
     "aliases": []
@@ -562,6 +569,13 @@
       },
       {
         "long": "token-file",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "web-dist",
         "short": null,
         "default_value": null,
         "possible_values": null,
@@ -973,6 +987,13 @@
       },
       {
         "long": "token-file",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "web-dist",
         "short": null,
         "default_value": null,
         "possible_values": null,

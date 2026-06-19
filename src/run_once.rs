@@ -203,7 +203,8 @@ pub async fn run_once_with_host(
 ) -> Result<RunOnceResponse> {
     let session = prepare_run_session(&host, &request).await?;
     bind_run_workspace(&host, &session.runtime, &request, session.is_persistent).await?;
-    let baseline = capture_baseline(&session.runtime, &session.runtime.agent_state().await?)?;
+    let baseline =
+        capture_baseline(&session.runtime, &session.runtime.agent_state().await?).await?;
 
     let inbound = InboundRequest {
         agent_id: session.agent_id.clone(),
@@ -226,26 +227,14 @@ pub async fn run_once_with_host(
     let queued_message = session.runtime.enqueue(message).await?;
 
     let mut candidate_completion: Option<CandidateCompletion> = None;
-    let mut cached_poll_view: Option<CachedPollView> = None;
+    let mut observed_new_task_ids = HashSet::<String>::new();
     let final_candidate = loop {
         let state = session.runtime.agent_state().await?;
         let storage_marker = session.runtime.poll_activity_marker()?;
-        let poll_view = match cached_poll_view.as_ref() {
-            Some(cached) if cached.storage_marker == storage_marker => cached.view.clone(),
-            _ => {
-                let view = collect_run_poll_view(
-                    &session.runtime,
-                    &baseline,
-                    &state,
-                    storage_marker.clone(),
-                )?;
-                cached_poll_view = Some(CachedPollView {
-                    storage_marker,
-                    view: view.clone(),
-                });
-                view
-            }
-        };
+        let poll_view =
+            collect_run_poll_view(&session.runtime, &baseline, &state, storage_marker.clone())
+                .await?;
+        observed_new_task_ids.extend(poll_view.new_task_ids.iter().cloned());
         let active_new_task_ids =
             active_new_task_ids(&session.runtime, &poll_view.new_task_ids).await?;
         let foreground_idle = state.current_run_id.is_none() && state.pending == 0;
@@ -322,7 +311,9 @@ pub async fn run_once_with_host(
         &baseline,
         &final_state,
         session.runtime.poll_activity_marker()?,
-    )?;
+    )
+    .await?;
+    observed_new_task_ids.extend(pre_cleanup_view.new_task_ids.iter().cloned());
     let active_tasks =
         active_new_task_ids(&session.runtime, &pre_cleanup_view.new_task_ids).await?;
     for task_id in &active_tasks {
@@ -334,7 +325,7 @@ pub async fn run_once_with_host(
     settle_stopped_tasks(&session.runtime, &active_tasks, &request.authority_class).await?;
     final_state = session.runtime.agent_state().await?;
 
-    let final_view = collect_run_view(&session.runtime, &baseline)?;
+    let final_view = collect_run_view(&session.runtime, &baseline, &observed_new_task_ids).await?;
     let response = build_response(
         &session.runtime,
         &baseline,
@@ -442,13 +433,14 @@ async fn bind_run_workspace(
     Ok(())
 }
 
-fn capture_baseline(
+async fn capture_baseline(
     runtime: &RuntimeHandle,
     state: &crate::types::AgentState,
 ) -> Result<RunBaseline> {
     Ok(RunBaseline {
         task_ids: runtime
-            .latest_task_records_snapshot()?
+            .latest_task_records_snapshot()
+            .await?
             .into_iter()
             .map(|item| item.id)
             .collect(),
@@ -534,20 +526,14 @@ struct RunPollView {
     activity_signature: PollActivitySignature,
 }
 
-#[derive(Clone)]
-struct CachedPollView {
-    storage_marker: PollActivityMarker,
-    view: RunPollView,
-}
-
-fn collect_run_poll_view(
+async fn collect_run_poll_view(
     runtime: &RuntimeHandle,
     baseline: &RunBaseline,
     state: &crate::types::AgentState,
     storage_marker: PollActivityMarker,
 ) -> Result<RunPollView> {
     let events = runtime.all_events()?;
-    let latest_tasks = runtime.latest_task_records_snapshot()?;
+    let latest_tasks = runtime.latest_task_records_snapshot().await?;
     let runtime_error = events
         .iter()
         .rev()
@@ -583,23 +569,46 @@ fn collect_run_poll_view(
     })
 }
 
-fn collect_run_view(runtime: &RuntimeHandle, baseline: &RunBaseline) -> Result<RunView> {
-    let mut new_tasks = runtime
-        .latest_task_records_snapshot()?
-        .into_iter()
-        .filter(|task| !baseline.task_ids.contains(&task.id))
-        .collect::<Vec<_>>();
-    new_tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    let new_tools = runtime
-        .all_tool_executions()?
-        .into_iter()
-        .filter(|tool| !baseline.tool_ids.contains(&tool.id))
-        .collect::<Vec<_>>();
+async fn collect_run_view(
+    runtime: &RuntimeHandle,
+    baseline: &RunBaseline,
+    observed_task_ids: &HashSet<String>,
+) -> Result<RunView> {
     let new_messages = runtime
         .all_messages()?
         .into_iter()
         .filter(|message| !baseline.message_ids.contains(&message.id))
         .collect::<Vec<_>>();
+    let mut task_ids = observed_task_ids.clone();
+    task_ids.extend(new_messages.iter().filter_map(message_task_id));
+
+    let new_tools = runtime
+        .all_tool_executions()?
+        .into_iter()
+        .filter(|tool| !baseline.tool_ids.contains(&tool.id))
+        .collect::<Vec<_>>();
+    task_ids.extend(new_tools.iter().filter_map(exec_command_task_id));
+
+    let mut tasks_by_id = runtime
+        .latest_task_records_snapshot()
+        .await?
+        .into_iter()
+        .filter(|task| !baseline.task_ids.contains(&task.id) || task_ids.contains(&task.id))
+        .map(|task| (task.id.clone(), task))
+        .collect::<HashMap<_, _>>();
+    for task_id in &task_ids {
+        if baseline.task_ids.contains(task_id) || tasks_by_id.contains_key(task_id) {
+            continue;
+        }
+        if let Some(task) = runtime.task_record(task_id).await? {
+            tasks_by_id.insert(task.id.clone(), task);
+        }
+    }
+    let mut new_tasks = tasks_by_id
+        .into_values()
+        .filter(|task| !baseline.task_ids.contains(&task.id))
+        .collect::<Vec<_>>();
+    new_tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
     let new_events = runtime
         .all_events()?
         .into_iter()
@@ -611,6 +620,35 @@ fn collect_run_view(runtime: &RuntimeHandle, baseline: &RunBaseline) -> Result<R
         new_messages,
         new_events,
     })
+}
+
+fn message_task_id(message: &MessageEnvelope) -> Option<String> {
+    message.task_id.clone().or_else(|| {
+        message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("task_id"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+    })
+}
+
+fn exec_command_task_id(tool: &ToolExecutionRecord) -> Option<String> {
+    if tool.tool_name != "ExecCommand" || tool.status != ToolExecutionStatus::Success {
+        return None;
+    }
+
+    exec_command_result_value(&tool.output)
+        .and_then(|value| value.get("task_handle"))
+        .and_then(|value| value.get("task_id"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn exec_command_result_value(output: &serde_json::Value) -> Option<&serde_json::Value> {
+    output
+        .get("result")
+        .or_else(|| output.get("envelope").and_then(|value| value.get("result")))
 }
 
 async fn active_new_task_ids(
@@ -1178,7 +1216,8 @@ mod tests {
             &RunBaseline::default(),
             &state,
             runtime.poll_activity_marker()?,
-        )?;
+        )
+        .await?;
 
         assert!(view.runtime_error);
         Ok(())
@@ -1202,7 +1241,8 @@ mod tests {
             &RunBaseline::default(),
             &state,
             runtime.poll_activity_marker()?,
-        )?;
+        )
+        .await?;
 
         assert!(view.new_task_ids.iter().any(|id| id == "early-task"));
         Ok(())
@@ -1266,6 +1306,72 @@ mod tests {
 
         let changed = changed_files_from_tools(&[tool], workspace_root);
         assert_eq!(changed, vec!["notes/result.txt", "notes/final.txt"]);
+    }
+
+    #[test]
+    fn exec_command_task_id_reads_promoted_task_handle() {
+        let tool = ToolExecutionRecord {
+            id: "tool-command".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 0,
+            turn_id: None,
+            tool_name: "ExecCommand".into(),
+            created_at: Utc::now(),
+            completed_at: None,
+            duration_ms: 0,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({}),
+            output: json!({
+                "envelope": {
+                    "result": {
+                        "disposition": "promoted_to_task",
+                        "task_handle": {
+                            "task_id": "task-promoted",
+                            "kind": "command_task",
+                            "status": "running"
+                        }
+                    }
+                }
+            }),
+            summary: "command promoted".into(),
+            invocation_surface: None,
+        };
+
+        assert_eq!(exec_command_task_id(&tool), Some("task-promoted".into()));
+    }
+
+    #[test]
+    fn exec_command_task_id_reads_current_result_shape() {
+        let tool = ToolExecutionRecord {
+            id: "tool-command".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 0,
+            turn_id: None,
+            tool_name: "ExecCommand".into(),
+            created_at: Utc::now(),
+            completed_at: None,
+            duration_ms: 0,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({}),
+            output: json!({
+                "result": {
+                    "disposition": "promoted_to_task",
+                    "task_handle": {
+                        "task_id": "task-promoted",
+                        "kind": "command_task",
+                        "status": "running"
+                    }
+                }
+            }),
+            summary: "command promoted".into(),
+            invocation_surface: None,
+        };
+
+        assert_eq!(exec_command_task_id(&tool), Some("task-promoted".into()));
     }
 
     #[test]
