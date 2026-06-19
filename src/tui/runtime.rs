@@ -5,7 +5,7 @@ use crate::client::{
     AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest,
     LocalEventStream, LocalHttpError, StreamEventEnvelope,
 };
-use crate::types::MessageEnvelope;
+use crate::types::{BriefRecord, MessageEnvelope, TranscriptEntry};
 use tokio::sync::mpsc;
 
 const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -64,7 +64,7 @@ pub(super) enum TuiRuntimeMessage {
     },
     BriefsHydrated {
         agent_id: String,
-        result: Result<Vec<crate::types::TranscriptEntry>, String>,
+        result: Result<BriefHydrationResult, String>,
     },
     EventStreamOpened {
         request_id: u64,
@@ -80,6 +80,11 @@ type SnapshotBootstrapResult = (
     Option<u64>,
     bool,
 );
+
+pub(super) struct BriefHydrationResult {
+    entries: Vec<TranscriptEntry>,
+    briefs: Vec<BriefRecord>,
+}
 
 pub(super) struct EventStreamOpenError {
     message: String,
@@ -942,18 +947,31 @@ impl TuiApp {
             return;
         }
         let entry_ids = projection.missing_brief_entry_ids_for_hydration();
-        if entry_ids.is_empty() {
+        let brief_ids = projection.missing_inline_brief_ids_for_hydration();
+        if entry_ids.is_empty() && brief_ids.is_empty() {
             return;
         }
         self.brief_hydration_in_flight = Some(agent_id.clone());
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
         tokio::spawn(async move {
-            let result = client
-                .agent_transcript_entries_batch_get(&agent_id, entry_ids)
-                .await
-                .map(|response| response.entries)
-                .map_err(|err| err.to_string());
+            let result = async {
+                let entries = if entry_ids.is_empty() {
+                    Vec::new()
+                } else {
+                    client
+                        .agent_transcript_entries_batch_get(&agent_id, entry_ids)
+                        .await?
+                        .entries
+                };
+                let mut briefs = Vec::with_capacity(brief_ids.len());
+                for brief_id in brief_ids {
+                    briefs.push(client.agent_brief(&agent_id, &brief_id).await?);
+                }
+                Ok(BriefHydrationResult { entries, briefs })
+            }
+            .await
+            .map_err(|err: anyhow::Error| err.to_string());
             let _ = tx.send(TuiRuntimeMessage::BriefsHydrated { agent_id, result });
         });
     }
@@ -961,7 +979,7 @@ impl TuiApp {
     pub(super) fn apply_briefs_hydrated(
         &mut self,
         agent_id: String,
-        result: Result<Vec<crate::types::TranscriptEntry>, String>,
+        result: Result<BriefHydrationResult, String>,
     ) {
         if self.brief_hydration_in_flight.as_ref() == Some(&agent_id) {
             self.brief_hydration_in_flight = None;
@@ -974,14 +992,16 @@ impl TuiApp {
             self.begin_brief_hydration_if_needed();
             return;
         }
-        let entries = match result {
-            Ok(entries) => entries,
+        let hydrated = match result {
+            Ok(hydrated) => hydrated,
             Err(error) => {
                 self.status_line = format!("Brief hydration failed for {agent_id}: {error}");
                 return;
             }
         };
-        if projection.hydrate_brief_texts(entries) {
+        let changed = projection.hydrate_brief_texts(hydrated.entries)
+            | projection.hydrate_brief_records(hydrated.briefs);
+        if changed {
             self.chat_text_cache.borrow_mut().take();
             self.apply_projection_view();
         }

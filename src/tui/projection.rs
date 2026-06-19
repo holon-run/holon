@@ -809,6 +809,29 @@ impl TuiProjection {
             .collect()
     }
 
+    pub(crate) fn missing_inline_brief_ids_for_hydration(&self) -> Vec<String> {
+        self.event_log
+            .iter()
+            .chain(self.durable_conversation_log.iter())
+            .filter(|event| event.kind == "brief_created")
+            .filter_map(|event| {
+                let brief =
+                    serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
+                match &brief.content_source {
+                    BriefContentSource::Inline => {
+                        if self.brief_text_cache.contains_key(&brief.brief_id) {
+                            return None;
+                        }
+                        Some(brief.brief_id.clone())
+                    }
+                    BriefContentSource::TranscriptEntry { .. } => None,
+                }
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     pub(crate) fn hydrate_brief_texts(&mut self, entries: Vec<TranscriptEntry>) -> bool {
         let mut changed = false;
         for entry in entries {
@@ -821,13 +844,24 @@ impl TuiProjection {
         changed
     }
 
+    pub(crate) fn hydrate_brief_records(&mut self, briefs: Vec<BriefRecord>) -> bool {
+        let mut changed = false;
+        for brief in briefs {
+            changed |= self.brief_text_cache.insert(brief.id, brief.text).is_none();
+        }
+        changed
+    }
+
     pub(crate) fn brief_text_for_event(&self, event: &ProjectionEventRecord) -> Option<&str> {
         let brief = serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
         match &brief.content_source {
             BriefContentSource::TranscriptEntry { entry_id, .. } => {
                 self.brief_text_cache.get(entry_id).map(String::as_str)
             }
-            BriefContentSource::Inline => None,
+            BriefContentSource::Inline => self
+                .brief_text_cache
+                .get(&brief.brief_id)
+                .map(String::as_str),
         }
     }
 
@@ -1685,15 +1719,15 @@ mod tests {
             AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
             AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
             AgentStateChangedEvent, AgentSummary, AgentTokenUsageSummary, AgentVisibility,
-            BriefKind, BriefRecord, CallbackDeliveryMode, ChildAgentSummary, ClosureDecision,
-            ClosureOutcome, ExternalTriggerScope, ExternalTriggerStateSnapshot,
-            ExternalTriggerStatus, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
-            MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture,
-            SkillsRuntimeView, TaskLifecycleAuditEvent, TaskRecord, TaskStatus, TimerRecord,
-            TimerStatus, TodoItem, TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord,
-            WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary,
-            WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
-            WorktreeSession,
+            BriefCreatedAuditEvent, BriefKind, BriefRecord, CallbackDeliveryMode,
+            ChildAgentSummary, ClosureDecision, ClosureOutcome, ExternalTriggerScope,
+            ExternalTriggerStateSnapshot, ExternalTriggerStatus, LoadedAgentsMdView, MessageBody,
+            MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+            RuntimePosture, SkillsRuntimeView, TaskLifecycleAuditEvent, TaskRecord, TaskStatus,
+            TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage, TurnTerminalKind,
+            TurnTerminalRecord, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
+            WaitingIntentSummary, WaitingReason, WorkItemRecord, WorkItemState,
+            WorkspaceOccupancyRecord, WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -2076,6 +2110,40 @@ mod tests {
         assert_eq!(
             lanes,
             vec![ProjectionEventLane::Timeline, ProjectionEventLane::Timeline]
+        );
+    }
+
+    #[test]
+    fn projection_hydrates_inline_audit_brief_text_by_brief_id() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "resolved inline projection body",
+            None,
+            None,
+        );
+        let event_payload =
+            serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief)).unwrap();
+        let event = sample_event("brief_created", event_payload);
+        projection.apply_event(event, &test_log_writer());
+
+        assert_eq!(
+            projection.missing_inline_brief_ids_for_hydration(),
+            vec![brief.id.clone()]
+        );
+        assert!(projection
+            .brief_text_for_event(projection.event_log().last().unwrap())
+            .is_none());
+
+        assert!(projection.hydrate_brief_records(vec![brief.clone()]));
+        assert_eq!(
+            projection.missing_inline_brief_ids_for_hydration(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            projection.brief_text_for_event(projection.event_log().last().unwrap()),
+            Some("resolved inline projection body")
         );
     }
 
