@@ -338,6 +338,48 @@ mod tests {
     }
 
     #[test]
+    fn non_terminal_task_result_does_not_resume_expected_wait() {
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingTaskResult),
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::TaskResult,
+                contentful: true,
+                task_terminal: false,
+                wake_hint_source: None,
+                task_work_item_id: None,
+            },
+            None,
+        );
+
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_reentry);
+        assert!(resolution.matched_waiting_reason);
+        assert!(resolution
+            .evidence
+            .iter()
+            .any(|entry| entry == "matches_waiting_reason"));
+    }
+
+    #[test]
+    fn terminal_task_result_for_other_work_item_does_not_resume_expected_wait() {
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingTaskResult),
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::TaskResult,
+                contentful: true,
+                task_terminal: true,
+                wake_hint_source: None,
+                task_work_item_id: Some("other-work".into()),
+            },
+            Some("active-work"),
+        );
+
+        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        assert!(!resolution.model_reentry);
+        assert!(resolution.matched_waiting_reason);
+    }
+
+    #[test]
     fn wake_hint_system_tick_is_liveness_only() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingExternalChange),
@@ -352,6 +394,25 @@ mod tests {
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
+    }
+
+    #[test]
+    fn contentful_system_tick_resumes_external_wait_recheck() {
+        let resolution = resolve_continuation(
+            &waiting(WaitingReason::AwaitingExternalChange),
+            &ContinuationTrigger {
+                kind: ContinuationTriggerKind::SystemTick,
+                contentful: true,
+                task_terminal: false,
+                wake_hint_source: None,
+                task_work_item_id: None,
+            },
+            None,
+        );
+
+        assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
+        assert!(resolution.model_reentry);
+        assert!(resolution.matched_waiting_reason);
     }
 
     #[test]
