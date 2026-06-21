@@ -1824,7 +1824,7 @@ fn latest_trusted_operator_input<'a>(
 
     messages
         .iter()
-        .filter(|message| is_trusted_operator_input(message))
+        .filter(|message| is_trusted_operator_input(message) && message.message_seq.is_some())
         .max_by(|left, right| compare_message_recency(left, right))
 }
 
@@ -1834,15 +1834,10 @@ fn is_trusted_operator_input(message: &MessageEnvelope) -> bool {
 }
 
 fn compare_message_recency(left: &MessageEnvelope, right: &MessageEnvelope) -> Ordering {
-    match (left.message_seq, right.message_seq) {
-        (Some(left_seq), Some(right_seq)) => left_seq.cmp(&right_seq),
-        (Some(_), None) => Ordering::Greater,
-        (None, Some(_)) => Ordering::Less,
-        (None, None) => left
-            .created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id)),
-    }
+    left.message_seq
+        .cmp(&right.message_seq)
+        .then_with(|| left.created_at.cmp(&right.created_at))
+        .then_with(|| left.id.cmp(&right.id))
 }
 
 fn current_input_relation(
@@ -6993,6 +6988,108 @@ mod tests {
     }
 
     #[test]
+    fn resume_override_anchor_ignores_legacy_operator_without_message_seq() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        let mut legacy_without_sequence = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "legacy null sequence request".to_string(),
+            },
+        );
+        legacy_without_sequence.id = "msg-legacy-null".into();
+        legacy_without_sequence.message_seq = None;
+        legacy_without_sequence.created_at =
+            chrono::DateTime::parse_from_rfc3339("2026-06-18T11:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+        let mut sequenced = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "sequenced request for resume override".to_string(),
+            },
+        );
+        sequenced.id = "msg-sequenced".into();
+        sequenced.message_seq = Some(42);
+        sequenced.created_at = chrono::DateTime::parse_from_rfc3339("2026-06-18T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        runtime_db
+            .messages()
+            .upsert_many(&[legacy_without_sequence, sequenced])
+            .unwrap();
+
+        let mut system_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "recovery".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "runtime recovery after wait override".to_string(),
+            },
+        );
+        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &system_tick,
+            Some(&ContinuationResolution {
+                trigger_kind: ContinuationTriggerKind::SystemTick,
+                class: ContinuationClass::ResumeOverride,
+                model_reentry: true,
+                prior_closure_outcome: crate::types::ClosureOutcome::Continuable,
+                prior_waiting_reason: None,
+                matched_waiting_reason: false,
+                evidence: vec![],
+            }),
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+            dir.path(),
+        )
+        .unwrap();
+
+        let anchor = built
+            .sections
+            .iter()
+            .find(|section| section.name == "continuation_anchor")
+            .expect("continuation_anchor section should be present");
+        assert!(anchor
+            .content
+            .contains("sequenced request for resume override"));
+        assert!(!anchor.content.contains("legacy null sequence request"));
+    }
+
+    #[test]
     fn build_context_work_item_anchor_does_not_duplicate_work_item_projection() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
@@ -7875,7 +7972,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_trusted_operator_input_prefers_sequenced_history_over_legacy_null_sequence() {
+    fn latest_trusted_operator_input_ignores_legacy_null_sequence() {
         let mut sequenced = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
