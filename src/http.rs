@@ -232,7 +232,6 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/handshake", get(handshake))
         .route("/models", get(models_handler))
-        .route("/search", post(search))
         .route("/agents/list", get(list_agent_entries))
         .route("/agents/{agent_id}/enqueue", post(enqueue))
         .route("/agents/{agent_id}/status", get(status))
@@ -383,9 +382,13 @@ pub fn router(state: AppState) -> Router {
         .route("/state", get(state_default))
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default));
+    let root_routes = api_routes
+        .clone()
+        .route("/search", get(web_or_not_found_handler).post(search));
+    let api_routes = api_routes.route("/search", post(search));
 
     Router::new()
-        .merge(api_routes.clone())
+        .merge(root_routes)
         .nest("/api", api_routes)
         .fallback(web_or_not_found_handler)
         .layer(api_cors_layer(&config.api_cors))
@@ -1980,15 +1983,40 @@ fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{
-        sort_state_work_items, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
+        router, sort_state_work_items, AppState, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
         STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
     };
-    use crate::types::{
-        TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
-        TranscriptEntryKind, WorkItemRecord, WorkItemState,
+    use crate::{
+        config::AppConfig,
+        host::RuntimeHost,
+        provider::StubProvider,
+        types::{
+            TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
+            TranscriptEntryKind, WorkItemRecord, WorkItemState,
+        },
+    };
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Request, StatusCode},
     };
     use chrono::{Duration, Utc};
     use serde_json::json;
+    use std::{fs, sync::Arc};
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    fn test_host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        (home, host)
+    }
 
     #[test]
     fn state_sort_preserves_queue_display_order() {
@@ -2143,6 +2171,30 @@ mod tests {
             super::truncate_state_bootstrap_string("你好世界a", 4),
             "你..."
         );
+    }
+
+    #[tokio::test]
+    async fn get_search_serves_web_app_instead_of_api_method_not_allowed() {
+        let (_home, host) = test_host();
+        let web_dist = tempdir().unwrap();
+        fs::write(web_dist.path().join("index.html"), "<html>holon ui</html>").unwrap();
+        let app =
+            router(AppState::for_tcp(host).with_web_dist(Some(web_dist.path().to_path_buf())));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/search")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"<html>holon ui</html>");
     }
 }
 
