@@ -178,6 +178,44 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
   });
 
+  it("posts runtime search filters for cross-agent all-workspace search", async () => {
+    const seen: Array<{ url: string; body: unknown }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith("/search")) {
+        return Response.json({ query: "needle", limit: 10, results: [] });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(
+      client.search("needle", {
+        agentIds: ["holon-pm", "worker"],
+        includeAllWorkspaces: true,
+        limit: 10,
+      }),
+    ).resolves.toEqual({ query: "needle", limit: 10, results: [] });
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/search",
+        body: {
+          query: "needle",
+          agent_ids: ["holon-pm", "worker"],
+          include_all_workspaces: true,
+          limit: 10,
+          types: ["message"],
+        },
+      },
+    ]);
+  });
+
   it("fetches agent work items from the scoped work-items endpoint", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {

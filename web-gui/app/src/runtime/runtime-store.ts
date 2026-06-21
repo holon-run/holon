@@ -34,6 +34,7 @@ import type {
   RuntimeTaskOutputResult,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
+  RuntimeSearchOptions,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
   WorkItemSummary,
@@ -186,7 +187,7 @@ export interface RuntimeStoreState {
   refreshCredentialStore: () => Promise<void>;
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
-  runSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
+  runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;

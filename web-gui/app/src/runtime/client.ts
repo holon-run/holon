@@ -14,6 +14,7 @@ import type {
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeModelOption,
+  RuntimeSearchOptions,
   RuntimeTaskOutputResult,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
@@ -666,13 +667,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       await deleteJson<unknown>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, requestHeaders);
     },
-    async search(query: string, options: { agentIds?: string[]; limit?: number } = {}): Promise<SearchResponse> {
+    async search(query: string, options: RuntimeSearchOptions = {}): Promise<SearchResponse> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
       const response = await postJson<SearchResponseDto>(fetchImpl, baseUrl, "/search", {
         query,
         agent_ids: options.agentIds,
+        include_all_workspaces: options.includeAllWorkspaces,
         limit: options.limit,
         types: ["message"],
       }, requestHeaders);

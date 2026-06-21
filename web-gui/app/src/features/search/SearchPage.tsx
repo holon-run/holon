@@ -2,14 +2,14 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import type { AgentSummary, SearchResponse, SearchResultItem } from "../../runtime/types";
+import type { AgentSummary, RuntimeSearchOptions, SearchResponse, SearchResultItem } from "../../runtime/types";
 
 interface SearchPageProps {
   agents: AgentSummary[];
   search: SearchResponse | null;
   loading: boolean;
   error?: string;
-  onSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
+  onSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   onOpenAgent: (agentId: string, eventSeq?: number) => void;
 }
 
@@ -20,7 +20,6 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
   const [agentId, setAgentId] = useState("all");
   const [limit, setLimit] = useState(String(search?.limit || DEFAULT_LIMIT));
   const trimmedQuery = query.trim();
-  const selectedAgentIds = agentId === "all" ? undefined : [agentId];
   const hasResults = Boolean(search?.results.length);
   const resultCount = search?.results.length ?? 0;
   const agentOptions = useMemo(() => [...agents].sort((left, right) => left.id.localeCompare(right.id)), [agents]);
@@ -28,13 +27,13 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
   useEffect(() => {
     const initialQuery = readInitialQuery();
     if (!initialQuery || search || loading) return;
-    void onSearch(initialQuery, { limit: numberFromInput(limit, DEFAULT_LIMIT) });
-  }, [limit, loading, onSearch, search]);
+    void onSearch(initialQuery, searchOptionsForSelection("all", agents, limit));
+  }, [agents, limit, loading, onSearch, search]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     writeQueryParam(trimmedQuery);
-    void onSearch(trimmedQuery, { agentIds: selectedAgentIds, limit: numberFromInput(limit, DEFAULT_LIMIT) });
+    void onSearch(trimmedQuery, searchOptionsForSelection(agentId, agents, limit));
   }
 
   return (
@@ -361,4 +360,13 @@ function writeQueryParam(query: string): void {
     url.searchParams.delete("q");
   }
   window.history.replaceState(null, "", url);
+}
+
+export function searchOptionsForSelection(agentId: string, agents: AgentSummary[], limit: string): RuntimeSearchOptions {
+  const selectedAgentIds = agentId === "all" ? agents.map((agent) => agent.id).filter(Boolean) : [agentId];
+  return {
+    agentIds: selectedAgentIds.length > 0 ? selectedAgentIds : undefined,
+    includeAllWorkspaces: agentId === "all",
+    limit: numberFromInput(limit, DEFAULT_LIMIT),
+  };
 }

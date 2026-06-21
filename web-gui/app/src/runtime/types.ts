@@ -244,6 +244,12 @@ export interface SearchResponse {
   results: SearchResultItem[];
 }
 
+export interface RuntimeSearchOptions {
+  agentIds?: string[];
+  includeAllWorkspaces?: boolean;
+  limit?: number;
+}
+
 export interface RuntimeMessageEnvelope {
   id?: string;
   agent_id?: string;
