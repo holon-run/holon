@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{atomic::AtomicBool, Arc},
 };
@@ -14,7 +14,11 @@ use crate::{
     context::ContextConfig,
     host::RuntimeHostBridge,
     model_catalog::BuiltInModelMetadata,
-    model_discovery::{discovery_cache_path, load_discovery_cache_at},
+    model_discovery::{
+        discovery_cache_needs_refresh, discovery_cache_path, discovery_cache_status_for_provider,
+        load_discovery_cache_at, refresh_provider_models, ModelDiscoveryCacheFile,
+        ModelDiscoveryCacheStatus, DEFAULT_DISCOVERY_CACHE_TTL,
+    },
     provider::{
         build_provider_from_model_chain, resolved_model_availability, AgentProvider,
         ConversationMessage, ModelBlock, ProviderJsonSchemaResponseFormat,
@@ -291,6 +295,7 @@ impl RuntimeHandle {
                 context_config: RwLock::new(resolved_context_config),
                 builtin_web_search_probe_cache: Mutex::new(HashMap::new()),
                 view_image_observation_cache: Mutex::new(HashMap::new()),
+                model_discovery_refreshes: Mutex::new(HashSet::new()),
                 callback_base_url,
                 tools: ToolRegistry::new(PathBuf::new()),
                 system: Arc::new(LocalSystem::new()),
@@ -525,6 +530,7 @@ impl RuntimeHandle {
         let cache_path = discovery_cache_path(&config.home_dir);
         match tokio::task::spawn_blocking(move || load_discovery_cache_at(&cache_path)).await {
             Ok(Ok(cache)) => {
+                self.spawn_model_discovery_refreshes(&config, &cache).await;
                 config.model_discovery_cache = cache;
                 Some(config)
             }
@@ -543,6 +549,105 @@ impl RuntimeHandle {
                 None
             }
         }
+    }
+
+    async fn spawn_model_discovery_refreshes(
+        &self,
+        config: &AppConfig,
+        cache: &ModelDiscoveryCacheFile,
+    ) {
+        let providers = config
+            .providers
+            .values()
+            .filter(|provider| {
+                discovery_cache_needs_refresh(provider, cache, DEFAULT_DISCOVERY_CACHE_TTL)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for provider in providers {
+            let provider_id = provider.id.clone();
+            {
+                let mut in_flight = self.inner.model_discovery_refreshes.lock().await;
+                if !in_flight.insert(provider_id.clone()) {
+                    continue;
+                }
+            }
+
+            let runtime = self.clone();
+            let cache_path = discovery_cache_path(&config.home_dir);
+            tokio::spawn(async move {
+                let result = refresh_provider_models(&provider, &cache_path).await;
+                match result {
+                    Ok(report) => {
+                        tracing::info!(
+                            provider = %report.provider.as_str(),
+                            model_count = report.model_count,
+                            "refreshed model discovery cache"
+                        );
+                        if let Err(err) = runtime.reload_model_discovery_cache_snapshot().await {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to reload model discovery cache after refresh"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            provider = %provider_id.as_str(),
+                            error = %err,
+                            "model discovery cache refresh failed"
+                        );
+                    }
+                }
+                runtime
+                    .inner
+                    .model_discovery_refreshes
+                    .lock()
+                    .await
+                    .remove(&provider_id);
+            });
+        }
+    }
+
+    async fn reload_model_discovery_cache_snapshot(&self) -> Result<()> {
+        let snap = self.inner.config_snapshot.load();
+        let Some(reconfig) = snap.provider_reconfig.as_ref() else {
+            return Ok(());
+        };
+        let mut config = reconfig.config.clone();
+        let cache_path = discovery_cache_path(&config.home_dir);
+        let cache =
+            tokio::task::spawn_blocking(move || load_discovery_cache_at(&cache_path)).await??;
+        config.model_discovery_cache = cache;
+        self.inner
+            .config_snapshot
+            .store(Arc::new(ConfigSnapshot::from_config(&config)));
+        Ok(())
+    }
+
+    pub(crate) async fn model_discovery_status(&self) -> Result<Vec<ModelDiscoveryCacheStatus>> {
+        let snap = self.inner.config_snapshot.load();
+        let Some(reconfig) = snap.provider_reconfig.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let config = reconfig.config.clone();
+        let cache_path = discovery_cache_path(&config.home_dir);
+        let cache =
+            tokio::task::spawn_blocking(move || load_discovery_cache_at(&cache_path)).await??;
+        self.spawn_model_discovery_refreshes(&config, &cache).await;
+        let in_flight = self.inner.model_discovery_refreshes.lock().await.clone();
+        Ok(config
+            .providers
+            .values()
+            .map(|provider| {
+                discovery_cache_status_for_provider(
+                    provider,
+                    &cache,
+                    DEFAULT_DISCOVERY_CACHE_TTL,
+                    in_flight.contains(&provider.id),
+                )
+            })
+            .collect())
     }
 
     pub(crate) async fn available_models(&self) -> Result<Vec<BuiltInModelMetadata>> {

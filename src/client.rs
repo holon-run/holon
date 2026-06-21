@@ -99,6 +99,8 @@ pub struct ModelsResponse {
     pub available_models: Vec<BuiltInModelMetadata>,
     #[serde(default)]
     pub model_availability: Vec<ResolvedModelAvailability>,
+    #[serde(default)]
+    pub model_discovery_cache: Vec<crate::model_discovery::ModelDiscoveryCacheStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

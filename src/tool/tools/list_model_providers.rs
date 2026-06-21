@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    model_discovery::ModelDiscoveryCacheStatus,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
     types::{AuthorityClass, ModelProviderAvailability, ModelProviderEntry, ToolCapabilityFamily},
@@ -27,6 +28,8 @@ pub(crate) struct ListModelProvidersArgs {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ListModelProvidersResult {
     pub(crate) include_unavailable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) model_discovery_cache: Vec<ModelDiscoveryCacheStatus>,
     pub(crate) providers: Vec<ModelProviderEntry>,
 }
 
@@ -48,6 +51,7 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: ListModelProvidersArgs = parse_tool_args(NAME, input)?;
     let mut providers = runtime.model_providers().await?;
+    let model_discovery_cache = runtime.model_discovery_status().await?;
     if !args.include_unavailable {
         providers
             .retain(|provider| provider.availability != ModelProviderAvailability::Unavailable);
@@ -56,6 +60,7 @@ pub(crate) async fn execute(
         NAME,
         &ListModelProvidersResult {
             include_unavailable: args.include_unavailable,
+            model_discovery_cache,
             providers,
         },
     )

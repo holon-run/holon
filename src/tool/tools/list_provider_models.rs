@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    model_discovery::ModelDiscoveryCacheStatus,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
     types::{AuthorityClass, ModelAvailability, ProviderModelEntry, ToolCapabilityFamily},
@@ -38,6 +39,8 @@ pub(crate) struct ListProviderModelsResult {
     pub(crate) limit: usize,
     pub(crate) returned: usize,
     pub(crate) next_cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) discovery_cache: Option<ModelDiscoveryCacheStatus>,
     pub(crate) models: Vec<ProviderModelEntry>,
 }
 
@@ -72,6 +75,11 @@ pub(crate) async fn execute(
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = normalize_optional_non_empty(args.cursor);
     let mut models = runtime.provider_models(&provider).await?;
+    let discovery_cache = runtime
+        .model_discovery_status()
+        .await?
+        .into_iter()
+        .find(|status| status.provider.as_str() == provider);
     if !args.include_unavailable {
         models.retain(|model| model.availability != ModelAvailability::Unavailable);
     }
@@ -85,6 +93,7 @@ pub(crate) async fn execute(
             limit,
             returned,
             next_cursor,
+            discovery_cache,
             models: page,
         },
     )
