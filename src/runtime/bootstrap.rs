@@ -273,7 +273,7 @@ impl RuntimeHandle {
             context_config.clone()
         };
 
-        Ok(Self {
+        let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 agent: Mutex::new(RuntimeAgent {
                     last_persisted_state: state.clone(),
@@ -302,7 +302,9 @@ impl RuntimeHandle {
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
             }),
-        })
+        };
+        runtime.spawn_background_memory_indexer();
+        Ok(runtime)
     }
 
     pub(crate) async fn current_provider(&self) -> Arc<dyn AgentProvider> {

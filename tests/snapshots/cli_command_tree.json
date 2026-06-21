@@ -799,6 +799,33 @@
     "aliases": []
   },
   {
+    "path": "memory-index",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "memory-index.rebuild",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "workspace",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "onboard",
     "positionals": [],
     "flags": [

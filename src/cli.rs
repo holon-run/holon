@@ -84,6 +84,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: WorkItemCommands,
     },
+    #[command(name = "memory-index", about = "Manage the local memory search index")]
+    MemoryIndex {
+        #[command(subcommand)]
+        command: MemoryIndexCommands,
+    },
     Timer {
         #[arg(long)]
         after_ms: u64,
@@ -509,6 +514,17 @@ pub enum WorkItemCommands {
         work_item_id: String,
         #[arg(long)]
         agent: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MemoryIndexCommands {
+    #[command(about = "Force a full rebuild of the local memory search index")]
+    Rebuild {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
     },
 }
 
