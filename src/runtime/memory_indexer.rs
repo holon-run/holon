@@ -10,6 +10,10 @@ const MEMORY_INDEXER_ERROR_RECHECK: Duration = Duration::from_secs(10);
 
 impl RuntimeHandle {
     pub(super) fn spawn_background_memory_indexer(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            debug!("memory indexer not spawned because no Tokio runtime is running");
+            return;
+        }
         let runtime = self.clone();
         tokio::spawn(async move {
             runtime.run_background_memory_indexer().await;

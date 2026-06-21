@@ -3935,6 +3935,7 @@ mod tests {
             .iter()
             .any(|source| source.source_ref == fresh_ref));
 
+        refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
         let results = search_memory(
             &storage,
             "pending source queue",
@@ -4181,6 +4182,7 @@ mod tests {
             })
             .unwrap();
 
+        refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
         let results = search_memory(
             &storage,
             "sentinel_middle_line_1246",
@@ -4317,6 +4319,7 @@ mod tests {
             .iter()
             .any(|source| source.source_ref == source_ref));
 
+        refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
         let results = search_memory(
             &storage,
             "pending_batch_receipt_middle_1246",
