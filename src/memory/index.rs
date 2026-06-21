@@ -66,6 +66,10 @@ pub struct MemorySearchIndexStatus {
     pub high_watermark: i64,
     pub lag: i64,
     #[serde(default, skip_serializing_if = "is_false")]
+    pub indexing_needed: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub results_may_be_incomplete: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub consumption_was_limited: bool,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_error_count: usize,
@@ -218,11 +222,12 @@ pub fn search_memory_query_for_agent_storages(
     active_workspace_id: Option<&str>,
     include_all_workspaces: bool,
     agent_ids: &[String],
-    agent_storages: &[AppStorage],
+    _agent_storages: &[AppStorage],
 ) -> Result<MemorySearchQueryResult> {
     let agent_id = storage_agent_id(storage);
     let agent_filter = normalize_memory_search_agent_filter(&agent_id, agent_ids);
-    let index = ensure_memory_indexes_current(storage, active_workspace_id, agent_storages)?;
+    log_legacy_index_deprecation(storage);
+    let index = MemoryIndex::open(storage)?;
     let results = index.search(
         query,
         limit,
@@ -235,6 +240,18 @@ pub fn search_memory_query_for_agent_storages(
         results,
         index_status,
     })
+}
+
+pub fn refresh_memory_index_bounded(
+    storage: &AppStorage,
+    active_workspace_id: Option<&str>,
+    batch_limit: usize,
+) -> Result<MemorySearchIndexStatus> {
+    log_legacy_index_deprecation(storage);
+    let mut index = MemoryIndex::open(storage)?;
+    refresh_memory_index_for_storage(&mut index, storage, active_workspace_id, batch_limit)?;
+    let agent_id = storage_agent_id(storage);
+    index.index_status(storage, &agent_id)
 }
 
 fn normalize_memory_search_agent_filter(
@@ -311,11 +328,21 @@ fn ensure_memory_indexes_current(
     log_legacy_index_deprecation(storage);
     let mut index = MemoryIndex::open(storage)?;
     let mut refreshed_agent_ids = BTreeSet::new();
-    refresh_memory_index_for_storage(&mut index, storage, active_workspace_id)?;
+    refresh_memory_index_for_storage(
+        &mut index,
+        storage,
+        active_workspace_id,
+        MEMORY_INDEX_OUTBOX_CONSUME_LIMIT,
+    )?;
     refreshed_agent_ids.insert(storage_agent_id(storage));
     for agent_storage in agent_storages {
         if refreshed_agent_ids.insert(storage_agent_id(agent_storage)) {
-            refresh_memory_index_for_storage(&mut index, agent_storage, active_workspace_id)?;
+            refresh_memory_index_for_storage(
+                &mut index,
+                agent_storage,
+                active_workspace_id,
+                MEMORY_INDEX_OUTBOX_CONSUME_LIMIT,
+            )?;
         }
     }
     Ok(index)
@@ -325,9 +352,10 @@ fn refresh_memory_index_for_storage(
     index: &mut MemoryIndex,
     storage: &AppStorage,
     active_workspace_id: Option<&str>,
+    batch_limit: usize,
 ) -> Result<()> {
-    index.consume_runtime_outbox(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
-    index.consume_pending_sources(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
+    index.consume_runtime_outbox(storage, batch_limit)?;
+    index.consume_pending_sources(storage, batch_limit)?;
     repair_known_markdown_sources(storage, index)?;
     if memory_index_is_dirty(storage) {
         let agent_id = storage_agent_id(storage);
@@ -792,6 +820,8 @@ impl MemoryIndex {
                 cursor: 0,
                 high_watermark: 0,
                 lag: 0,
+                indexing_needed: false,
+                results_may_be_incomplete: false,
                 consumption_was_limited: false,
                 skipped_error_count: self.last_outbox_error_count,
                 last_indexed_at: None,
@@ -810,11 +840,14 @@ impl MemoryIndex {
         } else {
             "fresh"
         };
+        let indexing_needed = freshness != "fresh";
         Ok(MemorySearchIndexStatus {
             freshness: freshness.into(),
             cursor,
             high_watermark,
             lag,
+            indexing_needed,
+            results_may_be_incomplete: indexing_needed,
             consumption_was_limited: self.last_outbox_consume_reached_limit && lag > 0,
             skipped_error_count: self.last_outbox_error_count,
             last_indexed_at: self.cursor_updated_at(
@@ -2742,6 +2775,7 @@ mod tests {
             "The agent now remembers 混合 搜索 diagnostics.",
         )
         .unwrap();
+        refresh_memory_index_bounded(&storage, None, 10).unwrap();
         let results = search_memory(&storage, "混合搜索", 10, None, false).unwrap();
         assert!(results.iter().any(|result| {
             result.source_ref == "agent_memory:self" && result.snippet.contains("混合")
@@ -3227,6 +3261,23 @@ mod tests {
             1
         );
 
+        let stale_response =
+            search_memory_query(&storage, "outbox discovery", 10, Some("ws-holon"), false).unwrap();
+        assert!(!stale_response
+            .results
+            .iter()
+            .any(|result| result.source_ref == brief_ref));
+        assert_eq!(stale_response.index_status.freshness, "stale");
+        assert_eq!(stale_response.index_status.lag, 1);
+        assert!(stale_response.index_status.indexing_needed);
+        assert!(stale_response.index_status.results_may_be_incomplete);
+
+        let status = refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
+        assert_eq!(status.freshness, "fresh");
+        assert_eq!(status.lag, 0);
+        assert!(!status.consumption_was_limited);
+        assert_eq!(status.skipped_error_count, 0);
+
         let response =
             search_memory_query(&storage, "outbox discovery", 10, Some("ws-holon"), false).unwrap();
         assert!(response
@@ -3515,6 +3566,7 @@ mod tests {
                 "ws-holon",
             ))
             .unwrap();
+        refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
         let results = search_memory(&storage, "fresh", 10, Some("ws-holon"), false).unwrap();
         assert!(results
             .iter()
