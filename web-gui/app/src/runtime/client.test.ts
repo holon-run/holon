@@ -216,6 +216,46 @@ describe("createRuntimeClient", () => {
     ]);
   });
 
+  it("projects runtime search snippets as result previews", async () => {
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/search")) {
+        return Response.json({
+          query: "needle",
+          limit: 1,
+          results: [
+            {
+              kind: "message",
+              source_ref: "message:msg-1",
+              agent_id: "holon-pm",
+              title: "Operator prompt",
+              snippet: "needle appears in the message body",
+              updated_at: "2026-06-21T00:00:00Z",
+            },
+          ],
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.search("needle", { limit: 1 })).resolves.toEqual({
+      query: "needle",
+      limit: 1,
+      results: [
+        expect.objectContaining({
+          kind: "message",
+          preview: "needle appears in the message body",
+        }),
+      ],
+    });
+  });
+
   it("fetches agent work items from the scoped work-items endpoint", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {

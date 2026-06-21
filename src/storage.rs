@@ -1066,17 +1066,6 @@ impl AppStorage {
                         record.completed_at.or(Some(record.created_at)),
                         "tool_command_receipt_written",
                     )?);
-                    for stream in ["stdout", "stderr", "output"] {
-                        let source_ref = command_output_source_ref(&record.id, None, stream);
-                        changes.push(self.runtime_index_upsert(
-                            record.agent_id.clone(),
-                            "tool_command_output_preview",
-                            source_ref.clone(),
-                            source_ref,
-                            record.completed_at.or(Some(record.created_at)),
-                            "tool_command_output_preview_written",
-                        )?);
-                    }
                 }
             }
             "ExecCommandBatch" => {
@@ -1093,18 +1082,6 @@ impl AppStorage {
                                 record.completed_at.or(Some(record.created_at)),
                                 "tool_command_receipt_written",
                             )?);
-                            for stream in ["stdout", "stderr", "output"] {
-                                let source_ref =
-                                    command_output_source_ref(&record.id, Some(index), stream);
-                                changes.push(self.runtime_index_upsert(
-                                    record.agent_id.clone(),
-                                    "tool_command_output_preview",
-                                    source_ref.clone(),
-                                    source_ref,
-                                    record.completed_at.or(Some(record.created_at)),
-                                    "tool_command_output_preview_written",
-                                )?);
-                            }
                         }
                     }
                 }
@@ -1226,14 +1203,6 @@ impl AppStorage {
                         &source_ref,
                         &source_ref,
                     )?;
-                    for stream in ["stdout", "stderr", "output"] {
-                        let source_ref = command_output_source_ref(&record.id, None, stream);
-                        self.enqueue_memory_index_source(
-                            "tool_command_output",
-                            &source_ref,
-                            &source_ref,
-                        )?;
-                    }
                 }
             }
             "ExecCommandBatch" => {
@@ -1247,15 +1216,6 @@ impl AppStorage {
                                 &source_ref,
                                 &source_ref,
                             )?;
-                            for stream in ["stdout", "stderr", "output"] {
-                                let source_ref =
-                                    command_output_source_ref(&record.id, Some(offset + 1), stream);
-                                self.enqueue_memory_index_source(
-                                    "tool_command_output",
-                                    &source_ref,
-                                    &source_ref,
-                                )?;
-                            }
                         }
                     }
                 }

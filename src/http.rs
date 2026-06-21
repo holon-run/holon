@@ -568,6 +568,8 @@ pub struct SearchRequest {
     pub include_all_workspaces: bool,
     #[serde(default)]
     pub agent_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub types: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1047,16 +1049,30 @@ pub async fn search(
             .await
             .map_err(error_response)?
     };
+    let results = filter_search_results(search_result.results, &request.types);
     traced_json(
         "/search",
         started_at,
         SearchResponse {
             query,
             limit,
-            results: search_result.results,
+            results,
             index_status: search_result.index_status,
         },
     )
+}
+
+fn filter_search_results(
+    results: Vec<crate::memory::MemorySearchResult>,
+    types: &[String],
+) -> Vec<crate::memory::MemorySearchResult> {
+    if types.is_empty() {
+        return results;
+    }
+    results
+        .into_iter()
+        .filter(|result| types.iter().any(|kind| kind == &result.kind))
+        .collect()
 }
 
 fn normalize_search_agent_ids(

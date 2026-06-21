@@ -4343,6 +4343,71 @@ mod tests {
     }
 
     #[test]
+    fn command_output_is_retrievable_but_not_search_indexed() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-output-search-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommand".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({"cmd": "printf searchable_command_input_1246"}),
+                output: json!({
+                    "result": {
+                        "stdout_preview": "command_output_only_sentinel_1246\n",
+                        "stderr_preview": "",
+                        "truncated": false,
+                        "artifacts": []
+                    }
+                }),
+                summary: "command exited with status 0".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let memory = get_memory(
+            &storage,
+            "tool_execution:tool-output-search-1246:stdout",
+            None,
+            Some("ws-holon"),
+        )
+        .unwrap()
+        .expect("command output should remain retrievable by explicit source ref");
+        assert!(memory.content.contains("command_output_only_sentinel_1246"));
+
+        let output_results = search_memory(
+            &storage,
+            "command_output_only_sentinel_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        assert!(output_results.is_empty());
+
+        let receipt_results = search_memory(
+            &storage,
+            "searchable_command_input_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        assert!(receipt_results
+            .iter()
+            .any(|result| result.kind == "tool_command_receipt"));
+    }
+
+    #[test]
     fn command_output_indexes_unavailable_batch_item_without_result() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();

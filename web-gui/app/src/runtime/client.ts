@@ -464,6 +464,9 @@ interface SearchResultItemDto {
   type?: "message";
   result_type?: "message";
   agent_id?: string;
+  source_ref?: string;
+  title?: string;
+  snippet?: string;
   locator?: {
     evidence_id?: string;
     message_id?: string;
@@ -1187,7 +1190,7 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
       },
       createdAt: result.created_at,
       kind: result.kind ?? "message",
-      preview: result.preview ?? "",
+      preview: result.preview ?? result.snippet ?? result.title ?? result.source_ref ?? "",
     })),
   };
 }
