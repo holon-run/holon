@@ -154,6 +154,9 @@ runs:
         repo="$INPUT_REPO"
         base="$INPUT_BASE"
         goal="$INPUT_GOAL"
+        default_pr_goal="Review the target pull request only. Publish exactly one structured review or PR comment. Do not edit files, push commits, open PRs, or close issues."
+        default_pr_fix_goal="Fix the target pull request according to the latest requester comment. Push commits to the PR branch when changes are needed. Do not open another PR. Publish a concise completion summary and stop."
+        default_issue_goal="Solve the target issue end to end. Make the required changes, commit on a branch, push it, and open a pull request. Include the PR URL in summary.md and manifest.json when possible."
 
         write_outputs() {
           {
@@ -196,6 +199,13 @@ runs:
         case "$EVENT_NAME:$EVENT_ACTION" in
           issue_comment:created)
             first_line="$(printf '%s\n' "$COMMENT_BODY" | sed -n '1s/^[[:space:]]*//;1s/[[:space:]]*$//;1p')"
+            holonbot_command=false
+            comment_goal=""
+            if [ "$first_line" = "@holonbot" ] || [[ "$first_line" == "@holonbot "* ]]; then
+              holonbot_command=true
+              comment_goal="$(printf '%s\n' "$COMMENT_BODY" | sed '1s/^[[:space:]]*@holonbot[[:space:]]*//')"
+              comment_goal="$(printf '%s\n' "$comment_goal" | sed '/[^[:space:]]/,$!d; :a; /^[[:space:]]*$/{$d;N;ba;}')"
+            fi
             permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || true)"
             if [ "$permission" != "admin" ] && [ "$permission" != "maintain" ] && [ "$permission" != "write" ]; then
               reason="insufficient permission for $ACTOR: ${permission:-none}"
@@ -205,33 +215,45 @@ runs:
 
             if [ -n "$ISSUE_IS_PR" ]; then
               ref="https://github.com/$REPO/pull/$ISSUE_NUMBER"
-              case "$first_line" in
-                "@holonbot fix"|"@holonbot pr-fix")
-                  should_run=true
-                  reason="PR fix command"
-                  goal="${goal:-Fix the target pull request according to the latest requester comment. Push commits to the PR branch when changes are needed. Do not open another PR. Publish a concise completion summary and stop.}"
-                  ;;
-                "@holonbot review")
-                  should_run=true
-                  reason="PR review command"
-                  goal="${goal:-Review the target pull request only. Publish exactly one structured review or PR comment. Do not edit files, push commits, open PRs, or close issues.}"
-                  ;;
-                *)
-                  reason="unrecognized PR command: $first_line"
-                  ;;
-              esac
+              if [ "$holonbot_command" = "true" ]; then
+                should_run=true
+                reason="PR comment command"
+                goal="${goal:-${comment_goal:-$default_pr_goal}}"
+              else
+                case "$first_line" in
+                  "@holonbot fix"|"@holonbot pr-fix")
+                    should_run=true
+                    reason="PR fix command"
+                    goal="${goal:-$default_pr_fix_goal}"
+                    ;;
+                  "@holonbot review")
+                    should_run=true
+                    reason="PR review command"
+                    goal="${goal:-$default_pr_goal}"
+                    ;;
+                  *)
+                    reason="unrecognized PR command: $first_line"
+                    ;;
+                esac
+              fi
             else
               ref="https://github.com/$REPO/issues/$ISSUE_NUMBER"
-              case "$first_line" in
-                "@holonbot fix"|"@holonbot solve")
+              if [ "$holonbot_command" = "true" ]; then
+                should_run=true
+                reason="issue comment command"
+                goal="${goal:-${comment_goal:-$default_issue_goal}}"
+              else
+                case "$first_line" in
+                  "@holonbot fix"|"@holonbot solve")
                   should_run=true
-                  reason="issue solve command"
-                  goal="${goal:-Solve the target issue end to end. Make the required changes, commit on a branch, push it, and open a pull request. Include the PR URL in summary.md and manifest.json when possible.}"
-                  ;;
-                *)
-                  reason="unrecognized issue command: $first_line"
-                  ;;
-              esac
+                    reason="issue solve command"
+                    goal="${goal:-$default_issue_goal}"
+                    ;;
+                  *)
+                    reason="unrecognized issue command: $first_line"
+                    ;;
+                esac
+              fi
             fi
             ;;
           issues:labeled)
@@ -239,7 +261,7 @@ runs:
               should_run=true
               reason="issue labeled holon"
               ref="https://github.com/$REPO/issues/$ISSUE_NUMBER"
-              goal="${goal:-Solve the target issue end to end. Make the required changes, commit on a branch, push it, and open a pull request. Include the PR URL in summary.md and manifest.json when possible.}"
+              goal="${goal:-$default_issue_goal}"
             fi
             ;;
           issues:assigned)
@@ -247,7 +269,7 @@ runs:
               should_run=true
               reason="issue assigned to holonbot"
               ref="https://github.com/$REPO/issues/$ISSUE_NUMBER"
-              goal="${goal:-Solve the target issue end to end. Make the required changes, commit on a branch, push it, and open a pull request. Include the PR URL in summary.md and manifest.json when possible.}"
+              goal="${goal:-$default_issue_goal}"
             fi
             ;;
           pull_request:labeled)
@@ -278,7 +300,7 @@ runs:
             reason="skip cross-repo PR"
             goal=""
           else
-            goal="${goal:-Review the target pull request only. Publish exactly one structured review or PR comment. Do not edit files, push commits, open PRs, or close issues.}"
+            goal="${goal:-$default_pr_goal}"
           fi
         fi
 
