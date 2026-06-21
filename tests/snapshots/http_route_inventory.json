@@ -1428,6 +1428,22 @@
   },
   {
     "method": "post",
+    "path": "/memory/get",
+    "handler": "memory_get",
+    "operation_id": "runtimeMemoryGet",
+    "tag": "search",
+    "parameters": [],
+    "request_schema": "MemoryGetRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/search",
     "handler": "search",
     "operation_id": "runtimeSearch",

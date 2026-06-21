@@ -80,7 +80,7 @@ pub struct MemorySearchQueryResult {
     pub index_status: MemorySearchIndexStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct MemoryGetResult {
     pub kind: String,
