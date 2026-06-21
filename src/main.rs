@@ -30,6 +30,7 @@ use holon::{
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
+    memory::rebuild_memory_index,
     model_discovery::{discovery_cache_path, refresh_provider_models},
     onboarding::{
         apply_onboarding_wizard_draft, onboarding_report, OnboardingApplySummary,
@@ -49,8 +50,8 @@ use tracing_subscriber::EnvFilter;
 use holon::cli::{
     AgentCommands, AgentModelCommands, Cli, Commands, ConfigCommands, ConfigCredentialCommands,
     ConfigModelCommands, ConfigProviderCommands, ControlCommandAction, DaemonCommands,
-    DebugCommands, EventsCommands, ServeAccess, ServeOptions, SkillsCommands, TaskCommands,
-    WorkItemCommands, WorkspaceCommands,
+    DebugCommands, EventsCommands, MemoryIndexCommands, ServeAccess, ServeOptions, SkillsCommands,
+    TaskCommands, WorkItemCommands, WorkspaceCommands,
 };
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -198,6 +199,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Events { command } => handle_events_command(&config, command).await,
         Commands::Task { command } => handle_task_command(&config, command).await,
         Commands::WorkItem { command } => handle_work_item_command(&config, command).await,
+        Commands::MemoryIndex { command } => handle_memory_index_command(&config, command).await,
         Commands::Timer {
             after_ms,
             every_ms,
@@ -259,6 +261,29 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Debug { command } => handle_debug_command(config, command).await,
         Commands::Onboard { .. } => unreachable!("onboard command is handled before runtime load"),
         Commands::Config { .. } => unreachable!("config commands are handled separately"),
+    }
+}
+
+async fn handle_memory_index_command(
+    config: &AppConfig,
+    command: MemoryIndexCommands,
+) -> Result<()> {
+    match command {
+        MemoryIndexCommands::Rebuild { agent, workspace } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            let agent_home = config.data_dir.join("agents").join(&agent);
+            let storage = AppStorage::new_for_agent(&agent_home, agent.clone())?;
+            rebuild_memory_index(&storage, workspace.as_deref())?;
+            println!(
+                "Rebuilt memory index for agent `{}`{}.",
+                agent,
+                workspace
+                    .as_deref()
+                    .map(|workspace| format!(" in workspace `{workspace}`"))
+                    .unwrap_or_default()
+            );
+            Ok(())
+        }
     }
 }
 
