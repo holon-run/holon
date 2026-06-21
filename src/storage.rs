@@ -2763,28 +2763,58 @@ impl AppStorage {
         &self,
         agent_id: &str,
     ) -> Result<Vec<WaitConditionRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.wait_conditions().active_for_agent(agent_id);
-        }
-        // JSONL fallback: read all and filter
-        Ok(self
-            .read_recent_wait_conditions(usize::MAX)?
-            .into_iter()
-            .filter(|record| record.agent_id == agent_id)
-            .filter(|record| record.status == WaitConditionStatus::Active)
-            .collect())
+        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.wait_conditions().active_for_agent(agent_id)?
+        } else {
+            // JSONL fallback: read all and filter
+            self.read_recent_wait_conditions(usize::MAX)?
+                .into_iter()
+                .filter(|record| record.agent_id == agent_id)
+                .filter(|record| record.status == WaitConditionStatus::Active)
+                .collect()
+        };
+        self.filter_active_wait_conditions_for_live_scope(records)
     }
 
     pub fn active_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.wait_conditions().active_all();
+        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.wait_conditions().active_all()?
+        } else {
+            // JSONL fallback: read all and filter
+            self.read_recent_wait_conditions(usize::MAX)?
+                .into_iter()
+                .filter(|record| record.status == WaitConditionStatus::Active)
+                .collect()
+        };
+        self.filter_active_wait_conditions_for_live_scope(records)
+    }
+
+    fn filter_active_wait_conditions_for_live_scope(
+        &self,
+        records: Vec<WaitConditionRecord>,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        let mut work_item_is_open = std::collections::BTreeMap::<String, bool>::new();
+        let mut live = Vec::new();
+        for record in records {
+            let Some(work_item_id) = record.work_item_id.as_deref() else {
+                live.push(record);
+                continue;
+            };
+            let is_open = match work_item_is_open.get(work_item_id) {
+                Some(is_open) => *is_open,
+                None => {
+                    let is_open = self
+                        .latest_work_item(work_item_id)?
+                        .is_some_and(|item| item.state == WorkItemState::Open);
+                    work_item_is_open.insert(work_item_id.to_string(), is_open);
+                    is_open
+                }
+            };
+            if is_open {
+                live.push(record);
+            }
         }
-        // JSONL fallback: read all and filter
-        Ok(self
-            .read_recent_wait_conditions(usize::MAX)?
-            .into_iter()
-            .filter(|record| record.status == WaitConditionStatus::Active)
-            .collect())
+        Ok(live)
     }
 
     pub fn active_wait_conditions_for_work_item(
@@ -5672,6 +5702,93 @@ mod tests {
         let waiting_intents = storage.latest_waiting_intents().unwrap();
         assert_eq!(waiting_intents.len(), 1);
         assert_eq!(waiting_intents[0].id, "wait-1");
+    }
+
+    #[test]
+    fn active_wait_conditions_ignore_completed_work_item_scope() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let mut work = WorkItemRecord::new("default", "completed wait", WorkItemState::Open);
+        work.blocked_by = Some("task".into());
+        storage.append_work_item(&work).unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "stale-work-wait".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(work.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some("task-1".into()),
+                waiting_for: "task result".into(),
+                wake_sources: vec![WakeSource::TaskResult {
+                    task_id: "task-1".into(),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+            })
+            .unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "agent-wait".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pr-1".into()),
+                waiting_for: "merge".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-1".into()),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+            })
+            .unwrap();
+
+        work.state = WorkItemState::Completed;
+        work.blocked_by = None;
+        work.revision += 1;
+        work.updated_at = now + chrono::Duration::seconds(1);
+        storage.append_work_item(&work).unwrap();
+
+        let active_for_agent = storage.active_wait_conditions_for_agent("default").unwrap();
+        assert_eq!(
+            active_for_agent
+                .iter()
+                .map(|condition| condition.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent-wait"]
+        );
+        assert!(storage
+            .active_wait_conditions_for_work_item("default", &work.id)
+            .unwrap()
+            .is_empty());
+        assert_eq!(storage.latest_wait_conditions().unwrap().len(), 2);
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+        let completed = projection
+            .completed_recent
+            .iter()
+            .find(|item| item.work_item.id == work.id)
+            .expect("completed work item should still be visible");
+        assert_eq!(
+            completed.scheduling_state,
+            WorkItemSchedulingState::Completed
+        );
+        assert!(!completed.has_active_waits);
+        assert!(!completed.has_active_task_waits);
     }
 
     #[test]
