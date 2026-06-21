@@ -15,11 +15,21 @@ interface SearchPageProps {
 
 function extractMessageBodyPreview(value: string): string | undefined {
   const bodyMarker = "\nbody:\n";
+  const inlineBodyMarker = "\nbody:";
+  const compactBodyMarker = " body:";
   const markerIndex = value.indexOf(bodyMarker);
+  const inlineMarkerIndex = value.indexOf(inlineBodyMarker);
+  const compactMarkerIndex = value.lastIndexOf(compactBodyMarker);
   const body = markerIndex >= 0
     ? value.slice(markerIndex + bodyMarker.length)
     : value.startsWith("body:\n")
       ? value.slice("body:\n".length)
+      : inlineMarkerIndex >= 0
+        ? value.slice(inlineMarkerIndex + inlineBodyMarker.length)
+        : compactMarkerIndex >= 0
+          ? value.slice(compactMarkerIndex + compactBodyMarker.length)
+        : value.startsWith("body:")
+          ? value.slice("body:".length)
       : undefined;
   const summary = body
     ?.replace(/\n\[truncated\]$/, "")

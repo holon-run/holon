@@ -1510,6 +1510,7 @@ fn message_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
 
 fn message_document(message: MessageEnvelope) -> MemoryDocument {
     let body = message_document_body(&message);
+    let excerpt_body = message_body_text_for_memory(&message.body);
     let title = format!("Message {}", message.id);
     MemoryDocument {
         source_ref: format!("message:{}", message.id),
@@ -1519,7 +1520,7 @@ fn message_document(message: MessageEnvelope) -> MemoryDocument {
         agent_id: message.agent_id.clone(),
         source_path: None,
         title,
-        sanitized_excerpt: excerpt(&body),
+        sanitized_excerpt: excerpt(&excerpt_body),
         body,
         metadata: json!({
             "message_id": message.id,
@@ -3477,9 +3478,15 @@ mod tests {
         let results = search_memory(&storage, "MemorySearch", 10, Some("ws-holon"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "work_item"));
         let results = search_memory(&storage, "sentinel1879", 10, Some("ws-holon"), false).unwrap();
-        assert!(results
+        let message_result = results
             .iter()
-            .any(|result| result.source_ref == "message:msg-memory-search"));
+            .find(|result| result.source_ref == "message:msg-memory-search")
+            .expect("message memory result");
+        assert_eq!(
+            message_result.snippet,
+            "searchable operator message sentinel1879"
+        );
+        assert!(!message_result.snippet.contains("message_ref:"));
         let results = search_memory(&storage, "checksum", 10, Some("ws-holon"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "work_item"));
         let results = search_memory(&storage, "checklist", 10, Some("ws-holon"), false).unwrap();

@@ -60,4 +60,15 @@ describe("formatSearchPreview", () => {
       isFormatted: true,
     });
   });
+
+  it("summarizes compacted indexed message documents from inline body sections", () => {
+    expect(formatSearchPreview(
+      "message_ref: message:msg_0577e13c42a52bc message_id: msg_0577e13c42a52bc turn_ref: turn:turn_4be859224d5f055 message_seq: 691 kind: OperatorPrompt body: 你分析一下，当前索引的更新方式是如何的？",
+    )).toEqual({
+      title: "Message body",
+      summary: "你分析一下，当前索引的更新方式是如何的？",
+      meta: [],
+      isFormatted: true,
+    });
+  });
 });
