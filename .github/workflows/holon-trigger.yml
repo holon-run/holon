@@ -22,10 +22,25 @@ concurrency:
 jobs:
   holon:
     name: Run Holon
-    uses: ./.github/workflows/holon-solve.yml
-    secrets:
-      anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-      anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}
-      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-      openai_base_url: ${{ secrets.OPENAI_BASE_URL }}
-      holon_github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Holon
+        uses: ./
+        with:
+          trigger: auto
+          model: ${{ vars.HOLON_MODEL || '' }}
+          github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
+          anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          anthropic_base_url: ${{ secrets.ANTHROPIC_BASE_URL }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          openai_base_url: ${{ secrets.OPENAI_BASE_URL }}
+        env:
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}

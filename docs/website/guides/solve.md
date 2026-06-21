@@ -227,6 +227,41 @@ fi
 git push origin HEAD
 ```
 
+### GitHub Actions
+
+Use the composite action when you want a repository workflow with normal
+step-level environment variables for model providers:
+
+```yaml
+jobs:
+  holon:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: holon-run/holon@main
+        with:
+          trigger: auto
+          model: deepseek/deepseek-v3.2
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+```
+
+`trigger: auto` derives the target and goal from supported issue, pull request,
+label, assignment, and `@holonbot` comment events. For explicit runs, pass
+`ref: owner/repo#123` instead.
+
+The reusable workflow at `.github/workflows/holon-solve.yml` remains available
+as a compatibility wrapper, but the composite action is the recommended entry
+point when you need arbitrary provider environment variables.
+
 ## See also
 
 - [Holon CLI reference](/reference/cli) — full command tree
