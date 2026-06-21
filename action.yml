@@ -13,6 +13,14 @@ inputs:
     description: Trigger mode. Use explicit for ref-driven runs or auto to derive ref/goal from the GitHub event.
     required: false
     default: explicit
+  auto_review:
+    description: Enable automatic PR review for opened, reopened, or ready_for_review events in trigger:auto mode.
+    required: false
+    default: 'false'
+  auto_review_on_push:
+    description: Enable automatic PR review for synchronize events in trigger:auto mode.
+    required: false
+    default: 'false'
   repo:
     description: Repository hint for numeric refs.
     required: false
@@ -135,8 +143,8 @@ runs:
         COMMENT_BODY: ${{ github.event.comment.body || '' }}
         LABEL_NAME: ${{ github.event.label.name || '' }}
         ASSIGNEE_LOGIN: ${{ github.event.assignee.login || '' }}
-        AUTO_REVIEW: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
-        AUTO_REVIEW_ON_PUSH: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
+        AUTO_REVIEW: ${{ inputs.auto_review }}
+        AUTO_REVIEW_ON_PUSH: ${{ inputs.auto_review_on_push }}
       run: |
         set -euo pipefail
 

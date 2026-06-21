@@ -13,6 +13,16 @@ on:
         required: false
         type: string
         default: auto
+      auto_review:
+        description: Enable automatic PR review for opened, reopened, or ready_for_review events in trigger:auto mode.
+        required: false
+        type: string
+        default: ''
+      auto_review_on_push:
+        description: Enable automatic PR review for synchronize events in trigger:auto mode.
+        required: false
+        type: string
+        default: ''
       repo:
         description: GitHub repository hint for shorthand refs such as #123.
         required: false
@@ -119,6 +129,8 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           trigger: ${{ inputs.trigger }}
+          auto_review: ${{ inputs.auto_review || vars.HOLON_AUTO_REVIEW || 'false' }}
+          auto_review_on_push: ${{ inputs.auto_review_on_push || vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
           repo: ${{ inputs.repo }}
           base: ${{ inputs.base }}
           goal: ${{ inputs.goal }}

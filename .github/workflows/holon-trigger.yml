@@ -33,6 +33,8 @@ jobs:
         uses: ./
         with:
           trigger: auto
+          auto_review: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
+          auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
           model: ${{ vars.HOLON_MODEL || '' }}
           github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
           anthropic_auth_token: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
