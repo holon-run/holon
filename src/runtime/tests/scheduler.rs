@@ -101,6 +101,15 @@ fn append_active_external_wait_condition(
     agent_id: &str,
     work_item_id: Option<&str>,
 ) {
+    if let Some(work_item_id) = work_item_id {
+        let mut work_item = WorkItemRecord::new(
+            agent_id,
+            format!("{work_item_id} work"),
+            WorkItemState::Open,
+        );
+        work_item.id = work_item_id.into();
+        storage.append_work_item(&work_item).unwrap();
+    }
     storage
         .append_wait_condition(&WaitConditionRecord {
             id: id.into(),
