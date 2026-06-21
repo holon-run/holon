@@ -1710,6 +1710,51 @@ pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
     Ok(())
 }
 
+pub async fn cors_preflight_allows_default_put_credentials_route() -> Result<()> {
+    let config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let router: Router = http::router(AppState::for_tcp(host));
+    let listener = TcpListener::bind(&config.http_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let allowed = reqwest::Client::new()
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://{addr}/control/runtime/credentials/test-profile"),
+        )
+        .header("origin", "http://localhost:5173")
+        .header("access-control-request-method", "PUT")
+        .header(
+            "access-control-request-headers",
+            "authorization,content-type",
+        )
+        .send()
+        .await?;
+    assert!(allowed.status().is_success());
+    assert_eq!(
+        allowed
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("http://localhost:5173")
+    );
+    assert!(allowed
+        .headers()
+        .get("access-control-allow-methods")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|methods| methods.contains("PUT")));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn cors_preflight_respects_configured_origin() -> Result<()> {
     let mut config = test_config();
     config.api_cors = ApiCorsConfigFile {
