@@ -13,6 +13,20 @@ interface SearchPageProps {
   onOpenAgent: (agentId: string, eventSeq?: number) => void;
 }
 
+function extractMessageBodyPreview(value: string): string | undefined {
+  const bodyMarker = "\nbody:\n";
+  const markerIndex = value.indexOf(bodyMarker);
+  const body = markerIndex >= 0
+    ? value.slice(markerIndex + bodyMarker.length)
+    : value.startsWith("body:\n")
+      ? value.slice("body:\n".length)
+      : undefined;
+  const summary = body
+    ?.replace(/\n\[truncated\]$/, "")
+    .trim();
+  return summary || undefined;
+}
+
 const DEFAULT_LIMIT = 20;
 
 export function SearchPage({ agents, search, loading, error, onSearch, onOpenAgent }: SearchPageProps) {
@@ -189,9 +203,12 @@ interface FormattedSearchPreview {
   isFormatted: boolean;
 }
 
-function formatSearchPreview(value: string): FormattedSearchPreview {
+export function formatSearchPreview(value: string): FormattedSearchPreview {
   const text = value.trim();
   if (!text) return { summary: "No preview available.", meta: [], isFormatted: false };
+
+  const messageBody = extractMessageBodyPreview(text);
+  if (messageBody) return { title: "Message body", summary: messageBody, meta: [], isFormatted: true };
 
   const parsed = parseJsonPreview(text);
   if (!parsed) return { summary: text, meta: [], isFormatted: false };

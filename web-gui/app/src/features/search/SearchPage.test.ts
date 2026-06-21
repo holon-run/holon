@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { searchOptionsForSelection } from "./SearchPage";
+import { formatSearchPreview, searchOptionsForSelection } from "./SearchPage";
 import type { AgentSummary } from "../../runtime/types";
 
 function agent(id: string): AgentSummary {
@@ -39,6 +39,25 @@ describe("searchOptionsForSelection", () => {
       agentIds: ["worker"],
       includeAllWorkspaces: false,
       limit: 20,
+    });
+  });
+});
+
+describe("formatSearchPreview", () => {
+  it("summarizes indexed message documents from their body section", () => {
+    expect(formatSearchPreview([
+      "message_ref: message:msg_0577e13c42a52bc",
+      "message_id: msg_0577e13c42a52bc",
+      "turn_ref: turn:turn_4be859224d5f055",
+      "message_seq: 691",
+      "kind: OperatorPrompt",
+      "body:",
+      "你分析一下，当前索引的更新方式是如何的？",
+    ].join("\n"))).toEqual({
+      title: "Message body",
+      summary: "你分析一下，当前索引的更新方式是如何的？",
+      meta: [],
+      isFormatted: true,
     });
   });
 });

@@ -231,6 +231,11 @@ describe("createRuntimeClient", () => {
               title: "Operator prompt",
               snippet: "needle appears in the message body",
               updated_at: "2026-06-21T00:00:00Z",
+              metadata: {
+                message_id: "msg-1",
+                turn_id: "turn-1",
+                message_seq: 42,
+              },
             },
           ],
         });
@@ -251,6 +256,13 @@ describe("createRuntimeClient", () => {
         expect.objectContaining({
           kind: "message",
           preview: "needle appears in the message body",
+          createdAt: "2026-06-21T00:00:00Z",
+          locator: expect.objectContaining({
+            evidenceId: "message:msg-1",
+            messageId: "msg-1",
+            turnId: "turn-1",
+            eventSeq: 42,
+          }),
         }),
       ],
     });

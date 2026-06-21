@@ -467,6 +467,14 @@ interface SearchResultItemDto {
   source_ref?: string;
   title?: string;
   snippet?: string;
+  updated_at?: string;
+  metadata?: {
+    message_id?: string;
+    turn_id?: string;
+    task_id?: string;
+    work_item_id?: string;
+    message_seq?: number;
+  };
   locator?: {
     evidence_id?: string;
     message_id?: string;
@@ -1181,14 +1189,14 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
       resultType: result.result_type ?? result.type ?? "message",
       agentId: result.agent_id ?? "unknown-agent",
       locator: {
-        evidenceId: result.locator?.evidence_id,
-        messageId: result.locator?.message_id,
-        turnId: result.locator?.turn_id,
-        taskId: result.locator?.task_id,
-        workItemId: result.locator?.work_item_id,
-        eventSeq: result.locator?.event_seq,
+        evidenceId: result.locator?.evidence_id ?? result.source_ref,
+        messageId: result.locator?.message_id ?? result.metadata?.message_id,
+        turnId: result.locator?.turn_id ?? result.metadata?.turn_id,
+        taskId: result.locator?.task_id ?? result.metadata?.task_id,
+        workItemId: result.locator?.work_item_id ?? result.metadata?.work_item_id,
+        eventSeq: result.locator?.event_seq ?? result.metadata?.message_seq,
       },
-      createdAt: result.created_at,
+      createdAt: result.created_at ?? result.updated_at,
       kind: result.kind ?? "message",
       preview: result.preview ?? result.snippet ?? result.title ?? result.source_ref ?? "",
     })),
