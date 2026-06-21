@@ -2860,6 +2860,7 @@ mod tests {
         fs::write(agent_memory_self_path(&beta_home), "beta initial slice").unwrap();
 
         rebuild_memory_index(&alpha, None).unwrap();
+        rebuild_memory_index(&beta, None).unwrap();
         assert!(search_memory(&beta, "initial", 10, None, true)
             .unwrap()
             .iter()
@@ -2881,12 +2882,14 @@ mod tests {
         .unwrap();
         alpha.mark_memory_index_dirty().unwrap();
 
+        refresh_memory_index_bounded(&alpha, None, 10).unwrap();
         assert!(search_memory(&alpha, "rebuild", 10, None, true)
             .unwrap()
             .iter()
             .any(|result| result.agent_id == "alpha"
                 && result.source_ref == "agent_memory:self"
                 && result.snippet.contains("alpha rebuild")));
+        refresh_memory_index_bounded(&beta, Some("ws-beta"), 10).unwrap();
         assert!(search_memory(&beta, "fresh", 10, Some("ws-beta"), true)
             .unwrap()
             .iter()
@@ -4245,6 +4248,7 @@ mod tests {
             })
             .unwrap();
 
+        refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
         let results = search_memory(
             &storage,
             "batch_receipt_middle_1246",
@@ -4482,6 +4486,7 @@ mod tests {
             .unwrap();
 
         let source_ref = "tool_execution:tool-generic-output-1246:output";
+        refresh_memory_index_bounded(&storage, Some("ws-holon"), 10).unwrap();
         let results = search_memory(
             &storage,
             "generic_tool_output_1246",
