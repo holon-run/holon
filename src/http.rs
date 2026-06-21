@@ -385,7 +385,9 @@ pub fn router(state: AppState) -> Router {
     let root_routes = api_routes
         .clone()
         .route("/search", get(web_or_not_found_handler).post(search));
-    let api_routes = api_routes.route("/search", post(search));
+    let api_routes = api_routes
+        .route("/search", post(search))
+        .route("/memory/get", post(memory_get));
 
     Router::new()
         .merge(root_routes)
@@ -581,6 +583,12 @@ pub struct SearchResponse {
     pub limit: usize,
     pub results: Vec<crate::memory::MemorySearchResult>,
     pub index_status: crate::memory::MemorySearchIndexStatus,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct MemoryGetRequest {
+    pub source_ref: String,
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1063,6 +1071,26 @@ pub async fn search(
             index_status: search_result.index_status,
         },
     )
+}
+
+pub async fn memory_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<MemoryGetRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let source_ref = request.source_ref.trim();
+    if source_ref.is_empty() {
+        return Err(bad_request("source_ref must not be empty"));
+    }
+    let runtime = state.host.default_runtime().await.map_err(error_response)?;
+    let memory = runtime
+        .get_memory(source_ref, request.max_chars)
+        .await
+        .map_err(error_response)?
+        .ok_or_else(|| not_found(format!("memory source {source_ref} not found")))?;
+    traced_json("/memory/get", started_at, memory)
 }
 
 fn filter_search_results(

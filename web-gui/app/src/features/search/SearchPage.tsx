@@ -2,14 +2,18 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import type { AgentSummary, RuntimeSearchOptions, SearchResponse, SearchResultItem } from "../../runtime/types";
+import type { AgentSummary, MemorySourceContent, RuntimeSearchOptions, SearchResponse, SearchResultItem } from "../../runtime/types";
 
 interface SearchPageProps {
   agents: AgentSummary[];
   search: SearchResponse | null;
   loading: boolean;
   error?: string;
+  resultContentBySourceRef: Record<string, MemorySourceContent>;
+  resultContentLoadingBySourceRef: Record<string, boolean>;
+  resultContentErrorBySourceRef: Record<string, string | undefined>;
   onSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
+  onLoadResultContent: (sourceRef: string) => Promise<void>;
   onOpenAgent: (agentId: string, eventSeq?: number) => void;
 }
 
@@ -39,7 +43,18 @@ function extractMessageBodyPreview(value: string): string | undefined {
 
 const DEFAULT_LIMIT = 20;
 
-export function SearchPage({ agents, search, loading, error, onSearch, onOpenAgent }: SearchPageProps) {
+export function SearchPage({
+  agents,
+  search,
+  loading,
+  error,
+  resultContentBySourceRef,
+  resultContentLoadingBySourceRef,
+  resultContentErrorBySourceRef,
+  onSearch,
+  onLoadResultContent,
+  onOpenAgent,
+}: SearchPageProps) {
   const [query, setQuery] = useState(() => search?.query ?? readInitialQuery());
   const [agentId, setAgentId] = useState("all");
   const [limit, setLimit] = useState(String(search?.limit || DEFAULT_LIMIT));
@@ -126,7 +141,15 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
               </div>
               <div className="search-result-list">
                 {search?.results.map((result) => (
-                  <SearchResultCard key={result.locator.evidenceId ?? `${result.agentId}:${result.createdAt}:${result.preview}`} result={result} onOpenAgent={onOpenAgent} />
+                  <SearchResultCard
+                    key={result.locator.evidenceId ?? `${result.agentId}:${result.createdAt}:${result.preview}`}
+                    result={result}
+                    content={result.locator.sourceRef ? resultContentBySourceRef[result.locator.sourceRef] : undefined}
+                    contentLoading={result.locator.sourceRef ? resultContentLoadingBySourceRef[result.locator.sourceRef] : false}
+                    contentError={result.locator.sourceRef ? resultContentErrorBySourceRef[result.locator.sourceRef] : undefined}
+                    onLoadResultContent={onLoadResultContent}
+                    onOpenAgent={onOpenAgent}
+                  />
                 ))}
               </div>
             </>
@@ -137,8 +160,23 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
   );
 }
 
-function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; onOpenAgent: (agentId: string, eventSeq?: number) => void }) {
+function SearchResultCard({
+  result,
+  content,
+  contentLoading,
+  contentError,
+  onLoadResultContent,
+  onOpenAgent,
+}: {
+  result: SearchResultItem;
+  content?: MemorySourceContent;
+  contentLoading?: boolean;
+  contentError?: string;
+  onLoadResultContent: (sourceRef: string) => Promise<void>;
+  onOpenAgent: (agentId: string, eventSeq?: number) => void;
+}) {
   const preview = formatSearchPreview(result.preview);
+  const sourceRef = result.locator.sourceRef ?? result.locator.evidenceId;
   const locator = [
     result.locator.eventSeq != null ? `event #${result.locator.eventSeq}` : undefined,
     result.locator.turnId ? `turn ${shortId(result.locator.turnId)}` : undefined,
@@ -177,8 +215,32 @@ function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; o
         ) : null}
       </div>
       {locator.length > 0 ? <footer>{locator.join(" · ")}</footer> : null}
-      <details className="search-result-details">
-        <summary>Details</summary>
+      <details
+        className="search-result-details"
+        onToggle={(event) => {
+          if (event.currentTarget.open && sourceRef) {
+            void onLoadResultContent(sourceRef);
+          }
+        }}
+      >
+        <summary>Full source</summary>
+        {sourceRef ? (
+          <section className="search-result-full-source" aria-live="polite">
+            {contentLoading ? <p>Loading full source…</p> : null}
+            {contentError ? <p className="search-result-full-source-error">{contentError}</p> : null}
+            {content ? (
+              <>
+                <div className="search-result-full-source-head">
+                  <strong>{content.title}</strong>
+                  {content.truncated ? <span>truncated</span> : null}
+                </div>
+                <pre>{content.content || "No content available."}</pre>
+              </>
+            ) : null}
+          </section>
+        ) : (
+          <p className="search-result-full-source-empty">No source_ref available for this result.</p>
+        )}
         <dl>
           <div>
             <dt>Result type</dt>

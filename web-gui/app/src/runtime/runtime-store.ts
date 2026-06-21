@@ -22,6 +22,7 @@ import type {
   AgentTimelineActivity,
   AgentTimelineItem,
   DisplayLevel,
+  MemorySourceContent,
   RightPanelView,
   RouteKey,
   RuntimeBootstrap,
@@ -167,6 +168,9 @@ export interface RuntimeStoreState {
   search: SearchResponse | null;
   searchLoading: boolean;
   searchError?: string;
+  searchResultContentBySourceRef: Record<string, MemorySourceContent>;
+  searchResultContentLoadingBySourceRef: Record<string, boolean>;
+  searchResultContentErrorBySourceRef: Record<string, string | undefined>;
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   sessionsByAgentId: Record<string, AgentSessionState>;
 
@@ -188,6 +192,7 @@ export interface RuntimeStoreState {
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
   runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
+  loadSearchResultContent: (sourceRef: string) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
@@ -578,6 +583,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfigSaving: false,
   search: null,
   searchLoading: false,
+  searchResultContentBySourceRef: {},
+  searchResultContentLoadingBySourceRef: {},
+  searchResultContentErrorBySourceRef: {},
   credentialStore: { profiles: [] },
   credentialStoreLoading: false,
   credentialStoreError: undefined,
@@ -890,9 +898,57 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({ searchLoading: true, searchError: undefined });
     try {
       const search = await runtimeClient.search(trimmed, options);
-      set({ search, searchLoading: false });
+      set({
+        search,
+        searchLoading: false,
+        searchResultContentBySourceRef: {},
+        searchResultContentLoadingBySourceRef: {},
+        searchResultContentErrorBySourceRef: {},
+      });
     } catch (error) {
       set({ searchLoading: false, searchError: error instanceof Error ? error.message : String(error) });
+    }
+  },
+  loadSearchResultContent: async (sourceRef) => {
+    const trimmed = sourceRef.trim();
+    if (!trimmed) return;
+    const state = get();
+    if (state.searchResultContentBySourceRef[trimmed] || state.searchResultContentLoadingBySourceRef[trimmed]) {
+      return;
+    }
+    set((current) => ({
+      searchResultContentLoadingBySourceRef: {
+        ...current.searchResultContentLoadingBySourceRef,
+        [trimmed]: true,
+      },
+      searchResultContentErrorBySourceRef: {
+        ...current.searchResultContentErrorBySourceRef,
+        [trimmed]: undefined,
+      },
+    }));
+    try {
+      const content = await runtimeClient.getMemorySource(trimmed);
+      set((current) => ({
+        searchResultContentBySourceRef: {
+          ...current.searchResultContentBySourceRef,
+          [trimmed]: content,
+        },
+        searchResultContentLoadingBySourceRef: {
+          ...current.searchResultContentLoadingBySourceRef,
+          [trimmed]: false,
+        },
+      }));
+    } catch (error) {
+      set((current) => ({
+        searchResultContentLoadingBySourceRef: {
+          ...current.searchResultContentLoadingBySourceRef,
+          [trimmed]: false,
+        },
+        searchResultContentErrorBySourceRef: {
+          ...current.searchResultContentErrorBySourceRef,
+          [trimmed]: error instanceof Error ? error.message : String(error),
+        },
+      }));
     }
   },
 

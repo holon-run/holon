@@ -222,6 +222,7 @@ export interface CredentialStoreState {
 
 export interface SearchResultLocator {
   evidenceId?: string;
+  sourceRef?: string;
   messageId?: string;
   turnId?: string;
   taskId?: string;
@@ -242,6 +243,15 @@ export interface SearchResponse {
   query: string;
   limit: number;
   results: SearchResultItem[];
+}
+
+export interface MemorySourceContent {
+  kind: string;
+  sourceRef: string;
+  title: string;
+  content: string;
+  truncated: boolean;
+  updatedAt?: string;
 }
 
 export interface RuntimeSearchOptions {

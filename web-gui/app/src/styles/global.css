@@ -3486,6 +3486,50 @@ code {
   margin: 10px 0 0;
 }
 
+.search-result-full-source {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.search-result-full-source > p,
+.search-result-full-source-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-result-full-source-error {
+  color: var(--danger, #b42318);
+}
+
+.search-result-full-source-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-result-full-source-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-full-source-head span {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+}
+
 .search-result-details div {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr);

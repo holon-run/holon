@@ -6,6 +6,7 @@ import type {
   CredentialProfileStatus,
   CredentialStoreState,
   DashboardMetric,
+  MemorySourceContent,
   RuntimeBootstrap,
   RuntimeConfigState,
   RuntimeConfigSurface,
@@ -488,6 +489,15 @@ interface SearchResultItemDto {
   preview?: string;
 }
 
+interface MemorySourceContentDto {
+  kind?: string;
+  source_ref?: string;
+  title?: string;
+  content?: string;
+  truncated?: boolean;
+  updated_at?: string;
+}
+
 interface AgentMessagesBatchGetResponseDto {
   messages?: RuntimeMessageEnvelope[];
   missing_message_ids?: string[];
@@ -690,6 +700,16 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         types: ["message"],
       }, requestHeaders);
       return projectSearchResponse(response);
+    },
+    async getMemorySource(sourceRef: string, maxChars?: number): Promise<MemorySourceContent> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await postJson<MemorySourceContentDto>(fetchImpl, baseUrl, "/memory/get", {
+        source_ref: sourceRef,
+        max_chars: maxChars,
+      }, requestHeaders);
+      return projectMemorySourceContent(response);
     },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
@@ -1190,6 +1210,7 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
       agentId: result.agent_id ?? "unknown-agent",
       locator: {
         evidenceId: result.locator?.evidence_id ?? result.source_ref,
+        sourceRef: result.source_ref ?? result.locator?.evidence_id,
         messageId: result.locator?.message_id ?? result.metadata?.message_id,
         turnId: result.locator?.turn_id ?? result.metadata?.turn_id,
         taskId: result.locator?.task_id ?? result.metadata?.task_id,
@@ -1200,6 +1221,17 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
       kind: result.kind ?? "message",
       preview: result.preview ?? result.snippet ?? result.title ?? result.source_ref ?? "",
     })),
+  };
+}
+
+function projectMemorySourceContent(response: MemorySourceContentDto): MemorySourceContent {
+  return {
+    kind: response.kind ?? "unknown",
+    sourceRef: response.source_ref ?? "",
+    title: response.title ?? response.source_ref ?? "Memory source",
+    content: response.content ?? "",
+    truncated: response.truncated ?? false,
+    updatedAt: response.updated_at,
   };
 }
 

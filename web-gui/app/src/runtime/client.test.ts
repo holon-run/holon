@@ -259,6 +259,7 @@ describe("createRuntimeClient", () => {
           createdAt: "2026-06-21T00:00:00Z",
           locator: expect.objectContaining({
             evidenceId: "message:msg-1",
+            sourceRef: "message:msg-1",
             messageId: "msg-1",
             turnId: "turn-1",
             eventSeq: 42,
@@ -266,6 +267,46 @@ describe("createRuntimeClient", () => {
         }),
       ],
     });
+  });
+
+  it("fetches full memory source content by source_ref", async () => {
+    const seen: Array<{ url: string; body: unknown }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith("/memory/get")) {
+        return Response.json({
+          kind: "message",
+          source_ref: "message:msg-1",
+          title: "Operator prompt",
+          content: "message_ref: message:msg-1\nbody:\nfull body",
+          truncated: false,
+          updated_at: "2026-06-21T00:00:00Z",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.getMemorySource("message:msg-1", 1000)).resolves.toEqual({
+      kind: "message",
+      sourceRef: "message:msg-1",
+      title: "Operator prompt",
+      content: "message_ref: message:msg-1\nbody:\nfull body",
+      truncated: false,
+      updatedAt: "2026-06-21T00:00:00Z",
+    });
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/memory/get",
+        body: { source_ref: "message:msg-1", max_chars: 1000 },
+      },
+    ]);
   });
 
   it("fetches agent work items from the scoped work-items endpoint", async () => {
