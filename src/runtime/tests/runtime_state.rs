@@ -2278,6 +2278,9 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
     )
     .unwrap();
     let now = Utc::now();
+    let mut work_item = WorkItemRecord::new("default", "task wait", WorkItemState::Open);
+    work_item.id = "wi-1".into();
+    runtime.storage().append_work_item(&work_item).unwrap();
     runtime
         .storage()
         .append_wait_condition(&WaitConditionRecord {
@@ -2392,6 +2395,10 @@ async fn timer_operator_and_system_ticks_record_wait_reconciliation_signals() {
             vec![WakeSource::SystemTick],
         ),
     ] {
+        let mut work_item =
+            WorkItemRecord::new("default", format!("{id} work"), WorkItemState::Open);
+        work_item.id = format!("{id}-work");
+        runtime.storage().append_work_item(&work_item).unwrap();
         runtime
             .storage()
             .append_wait_condition(&WaitConditionRecord {
