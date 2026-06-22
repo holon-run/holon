@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-const HTTP_SOURCE_PATH: &str = "src/http.rs";
+const HTTP_SOURCE_PATH: &str = "src/http/mod.rs";
 const SNAPSHOT_PATH: &str = "tests/snapshots/http_route_inventory.json";
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
