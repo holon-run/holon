@@ -37,6 +37,6 @@ jobs:
           auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
           model: bigmodel/glm-5.2
           github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
-          bigmodel_api_key: ${{ secrets.BIGMODEL_API_KEY }}
+          bigmodel_api_key: ${{ secrets.bigmodel_api_key }}
         env:
-          BIGMODEL_API_KEY: ${{ secrets.BIGMODEL_API_KEY }}
+          BIGMODEL_API_KEY: ${{ secrets.bigmodel_api_key }}
