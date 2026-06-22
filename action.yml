@@ -85,7 +85,7 @@ inputs:
   build_from_source:
     description: Build Holon from source before running.
     required: false
-    default: 'true'
+    default: 'false'
   holon_repository:
     description: Holon repository for source builds.
     required: false
