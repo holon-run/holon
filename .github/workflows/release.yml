@@ -105,8 +105,6 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This line is intentionally breaking relative to the old Go-line releases. If you need the old Go implementation, stay on \`v0.12.0\`.
-
           This patch release improves memory indexing and search, hardens GitHub Action event handling, fixes model discovery refresh behavior, and corrects several runtime lifecycle edge cases.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
