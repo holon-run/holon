@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::task::JoinHandle;
 
 use crate::{
-    config::AppConfig,
+    config::{AppConfig, ModelRef},
     host::RuntimeHost,
     ingress::InboundRequest,
     provider::ProviderCacheUsage,
@@ -99,6 +99,11 @@ pub struct RunOnceResponse {
     pub output_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cache_usage: Option<RunProviderCacheUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<ModelRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<ModelRef>,
+    pub fallback_active: bool,
     pub model_rounds: u64,
     pub tool_calls: usize,
     pub shell_commands: usize,
@@ -161,6 +166,16 @@ impl RunOnceResponse {
                 "Provider cache: read {}, created {}, hit rate {}",
                 cache_usage.read_input_tokens, cache_usage.creation_input_tokens, hit_rate
             ));
+        }
+
+        if let Some(active_model) = self.active_model.as_ref() {
+            let mut line = format!("Model: {}", active_model.as_string());
+            if let Some(requested_model) = self.requested_model.as_ref() {
+                if requested_model != active_model {
+                    line.push_str(&format!(" (requested {})", requested_model.as_string()));
+                }
+            }
+            sections.push(line);
         }
 
         if !self.tasks.is_empty() {
@@ -839,6 +854,11 @@ async fn build_response(
     let final_text = delivery_summary_text
         .or_else(|| raw_final_text.clone())
         .unwrap_or_default();
+    let (requested_model, active_model, fallback_active) = latest_run_model_state(
+        &view.new_events,
+        final_state.last_requested_model.clone(),
+        final_state.last_active_model.clone(),
+    );
 
     Ok(RunOnceResponse {
         agent_id: queued_message.agent_id.clone(),
@@ -854,6 +874,9 @@ async fn build_response(
         input_tokens: token_usage.input_tokens,
         output_tokens: token_usage.output_tokens,
         provider_cache_usage,
+        requested_model,
+        active_model,
+        fallback_active,
         token_usage,
         model_rounds: final_state
             .total_model_rounds
@@ -950,6 +973,49 @@ fn batched_exec_command_items(tools: &[ToolExecutionRecord]) -> usize {
             completed_count + failed_count
         })
         .sum()
+}
+
+fn latest_run_model_state(
+    events: &[AuditEvent],
+    fallback_requested_model: Option<ModelRef>,
+    fallback_active_model: Option<ModelRef>,
+) -> (Option<ModelRef>, Option<ModelRef>, bool) {
+    let mut requested_model = fallback_requested_model;
+    let mut active_model = fallback_active_model;
+    let mut fallback_active = requested_model
+        .as_ref()
+        .zip(active_model.as_ref())
+        .is_some_and(|(requested, active)| requested != active);
+
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "provider_round_completed")
+    {
+        requested_model = event
+            .data
+            .get("requested_model")
+            .and_then(|value| value.as_str())
+            .and_then(|value| ModelRef::parse(value).ok())
+            .or(requested_model);
+        active_model = event
+            .data
+            .get("active_model")
+            .and_then(|value| value.as_str())
+            .and_then(|value| ModelRef::parse(value).ok())
+            .or(active_model);
+        fallback_active = event
+            .data
+            .get("fallback_active")
+            .and_then(|value| value.as_bool())
+            .unwrap_or_else(|| {
+                requested_model
+                    .as_ref()
+                    .zip(active_model.as_ref())
+                    .is_some_and(|(requested, active)| requested != active)
+            });
+    }
+
+    (requested_model, active_model, fallback_active)
 }
 
 fn raw_final_text(
