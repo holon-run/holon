@@ -578,17 +578,31 @@ async fn collect_run_poll_view(
 ) -> Result<RunPollView> {
     let events = runtime.all_events()?;
     let latest_tasks = runtime.latest_task_records_snapshot().await?;
+    let new_tools = runtime
+        .all_tool_executions()?
+        .into_iter()
+        .filter(|tool| !baseline.tool_ids.contains(&tool.id))
+        .collect::<Vec<_>>();
     let runtime_error = events
         .iter()
         .rev()
         .take_while(|event| !baseline.event_ids.contains(&event.id))
         .any(|event| event.kind == "runtime_error");
 
-    let new_task_ids = latest_tasks
+    let mut new_task_ids = latest_tasks
         .iter()
         .filter(|task| !baseline.task_ids.contains(&task.id))
         .map(|task| task.id.clone())
-        .collect();
+        .collect::<Vec<_>>();
+    new_task_ids.extend(new_tools.iter().filter_map(exec_command_task_id));
+    new_task_ids.extend(
+        events
+            .iter()
+            .filter(|event| !baseline.event_ids.contains(&event.id))
+            .filter_map(run_event_task_id),
+    );
+    new_task_ids.sort();
+    new_task_ids.dedup();
 
     let activity_signature = PollActivitySignature {
         storage_marker,
@@ -623,6 +637,11 @@ async fn collect_run_view(
         .into_iter()
         .filter(|message| !baseline.message_ids.contains(&message.id))
         .collect::<Vec<_>>();
+    let new_events = runtime
+        .all_events()?
+        .into_iter()
+        .filter(|event| !baseline.event_ids.contains(&event.id))
+        .collect::<Vec<_>>();
     let mut task_ids = observed_task_ids.clone();
     task_ids.extend(new_messages.iter().filter_map(message_task_id));
 
@@ -632,6 +651,7 @@ async fn collect_run_view(
         .filter(|tool| !baseline.tool_ids.contains(&tool.id))
         .collect::<Vec<_>>();
     task_ids.extend(new_tools.iter().filter_map(exec_command_task_id));
+    task_ids.extend(new_events.iter().filter_map(run_event_task_id));
 
     let mut tasks_by_id = runtime
         .latest_task_records_snapshot()
@@ -653,11 +673,6 @@ async fn collect_run_view(
         .filter(|task| !baseline.task_ids.contains(&task.id))
         .collect::<Vec<_>>();
     new_tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    let new_events = runtime
-        .all_events()?
-        .into_iter()
-        .filter(|event| !baseline.event_ids.contains(&event.id))
-        .collect::<Vec<_>>();
     Ok(RunView {
         new_tasks,
         new_tools,
@@ -687,6 +702,49 @@ fn exec_command_task_id(tool: &ToolExecutionRecord) -> Option<String> {
         .and_then(|value| value.get("task_id"))
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
+}
+
+fn exec_command_event_task_id(event: &AuditEvent) -> Option<String> {
+    if event.kind != "tool_executed"
+        || event.data.get("tool_name").and_then(|value| value.as_str()) != Some("ExecCommand")
+        || event
+            .data
+            .get("status")
+            .and_then(|value| value.as_str())
+            .is_some_and(|status| status != "success")
+    {
+        return None;
+    }
+
+    event
+        .data
+        .get("task_handle")
+        .and_then(|value| value.get("task_id"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn process_execution_event_task_id(event: &AuditEvent) -> Option<String> {
+    if event.kind != "process_execution_requested"
+        || event.data.get("surface").and_then(|value| value.as_str()) != Some("command_task")
+        || event
+            .data
+            .get("promoted_from_exec_command")
+            .and_then(|value| value.as_bool())
+            != Some(true)
+    {
+        return None;
+    }
+
+    event
+        .data
+        .get("task_id")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn run_event_task_id(event: &AuditEvent) -> Option<String> {
+    exec_command_event_task_id(event).or_else(|| process_execution_event_task_id(event))
 }
 
 fn exec_command_result_value(output: &serde_json::Value) -> Option<&serde_json::Value> {
@@ -1467,6 +1525,27 @@ mod tests {
         };
 
         assert_eq!(exec_command_task_id(&tool), Some("task-promoted".into()));
+    }
+
+    #[test]
+    fn exec_command_event_task_id_reads_tool_executed_task_handle() {
+        let event = AuditEvent::new(
+            "tool_executed",
+            json!({
+                "tool_name": "ExecCommand",
+                "status": "success",
+                "task_handle": {
+                    "task_id": "task-promoted",
+                    "task_kind": "command_task",
+                    "status": "running"
+                }
+            }),
+        );
+
+        assert_eq!(
+            exec_command_event_task_id(&event),
+            Some("task-promoted".into())
+        );
     }
 
     #[test]
