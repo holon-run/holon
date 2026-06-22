@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-const HTTP_SOURCE_PATH: &str = "src/http.rs";
+const HTTP_SOURCE_PATH: &str = "src/http/mod.rs";
 const SNAPSHOT_PATH: &str = "tests/snapshots/http_route_inventory.json";
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -144,7 +144,14 @@ fn parse_route_call(call: &str) -> HttpRoute {
                 .find(')')
                 .map(|relative| handler_start + relative)
                 .unwrap_or_else(|| panic!("missing handler terminator for route {path}"));
-            let handler = call_tail[handler_start..handler_end].trim().to_string();
+            // Strip module qualification (e.g. `agents::root` → `root`) so the
+            // snapshot stays stable regardless of internal module structure.
+            let handler = call_tail[handler_start..handler_end]
+                .trim()
+                .rsplit("::")
+                .next()
+                .unwrap_or_else(|| panic!("empty handler name for route {path}"))
+                .to_string();
             return HttpRoute {
                 method: method.to_string(),
                 path,
