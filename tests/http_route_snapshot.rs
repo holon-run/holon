@@ -20,6 +20,10 @@ struct HttpRoute {
     handler: String,
 }
 
+fn is_openapi_route(route: &HttpRoute) -> bool {
+    route.handler != "web_or_not_found_handler"
+}
+
 #[derive(Debug, Serialize)]
 struct RouteInventoryEntry {
     method: String,
@@ -68,11 +72,11 @@ fn render_live_inventory() -> String {
     let source = std::fs::read_to_string(HTTP_SOURCE_PATH)
         .unwrap_or_else(|err| panic!("failed to read {HTTP_SOURCE_PATH}: {err}"));
     let routes = parse_axum_routes(&source);
-    assert_eq!(routes.len(), 70, "unexpected parsed HTTP route count");
+    assert_eq!(routes.len(), 72, "unexpected parsed HTTP route count");
 
     let openapi = holon::openapi::generate_openapi_json();
     let mut entries = Vec::new();
-    for route in routes {
+    for route in routes.into_iter().filter(is_openapi_route) {
         let operation = &openapi["paths"][&route.path][&route.method];
         assert!(
             operation.is_object(),

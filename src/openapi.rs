@@ -9,10 +9,11 @@ use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
         BatchGetMessagesRequest, CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest,
-        PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
+        MemoryGetRequest, PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
         RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
         UpdateWorkItemRequest,
     },
+    memory::MemoryGetResult,
     types::{
         BriefRecord, TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult,
         TimerRecord, ToolExecutionRecord, WorkItemRecord,
@@ -91,6 +92,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List skills", "Return installed skills for an agent.", None, AuthKind::RemoteAccess),
     route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime memory", "Search the same memory v2 index used by the agent MemorySearch tool.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
+    route_with_response("post", "/memory/get", "runtimeMemoryGet", "search", "Fetch runtime memory source", "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.", Some("MemoryGetRequest"), "MemoryGetResult", AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/agents/{agent_id}/enqueue", "enqueueAgent", "ingress", "Enqueue agent message", "Enqueue a public channel/webhook message for the named agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/webhooks/generic/{agent_id}", "genericWebhook", "ingress", "Generic webhook", "Convert an arbitrary JSON webhook body into a trusted integration message.", Some("GenericJsonPayload"), AuthKind::None),
@@ -558,6 +560,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "SearchResponse".into(),
         component_schema::<SearchResponse>(),
+    );
+    schemas.insert(
+        "MemoryGetRequest".into(),
+        component_schema::<MemoryGetRequest>(),
+    );
+    schemas.insert(
+        "MemoryGetResult".into(),
+        component_schema::<MemoryGetResult>(),
     );
     schemas.insert(
         "BatchGetMessagesRequest".into(),

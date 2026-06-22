@@ -36,6 +36,7 @@ http_async_tests!(
     runtime_readiness_route_omits_activity_summary,
     runtime_config_route_reads_and_updates_persisted_runtime_config,
     cors_preflight_allows_default_localhost_origins,
+    cors_preflight_allows_default_put_credentials_route,
     cors_preflight_respects_configured_origin,
     runtime_status_route_reports_waiting_activity_summary,
     runtime_status_route_reports_last_runtime_failure_summary,

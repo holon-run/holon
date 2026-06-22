@@ -382,6 +382,81 @@
       "JsonValue": {
         "description": "Arbitrary JSON value. Used as a conservative baseline for routes whose DTO is not yet stabilized."
       },
+      "MemoryGetRequest": {
+        "properties": {
+          "max_chars": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ref"
+        ],
+        "title": "MemoryGetRequest",
+        "type": "object"
+      },
+      "MemoryGetResult": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "metadata": true,
+          "scope_kind": {
+            "type": "string"
+          },
+          "source_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "source_ref",
+          "scope_kind",
+          "agent_id",
+          "title",
+          "content",
+          "truncated",
+          "updated_at",
+          "metadata"
+        ],
+        "title": "MemoryGetResult",
+        "type": "object"
+      },
       "OperatorIngressRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -1859,6 +1934,13 @@
           },
           "query": {
             "type": "string"
+          },
+          "types": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -8240,6 +8322,64 @@
         "summary": "Protocol handshake",
         "tags": [
           "discovery"
+        ]
+      }
+    },
+    "/memory/get": {
+      "post": {
+        "description": "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.",
+        "operationId": "runtimeMemoryGet",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGetResult"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Fetch runtime memory source",
+        "tags": [
+          "search"
         ]
       }
     },

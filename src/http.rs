@@ -232,7 +232,6 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/handshake", get(handshake))
         .route("/models", get(models_handler))
-        .route("/search", post(search))
         .route("/agents/list", get(list_agent_entries))
         .route("/agents/{agent_id}/enqueue", post(enqueue))
         .route("/agents/{agent_id}/status", get(status))
@@ -383,9 +382,15 @@ pub fn router(state: AppState) -> Router {
         .route("/state", get(state_default))
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default));
+    let root_routes = api_routes
+        .clone()
+        .route("/search", get(web_or_not_found_handler).post(search));
+    let api_routes = api_routes
+        .route("/search", post(search))
+        .route("/memory/get", post(memory_get));
 
     Router::new()
-        .merge(api_routes.clone())
+        .merge(root_routes)
         .nest("/api", api_routes)
         .fallback(web_or_not_found_handler)
         .layer(api_cors_layer(&config.api_cors))
@@ -568,6 +573,8 @@ pub struct SearchRequest {
     pub include_all_workspaces: bool,
     #[serde(default)]
     pub agent_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub types: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -576,6 +583,12 @@ pub struct SearchResponse {
     pub limit: usize,
     pub results: Vec<crate::memory::MemorySearchResult>,
     pub index_status: crate::memory::MemorySearchIndexStatus,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct MemoryGetRequest {
+    pub source_ref: String,
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1052,16 +1065,50 @@ pub async fn search(
             .await
             .map_err(error_response)?
     };
+    let results = filter_search_results(search_result.results, &request.types);
     traced_json(
         "/search",
         started_at,
         SearchResponse {
             query,
             limit,
-            results: search_result.results,
+            results,
             index_status: search_result.index_status,
         },
     )
+}
+
+pub async fn memory_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<MemoryGetRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let source_ref = request.source_ref.trim();
+    if source_ref.is_empty() {
+        return Err(bad_request("source_ref must not be empty"));
+    }
+    let runtime = state.host.default_runtime().await.map_err(error_response)?;
+    let memory = runtime
+        .get_memory(source_ref, request.max_chars)
+        .await
+        .map_err(error_response)?
+        .ok_or_else(|| not_found(format!("memory source {source_ref} not found")))?;
+    traced_json("/memory/get", started_at, memory)
+}
+
+fn filter_search_results(
+    results: Vec<crate::memory::MemorySearchResult>,
+    types: &[String],
+) -> Vec<crate::memory::MemorySearchResult> {
+    if types.is_empty() {
+        return results;
+    }
+    results
+        .into_iter()
+        .filter(|result| types.iter().any(|kind| kind == &result.kind))
+        .collect()
 }
 
 fn normalize_search_agent_ids(
@@ -1969,15 +2016,40 @@ fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{
-        sort_state_work_items, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
+        router, sort_state_work_items, AppState, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
         STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
     };
-    use crate::types::{
-        TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
-        TranscriptEntryKind, WorkItemRecord, WorkItemState,
+    use crate::{
+        config::AppConfig,
+        host::RuntimeHost,
+        provider::StubProvider,
+        types::{
+            TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
+            TranscriptEntryKind, WorkItemRecord, WorkItemState,
+        },
+    };
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Request, StatusCode},
     };
     use chrono::{Duration, Utc};
     use serde_json::json;
+    use std::{fs, sync::Arc};
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    fn test_host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        (home, host)
+    }
 
     #[test]
     fn state_sort_preserves_queue_display_order() {
@@ -2132,6 +2204,30 @@ mod tests {
             super::truncate_state_bootstrap_string("你好世界a", 4),
             "你..."
         );
+    }
+
+    #[tokio::test]
+    async fn get_search_serves_web_app_instead_of_api_method_not_allowed() {
+        let (_home, host) = test_host();
+        let web_dist = tempdir().unwrap();
+        fs::write(web_dist.path().join("index.html"), "<html>holon ui</html>").unwrap();
+        let app =
+            router(AppState::for_tcp(host).with_web_dist(Some(web_dist.path().to_path_buf())));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/search")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"<html>holon ui</html>");
     }
 }
 

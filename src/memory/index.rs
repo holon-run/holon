@@ -85,7 +85,7 @@ pub struct MemorySearchQueryResult {
     pub index_status: MemorySearchIndexStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct MemoryGetResult {
     pub kind: String,
@@ -1686,6 +1686,7 @@ fn message_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
 
 fn message_document(message: MessageEnvelope) -> MemoryDocument {
     let body = message_document_body(&message);
+    let excerpt_body = message_body_text_for_memory(&message.body);
     let title = format!("Message {}", message.id);
     MemoryDocument {
         source_ref: format!("message:{}", message.id),
@@ -1695,7 +1696,7 @@ fn message_document(message: MessageEnvelope) -> MemoryDocument {
         agent_id: message.agent_id.clone(),
         source_path: None,
         title,
-        sanitized_excerpt: excerpt(&body),
+        sanitized_excerpt: excerpt(&excerpt_body),
         body,
         metadata: json!({
             "message_id": message.id,
@@ -3689,9 +3690,15 @@ mod tests {
         let results = search_memory(&storage, "MemorySearch", 10, Some("ws-holon"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "work_item"));
         let results = search_memory(&storage, "sentinel1879", 10, Some("ws-holon"), false).unwrap();
-        assert!(results
+        let message_result = results
             .iter()
-            .any(|result| result.source_ref == "message:msg-memory-search"));
+            .find(|result| result.source_ref == "message:msg-memory-search")
+            .expect("message memory result");
+        assert_eq!(
+            message_result.snippet,
+            "searchable operator message sentinel1879"
+        );
+        assert!(!message_result.snippet.contains("message_ref:"));
         let results = search_memory(&storage, "checksum", 10, Some("ws-holon"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "work_item"));
         let results = search_memory(&storage, "checklist", 10, Some("ws-holon"), false).unwrap();
@@ -4595,6 +4602,75 @@ mod tests {
 
         assert!(memory.content.contains("second_batch_output_1246"));
         assert!(!memory.content.contains("first_batch_output_1246"));
+    }
+
+    #[test]
+    fn command_output_is_retrievable_but_not_search_indexed() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-output-search-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommand".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({"cmd": "printf searchable_command_input_1246"}),
+                output: json!({
+                    "result": {
+                        "stdout_preview": "command_output_only_sentinel_1246\n",
+                        "stderr_preview": "",
+                        "truncated": false,
+                        "artifacts": []
+                    }
+                }),
+                summary: "command exited with status 0".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let memory = get_memory(
+            &storage,
+            "tool_execution:tool-output-search-1246:stdout",
+            None,
+            Some("ws-holon"),
+        )
+        .unwrap()
+        .expect("command output should remain retrievable by explicit source ref");
+        assert!(memory.content.contains("command_output_only_sentinel_1246"));
+
+        // Consume pending sources before searching. The background memory indexer
+        // normally handles this, but tests run without a runtime loop.
+        ensure_memory_indexes_current(&storage, Some("ws-holon"), &[]).unwrap();
+
+        let output_results = search_memory(
+            &storage,
+            "command_output_only_sentinel_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        assert!(output_results.is_empty());
+
+        let receipt_results = search_memory(
+            &storage,
+            "searchable_command_input_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        assert!(receipt_results
+            .iter()
+            .any(|result| result.kind == "tool_command_receipt"));
     }
 
     #[test]

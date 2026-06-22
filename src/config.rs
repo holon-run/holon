@@ -312,7 +312,7 @@ impl ApiCorsConfigFile {
 }
 
 fn default_api_cors_allowed_methods() -> Vec<String> {
-    ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+    ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
         .into_iter()
         .map(str::to_string)
         .collect()

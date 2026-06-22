@@ -178,6 +178,137 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
   });
 
+  it("posts runtime search filters for cross-agent all-workspace search", async () => {
+    const seen: Array<{ url: string; body: unknown }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith("/search")) {
+        return Response.json({ query: "needle", limit: 10, results: [] });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(
+      client.search("needle", {
+        agentIds: ["holon-pm", "worker"],
+        includeAllWorkspaces: true,
+        limit: 10,
+      }),
+    ).resolves.toEqual({ query: "needle", limit: 10, results: [] });
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/search",
+        body: {
+          query: "needle",
+          agent_ids: ["holon-pm", "worker"],
+          include_all_workspaces: true,
+          limit: 10,
+          types: ["message"],
+        },
+      },
+    ]);
+  });
+
+  it("projects runtime search snippets as result previews", async () => {
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/search")) {
+        return Response.json({
+          query: "needle",
+          limit: 1,
+          results: [
+            {
+              kind: "message",
+              source_ref: "message:msg-1",
+              agent_id: "holon-pm",
+              title: "Operator prompt",
+              snippet: "needle appears in the message body",
+              updated_at: "2026-06-21T00:00:00Z",
+              metadata: {
+                message_id: "msg-1",
+                turn_id: "turn-1",
+                message_seq: 42,
+              },
+            },
+          ],
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.search("needle", { limit: 1 })).resolves.toEqual({
+      query: "needle",
+      limit: 1,
+      results: [
+        expect.objectContaining({
+          kind: "message",
+          preview: "needle appears in the message body",
+          createdAt: "2026-06-21T00:00:00Z",
+          locator: expect.objectContaining({
+            evidenceId: "message:msg-1",
+            sourceRef: "message:msg-1",
+            messageId: "msg-1",
+            turnId: "turn-1",
+            eventSeq: 42,
+          }),
+        }),
+      ],
+    });
+  });
+
+  it("fetches full memory source content by source_ref", async () => {
+    const seen: Array<{ url: string; body: unknown }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith("/memory/get")) {
+        return Response.json({
+          kind: "message",
+          source_ref: "message:msg-1",
+          title: "Operator prompt",
+          content: "message_ref: message:msg-1\nbody:\nfull body",
+          truncated: false,
+          updated_at: "2026-06-21T00:00:00Z",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.getMemorySource("message:msg-1", 1000)).resolves.toEqual({
+      kind: "message",
+      sourceRef: "message:msg-1",
+      title: "Operator prompt",
+      content: "message_ref: message:msg-1\nbody:\nfull body",
+      truncated: false,
+      updatedAt: "2026-06-21T00:00:00Z",
+    });
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/memory/get",
+        body: { source_ref: "message:msg-1", max_chars: 1000 },
+      },
+    ]);
+  });
+
   it("fetches agent work items from the scoped work-items endpoint", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {
