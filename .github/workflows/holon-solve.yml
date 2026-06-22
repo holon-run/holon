@@ -52,7 +52,7 @@ on:
         description: Build Holon from source.
         required: false
         type: boolean
-        default: true
+        default: false
       holon_repository:
         description: Holon repository for source builds.
         required: false
