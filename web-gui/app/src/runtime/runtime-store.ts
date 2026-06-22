@@ -175,7 +175,7 @@ export interface RuntimeStoreState {
   sessionsByAgentId: Record<string, AgentSessionState>;
 
   setRoute: (route: RouteKey) => void;
-  openAgent: (agentId: string) => void;
+  openAgent: (agentId: string, targetEventSeq?: number) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
@@ -593,12 +593,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   sessionsByAgentId: {},
 
   setRoute: (route) => set({ route }),
-  openAgent: (agentId) =>
+  openAgent: (agentId, targetEventSeq) =>
     set((state) => {
+      const currentSession = state.sessionsByAgentId[agentId];
       const rosterActivityByAgentId = markAgentRead(
         state.rosterActivityByAgentId,
         agentId,
-        state.sessionsByAgentId[agentId]?.newestSeq,
+        currentSession?.newestSeq,
       );
       if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
         writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
@@ -608,6 +609,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         route: "agent",
         displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
         rosterActivityByAgentId,
+        sessionsByAgentId:
+          targetEventSeq == null
+            ? state.sessionsByAgentId
+            : {
+                ...state.sessionsByAgentId,
+                [agentId]: {
+                  ...emptyAgentSession(),
+                  ...currentSession,
+                  targetEventSeq,
+                  historyError: undefined,
+                },
+              },
       };
     }),
   setDisplayLevel: (displayLevel, agentId) =>
@@ -972,6 +985,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     try {
       const detail = await runtimeClient.getAgentDetail(agentId, displayLevel);
       set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
+      await loadTargetAgentEventWindow(get, set, agentId, displayLevel);
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
@@ -2730,6 +2744,56 @@ function mergeEventPageIntoSession(
       },
     },
   };
+}
+
+async function loadTargetAgentEventWindow(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): Promise<void> {
+  const session = get().sessionsByAgentId[agentId];
+  const targetEventSeq = session?.targetEventSeq;
+  if (targetEventSeq == null || session?.eventsBySeq[targetEventSeq]) return;
+
+  set((state) => ({
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...state.sessionsByAgentId[agentId],
+        loadingOlder: true,
+        historyError: undefined,
+      },
+    },
+  }));
+
+  try {
+    const page = await runtimeClient.getAgentEvents(agentId, {
+      afterSeq: targetEventSeq - 1,
+      limit: 80,
+      order: "asc",
+      displayLevel,
+    });
+    set((state) =>
+      mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel, {
+        newestSeq: page.cursor_seq ?? page.newest_seq,
+        append: true,
+      }),
+    );
+  } catch (error) {
+    set((state) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...emptyAgentSession(),
+          ...state.sessionsByAgentId[agentId],
+          loadingOlder: false,
+          historyError: error instanceof Error ? error.message : String(error),
+        },
+      },
+    }));
+  }
 }
 
 function eventsBySeq(events: StreamEventEnvelopeDto[]): Record<number, unknown> {

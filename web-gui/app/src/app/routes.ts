@@ -3,9 +3,17 @@ import type { RouteKey } from "../runtime/types";
 interface BrowserRoute {
   route: RouteKey;
   agentId?: string;
+  eventSeq?: number;
 }
 
-export function routeFromLocation(location: Pick<Location, "pathname">): BrowserRoute {
+function eventSeqFromSearch(search: string): number | undefined {
+  const raw = new URLSearchParams(search).get("event_seq");
+  if (!raw) return undefined;
+  const eventSeq = Number(raw);
+  return Number.isInteger(eventSeq) && eventSeq > 0 ? eventSeq : undefined;
+}
+
+export function routeFromLocation(location: Pick<Location, "pathname" | "search">): BrowserRoute {
   const path = location.pathname.replace(/\/+$/, "") || "/";
 
   if (path === "/") return { route: "dashboard" };
@@ -14,7 +22,11 @@ export function routeFromLocation(location: Pick<Location, "pathname">): Browser
 
   const agentMatch = path.match(/^\/agents\/([^/]+)(?:\/conversation)?$/);
   if (agentMatch) {
-    return { route: "agent", agentId: safeDecodeURIComponent(agentMatch[1]) };
+    return {
+      route: "agent",
+      agentId: safeDecodeURIComponent(agentMatch[1]),
+      eventSeq: eventSeqFromSearch(location.search),
+    };
   }
 
   return { route: "dashboard" };

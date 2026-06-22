@@ -1684,6 +1684,12 @@ code {
   align-self: flex-start;
 }
 
+.message.is-targeted {
+  border-radius: 16px;
+  outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  outline-offset: 6px;
+}
+
 .message.activity-message {
   align-self: flex-start;
   width: min(760px, 88%);
