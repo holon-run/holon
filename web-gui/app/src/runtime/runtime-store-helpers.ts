@@ -33,6 +33,7 @@ export interface AgentSessionState {
   newestSeq?: number;
   oldestSeq?: number;
   hasOlder?: boolean;
+  targetEventSeq?: number;
   lastStreamActivityAt?: string;
   reconnectAttempt?: number;
   error?: string;

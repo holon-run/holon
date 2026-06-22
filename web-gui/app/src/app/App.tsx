@@ -148,7 +148,7 @@ export function App() {
     const applyBrowserRoute = () => {
       const nextRoute = routeFromLocation(window.location);
       if (nextRoute.route === "agent" && nextRoute.agentId) {
-        openAgent(nextRoute.agentId);
+        openAgent(nextRoute.agentId, nextRoute.eventSeq);
         return;
       }
       setRoute(nextRoute.route);
@@ -179,7 +179,7 @@ export function App() {
   }
 
   function navigateAgent(agentId: string, eventSeq?: number) {
-    openAgent(agentId);
+    openAgent(agentId, eventSeq);
     pushBrowserRoute("agent", agentId, eventSeq == null ? undefined : { event_seq: eventSeq });
   }
 
@@ -372,6 +372,7 @@ export function App() {
             hasOlderEvents={selectedAgentSession?.hasOlder ?? selectedAgentDetail?.hasOlderEvents ?? false}
             loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
             historyError={selectedAgentSession?.historyError}
+            targetEventSeq={selectedAgentSession?.targetEventSeq}
             onRefreshModels={refreshModelCatalog}
             onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, displayLevel, reasoningEffort)}
             onClearModel={() => clearAgentModel(activeAgent.id, displayLevel)}

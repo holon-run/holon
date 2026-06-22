@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatSearchPreview, searchOptionsForSelection } from "./SearchPage";
+import { canSearchSelection, formatSearchPreview, searchOptionsForSelection } from "./SearchPage";
 import type { AgentSummary } from "../../runtime/types";
 
 function agent(id: string): AgentSummary {
@@ -40,6 +40,13 @@ describe("searchOptionsForSelection", () => {
       includeAllWorkspaces: false,
       limit: 20,
     });
+  });
+});
+
+describe("canSearchSelection", () => {
+  it("waits for visible agents before searching the All agents option", () => {
+    expect(canSearchSelection("all", [])).toBe(false);
+    expect(canSearchSelection("all", [agent("holon-pm")])).toBe(true);
   });
 });
 

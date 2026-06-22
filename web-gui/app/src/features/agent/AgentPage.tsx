@@ -27,6 +27,7 @@ interface AgentPageProps {
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
   historyError?: string;
+  targetEventSeq?: number;
   onRefreshModels: () => Promise<void>;
   onSetModel: (model: string, reasoningEffort?: string) => Promise<void>;
   onClearModel: () => Promise<void>;
@@ -91,6 +92,7 @@ export function AgentPage({
   modelCatalogLoading,
   modelCatalogError,
   historyError,
+  targetEventSeq,
   onRefreshModels,
   onSetModel,
   onClearModel,
@@ -129,6 +131,7 @@ export function AgentPage({
   const isWorking = isAgentWorking(activeAgent, sendingPrompt);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
+  const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
@@ -175,6 +178,15 @@ export function AgentPage({
       list.scrollTop = list.scrollHeight;
     }
   }, [timelineVersion]);
+
+  useLayoutEffect(() => {
+    if (!targetTimelineItemId) return;
+    const list = messageListRef.current;
+    const target = list?.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`);
+    if (!target) return;
+    stickToBottomRef.current = false;
+    target.scrollIntoView({ block: "center" });
+  }, [targetTimelineItemId, timelineVersion]);
 
   async function sendDraftPrompt() {
     if (!canSendPrompt) return;
@@ -285,6 +297,7 @@ export function AgentPage({
                 onOpenInspector={onOpenInspector}
                 onInspectActivity={onInspectActivity}
                 selectedActivityId={selectedActivityId}
+                targetTimelineItemId={targetTimelineItemId}
                 turn={turn}
               />
             ))}
@@ -610,18 +623,37 @@ function isTurnStartedItem(item: AgentTimelineItem): boolean {
   return item.meta.startsWith("turn_started");
 }
 
+function itemHasEventSeq(item: AgentTimelineItem, eventSeq: number | undefined): boolean {
+  if (eventSeq == null) return false;
+  if (rawEventSeq(item.rawEvent) === eventSeq) return true;
+  return (item.activities ?? []).some((activity) => rawEventSeq(activity.rawEvent) === eventSeq);
+}
+
+function rawEventSeq(rawEvent: unknown): number | undefined {
+  return typeof rawEvent === "object" && rawEvent !== null && "event_seq" in rawEvent && typeof rawEvent.event_seq === "number"
+    ? rawEvent.event_seq
+    : undefined;
+}
+
+function cssEscape(value: string): string {
+  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(value);
+  return value.replace(/["\\]/g, "\\$&");
+}
+
 const TimelineTurnGroup = memo(function TimelineTurnGroup({
   turn,
   displayLevel,
   onOpenInspector,
   onInspectActivity,
   selectedActivityId,
+  targetTimelineItemId,
 }: {
   turn: TimelineTurn;
   displayLevel: DisplayLevel;
   onOpenInspector: () => void;
   onInspectActivity: (activity: AgentTimelineActivity) => void;
   selectedActivityId?: string;
+  targetTimelineItemId?: string;
 }) {
   return (
     <section className="timeline-turn" aria-label={turn.label}>
@@ -640,6 +672,7 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
             onOpenInspector={onOpenInspector}
             onInspectActivity={onInspectActivity}
             selectedActivityId={selectedActivityId}
+            targetTimelineItemId={targetTimelineItemId}
           />
         ))}
       </div>
@@ -654,6 +687,7 @@ const TimelineMessage = memo(function TimelineMessage({
   onOpenInspector,
   onInspectActivity,
   selectedActivityId,
+  targetTimelineItemId,
 }: {
   item: AgentTimelineItem;
   compactAssistant: boolean;
@@ -661,6 +695,7 @@ const TimelineMessage = memo(function TimelineMessage({
   onOpenInspector: () => void;
   onInspectActivity: (activity: AgentTimelineActivity) => void;
   selectedActivityId?: string;
+  targetTimelineItemId?: string;
 }) {
   const isRuntimeItem = isRuntimeActivityItem(item);
   const activities =
@@ -671,7 +706,10 @@ const TimelineMessage = memo(function TimelineMessage({
         : (item.activities ?? []);
   if (isRuntimeItem) {
     return (
-      <article className="message activity-message">
+      <article
+        className={`message activity-message${targetTimelineItemId === item.id ? " is-targeted" : ""}`}
+        data-timeline-item-id={item.id}
+      >
         {activities.length ? (
           <ActivityTrail
             activities={activities}
@@ -689,7 +727,10 @@ const TimelineMessage = memo(function TimelineMessage({
   const inspectItem = () => onInspectActivity(timelineItemToWorkingActivity(item));
 
   return (
-    <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
+    <article
+      className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}${targetTimelineItemId === item.id ? " is-targeted" : ""}`}
+      data-timeline-item-id={item.id}
+    >
       <div className="bubble">
         <TimelineItemContent item={item} />
         <TimelineItemDetail detail={item.detail} />

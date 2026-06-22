@@ -66,6 +66,7 @@ export function SearchPage({
   useEffect(() => {
     const initialQuery = readInitialQuery();
     if (!initialQuery || search || loading) return;
+    if (!canSearchSelection("all", agents)) return;
     void onSearch(initialQuery, searchOptionsForSelection("all", agents, limit));
   }, [agents, limit, loading, onSearch, search]);
 
@@ -109,7 +110,7 @@ export function SearchPage({
             <span>Limit</span>
             <input value={limit} inputMode="numeric" onChange={(event) => setLimit(event.target.value)} />
           </label>
-          <Button type="submit" variant="accent" disabled={!trimmedQuery || loading}>
+          <Button type="submit" variant="accent" disabled={!trimmedQuery || loading || !canSearchSelection(agentId, agents)}>
             {loading ? "Searching…" : "Search"}
           </Button>
         </form>
@@ -458,4 +459,9 @@ export function searchOptionsForSelection(agentId: string, agents: AgentSummary[
     includeAllWorkspaces: agentId === "all",
     limit: numberFromInput(limit, DEFAULT_LIMIT),
   };
+}
+
+export function canSearchSelection(agentId: string, agents: AgentSummary[]): boolean {
+  if (agentId !== "all") return Boolean(agentId.trim());
+  return agents.some((agent) => Boolean(agent.id.trim()));
 }

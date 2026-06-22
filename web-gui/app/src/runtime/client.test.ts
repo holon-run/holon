@@ -178,6 +178,43 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
   });
 
+  it("fetches an agent event window with pagination parameters", async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info")) {
+        return Response.json({
+          events: [{ agent_id: "agent/one", event_seq: 740, ts: "2026-06-22T00:00:00Z", type: "message_enqueued" }],
+          has_older: true,
+          cursor_seq: 819,
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(
+      client.getAgentEvents("agent/one", {
+        afterSeq: 739,
+        limit: 80,
+        order: "asc",
+        displayLevel: "info",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        events: [expect.objectContaining({ event_seq: 740 })],
+        cursor_seq: 819,
+      }),
+    );
+    expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info"]);
+  });
+
   it("posts runtime search filters for cross-agent all-workspace search", async () => {
     const seen: Array<{ url: string; body: unknown }> = [];
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
