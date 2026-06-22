@@ -259,30 +259,59 @@ pub async fn run_once_with_host(
                 .saturating_sub(baseline.total_model_rounds)
                 >= max
         });
+        let terminal_within_max_turns = request.max_turns.is_none_or(|max| {
+            state
+                .total_model_rounds
+                .saturating_sub(baseline.total_model_rounds)
+                <= max
+        });
 
+        let terminal_status = if foreground_idle && poll_view.turn_terminal_observed {
+            session.runtime.current_closure().await?.map(|closure| {
+                (
+                    match closure.outcome {
+                        ClosureOutcome::Completed => RunFinalStatus::Completed,
+                        ClosureOutcome::Continuable => RunFinalStatus::Waiting,
+                        ClosureOutcome::Failed => RunFinalStatus::Failed,
+                        ClosureOutcome::Waiting => RunFinalStatus::Waiting,
+                    },
+                    closure.waiting_reason,
+                )
+            })
+        } else {
+            None
+        };
+        let terminal_final_text_observed = state
+            .last_turn_terminal
+            .as_ref()
+            .filter(|record| record.turn_index > baseline.turn_index)
+            .and_then(|record| record.last_assistant_message.as_ref())
+            .is_some_and(|text| !text.trim().is_empty());
+
+        let waiting_for_active_tasks = request.wait_for_tasks && !active_new_task_ids.is_empty();
         let candidate_status = if poll_view.runtime_error && foreground_idle {
             Some((RunFinalStatus::Failed, None))
+        } else if terminal_within_max_turns
+            && (matches!(terminal_status, Some((RunFinalStatus::Failed, _)))
+                || (terminal_final_text_observed
+                    && matches!(terminal_status, Some((RunFinalStatus::Completed, _)))))
+        {
+            if waiting_for_active_tasks {
+                None
+            } else {
+                terminal_status
+            }
         } else if max_turns_hit && foreground_idle {
-            if request.wait_for_tasks && !active_new_task_ids.is_empty() {
+            if waiting_for_active_tasks {
                 None
             } else {
                 Some((RunFinalStatus::MaxTurnsExceeded, None))
             }
-        } else if foreground_idle && poll_view.turn_terminal_observed {
-            if request.wait_for_tasks && !active_new_task_ids.is_empty() {
+        } else if terminal_status.is_some() {
+            if waiting_for_active_tasks {
                 None
             } else {
-                session.runtime.current_closure().await?.map(|closure| {
-                    (
-                        match closure.outcome {
-                            ClosureOutcome::Completed => RunFinalStatus::Completed,
-                            ClosureOutcome::Continuable => RunFinalStatus::Waiting,
-                            ClosureOutcome::Failed => RunFinalStatus::Failed,
-                            ClosureOutcome::Waiting => RunFinalStatus::Waiting,
-                        },
-                        closure.waiting_reason,
-                    )
-                })
+                terminal_status
             }
         } else {
             None
