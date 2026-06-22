@@ -4402,20 +4402,19 @@ mod tests {
         ensure_agent_home_layout(dir.path()).unwrap();
         fs::write(
             agent_memory_self_path(dir.path()),
-            "initial rebuild intent sentinel",
+            "obsolete-only-token rebuild intent sentinel",
         )
         .unwrap();
         rebuild_memory_index(&storage, None).unwrap();
 
         fs::write(
             agent_memory_self_path(dir.path()),
-            "refreshed rebuild intent sentinel",
+            "refreshed-only-token rebuild intent sentinel",
         )
         .unwrap();
         request_memory_index_rebuild(&storage, None, "test_rebuild").unwrap();
 
-        let stale =
-            search_memory_query(&storage, "initial rebuild intent", 10, None, false).unwrap();
+        let stale = search_memory_query(&storage, "obsolete-only-token", 10, None, false).unwrap();
         assert_eq!(stale.index_status.freshness, "stale");
         assert!(stale
             .results
@@ -4425,12 +4424,12 @@ mod tests {
         let status = refresh_memory_index_bounded(&storage, None, 10).unwrap();
         assert_eq!(status.freshness, "fresh");
         assert!(
-            search_memory(&storage, "initial rebuild intent", 10, None, false)
+            search_memory(&storage, "obsolete-only-token", 10, None, false)
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            search_memory(&storage, "refreshed rebuild intent", 10, None, false)
+            search_memory(&storage, "refreshed-only-token", 10, None, false)
                 .unwrap()
                 .iter()
                 .any(|result| result.source_ref == "agent_memory:self")
