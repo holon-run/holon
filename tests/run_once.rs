@@ -1143,7 +1143,56 @@ impl AgentProvider for TwoRoundProvider {
 }
 
 #[tokio::test]
-async fn run_once_enforces_soft_max_turns_boundary() -> Result<()> {
+async fn run_once_reports_completed_when_final_result_is_below_max_turns() -> Result<()> {
+    let home_dir = tempdir()?.keep();
+    let workspace_dir = tempdir()?.keep();
+    let host = RuntimeHost::new_with_provider(
+        test_config(workspace_dir, home_dir),
+        Arc::new(StubProvider::new("stub result")),
+    )?;
+
+    let response = run_once_with_host(
+        host,
+        RunOnceRequest {
+            max_turns: Some(2),
+            ..run_request("hello")
+        },
+    )
+    .await?;
+
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "stub result");
+    assert_eq!(response.model_rounds, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_once_reports_completed_when_final_result_lands_on_max_turn_boundary() -> Result<()> {
+    let home_dir = tempdir()?.keep();
+    let workspace_dir = tempdir()?.keep();
+    let host = RuntimeHost::new_with_provider(
+        test_config(workspace_dir, home_dir),
+        Arc::new(StubProvider::new("stub result")),
+    )?;
+
+    let response = run_once_with_host(
+        host,
+        RunOnceRequest {
+            max_turns: Some(1),
+            ..run_request("hello")
+        },
+    )
+    .await?;
+
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "stub result");
+    assert_eq!(response.model_rounds, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_once_reports_completed_when_final_text_arrives_after_last_allowed_model_round(
+) -> Result<()> {
     let home_dir = tempdir()?.keep();
     let workspace_dir = tempdir()?.keep();
     let host = RuntimeHost::new_with_provider(
@@ -1154,13 +1203,14 @@ async fn run_once_enforces_soft_max_turns_boundary() -> Result<()> {
     let response = run_once_with_host(
         host,
         RunOnceRequest {
-            max_turns: Some(1),
+            max_turns: Some(2),
             ..run_request("two round prompt")
         },
     )
     .await?;
 
-    assert_eq!(response.final_status, RunFinalStatus::MaxTurnsExceeded);
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "two rounds complete");
     assert_eq!(response.model_rounds, 2);
     Ok(())
 }
