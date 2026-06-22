@@ -6,6 +6,7 @@ mod continuation;
 mod delivery;
 mod failure;
 mod lifecycle;
+mod memory_indexer;
 mod memory_refresh;
 mod message_dispatch;
 mod operator;
@@ -31,7 +32,7 @@ pub use tasks::{
 pub(crate) use waiting::{WaitForScope, WaitForWakeKind};
 
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -244,6 +245,7 @@ struct RuntimeInner {
         Mutex<HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>>,
     view_image_observation_cache:
         Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
+    model_discovery_refreshes: Mutex<HashSet<crate::config::ProviderId>>,
     callback_base_url: String,
     tools: ToolRegistry,
     system: Arc<LocalSystem>,
@@ -1392,22 +1394,30 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn persist_message_evidence(&self, message: &MessageEnvelope) -> Result<()> {
-        self.inner.storage.append_message(message)
+        self.inner.storage.append_message(message)?;
+        self.inner.notify.notify_one();
+        Ok(())
     }
 
     pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.inner.storage.append_transcript_entry(entry)
+        self.inner.storage.append_transcript_entry(entry)?;
+        self.inner.notify.notify_one();
+        Ok(())
     }
 
     pub(crate) fn persist_tool_execution_evidence(
         &self,
         record: &ToolExecutionRecord,
     ) -> Result<()> {
-        self.inner.storage.append_tool_execution(record)
+        self.inner.storage.append_tool_execution(record)?;
+        self.inner.notify.notify_one();
+        Ok(())
     }
 
     pub(crate) fn persist_brief_evidence(&self, brief: &BriefRecord) -> Result<()> {
-        self.inner.storage.append_brief(brief)
+        self.inner.storage.append_brief(brief)?;
+        self.inner.notify.notify_one();
+        Ok(())
     }
 
     pub async fn run(self) -> Result<()> {

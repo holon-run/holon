@@ -8,6 +8,7 @@ use crate::context::ContextConfig;
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
 const DEFAULT_COMPACTION_TRIGGER_PERCENT: u8 = 90;
 const DEFAULT_KEEP_RECENT_PERCENT: u8 = 38;
+const DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS: usize = 64_000;
 const DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS: usize = 2_500;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,9 +196,18 @@ impl Default for ResolvedRuntimeModelPolicy {
             description: "Legacy model state without resolved runtime policy.".into(),
             context_window_tokens: None,
             effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
-            prompt_budget_estimated_tokens: 4096,
-            compaction_trigger_estimated_tokens: 2048,
-            compaction_keep_recent_estimated_tokens: 768,
+            prompt_budget_estimated_tokens: DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS,
+            compaction_trigger_estimated_tokens: percent_of(
+                DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS,
+                usize::from(DEFAULT_COMPACTION_TRIGGER_PERCENT),
+            ),
+            compaction_keep_recent_estimated_tokens: percent_of(
+                percent_of(
+                    DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS,
+                    usize::from(DEFAULT_COMPACTION_TRIGGER_PERCENT),
+                ),
+                usize::from(DEFAULT_KEEP_RECENT_PERCENT),
+            ),
             runtime_max_output_tokens: 8192,
             verbosity: None,
             tool_output_truncation_estimated_tokens:
@@ -307,7 +317,13 @@ impl BuiltInModelCatalog {
                     .map(|window| percent_of(window, usize::from(effective_context_window_percent)))
             })
             .or_else(|| fallback_override.and_then(|value| value.prompt_budget_estimated_tokens))
-            .unwrap_or(base_context_config.prompt_budget_estimated_tokens);
+            .unwrap_or_else(|| {
+                if built_in.is_none() {
+                    DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS
+                } else {
+                    base_context_config.prompt_budget_estimated_tokens
+                }
+            });
         let auto_compact_token_limit = override_config
             .and_then(|value| value.auto_compact_token_limit)
             .or_else(|| built_in.and_then(|entry| entry.auto_compact_token_limit))
@@ -2381,6 +2397,24 @@ mod tests {
         assert_eq!(policy.prompt_budget_estimated_tokens, 64_000);
         assert_eq!(policy.compaction_trigger_estimated_tokens, 48_000);
         assert_eq!(policy.compaction_keep_recent_estimated_tokens, 24_000);
+        assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
+    }
+
+    #[test]
+    fn resolves_unknown_model_with_larger_default_fallback_budget() {
+        let catalog = BuiltInModelCatalog::new();
+        let policy = catalog.resolve_policy(
+            &ModelRef::new(ProviderId::openai(), "custom-model"),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+
+        assert_eq!(policy.prompt_budget_estimated_tokens, 64_000);
+        assert_eq!(policy.compaction_trigger_estimated_tokens, 57_600);
+        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 21_888);
         assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
     }
 

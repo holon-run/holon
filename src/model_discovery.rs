@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -14,6 +15,7 @@ use crate::{
 };
 
 const OPENROUTER_MODELS_PATH: &str = "/models";
+pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelDiscoveryCacheFile {
@@ -51,8 +53,90 @@ pub struct ModelDiscoveryRefreshReport {
     pub cache_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelDiscoveryCacheState {
+    Fresh,
+    Missing,
+    Stale,
+    Unsupported,
+    Unauthenticated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelDiscoveryCacheStatus {
+    pub provider: ProviderId,
+    pub state: ModelDiscoveryCacheState,
+    pub supports_auto_refresh: bool,
+    pub credential_configured: bool,
+    pub refresh_in_flight: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_seconds: Option<u64>,
+    pub ttl_seconds: u64,
+    pub model_count: usize,
+}
+
 pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
     home_dir.join("model-discovery-cache.json")
+}
+
+pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
+    provider.id.as_str() == "openrouter"
+}
+
+pub fn discovery_cache_status_for_provider(
+    provider: &ProviderRuntimeConfig,
+    cache: &ModelDiscoveryCacheFile,
+    ttl: Duration,
+    refresh_in_flight: bool,
+) -> ModelDiscoveryCacheStatus {
+    let supports_auto_refresh = provider_supports_model_discovery(provider);
+    let credential_configured = provider.has_configured_credential();
+    let entry = cache.providers.get(&provider.id);
+    let age = entry.and_then(|entry| {
+        Utc::now()
+            .signed_duration_since(entry.fetched_at)
+            .to_std()
+            .ok()
+    });
+    let state = if !supports_auto_refresh {
+        ModelDiscoveryCacheState::Unsupported
+    } else if !credential_configured {
+        ModelDiscoveryCacheState::Unauthenticated
+    } else if let Some(age) = age {
+        if age <= ttl {
+            ModelDiscoveryCacheState::Fresh
+        } else {
+            ModelDiscoveryCacheState::Stale
+        }
+    } else {
+        ModelDiscoveryCacheState::Missing
+    };
+
+    ModelDiscoveryCacheStatus {
+        provider: provider.id.clone(),
+        state,
+        supports_auto_refresh,
+        credential_configured,
+        refresh_in_flight,
+        fetched_at: entry.map(|entry| entry.fetched_at),
+        age_seconds: age.map(|age| age.as_secs()),
+        ttl_seconds: ttl.as_secs(),
+        model_count: entry.map(|entry| entry.models.len()).unwrap_or(0),
+    }
+}
+
+pub fn discovery_cache_needs_refresh(
+    provider: &ProviderRuntimeConfig,
+    cache: &ModelDiscoveryCacheFile,
+    ttl: Duration,
+) -> bool {
+    matches!(
+        discovery_cache_status_for_provider(provider, cache, ttl, false).state,
+        ModelDiscoveryCacheState::Missing | ModelDiscoveryCacheState::Stale
+    )
 }
 
 pub fn load_discovery_cache_at(path: &Path) -> Result<ModelDiscoveryCacheFile> {
@@ -261,6 +345,28 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn openrouter_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("openrouter").unwrap(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://openrouter.ai/api/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: Some("test-key".into()),
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     #[test]
     fn maps_openrouter_models_to_remote_metadata() {
         let payload: OpenRouterModelsResponse = serde_json::from_str(
@@ -281,5 +387,36 @@ mod tests {
         assert_eq!(model.max_output_tokens_upper_limit, Some(8192));
         assert!(model.capabilities.image_input);
         assert_eq!(model.source, ModelMetadataSource::RemoteDiscovered);
+    }
+
+    #[test]
+    fn discovery_cache_status_reports_missing_stale_and_fresh() {
+        let provider = openrouter_provider();
+        let ttl = Duration::from_secs(60);
+        let mut cache = ModelDiscoveryCacheFile::default();
+
+        let missing = discovery_cache_status_for_provider(&provider, &cache, ttl, false);
+        assert_eq!(missing.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(&provider, &cache, ttl));
+
+        cache.providers.insert(
+            provider.id.clone(),
+            ProviderModelDiscoveryCache {
+                provider: provider.id.clone(),
+                fetched_at: Utc::now() - chrono::TimeDelta::seconds(120),
+                source_url: None,
+                response_hash: None,
+                models: Vec::new(),
+            },
+        );
+        let stale = discovery_cache_status_for_provider(&provider, &cache, ttl, true);
+        assert_eq!(stale.state, ModelDiscoveryCacheState::Stale);
+        assert!(stale.refresh_in_flight);
+        assert!(discovery_cache_needs_refresh(&provider, &cache, ttl));
+
+        cache.providers.get_mut(&provider.id).unwrap().fetched_at = Utc::now();
+        let fresh = discovery_cache_status_for_provider(&provider, &cache, ttl, false);
+        assert_eq!(fresh.state, ModelDiscoveryCacheState::Fresh);
+        assert!(!discovery_cache_needs_refresh(&provider, &cache, ttl));
     }
 }

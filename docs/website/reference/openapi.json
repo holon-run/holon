@@ -1967,6 +1967,9 @@
                 "format": "int64",
                 "type": "integer"
               },
+              "indexing_needed": {
+                "type": "boolean"
+              },
               "lag": {
                 "format": "int64",
                 "type": "integer"
@@ -1977,6 +1980,9 @@
                   "string",
                   "null"
                 ]
+              },
+              "results_may_be_incomplete": {
+                "type": "boolean"
               },
               "skipped_error_count": {
                 "format": "uint",

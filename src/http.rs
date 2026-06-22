@@ -1015,12 +1015,17 @@ pub async fn models_handler(
     let runtime = state.host.default_runtime().await.map_err(error_response)?;
     let available_models = runtime.available_models().await.map_err(error_response)?;
     let model_availability = runtime.model_availability().await.map_err(error_response)?;
+    let model_discovery_cache = runtime
+        .model_discovery_status()
+        .await
+        .map_err(error_response)?;
     traced_json(
         "/models",
         started_at,
         json!({
             "available_models": available_models,
             "model_availability": model_availability,
+            "model_discovery_cache": model_discovery_cache,
         }),
     )
 }
