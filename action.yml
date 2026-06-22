@@ -126,6 +126,65 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Set up GitHub CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if command -v gh >/dev/null 2>&1; then
+          echo "GitHub CLI already available: $(command -v gh)"
+          exit 0
+        fi
+
+        version="2.95.0"
+        platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64) arch=amd64 ;;
+          arm64|aarch64) arch=arm64 ;;
+        esac
+
+        case "$platform:$arch" in
+          linux:amd64|linux:arm64)
+            asset="gh_${version}_${platform}_${arch}.tar.gz"
+            ;;
+          darwin:amd64)
+            asset="gh_${version}_macOS_amd64.zip"
+            ;;
+          darwin:arm64)
+            asset="gh_${version}_macOS_arm64.zip"
+            ;;
+          *)
+            echo "::error::Unsupported GitHub CLI platform: $platform/$arch"
+            exit 1
+            ;;
+        esac
+
+        install_dir="$RUNNER_TEMP/holon/bin"
+        tmp_dir="$RUNNER_TEMP/holon/gh-cli"
+        rm -rf "$tmp_dir"
+        mkdir -p "$install_dir" "$tmp_dir"
+        url="https://github.com/cli/cli/releases/download/v${version}/${asset}"
+
+        curl_args=(--fail --show-error --location --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300)
+        if [[ "$asset" == *.tar.gz ]]; then
+          curl "${curl_args[@]}" "$url" | tar -xz -C "$tmp_dir"
+        else
+          curl "${curl_args[@]}" "$url" -o "$tmp_dir/$asset"
+          unzip -q "$tmp_dir/$asset" -d "$tmp_dir"
+        fi
+
+        gh_bin="$(find "$tmp_dir" -path '*/bin/gh' -type f | head -n1)"
+        if [ -z "$gh_bin" ]; then
+          echo "::error::Failed to find gh binary after extracting $asset."
+          find "$tmp_dir" -maxdepth 3 -type f | sort
+          exit 1
+        fi
+        cp "$gh_bin" "$install_dir/gh"
+        chmod +x "$install_dir/gh"
+        echo "$install_dir" >> "$GITHUB_PATH"
+        echo "Installed GitHub CLI to $install_dir/gh"
+
     - name: Resolve Holon context
       id: context
       shell: bash
