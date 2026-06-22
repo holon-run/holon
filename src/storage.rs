@@ -414,7 +414,7 @@ impl AppStorage {
         Ok(())
     }
 
-    pub(crate) fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
+    pub fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
         let agent_id = self.current_agent_id()?;
         {
             let mut counter = self
