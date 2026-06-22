@@ -85,6 +85,8 @@ on:
         required: false
       openai_api_key:
         required: false
+      bigmodel_api_key:
+        required: false
       holon_github_token:
         required: false
       anthropic_base_url:
@@ -146,8 +148,10 @@ jobs:
           anthropic_base_url: ${{ secrets.anthropic_base_url }}
           openai_api_key: ${{ secrets.openai_api_key }}
           openai_base_url: ${{ secrets.openai_base_url }}
+          bigmodel_api_key: ${{ secrets.bigmodel_api_key }}
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.anthropic_auth_token || secrets.anthropic_api_key }}
           ANTHROPIC_BASE_URL: ${{ secrets.anthropic_base_url }}
           OPENAI_API_KEY: ${{ secrets.openai_api_key }}
           OPENAI_BASE_URL: ${{ secrets.openai_base_url }}
+          BIGMODEL_API_KEY: ${{ secrets.bigmodel_api_key }}

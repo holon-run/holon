@@ -63,6 +63,9 @@ inputs:
     description: OpenAI Base URL.
     required: false
     default: ''
+  bigmodel_api_key:
+    description: BigModel API key.
+    required: false
   github_token:
     description: Explicit GitHub token override. Defaults to Holonbot broker token when available, then github.token.
     required: false
@@ -489,6 +492,7 @@ runs:
         ANTHROPIC_BASE_URL_INPUT: ${{ inputs.anthropic_base_url }}
         OPENAI_API_KEY_INPUT: ${{ inputs.openai_api_key }}
         OPENAI_BASE_URL_INPUT: ${{ inputs.openai_base_url }}
+        BIGMODEL_API_KEY_INPUT: ${{ inputs.bigmodel_api_key }}
         GITHUB_TOKEN_INPUT: ${{ steps.github-token.outputs.token }}
         HOLON_ACTOR_LOGIN: ${{ steps.github-token.outputs.actor_login }}
         HOLON_ACTOR_TYPE: ${{ steps.github-token.outputs.actor_type }}
@@ -511,6 +515,9 @@ runs:
         fi
         if [ -n "$OPENAI_BASE_URL_INPUT" ]; then
           export OPENAI_BASE_URL="$OPENAI_BASE_URL_INPUT"
+        fi
+        if [ -n "$BIGMODEL_API_KEY_INPUT" ]; then
+          export BIGMODEL_API_KEY="$BIGMODEL_API_KEY_INPUT"
         fi
 
         workspace="$INPUT_WORKSPACE"
@@ -642,6 +649,9 @@ runs:
         cache_created="$(jq -r '.provider_cache_usage.creation_input_tokens // 0' "$run_json")"
         cacheable="$(jq -r '.provider_cache_usage.cacheable_input_tokens // 0' "$run_json")"
         hit_rate="$(jq -r 'if (.provider_cache_usage.hit_rate // null) == null then "n/a" else ((.provider_cache_usage.hit_rate * 10000 | round) / 100 | tostring) + "%" end' "$run_json")"
+        requested_model="$(jq -r '.requested_model // "unknown"' "$run_json")"
+        active_model="$(jq -r '.active_model // "unknown"' "$run_json")"
+        fallback_active="$(jq -r '.fallback_active // false' "$run_json")"
         final_status="$(jq -r '.final_status // "unknown"' "$run_json")"
         report_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$repo_hint}/actions/runs/${GITHUB_RUN_ID:-}"
 
@@ -652,6 +662,9 @@ runs:
           echo "- Result: \`$final_status\`"
           echo "- Target: $target_ref"
           echo "- Workflow run: $report_url"
+          echo "- Model: $active_model"
+          echo "- Requested model: $requested_model"
+          echo "- Fallback active: $fallback_active"
           echo "- Token usage: input $input_tokens, output $output_tokens, total $total_tokens"
           echo "- Provider cache: read $cache_read, created $cache_created, cacheable $cacheable, hit rate $hit_rate"
           echo "- Model rounds: $model_rounds"
