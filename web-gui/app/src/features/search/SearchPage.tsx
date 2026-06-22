@@ -2,25 +2,63 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import type { AgentSummary, SearchResponse, SearchResultItem } from "../../runtime/types";
+import type { AgentSummary, MemorySourceContent, RuntimeSearchOptions, SearchResponse, SearchResultItem } from "../../runtime/types";
 
 interface SearchPageProps {
   agents: AgentSummary[];
   search: SearchResponse | null;
   loading: boolean;
   error?: string;
-  onSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
+  resultContentBySourceRef: Record<string, MemorySourceContent>;
+  resultContentLoadingBySourceRef: Record<string, boolean>;
+  resultContentErrorBySourceRef: Record<string, string | undefined>;
+  onSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
+  onLoadResultContent: (sourceRef: string) => Promise<void>;
   onOpenAgent: (agentId: string, eventSeq?: number) => void;
+}
+
+function extractMessageBodyPreview(value: string): string | undefined {
+  const bodyMarker = "\nbody:\n";
+  const inlineBodyMarker = "\nbody:";
+  const compactBodyMarker = " body:";
+  const markerIndex = value.indexOf(bodyMarker);
+  const inlineMarkerIndex = value.indexOf(inlineBodyMarker);
+  const compactMarkerIndex = value.lastIndexOf(compactBodyMarker);
+  const body = markerIndex >= 0
+    ? value.slice(markerIndex + bodyMarker.length)
+    : value.startsWith("body:\n")
+      ? value.slice("body:\n".length)
+      : inlineMarkerIndex >= 0
+        ? value.slice(inlineMarkerIndex + inlineBodyMarker.length)
+        : compactMarkerIndex >= 0
+          ? value.slice(compactMarkerIndex + compactBodyMarker.length)
+        : value.startsWith("body:")
+          ? value.slice("body:".length)
+      : undefined;
+  const summary = body
+    ?.replace(/\n\[truncated\]$/, "")
+    .trim();
+  return summary || undefined;
 }
 
 const DEFAULT_LIMIT = 20;
 
-export function SearchPage({ agents, search, loading, error, onSearch, onOpenAgent }: SearchPageProps) {
+export function SearchPage({
+  agents,
+  search,
+  loading,
+  error,
+  resultContentBySourceRef,
+  resultContentLoadingBySourceRef,
+  resultContentErrorBySourceRef,
+  onSearch,
+  onLoadResultContent,
+  onOpenAgent,
+}: SearchPageProps) {
   const [query, setQuery] = useState(() => search?.query ?? readInitialQuery());
   const [agentId, setAgentId] = useState("all");
   const [limit, setLimit] = useState(String(search?.limit || DEFAULT_LIMIT));
   const trimmedQuery = query.trim();
-  const selectedAgentIds = agentId === "all" ? undefined : [agentId];
   const hasResults = Boolean(search?.results.length);
   const resultCount = search?.results.length ?? 0;
   const agentOptions = useMemo(() => [...agents].sort((left, right) => left.id.localeCompare(right.id)), [agents]);
@@ -28,13 +66,13 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
   useEffect(() => {
     const initialQuery = readInitialQuery();
     if (!initialQuery || search || loading) return;
-    void onSearch(initialQuery, { limit: numberFromInput(limit, DEFAULT_LIMIT) });
-  }, [limit, loading, onSearch, search]);
+    void onSearch(initialQuery, searchOptionsForSelection("all", agents, limit));
+  }, [agents, limit, loading, onSearch, search]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     writeQueryParam(trimmedQuery);
-    void onSearch(trimmedQuery, { agentIds: selectedAgentIds, limit: numberFromInput(limit, DEFAULT_LIMIT) });
+    void onSearch(trimmedQuery, searchOptionsForSelection(agentId, agents, limit));
   }
 
   return (
@@ -103,7 +141,15 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
               </div>
               <div className="search-result-list">
                 {search?.results.map((result) => (
-                  <SearchResultCard key={result.locator.evidenceId ?? `${result.agentId}:${result.createdAt}:${result.preview}`} result={result} onOpenAgent={onOpenAgent} />
+                  <SearchResultCard
+                    key={result.locator.evidenceId ?? `${result.agentId}:${result.createdAt}:${result.preview}`}
+                    result={result}
+                    content={result.locator.sourceRef ? resultContentBySourceRef[result.locator.sourceRef] : undefined}
+                    contentLoading={result.locator.sourceRef ? resultContentLoadingBySourceRef[result.locator.sourceRef] : false}
+                    contentError={result.locator.sourceRef ? resultContentErrorBySourceRef[result.locator.sourceRef] : undefined}
+                    onLoadResultContent={onLoadResultContent}
+                    onOpenAgent={onOpenAgent}
+                  />
                 ))}
               </div>
             </>
@@ -114,8 +160,23 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
   );
 }
 
-function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; onOpenAgent: (agentId: string, eventSeq?: number) => void }) {
+function SearchResultCard({
+  result,
+  content,
+  contentLoading,
+  contentError,
+  onLoadResultContent,
+  onOpenAgent,
+}: {
+  result: SearchResultItem;
+  content?: MemorySourceContent;
+  contentLoading?: boolean;
+  contentError?: string;
+  onLoadResultContent: (sourceRef: string) => Promise<void>;
+  onOpenAgent: (agentId: string, eventSeq?: number) => void;
+}) {
   const preview = formatSearchPreview(result.preview);
+  const sourceRef = result.locator.sourceRef ?? result.locator.evidenceId;
   const locator = [
     result.locator.eventSeq != null ? `event #${result.locator.eventSeq}` : undefined,
     result.locator.turnId ? `turn ${shortId(result.locator.turnId)}` : undefined,
@@ -154,8 +215,32 @@ function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; o
         ) : null}
       </div>
       {locator.length > 0 ? <footer>{locator.join(" · ")}</footer> : null}
-      <details className="search-result-details">
-        <summary>Details</summary>
+      <details
+        className="search-result-details"
+        onToggle={(event) => {
+          if (event.currentTarget.open && sourceRef) {
+            void onLoadResultContent(sourceRef);
+          }
+        }}
+      >
+        <summary>Full source</summary>
+        {sourceRef ? (
+          <section className="search-result-full-source" aria-live="polite">
+            {contentLoading ? <p>Loading full source…</p> : null}
+            {contentError ? <p className="search-result-full-source-error">{contentError}</p> : null}
+            {content ? (
+              <>
+                <div className="search-result-full-source-head">
+                  <strong>{content.title}</strong>
+                  {content.truncated ? <span>truncated</span> : null}
+                </div>
+                <pre>{content.content || "No content available."}</pre>
+              </>
+            ) : null}
+          </section>
+        ) : (
+          <p className="search-result-full-source-empty">No source_ref available for this result.</p>
+        )}
         <dl>
           <div>
             <dt>Result type</dt>
@@ -190,9 +275,12 @@ interface FormattedSearchPreview {
   isFormatted: boolean;
 }
 
-function formatSearchPreview(value: string): FormattedSearchPreview {
+export function formatSearchPreview(value: string): FormattedSearchPreview {
   const text = value.trim();
   if (!text) return { summary: "No preview available.", meta: [], isFormatted: false };
+
+  const messageBody = extractMessageBodyPreview(text);
+  if (messageBody) return { title: "Message body", summary: messageBody, meta: [], isFormatted: true };
 
   const parsed = parseJsonPreview(text);
   if (!parsed) return { summary: text, meta: [], isFormatted: false };
@@ -361,4 +449,13 @@ function writeQueryParam(query: string): void {
     url.searchParams.delete("q");
   }
   window.history.replaceState(null, "", url);
+}
+
+export function searchOptionsForSelection(agentId: string, agents: AgentSummary[], limit: string): RuntimeSearchOptions {
+  const selectedAgentIds = agentId === "all" ? agents.map((agent) => agent.id).filter(Boolean) : [agentId];
+  return {
+    agentIds: selectedAgentIds.length > 0 ? selectedAgentIds : undefined,
+    includeAllWorkspaces: agentId === "all",
+    limit: numberFromInput(limit, DEFAULT_LIMIT),
+  };
 }

@@ -11,6 +11,8 @@ pub struct SearchRequest {
     pub include_all_workspaces: bool,
     #[serde(default)]
     pub agent_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub types: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -19,6 +21,12 @@ pub struct SearchResponse {
     pub limit: usize,
     pub results: Vec<crate::memory::MemorySearchResult>,
     pub index_status: crate::memory::MemorySearchIndexStatus,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct MemoryGetRequest {
+    pub source_ref: String,
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

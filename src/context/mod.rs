@@ -1,3 +1,17 @@
+//! Context assembly: builds prompt sections from runtime state.
+mod budget;
+mod render;
+// Re-import budget helpers for use within this module.
+use budget::{estimate_text_tokens, reserve_current_input_budget, truncate_section_content};
+// Re-import render helpers for use within this module.
+#[cfg(test)]
+use render::trust_label;
+use render::{
+    body_preview, bounded_inline, enum_label, estimate_message_tokens, include_in_prompt_context,
+    indent_block, message_body_text, message_header, push_budgeted_section, sanitize_inline,
+    section, turn_section,
+};
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -7,18 +21,18 @@ use serde_json::Value;
 
 use crate::{
     object_resolver::RuntimeObjectResolver,
-    prompt::{PromptSection, PromptStability},
+    prompt::PromptSection,
     storage::{is_active_task_status, AppStorage},
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::helpers::truncate_text,
     types::{
-        AdmissionContext, AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode,
-        ChildSupervisionProjection, CommandTaskStatusSnapshot, ContextEpisodeRecord,
-        ContinuationClass, ContinuationResolution, ContinuationTriggerKind, ExternalTriggerRecord,
-        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState,
-        ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnRecord,
-        WaitConditionRecord, WorkItemRecord, WorkItemRefStatus, WorkingMemorySnapshot,
+        AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode, ChildSupervisionProjection,
+        CommandTaskStatusSnapshot, ContextEpisodeRecord, ContinuationClass, ContinuationResolution,
+        ContinuationTriggerKind, ExternalTriggerRecord, ExternalTriggerScope,
+        ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
+        SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
+        TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord, WorkItemRecord,
+        WorkItemRefStatus, WorkingMemorySnapshot,
     },
 };
 
@@ -678,38 +692,6 @@ fn legacy_turn_identity_matches(
             .is_some_and(|(evidence_turn_index, message_seq)| evidence_turn_index == message_seq)
 }
 
-fn message_header(message: &MessageEnvelope) -> String {
-    let mut labels = vec![origin_label(&message.origin).to_string()];
-    if let Some(surface) = message.delivery_surface {
-        labels.push(delivery_surface_label(surface).to_string());
-    }
-    if let Some(context) = message.admission_context {
-        labels.push(admission_context_label(context).to_string());
-    }
-    if let Some(trigger_kind) = message.trigger_kind {
-        labels.push(format!("trigger:{}", enum_label(&trigger_kind)));
-    }
-    if let Some(work_item_id) = message.work_item_id.as_deref() {
-        labels.push(format!("work_item:{}", header_label_value(work_item_id)));
-    }
-    if let Some(task_id) = message.task_id.as_deref() {
-        labels.push(format!("task:{}", header_label_value(task_id)));
-    }
-    labels.push(authority_class_label(message.authority_class).to_string());
-    labels.push(kind_label(message));
-    format!("[{}]", labels.join("]["))
-}
-
-fn header_label_value(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' | ':' | '/' => ch,
-            _ => '_',
-        })
-        .collect()
-}
-
 fn default_external_ingress(
     storage: &AppStorage,
     agent_id: &str,
@@ -818,37 +800,6 @@ pub fn maybe_compact_agent(
             agent.working_memory.compression_epoch.saturating_add(1);
     }
     Ok(true)
-}
-
-fn section(name: &'static str, content: String) -> PromptSection {
-    PromptSection {
-        name: name.to_string(),
-        id: name.to_string(),
-        content,
-        stability: PromptStability::AgentScoped,
-    }
-}
-
-fn turn_section(name: &'static str, content: String) -> PromptSection {
-    PromptSection {
-        name: name.to_string(),
-        id: name.to_string(),
-        content,
-        stability: PromptStability::TurnScoped,
-    }
-}
-
-fn push_budgeted_section(
-    sections: &mut Vec<PromptSection>,
-    remaining_budget: &mut usize,
-    section: PromptSection,
-) -> bool {
-    let Some(section) = fit_section_to_budget(section, *remaining_budget) else {
-        return false;
-    };
-    *remaining_budget = remaining_budget.saturating_sub(estimate_section_tokens(&section));
-    sections.push(section);
-    true
 }
 
 fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
@@ -965,45 +916,6 @@ fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStat
     if let Some(output_path) = command.output_path.as_deref() {
         lines.push(format!("    output_path: {}", sanitize_inline(output_path)));
     }
-}
-
-fn fit_section_to_budget(section: PromptSection, budget: usize) -> Option<PromptSection> {
-    if budget == 0 {
-        return None;
-    }
-
-    if estimate_section_tokens(&section) <= budget {
-        return Some(section);
-    }
-
-    let section_header_budget = estimate_text_tokens(&format!("[{}]\n", section.name));
-    if budget <= section_header_budget {
-        return None;
-    }
-
-    let truncated_content = truncate_section_content(
-        "",
-        &section.content,
-        budget.saturating_sub(section_header_budget),
-        Some("\n[truncated for budget]"),
-    );
-    let fitted = PromptSection {
-        content: truncated_content,
-        ..section
-    };
-    if fitted.content.trim().is_empty() || estimate_section_tokens(&fitted) > budget {
-        None
-    } else {
-        Some(fitted)
-    }
-}
-
-fn render_message(message: &MessageEnvelope) -> String {
-    format!(
-        "- {} {}",
-        message_header(message),
-        body_preview(&message.body)
-    )
 }
 
 fn render_current_work_item(
@@ -1432,68 +1344,6 @@ fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
     snapshot == &WorkingMemorySnapshot::default()
 }
 
-fn kind_label(message: &MessageEnvelope) -> String {
-    format!("{:?}", message.kind)
-}
-
-fn origin_label(origin: &MessageOrigin) -> &'static str {
-    match origin {
-        MessageOrigin::Operator { .. } => "operator",
-        MessageOrigin::Channel { .. } => "channel",
-        MessageOrigin::Webhook { .. } => "webhook",
-        MessageOrigin::Callback { .. } => "callback",
-        MessageOrigin::Timer { .. } => "timer",
-        MessageOrigin::System { .. } => "system",
-        MessageOrigin::Task { .. } => "task",
-    }
-}
-
-#[cfg(test)]
-fn trust_label(authority_class: &AuthorityClass) -> &'static str {
-    match authority_class {
-        AuthorityClass::OperatorInstruction => "trusted_operator",
-        AuthorityClass::RuntimeInstruction => "trusted_system",
-        AuthorityClass::IntegrationSignal => "trusted_integration",
-        AuthorityClass::ExternalEvidence => "untrusted_external",
-    }
-}
-
-fn authority_class_label(authority_class: AuthorityClass) -> &'static str {
-    match authority_class {
-        AuthorityClass::OperatorInstruction => "operator_instruction",
-        AuthorityClass::RuntimeInstruction => "runtime_instruction",
-        AuthorityClass::IntegrationSignal => "integration_signal",
-        AuthorityClass::ExternalEvidence => "external_evidence",
-    }
-}
-
-fn delivery_surface_label(surface: MessageDeliverySurface) -> &'static str {
-    match surface {
-        MessageDeliverySurface::CliPrompt => "cli_prompt",
-        MessageDeliverySurface::RunOnce => "run_once",
-        MessageDeliverySurface::HttpPublicEnqueue => "http_public_enqueue",
-        MessageDeliverySurface::HttpWebhook => "http_webhook",
-        MessageDeliverySurface::HttpCallbackEnqueue => "http_callback_enqueue",
-        MessageDeliverySurface::HttpCallbackWake => "http_callback_wake",
-        MessageDeliverySurface::HttpControlPrompt => "http_control_prompt",
-        MessageDeliverySurface::RemoteOperatorTransport => "remote_operator_transport",
-        MessageDeliverySurface::TimerScheduler => "timer_scheduler",
-        MessageDeliverySurface::RuntimeSystem => "runtime_system",
-        MessageDeliverySurface::TaskRejoin => "task_rejoin",
-    }
-}
-
-fn admission_context_label(context: AdmissionContext) -> &'static str {
-    match context {
-        AdmissionContext::PublicUnauthenticated => "public_unauthenticated",
-        AdmissionContext::ControlAuthenticated => "control_authenticated",
-        AdmissionContext::OperatorTransportAuthenticated => "operator_transport_authenticated",
-        AdmissionContext::ExternalTriggerCapability => "external_trigger_capability",
-        AdmissionContext::LocalProcess => "local_process",
-        AdmissionContext::RuntimeOwned => "runtime_owned",
-    }
-}
-
 fn scope_label(scope: &crate::types::SkillScope) -> &'static str {
     match scope {
         crate::types::SkillScope::User => "user",
@@ -1515,23 +1365,6 @@ fn activation_state_label(state: crate::types::SkillActivationState) -> &'static
     match state {
         crate::types::SkillActivationState::TurnActive => "turn_active",
         crate::types::SkillActivationState::SessionActive => "session_active",
-    }
-}
-
-fn body_preview(body: &MessageBody) -> String {
-    let text = message_body_text(body);
-    if text.chars().count() <= 160 {
-        text
-    } else {
-        format!("{}...", text.chars().take(160).collect::<String>())
-    }
-}
-
-fn message_body_text(body: &MessageBody) -> String {
-    match body {
-        MessageBody::Text { text } => text.clone(),
-        MessageBody::Json { value } => value.to_string(),
-        MessageBody::Brief { text, .. } => text.clone(),
     }
 }
 
@@ -1638,10 +1471,6 @@ fn render_recent_turn_runtime_input_line(
         subsystem,
         message_ref
     ))
-}
-
-fn bounded_inline(value: &str, max_chars: usize) -> String {
-    truncate_text(&sanitize_inline(value), max_chars)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1956,13 +1785,6 @@ fn continuation_context(
     Some(lines.join("\n"))
 }
 
-fn enum_label<T: serde::Serialize + std::fmt::Debug>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(ToString::to_string))
-        .unwrap_or_else(|| format!("{value:?}"))
-}
-
 fn render_wake_hint_context(message: &MessageEnvelope) -> Option<String> {
     if message.kind != MessageKind::SystemTick {
         return None;
@@ -2073,60 +1895,6 @@ fn truncate_continuation_body(text: &str) -> String {
     } else {
         format!("{}...", text.chars().take(MAX_CHARS).collect::<String>())
     }
-}
-
-fn estimate_section_tokens(section: &PromptSection) -> usize {
-    estimate_text_tokens(&format!("[{}]\n{}", section.name, section.content))
-}
-
-fn estimate_message_tokens(message: &MessageEnvelope) -> usize {
-    estimate_text_tokens(&render_message(message))
-}
-
-fn estimate_text_tokens(text: &str) -> usize {
-    let chars = text.chars().count();
-    chars.div_ceil(4).max(1)
-}
-
-fn truncate_section_content(
-    prefix: &str,
-    text: &str,
-    budget: usize,
-    truncation_notice: Option<&str>,
-) -> String {
-    let full = format!("{prefix}{text}");
-    if estimate_text_tokens(&full) <= budget {
-        return full;
-    }
-
-    let suffix = format!("...{}", truncation_notice.unwrap_or(""));
-    let prefix_only = prefix.trim_end().to_string();
-    if estimate_text_tokens(&(prefix.to_string() + &suffix)) > budget {
-        return prefix_only;
-    }
-
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let mid = (low + high).div_ceil(2);
-        let candidate = format!(
-            "{prefix}{}{}",
-            chars[..mid].iter().collect::<String>(),
-            suffix
-        );
-        if estimate_text_tokens(&candidate) <= budget {
-            low = mid;
-        } else {
-            high = mid.saturating_sub(1);
-        }
-    }
-
-    format!(
-        "{prefix}{}{}",
-        chars[..low].iter().collect::<String>(),
-        suffix
-    )
 }
 
 fn render_recent_turns_with_budget(
@@ -2455,23 +2223,6 @@ fn turn_trigger_summary_label(trigger: &crate::types::TurnTriggerSummary) -> &'s
             _ => "runtime-originated input",
         },
     }
-}
-
-fn sanitize_inline(value: &str) -> String {
-    let mut sanitized = String::with_capacity(value.len());
-    let mut pending_space = false;
-    for ch in value.chars() {
-        if ch.is_whitespace() {
-            pending_space = !sanitized.is_empty();
-        } else {
-            if pending_space {
-                sanitized.push(' ');
-                pending_space = false;
-            }
-            sanitized.push(ch);
-        }
-    }
-    sanitized
 }
 
 fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<usize>) -> String {
@@ -3147,10 +2898,6 @@ fn config_recent_bonus(recency_index: usize) -> usize {
     16usize.saturating_sub(recency_index)
 }
 
-fn reserve_current_input_budget(total_budget: usize) -> usize {
-    total_budget.min(256)
-}
-
 fn normalized_option_eq(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => normalize_text(left) == normalize_text(right),
@@ -3195,34 +2942,24 @@ fn normalize_text(text: &str) -> String {
         .collect::<String>()
 }
 
-fn indent_block(text: &str, spaces: usize) -> String {
-    let prefix = " ".repeat(spaces);
-    text.lines()
-        .map(|line| format!("{prefix}{line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn include_in_prompt_context(message: &MessageEnvelope) -> bool {
-    !matches!(message.kind, MessageKind::SystemTick)
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
+    use super::budget::estimate_section_tokens;
     use crate::{
         prompt::build_effective_prompt,
         runtime_db::RuntimeDb,
         storage::AppStorage,
         types::{
-            AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentVisibility, AuthorityClass, BriefContentSource, BriefContentSourceRelation,
-            BriefKind, BriefRecord, CallbackDeliveryMode, ContextEpisodeRecord,
-            ContinuationTriggerKind, EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd,
-            MessageKind, MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
+            AdmissionContext, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
+            AgentRegistryStatus, AgentVisibility, AuthorityClass, BriefContentSource,
+            BriefContentSourceRelation, BriefKind, BriefRecord, CallbackDeliveryMode,
+            ContextEpisodeRecord, ContinuationTriggerKind, EpisodeBoundaryReason,
+            ExternalTriggerScope, LoadedAgentsMd, MessageDeliverySurface, MessageKind,
+            MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
             ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
             WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemRef, WorkItemRefKind,
             WorkItemRefStatus, WorkItemState,
@@ -8380,5 +8117,36 @@ mod tests {
             .position(|section| section.name == "current_work_item")
             .expect("current_work_item section should be present");
         assert!(work_item_idx < notes_idx);
+    }
+
+    /// Regression test for the context module split: verifies that budget
+    /// and render helpers in `budget.rs` and `render.rs` cooperate correctly
+    /// after extraction from the monolithic `context.rs`.
+    #[test]
+    fn budget_and_render_submodules_cooperate() {
+        use super::budget::{estimate_section_tokens, fit_section_to_budget};
+        use super::render::section;
+
+        // Use enough content to ensure truncation is needed under a tight budget.
+        let content =
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu\n".repeat(8);
+        let sec = section("test_section", content);
+
+        // Full content fits within a generous budget.
+        let full_tokens = estimate_section_tokens(&sec);
+        let fitted = fit_section_to_budget(sec.clone(), full_tokens)
+            .expect("section should fit within its own token estimate");
+        assert_eq!(fitted.content, sec.content);
+
+        // Tight budget truncates content but preserves the section name.
+        // Use a budget large enough for header + truncation suffix but
+        // much smaller than the full section.
+        let truncated = fit_section_to_budget(sec, 30)
+            .expect("section should still be present under tight budget");
+        assert_eq!(truncated.name, "test_section");
+        assert!(
+            truncated.content.contains("[truncated for budget]"),
+            "truncated content should include budget notice"
+        );
     }
 }

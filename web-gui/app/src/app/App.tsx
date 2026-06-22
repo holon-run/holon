@@ -62,7 +62,11 @@ export function App() {
   const search = useRuntimeStore((state) => state.search);
   const searchLoading = useRuntimeStore((state) => state.searchLoading);
   const searchError = useRuntimeStore((state) => state.searchError);
+  const searchResultContentBySourceRef = useRuntimeStore((state) => state.searchResultContentBySourceRef);
+  const searchResultContentLoadingBySourceRef = useRuntimeStore((state) => state.searchResultContentLoadingBySourceRef);
+  const searchResultContentErrorBySourceRef = useRuntimeStore((state) => state.searchResultContentErrorBySourceRef);
   const runSearch = useRuntimeStore((state) => state.runSearch);
+  const loadSearchResultContent = useRuntimeStore((state) => state.loadSearchResultContent);
   const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
   const refreshRuntimeConfig = useRuntimeStore((state) => state.refreshRuntimeConfig);
   const updateRuntimeConfig = useRuntimeStore((state) => state.updateRuntimeConfig);
@@ -391,7 +395,11 @@ export function App() {
             search={search}
             loading={searchLoading}
             error={searchError}
+            resultContentBySourceRef={searchResultContentBySourceRef}
+            resultContentLoadingBySourceRef={searchResultContentLoadingBySourceRef}
+            resultContentErrorBySourceRef={searchResultContentErrorBySourceRef}
             onSearch={runSearch}
+            onLoadResultContent={loadSearchResultContent}
             onOpenAgent={navigateAgent}
           />
         ) : null}

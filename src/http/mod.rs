@@ -266,7 +266,6 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(agents::root))
         .route("/handshake", get(agents::handshake))
         .route("/models", get(agents::models_handler))
-        .route("/search", post(agents::search))
         .route("/agents/list", get(agents::list_agent_entries))
         .route("/agents/{agent_id}/enqueue", post(state::enqueue))
         .route("/agents/{agent_id}/status", get(state::status))
@@ -461,9 +460,16 @@ pub fn router(state: AppState) -> Router {
         .route("/state", get(state::state_default))
         .route("/transcript", get(state::transcript_default))
         .route("/worktree-summary", get(state::worktree_summary_default));
+    let root_routes = api_routes.clone().route(
+        "/search",
+        get(web::web_or_not_found_handler).post(agents::search),
+    );
+    let api_routes = api_routes
+        .route("/search", post(agents::search))
+        .route("/memory/get", post(agents::memory_get));
 
     Router::new()
-        .merge(api_routes.clone())
+        .merge(root_routes)
         .nest("/api", api_routes)
         .fallback(web::web_or_not_found_handler)
         .layer(api_cors_layer(&config.api_cors))
@@ -976,5 +982,55 @@ pub async fn serve_unix(
                 error!(error = %err, "unix control server connection failed");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{router, AppState};
+    use crate::{config::AppConfig, host::RuntimeHost, provider::StubProvider};
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Request, StatusCode},
+    };
+    use std::{fs, sync::Arc};
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    fn test_host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        (home, host)
+    }
+
+    #[tokio::test]
+    async fn get_search_serves_web_app_instead_of_api_method_not_allowed() {
+        let (_home, host) = test_host();
+        let web_dist = tempdir().unwrap();
+        fs::write(web_dist.path().join("index.html"), "<html>holon ui</html>").unwrap();
+        let app =
+            router(AppState::for_tcp(host).with_web_dist(Some(web_dist.path().to_path_buf())));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/search")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"<html>holon ui</html>");
     }
 }

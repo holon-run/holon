@@ -76,16 +76,50 @@ pub async fn search(
             .await
             .map_err(error_response)?
     };
+    let results = filter_search_results(search_result.results, &request.types);
     traced_json(
         "/search",
         started_at,
         SearchResponse {
             query,
             limit,
-            results: search_result.results,
+            results,
             index_status: search_result.index_status,
         },
     )
+}
+
+pub async fn memory_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<MemoryGetRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let source_ref = request.source_ref.trim();
+    if source_ref.is_empty() {
+        return Err(bad_request("source_ref must not be empty"));
+    }
+    let runtime = state.host.default_runtime().await.map_err(error_response)?;
+    let memory = runtime
+        .get_memory(source_ref, request.max_chars)
+        .await
+        .map_err(error_response)?
+        .ok_or_else(|| not_found(format!("memory source {source_ref} not found")))?;
+    traced_json("/memory/get", started_at, memory)
+}
+
+fn filter_search_results(
+    results: Vec<crate::memory::MemorySearchResult>,
+    types: &[String],
+) -> Vec<crate::memory::MemorySearchResult> {
+    if types.is_empty() {
+        return results;
+    }
+    results
+        .into_iter()
+        .filter(|result| types.iter().any(|kind| kind == &result.kind))
+        .collect()
 }
 
 fn normalize_search_agent_ids(
