@@ -107,15 +107,18 @@ jobs:
 
           This line is intentionally breaking relative to the old Go-line releases. If you need the old Go implementation, stay on \`v0.12.0\`.
 
-          This patch release restores the \`xiaomi-token-plan\` provider alias, fixes inline brief hydration in the TUI, and adds docs for recently added Web GUI and runtime diagnostics features.
+          This patch release improves memory indexing and search, hardens GitHub Action event handling, fixes model discovery refresh behavior, and corrects several runtime lifecycle edge cases.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Restore the \`xiaomi-token-plan\` provider with its own base URL and \`XIAOMI_TOKEN_PLAN_API_KEY\` environment variable ([#1890](https://github.com/holon-run/holon/pull/1890)).
-          - Fix TUI rendering for inline brief hydration so brief text can be displayed without an extra lookup ([#1889](https://github.com/holon-run/holon/pull/1889)).
-          - Add user-facing guides for the Web GUI, memory auto-load, child token usage, and performance diagnostics ([#1888](https://github.com/holon-run/holon/pull/1888)).
+          - Move Holon trigger orchestration into the GitHub Action so issue and PR automation can run with clearer event handling ([#1902](https://github.com/holon-run/holon/pull/1902)).
+          - Improve memory search excerpts and expandable source handling for clearer retrieval evidence ([#1907](https://github.com/holon-run/holon/pull/1907)).
+          - Index memory asynchronously and route rebuild/backfill work through the indexer for a more consistent memory maintenance path ([#1905](https://github.com/holon-run/holon/pull/1905), [#1915](https://github.com/holon-run/holon/pull/1915)).
+          - Refresh model discovery caches automatically and raise the unknown fallback prompt budget to reduce stale or undersized model-selection context ([#1909](https://github.com/holon-run/holon/pull/1909), [#1910](https://github.com/holon-run/holon/pull/1910)).
+          - Harden Holon Action behavior for cross-repo pull requests, active model reporting, and GitHub CLI installation ([#1918](https://github.com/holon-run/holon/pull/1918), [#1919](https://github.com/holon-run/holon/pull/1919), [#1920](https://github.com/holon-run/holon/pull/1920)).
+          - Fix runtime continuation and resume edge cases around stale work-item waits, legacy null message sequence values, conversation event sequence links, and completed \`run_once\` final status precedence ([#1898](https://github.com/holon-run/holon/pull/1898), [#1899](https://github.com/holon-run/holon/pull/1899), [#1921](https://github.com/holon-run/holon/pull/1921), [#1924](https://github.com/holon-run/holon/pull/1924)).
 
           ## Install
 

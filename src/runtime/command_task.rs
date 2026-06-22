@@ -36,8 +36,10 @@ const INPUT_CHANNEL_CAPACITY: usize = 16;
 const STREAM_TAIL_CHAR_LIMIT: usize = 128_000;
 const COMBINED_TAIL_CHAR_LIMIT: usize = 256_000;
 const PROCESS_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(25);
-// After the main process exits, cap output drain so background pipe-holders cannot block forever.
-const COLLECT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+// After the main process exits, only give readers a short grace period to
+// deliver already-buffered output. Background children may inherit stdout/stderr
+// and keep the pipes open long after the foreground command has completed.
+const COLLECT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(super) enum ManagedTaskHandle {
     Async(JoinHandle<()>),
@@ -239,6 +241,18 @@ impl RuntimeHandle {
         }
         let mut running = self.start_command_process(&resolved).await?;
         let mut captured = CapturedOutput::default();
+        if spec.yield_time_ms == 0 {
+            return self
+                .promote_exec_command_to_task(
+                    spec,
+                    resolved,
+                    running,
+                    authority_class.clone(),
+                    captured,
+                    diagnostics,
+                )
+                .await;
+        }
         let sleep = tokio::time::sleep(Duration::from_millis(spec.yield_time_ms));
         let mut status_tick = tokio::time::interval(PROCESS_STATUS_POLL_INTERVAL);
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -270,46 +284,69 @@ impl RuntimeHandle {
                     }
                 }
                 _ = &mut sleep => {
-                    if let Some(status) = running
-                        .process
-                        .try_status()
-                        .await
-                        .context("failed to query command status")?
-                    {
-                        collect_remaining_output(&mut running, &mut captured).await;
-                        return self
-                            .complete_exec_command_result(
-                                &captured,
-                                &status,
-                                spec.max_output_tokens,
-                                Some(diagnostics.clone()),
-                            )
-                            .await;
+                    if spec.yield_time_ms > 0 {
+                        if let Some(status) = running
+                            .process
+                            .try_status()
+                            .await
+                            .context("failed to query command status")?
+                        {
+                            collect_remaining_output(&mut running, &mut captured).await;
+                            return self
+                                .complete_exec_command_result(
+                                    &captured,
+                                    &status,
+                                    spec.max_output_tokens,
+                                    Some(diagnostics.clone()),
+                                )
+                                .await;
+                        }
                     }
-                    let task = self
-                        .register_command_task(
-                            format!("Run command: {}", truncate_text(&spec.cmd, 80)),
+                    return self
+                        .promote_exec_command_to_task(
+                            spec,
                             resolved,
                             running,
                             authority_class.clone(),
-                            true,
-                            captured.clone(),
+                            captured,
+                            diagnostics,
                         )
-                        .await?;
-                    let (initial_output_preview, initial_output_truncated) =
-                        captured.initial_output_with_flag(spec.max_output_tokens);
-                    return Ok(ExecCommandResult {
-                        outcome: ExecCommandOutcome::PromotedToTask {
-                            task_handle: TaskHandle::from_task_record(&task, None),
-                            initial_output_preview,
-                            initial_output_truncated,
-                        },
-                        summary_text: Some("command promoted to a managed task".to_string()),
-                        command_diagnostics: Some(diagnostics),
-                    });
+                        .await;
                 }
             }
         }
+    }
+
+    async fn promote_exec_command_to_task(
+        &self,
+        spec: CommandTaskSpec,
+        resolved: ResolvedCommandTask,
+        running: RunningCommand,
+        authority_class: AuthorityClass,
+        captured: CapturedOutput,
+        diagnostics: CommandCostDiagnostics,
+    ) -> Result<ExecCommandResult> {
+        let task = self
+            .register_command_task(
+                format!("Run command: {}", truncate_text(&spec.cmd, 80)),
+                resolved,
+                running,
+                authority_class,
+                true,
+                captured.clone(),
+            )
+            .await?;
+        let (initial_output_preview, initial_output_truncated) =
+            captured.initial_output_with_flag(spec.max_output_tokens);
+        Ok(ExecCommandResult {
+            outcome: ExecCommandOutcome::PromotedToTask {
+                task_handle: TaskHandle::from_task_record(&task, None),
+                initial_output_preview,
+                initial_output_truncated,
+            },
+            summary_text: Some("command promoted to a managed task".to_string()),
+            command_diagnostics: Some(diagnostics),
+        })
     }
 
     pub(crate) async fn execute_exec_command_once(

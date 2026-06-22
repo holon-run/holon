@@ -853,7 +853,7 @@ impl AgentProvider for CommandTaskProvider {
                     input: json!({
                         "cmd": &self.cmd,
                         "shell": "sh",
-                        "yield_time_ms": 10,
+                        "yield_time_ms": 0,
                         "login": false,
                         "tty": false,
                         "max_output_tokens": 256

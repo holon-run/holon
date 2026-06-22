@@ -184,14 +184,14 @@ For more detailed explanations, see [Concepts](docs/website/concepts/).
 ## Current release
 
 The current recommended release is
-[`v0.19.1`](https://github.com/holon-run/holon/releases/tag/v0.19.1).
+[`v0.19.2`](https://github.com/holon-run/holon/releases/tag/v0.19.2).
 
 `v0.15.0` is the baseline release where the Holon Rust runtime enters public
 compatibility maintenance. Starting from this version, the project will maintain
 compatibility for the CLI, daemon/API semantics, and local persistent storage.
 
 See the full changes in the
-[v0.19.1 Release Notes](https://github.com/holon-run/holon/releases/tag/v0.19.1).
+[v0.19.2 Release Notes](https://github.com/holon-run/holon/releases/tag/v0.19.2).
 
 ## Status and compatibility
 
