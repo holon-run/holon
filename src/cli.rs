@@ -519,12 +519,17 @@ pub enum WorkItemCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum MemoryIndexCommands {
-    #[command(about = "Force a full rebuild of the local memory search index")]
+    #[command(about = "Request a full rebuild of the local memory search index")]
     Rebuild {
         #[arg(long)]
         agent: Option<String>,
         #[arg(long)]
         workspace: Option<String>,
+        #[arg(
+            long,
+            help = "Run the rebuild directly instead of submitting it to the background indexer"
+        )]
+        offline: bool,
     },
 }
 

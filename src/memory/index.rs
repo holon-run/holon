@@ -39,6 +39,9 @@ const MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION: i64 = 2;
 const MEMORY_INDEX_DOCUMENT_PROJECTION_VERSION: i64 = 1;
 const MEMORY_INDEX_BACKFILL_CURSOR: &str = "full";
 const MEMORY_INDEX_OUTBOX_CURSOR: &str = "runtime_index_outbox";
+const MEMORY_INDEX_REBUILD_SOURCE_KIND: &str = "memory_index_rebuild";
+const MEMORY_INDEX_REBUILD_SOURCE_ID: &str = "agent";
+const MEMORY_INDEX_REBUILD_SOURCE_REF_PREFIX: &str = "memory_index_rebuild";
 const MEMORY_INDEX_SEARCH_TEXT_MAX_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -129,6 +132,15 @@ fn legacy_memory_index_path(storage: &AppStorage) -> PathBuf {
 pub fn rebuild_memory_index(storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
     let mut index = MemoryIndex::open(storage)?;
     index.rebuild(storage, active_workspace_id)
+}
+
+pub fn request_memory_index_rebuild(
+    storage: &AppStorage,
+    active_workspace_id: Option<&str>,
+    reason: &str,
+) -> Result<()> {
+    let index = MemoryIndex::open(storage)?;
+    index.enqueue_rebuild_intent(&storage_agent_id(storage), active_workspace_id, reason)
 }
 
 pub(crate) fn enqueue_memory_index_upsert(
@@ -250,6 +262,7 @@ pub fn refresh_memory_index_bounded(
 ) -> Result<MemorySearchIndexStatus> {
     log_legacy_index_deprecation(storage);
     let mut index = MemoryIndex::open(storage)?;
+    index.consume_rebuild_intents(storage)?;
     refresh_memory_index_for_storage(&mut index, storage, active_workspace_id, batch_limit)?;
     let agent_id = storage_agent_id(storage);
     index.index_status(storage, &agent_id)
@@ -605,6 +618,15 @@ impl MemoryIndex {
 
     fn rebuild(&mut self, storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
         let agent_id = storage_agent_id(storage);
+        let runtime_db = storage.runtime_db()?;
+        let runtime_high_watermark = runtime_db
+            .as_ref()
+            .map(|db| {
+                db.runtime_index_outbox()
+                    .high_watermark_for_agent(&agent_id)
+            })
+            .transpose()?
+            .unwrap_or(0);
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "DELETE FROM memory_documents_fts
@@ -646,6 +668,15 @@ impl MemoryIndex {
                     MEMORY_INDEX_BACKFILL_CURSOR,
                     Utc::now().to_rfc3339(),
                 ],
+            )?;
+        }
+        if let Some(runtime_db) = runtime_db.as_ref() {
+            upsert_cursor_tx(
+                &transaction,
+                &runtime_index_runtime_id(runtime_db),
+                &agent_id,
+                MEMORY_INDEX_OUTBOX_CURSOR,
+                runtime_high_watermark,
             )?;
         }
         upsert_index_meta_tx(&transaction, &agent_id, Some(Utc::now()))?;
@@ -722,10 +753,49 @@ impl MemoryIndex {
         Ok(())
     }
 
+    fn enqueue_rebuild_intent(
+        &self,
+        agent_id: &str,
+        active_workspace_id: Option<&str>,
+        reason: &str,
+    ) -> Result<()> {
+        let source_ref = rebuild_intent_source_ref(agent_id);
+        self.enqueue_source(
+            agent_id,
+            MEMORY_INDEX_REBUILD_SOURCE_KIND,
+            active_workspace_id.unwrap_or(MEMORY_INDEX_REBUILD_SOURCE_ID),
+            &source_ref,
+            "rebuild",
+            None,
+            reason,
+        )
+    }
+
+    fn consume_rebuild_intents(&mut self, storage: &AppStorage) -> Result<()> {
+        let agent_id = storage_agent_id(storage);
+        let intents = self.rebuild_intents_for_agent(&agent_id)?;
+        for intent in intents {
+            self.connection.execute(
+                "DELETE FROM memory_index_pending_sources WHERE document_key = ?1",
+                [&intent.document_key],
+            )?;
+            let active_workspace_id = if intent.source_id == MEMORY_INDEX_REBUILD_SOURCE_ID {
+                None
+            } else {
+                Some(intent.source_id.as_str())
+            };
+            self.rebuild(storage, active_workspace_id)?;
+        }
+        Ok(())
+    }
+
     fn consume_pending_sources(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
         let agent_id = storage_agent_id(storage);
         let pending = self.pending_sources_for_agent_with_limit(&agent_id, limit)?;
         for source in pending {
+            if source.source_kind == MEMORY_INDEX_REBUILD_SOURCE_KIND {
+                continue;
+            }
             let transaction = self.connection.transaction()?;
             let result = apply_pending_source_tx(&transaction, storage, &source);
             match result {
@@ -854,8 +924,10 @@ impl MemoryIndex {
         agent_id: &str,
     ) -> Result<MemorySearchIndexStatus> {
         let has_stale_projection = self.has_stale_source_states_for_agent(agent_id)?;
+        let has_pending_sources = self.has_pending_sources_for_agent(agent_id)?;
         let Some(runtime_db) = storage.runtime_db()? else {
-            let indexing_needed = memory_index_is_dirty(storage) || has_stale_projection;
+            let indexing_needed =
+                memory_index_is_dirty(storage) || has_stale_projection || has_pending_sources;
             return Ok(MemorySearchIndexStatus {
                 freshness: if indexing_needed { "stale" } else { "fresh" }.into(),
                 cursor: 0,
@@ -876,7 +948,11 @@ impl MemoryIndex {
         let lag = high_watermark.saturating_sub(cursor);
         let freshness = if !memory_index_path(storage).exists() {
             "missing"
-        } else if memory_index_is_dirty(storage) || lag > 0 || has_stale_projection {
+        } else if memory_index_is_dirty(storage)
+            || lag > 0
+            || has_stale_projection
+            || has_pending_sources
+        {
             "stale"
         } else {
             "fresh"
@@ -927,6 +1003,40 @@ impl MemoryIndex {
             })
         })?;
         rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
+    fn rebuild_intents_for_agent(&self, agent_id: &str) -> Result<Vec<PendingSource>> {
+        let mut statement = self.connection.prepare(
+            "SELECT document_key, source_ref, agent_id, source_kind, source_id, operation
+             FROM memory_index_pending_sources
+             WHERE agent_id = ?1 AND source_kind = ?2
+             ORDER BY enqueued_at ASC, document_key ASC",
+        )?;
+        let rows =
+            statement.query_map(params![agent_id, MEMORY_INDEX_REBUILD_SOURCE_KIND], |row| {
+                Ok(PendingSource {
+                    document_key: row.get(0)?,
+                    source_ref: row.get(1)?,
+                    source_kind: row.get(3)?,
+                    source_id: row.get(4)?,
+                    operation: row.get(5)?,
+                })
+            })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
+    fn has_pending_sources_for_agent(&self, agent_id: &str) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT 1 FROM memory_index_pending_sources
+                 WHERE agent_id = ?1
+                 LIMIT 1",
+                [agent_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(false))
+            .map_err(Into::into)
     }
 
     fn stale_source_states_for_agent_with_limit(
@@ -1402,6 +1512,10 @@ fn document_key(document: &MemoryDocument) -> String {
 
 fn document_key_for(agent_id: &str, source_ref: &str) -> String {
     format!("{agent_id}:{source_ref}")
+}
+
+fn rebuild_intent_source_ref(agent_id: &str) -> String {
+    format!("{MEMORY_INDEX_REBUILD_SOURCE_REF_PREFIX}:{agent_id}")
 }
 
 fn all_backfill_source_kinds() -> &'static [&'static str] {
@@ -4277,6 +4391,53 @@ mod tests {
         assert!(MemoryIndex::open(&storage)
             .unwrap()
             .has_current_source_state_for_agent("default")
+            .unwrap());
+    }
+
+    #[test]
+    fn rebuild_intent_marks_index_stale_and_is_consumed_by_bounded_refresh() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        fs::write(
+            agent_memory_self_path(dir.path()),
+            "initial rebuild intent sentinel",
+        )
+        .unwrap();
+        rebuild_memory_index(&storage, None).unwrap();
+
+        fs::write(
+            agent_memory_self_path(dir.path()),
+            "refreshed rebuild intent sentinel",
+        )
+        .unwrap();
+        request_memory_index_rebuild(&storage, None, "test_rebuild").unwrap();
+
+        let stale =
+            search_memory_query(&storage, "initial rebuild intent", 10, None, false).unwrap();
+        assert_eq!(stale.index_status.freshness, "stale");
+        assert!(stale
+            .results
+            .iter()
+            .any(|result| result.source_ref == "agent_memory:self"));
+
+        let status = refresh_memory_index_bounded(&storage, None, 10).unwrap();
+        assert_eq!(status.freshness, "fresh");
+        assert!(
+            search_memory(&storage, "initial rebuild intent", 10, None, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            search_memory(&storage, "refreshed rebuild intent", 10, None, false)
+                .unwrap()
+                .iter()
+                .any(|result| result.source_ref == "agent_memory:self")
+        );
+        assert!(!MemoryIndex::open(&storage)
+            .unwrap()
+            .has_pending_sources_for_agent("default")
             .unwrap());
     }
 

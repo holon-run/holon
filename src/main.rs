@@ -30,7 +30,7 @@ use holon::{
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
-    memory::rebuild_memory_index,
+    memory::{rebuild_memory_index, request_memory_index_rebuild},
     model_discovery::{discovery_cache_path, refresh_provider_models},
     onboarding::{
         apply_onboarding_wizard_draft, onboarding_report, OnboardingApplySummary,
@@ -39,6 +39,7 @@ use holon::{
     onboarding_tui::run_onboarding_tui,
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
+    runtime_db::RuntimeDb,
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
     tui::run_tui,
@@ -269,19 +270,40 @@ async fn handle_memory_index_command(
     command: MemoryIndexCommands,
 ) -> Result<()> {
     match command {
-        MemoryIndexCommands::Rebuild { agent, workspace } => {
+        MemoryIndexCommands::Rebuild {
+            agent,
+            workspace,
+            offline,
+        } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let agent_home = config.data_dir.join("agents").join(&agent);
             let storage = AppStorage::new_for_agent(&agent_home, agent.clone())?;
-            rebuild_memory_index(&storage, workspace.as_deref())?;
-            println!(
-                "Rebuilt memory index for agent `{}`{}.",
-                agent,
-                workspace
-                    .as_deref()
-                    .map(|workspace| format!(" in workspace `{workspace}`"))
-                    .unwrap_or_default()
-            );
+            if offline {
+                rebuild_memory_index(&storage, workspace.as_deref())?;
+                println!(
+                    "Rebuilt memory index for agent `{}`{} in offline mode.",
+                    agent,
+                    workspace
+                        .as_deref()
+                        .map(|workspace| format!(" in workspace `{workspace}`"))
+                        .unwrap_or_default()
+                );
+            } else {
+                let runtime_db = RuntimeDb::open_and_migrate(
+                    config.runtime_db_path(),
+                    config.runtime_db_lock_path(),
+                )?;
+                storage.enable_scheduler_control_plane_db(runtime_db)?;
+                request_memory_index_rebuild(&storage, workspace.as_deref(), "cli_rebuild")?;
+                println!(
+                    "Requested memory index rebuild for agent `{}`{}; the background indexer will apply it.",
+                    agent,
+                    workspace
+                        .as_deref()
+                        .map(|workspace| format!(" in workspace `{workspace}`"))
+                        .unwrap_or_default()
+                );
+            }
             Ok(())
         }
     }

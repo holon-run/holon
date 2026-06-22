@@ -14,6 +14,13 @@ a bounded number of outbox rows and return stale or empty results with index
 status when the projection is missing or behind. Full rebuild/backfill is an
 explicit maintenance action, not a model tool side effect.
 
+Online rebuild requests use the same maintenance path as incremental refresh:
+they enqueue a rebuild intent in `memory_index_pending_sources`, mark the index
+stale, and let the background indexer consume the intent before bounded outbox
+refresh. The CLI's default `memory-index rebuild` behavior submits that intent;
+`--offline` remains the explicit foreground repair path for stopped-service or
+operator-controlled maintenance.
+
 The v1 `memory.sqlite3` file is intentionally ignored by v2. When v2 has not
 been created yet and a v1 file is present, the runtime logs that historical v1
 projection data requires an explicit rebuild/backfill instead of silently
