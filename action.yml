@@ -140,6 +140,8 @@ runs:
         ISSUE_NUMBER: ${{ github.event.issue.number || '' }}
         PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         ISSUE_IS_PR: ${{ github.event.issue.pull_request.url || '' }}
+        PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+        PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name || '' }}
         COMMENT_BODY: ${{ github.event.comment.body || '' }}
         LABEL_NAME: ${{ github.event.label.name || '' }}
         ASSIGNEE_LOGIN: ${{ github.event.assignee.login || '' }}
@@ -294,7 +296,19 @@ runs:
 
         if [ "$should_run" = "true" ] && [ -n "$PR_NUMBER" ]; then
           ref="https://github.com/$REPO/pull/$PR_NUMBER"
-          is_cross_repo="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null || echo "true")"
+          if [ -n "$PR_HEAD_REPO" ] && [ -n "$PR_BASE_REPO" ]; then
+            if [ "$PR_HEAD_REPO" = "$PR_BASE_REPO" ]; then
+              is_cross_repo=false
+            else
+              is_cross_repo=true
+            fi
+          elif ! is_cross_repo="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name != .base.repo.full_name' 2>/dev/null)"; then
+            should_run=false
+            reason="unable to determine PR repository ownership"
+            goal=""
+            write_outputs
+            exit 0
+          fi
           if [ "$is_cross_repo" = "true" ]; then
             should_run=false
             reason="skip cross-repo PR"
