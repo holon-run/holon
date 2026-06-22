@@ -816,6 +816,16 @@
         "required": false
       },
       {
+        "long": "offline",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "workspace",
         "short": null,
         "default_value": null,
