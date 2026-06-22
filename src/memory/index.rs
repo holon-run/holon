@@ -4646,6 +4646,10 @@ mod tests {
         .expect("command output should remain retrievable by explicit source ref");
         assert!(memory.content.contains("command_output_only_sentinel_1246"));
 
+        // Consume pending sources before searching. The background memory indexer
+        // normally handles this, but tests run without a runtime loop.
+        ensure_memory_indexes_current(&storage, Some("ws-holon"), &[]).unwrap();
+
         let output_results = search_memory(
             &storage,
             "command_output_only_sentinel_1246",
