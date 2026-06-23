@@ -1097,8 +1097,12 @@ impl RuntimeHandle {
         let mut view = if let Some(bridge) = self.inner.host_bridge.as_ref() {
             let registry = bridge.skills_registry()?;
             let mut registry = registry.write().await;
-            registry.replace_roots(skill_roots.clone())?;
-            skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
+            registry.sync_effective_roots(skill_roots.clone())?;
+            skills_runtime_view_from_catalog(
+                registry.catalog_for_roots(&skill_roots, None),
+                &skill_roots,
+                &state.active_skills,
+            )
         } else {
             let mut registry = crate::skills::SkillsRegistry::new();
             registry.replace_roots(skill_roots.clone())?;
@@ -1109,6 +1113,29 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
         );
         Ok(view)
+    }
+
+    pub(crate) async fn sync_effective_skill_roots_for_state(
+        &self,
+        state: &AgentState,
+    ) -> Result<()> {
+        let Some(bridge) = self.inner.host_bridge.as_ref() else {
+            return Ok(());
+        };
+        let identity = self.agent_identity_view().await?;
+        let skill_roots = effective_skill_root_registrations(
+            self.skill_visibility(&identity),
+            self.user_home().as_deref(),
+            &state.id,
+            self.agent_home().as_path(),
+            state
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.workspace_anchor.as_path()),
+        );
+        let registry = bridge.skills_registry()?;
+        registry.write().await.sync_effective_roots(skill_roots)?;
+        Ok(())
     }
 
     async fn begin_interactive_turn(

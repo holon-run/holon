@@ -802,6 +802,8 @@ impl RuntimeHandle {
         }
         self.inner.storage.append_workspace_entry(workspace)?;
         guard.persist_state(&self.inner.storage)?;
+        let state = guard.state.clone();
+        drop(guard);
         self.inner.storage.append_event(&AuditEvent::new(
             "workspace_attached",
             serde_json::json!({
@@ -809,6 +811,7 @@ impl RuntimeHandle {
                 "workspace_anchor": workspace.workspace_anchor,
             }),
         ))?;
+        self.sync_effective_skill_roots_for_state(&state).await?;
         Ok(())
     }
 
@@ -1026,6 +1029,8 @@ impl RuntimeHandle {
                 let _ = bridge.release_workspace_occupancy(occupancy_id).await?;
             }
         }
+        let state = self.agent_state().await?;
+        self.sync_effective_skill_roots_for_state(&state).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "workspace_used",
             serde_json::json!({
@@ -1174,6 +1179,8 @@ impl RuntimeHandle {
                 }
             }
         }
+        let state = self.agent_state().await?;
+        self.sync_effective_skill_roots_for_state(&state).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "workspace_entered",
             serde_json::json!({
@@ -1185,7 +1192,7 @@ impl RuntimeHandle {
                 "access_mode": access_mode,
                 "cwd": selected_cwd,
                 "boundary": crate::system::HostLocalBoundary::from_parts(
-                    &self.agent_state().await?.execution_profile,
+                    &state.execution_profile,
                     Some(projection_kind),
                     Some(access_mode),
                     Some(execution_root_id),
@@ -1303,6 +1310,8 @@ impl RuntimeHandle {
                 }
             }
         }
+        let state = self.agent_state().await?;
+        self.sync_effective_skill_roots_for_state(&state).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "workspace_entered",
             serde_json::json!({
@@ -1316,7 +1325,7 @@ impl RuntimeHandle {
                 "detected_kind": "existing_git_worktree",
                 "ownership": "external",
                 "boundary": crate::system::HostLocalBoundary::from_parts(
-                    &self.agent_state().await?.execution_profile,
+                    &state.execution_profile,
                     Some(WorkspaceProjectionKind::GitWorktreeRoot),
                     Some(access_mode),
                     Some(execution_root_id),

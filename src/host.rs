@@ -946,9 +946,9 @@ impl RuntimeHost {
             workspace_anchor,
         );
         let mut skill_registry = self.inner.skills_registry.write().await;
-        skill_registry.replace_roots(skill_roots.clone())?;
+        skill_registry.sync_effective_roots(skill_roots.clone())?;
         let mut skills = skills_runtime_view_from_catalog(
-            skill_registry.catalog(),
+            skill_registry.catalog_for_roots(&skill_roots, None),
             &skill_roots,
             &state.active_skills,
         );
