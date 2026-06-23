@@ -149,8 +149,10 @@ pub async fn skills_catalog(
     }
 
     let mut registry = state.skills_registry.write().await;
-    registry.replace_roots(roots).map_err(error_response)?;
-    let catalog = registry.catalog_with_filter(scope_filter);
+    registry
+        .sync_effective_roots(roots.clone())
+        .map_err(error_response)?;
+    let catalog = registry.catalog_for_roots(&roots, scope_filter);
     Ok(Json(json!({
         "ok": true,
         "agent_id": agent_id,

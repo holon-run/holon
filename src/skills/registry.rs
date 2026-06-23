@@ -44,6 +44,22 @@ impl SkillsRegistry {
         Ok(())
     }
 
+    /// Synchronize lifecycle-owned effective roots into the registry snapshot.
+    ///
+    /// This is intentionally additive: lifecycle transitions register or refresh
+    /// the roots that are effective for an agent/workspace, while catalog readers
+    /// select from the existing snapshot without clearing roots owned by other
+    /// agents or workspaces.
+    pub fn sync_effective_roots(
+        &mut self,
+        registrations: impl IntoIterator<Item = SkillRootRegistration>,
+    ) -> Result<()> {
+        for registration in registrations {
+            self.register_root(registration)?;
+        }
+        Ok(())
+    }
+
     /// Replace the registered roots with the provided effective set.
     ///
     /// This keeps shared registries scoped to the current caller's effective
@@ -167,27 +183,41 @@ impl SkillsRegistry {
 
     /// Get catalog filtered by optional scope.
     pub fn catalog_with_filter(&self, scope: Option<SkillScope>) -> Vec<SkillCatalogEntry> {
-        let filtered: Vec<&SkillCatalogEntry> = if let Some(filter_scope) = scope {
-            self.entries
-                .iter()
-                .filter(|e| e.scope == filter_scope)
-                .collect()
-        } else {
-            self.entries.iter().collect()
-        };
+        self.catalog_from_entries(self.entries.iter(), scope)
+    }
 
-        let selected_by_name: BTreeMap<String, &SkillCatalogEntry> =
-            filtered
-                .into_iter()
-                .fold(BTreeMap::new(), |mut acc, entry| {
-                    let existing = acc.get(&entry.name);
-                    if existing.map_or(true, |existing| {
-                        self.skill_wins_catalog_selection(entry, existing)
-                    }) {
-                        acc.insert(entry.name.clone(), entry);
-                    }
-                    acc
-                });
+    /// Get catalog for a caller's effective roots without mutating the registry.
+    pub fn catalog_for_roots(
+        &self,
+        roots: &[SkillRootRegistration],
+        scope: Option<SkillScope>,
+    ) -> Vec<SkillCatalogEntry> {
+        self.catalog_from_entries(
+            self.entries.iter().filter(|entry| {
+                roots
+                    .iter()
+                    .any(|root| entry.path.starts_with(&root.root_path))
+            }),
+            scope,
+        )
+    }
+
+    fn catalog_from_entries<'a>(
+        &self,
+        entries: impl Iterator<Item = &'a SkillCatalogEntry>,
+        scope: Option<SkillScope>,
+    ) -> Vec<SkillCatalogEntry> {
+        let selected_by_name: BTreeMap<String, &SkillCatalogEntry> = entries
+            .filter(|entry| scope.is_none_or(|filter_scope| entry.scope == filter_scope))
+            .fold(BTreeMap::new(), |mut acc, entry| {
+                let existing = acc.get(&entry.name);
+                if existing.map_or(true, |existing| {
+                    self.skill_wins_catalog_selection(entry, existing)
+                }) {
+                    acc.insert(entry.name.clone(), entry);
+                }
+                acc
+            });
         selected_by_name.into_values().cloned().collect()
     }
 
@@ -403,6 +433,30 @@ mod tests {
         assert_eq!(catalog[0].name, "second");
         assert_eq!(registry.roots().len(), 1);
         assert_eq!(registry.roots()[0].root_path, second_root);
+    }
+
+    #[test]
+    fn catalog_for_roots_selects_without_clearing_shared_registry() {
+        let temp = TempDir::new().unwrap();
+        let first_root = temp.path().join("first");
+        let second_root = temp.path().join("second");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        write_skill(&first_root, "first", "first", "one");
+        write_skill(&second_root, "second", "second", "two");
+
+        let first_registration = registration(first_root.clone(), SkillRootSourceKind::Workspace);
+        let second_registration = registration(second_root.clone(), SkillRootSourceKind::Workspace);
+
+        let mut registry = SkillsRegistry::new();
+        registry
+            .sync_effective_roots(vec![first_registration.clone(), second_registration])
+            .unwrap();
+
+        let first_catalog = registry.catalog_for_roots(&[first_registration], None);
+        assert_eq!(first_catalog.len(), 1);
+        assert_eq!(first_catalog[0].name, "first");
+        assert_eq!(registry.catalog().len(), 2);
     }
 
     #[test]
