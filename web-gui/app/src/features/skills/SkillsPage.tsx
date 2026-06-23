@@ -161,20 +161,22 @@ export function SkillsPage({
                 />
               </label>
             ) : null}
-            <label>
-              <span>Install mode</span>
-              <select value={addMode} onChange={(event) => setAddMode(event.target.value as SkillInstallMode)} disabled={loading}>
-                <option value="linked">Linked local ref</option>
-                <option value="copied">Copied snapshot</option>
-              </select>
-            </label>
+            {addSourceType === "local" ? (
+              <label>
+                <span>Install mode</span>
+                <select value={addMode} onChange={(event) => setAddMode(event.target.value as SkillInstallMode)} disabled={loading}>
+                  <option value="linked">Linked local ref</option>
+                  <option value="copied">Copied snapshot</option>
+                </select>
+              </label>
+            ) : null}
             <Button type="submit" variant="accent" disabled={loading || !addSource.trim()}>
               Install
             </Button>
           </form>
           <p className="skills-add-help">
-            Remote packages are downloaded into the user skill cache first; Linked then points the User Library at that local
-            folder, while Copied stores a snapshot in the User Library. Local folders use the same link-or-copy behavior directly.
+            Remote packages are imported into the User Library by the skill manager and do not need a link/copy choice here.
+            Local folders can be linked in place or copied as a snapshot.
           </p>
 
           <div className="skills-toolbar" role="search">
@@ -275,7 +277,7 @@ function SkillRow({
 
 function buildAddSkillInput(type: AddSourceType, source: string, skill: string, mode: SkillInstallMode): AddSkillInput {
   if (type === "local") return { kind: "local", path: source, mode };
-  return { kind: "remote", package: source, skill: skill || undefined, mode };
+  return { kind: "remote", package: source, skill: skill || undefined };
 }
 
 function sourcePlaceholder(type: AddSourceType) {
