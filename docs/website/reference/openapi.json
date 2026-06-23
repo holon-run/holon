@@ -5885,7 +5885,7 @@
     },
     "/api/skills/catalog": {
       "get": {
-        "description": "Return the precedence-resolved skills catalog. Query parameters: agent_id, scope.",
+        "description": "Return the global user Skill Library catalog. Query parameter: scope.",
         "operationId": "skillsCatalog",
         "parameters": [],
         "responses": {
