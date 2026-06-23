@@ -1417,6 +1417,222 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
+            "dashscope-token-plan",
+            "qwen3.7-max",
+            "qwen3.7-max",
+            1_000_000,
+            65_536,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "qwen3.7-plus",
+            "qwen3.7-plus",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "qwen3.6-plus",
+            "qwen3.6-plus",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "qwen3.6-flash",
+            "qwen3.6-flash",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "deepseek-v3.2",
+            "DeepSeek V3.2",
+            128_000,
+            32_768,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code",
+            262_144,
+            98_304,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "kimi-k2.6",
+            "kimi-k2.6",
+            262_144,
+            98_304,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "kimi-k2.5",
+            "kimi-k2.5",
+            262_144,
+            32_768,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "glm-5.2",
+            "glm-5.2",
+            1_000_000,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "glm-5.1",
+            "glm-5.1",
+            202_752,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "glm-5",
+            "glm-5",
+            202_752,
+            16_384,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-token-plan",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5",
+            196_608,
+            32_768,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "qwen3.7-plus",
+            "qwen3.7-plus",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "qwen3.6-plus",
+            "qwen3.6-plus",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "qwen3.5-plus",
+            "qwen3.5-plus",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "qwen3-max-2026-01-23",
+            "qwen3-max-2026-01-23",
+            262_144,
+            65_536,
+            false,
+            false,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "qwen3-coder-next",
+            "qwen3-coder-next",
+            262_144,
+            65_536,
+            false,
+            false,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "qwen3-coder-plus",
+            "qwen3-coder-plus",
+            1_000_000,
+            65_536,
+            false,
+            false,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5",
+            196_608,
+            32_768,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "glm-5",
+            "glm-5",
+            202_752,
+            16_384,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "glm-4.7",
+            "glm-4.7",
+            202_752,
+            16_384,
+            false,
+            false,
+        ),
+        catalog_model(
+            "dashscope-coding-plan",
+            "kimi-k2.5",
+            "kimi-k2.5",
+            262_144,
+            32_768,
+            true,
+            true,
+        ),
+        catalog_model(
             "stepfun",
             "step-3.5-flash",
             "Step 3.5 Flash",
@@ -2412,6 +2628,56 @@ mod tests {
         assert!(catalog
             .get(&ModelRef::parse("dashscope-openai/MiniMax-M2.5").unwrap())
             .is_none());
+    }
+
+    #[test]
+    fn dashscope_plan_providers_have_separate_exact_model_catalogs() {
+        let catalog = BuiltInModelCatalog::new();
+
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("dashscope-token-plan").unwrap())
+                .unwrap()
+                .as_string(),
+            "dashscope-token-plan/qwen3.7-max"
+        );
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("dashscope-coding-plan").unwrap())
+                .unwrap()
+                .as_string(),
+            "dashscope-coding-plan/qwen3.7-plus"
+        );
+
+        for model_ref in [
+            "dashscope-token-plan/qwen3.7-max",
+            "dashscope-token-plan/kimi-k2.7-code",
+            "dashscope-token-plan/glm-5.2",
+            "dashscope-token-plan/MiniMax-M2.5",
+            "dashscope-coding-plan/qwen3-coder-plus",
+            "dashscope-coding-plan/glm-5",
+            "dashscope-coding-plan/kimi-k2.5",
+            "dashscope-coding-plan/MiniMax-M2.5",
+        ] {
+            assert!(
+                catalog.get(&ModelRef::parse(model_ref).unwrap()).is_some(),
+                "{model_ref} should be registered"
+            );
+        }
+
+        for unsupported in [
+            "dashscope-token-plan/ZHIPU/GLM-5.2",
+            "dashscope-token-plan/MiniMax/MiniMax-M3",
+            "dashscope-coding-plan/glm-5.2",
+            "dashscope-coding-plan/kimi-k2.7-code",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::parse(unsupported).unwrap())
+                    .is_none(),
+                "{unsupported} should not be inferred from another DashScope catalog"
+            );
+        }
     }
 
     #[test]

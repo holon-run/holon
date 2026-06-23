@@ -442,6 +442,20 @@ pub(crate) fn built_in_provider_registry_with_settings(
     )?;
     insert_anthropic_compatible_provider(
         &mut registry,
+        "dashscope-token-plan",
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        &["DASHSCOPE_TOKEN_PLAN_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "dashscope-coding-plan",
+        "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+        &["DASHSCOPE_CODING_PLAN_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
         "deepseek",
         "https://api.deepseek.com/anthropic",
         &["DEEPSEEK_API_KEY"],
