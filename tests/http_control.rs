@@ -22,7 +22,7 @@ http_async_tests!(
     list_skills_includes_all_agent_skill_roots,
     agent_skills_endpoint_uses_effective_registry_snapshot,
     agent_skills_endpoint_does_not_leak_stale_roots_between_agents,
-    skills_catalog_uses_shared_registry_with_agent_and_workspace_roots,
+    skills_catalog_returns_global_user_library_only,
     install_skill_existing_destination_returns_conflict,
     add_skill_to_catalog_existing_destination_returns_conflict,
     skill_library_add_remove_and_agent_enable_disable_are_separate,

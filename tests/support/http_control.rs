@@ -579,52 +579,28 @@ pub async fn agent_skills_endpoint_uses_effective_registry_snapshot() -> Result<
     )?;
 
     let client = Client::new();
-    let catalog_payload: serde_json::Value = client
-        .get(format!("{base}/api/skills/catalog?agent_id=default"))
-        .send()
-        .await?
-        .json()
-        .await?;
     let list_payload: serde_json::Value = client
         .get(format!("{base}/agents/default/skills"))
         .send()
         .await?
         .json()
         .await?;
-    let catalog_names = catalog_payload["catalog"]
-        .as_array()
-        .expect("catalog should be an array")
-        .iter()
-        .filter_map(|skill| skill["name"].as_str())
-        .collect::<std::collections::BTreeSet<_>>();
     let listed_names = list_payload["skills"]
         .as_array()
         .expect("skills should be an array")
         .iter()
         .filter_map(|skill| skill["name"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(catalog_names, listed_names);
     assert!(listed_names.contains("shared-demo"));
     assert!(listed_names.contains("workspace-demo"));
 
     std::fs::remove_dir_all(&agent_skill_dir)?;
-    let catalog_payload: serde_json::Value = client
-        .get(format!("{base}/api/skills/catalog?agent_id=default"))
-        .send()
-        .await?
-        .json()
-        .await?;
     let list_payload: serde_json::Value = client
         .get(format!("{base}/agents/default/skills"))
         .send()
         .await?
         .json()
         .await?;
-    assert!(!catalog_payload["catalog"]
-        .as_array()
-        .expect("catalog should be an array")
-        .iter()
-        .any(|skill| skill["name"] == "shared-demo"));
     assert!(!list_payload["skills"]
         .as_array()
         .expect("skills should be an array")
@@ -691,8 +667,20 @@ pub async fn agent_skills_endpoint_does_not_leak_stale_roots_between_agents() ->
     Ok(())
 }
 
-pub async fn skills_catalog_uses_shared_registry_with_agent_and_workspace_roots() -> Result<()> {
+pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
+    let skill_name = format!("http-global-catalog-{}", std::process::id());
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let user_skill_dir = user_home.join(".agents").join("skills").join(&skill_name);
+    let _ = std::fs::remove_dir_all(&user_skill_dir);
+    std::fs::create_dir_all(&user_skill_dir)?;
+    std::fs::write(
+        user_skill_dir.join("SKILL.md"),
+        format!("---\nname: {skill_name}\ndescription: user\n---\nbody"),
+    )?;
+
     let agent_home = host.config().data_dir.join("agents/default");
     let agent_skill_dir = agent_home.join("skills/agent-demo");
     std::fs::create_dir_all(&agent_skill_dir)?;
@@ -713,24 +701,25 @@ pub async fn skills_catalog_uses_shared_registry_with_agent_and_workspace_roots(
 
     let client = Client::new();
     let payload: serde_json::Value = client
-        .get(format!("{base}/api/skills/catalog?agent_id=default"))
+        .get(format!("{base}/api/skills/catalog"))
         .send()
         .await?
         .json()
         .await?;
+    assert_eq!(payload["library"], "user");
     let skills = payload["catalog"]
         .as_array()
         .expect("catalog should be an array");
     assert!(skills
         .iter()
-        .any(|skill| skill["name"] == "shared-demo" && skill["scope"] == "agent"));
-    assert!(skills
+        .any(|skill| skill["name"] == skill_name && skill["scope"] == "user"));
+    assert!(!skills
         .iter()
-        .any(|skill| skill["name"] == "workspace-demo" && skill["scope"] == "workspace"));
+        .any(|skill| skill["name"] == "shared-demo" || skill["name"] == "workspace-demo"));
 
     std::fs::remove_dir_all(&agent_skill_dir)?;
     let payload: serde_json::Value = client
-        .get(format!("{base}/api/skills/catalog?agent_id=default"))
+        .get(format!("{base}/api/skills/catalog?scope=user"))
         .send()
         .await?
         .json()
@@ -738,8 +727,9 @@ pub async fn skills_catalog_uses_shared_registry_with_agent_and_workspace_roots(
     let skills = payload["catalog"]
         .as_array()
         .expect("catalog should be an array");
-    assert!(!skills.iter().any(|skill| skill["name"] == "shared-demo"));
+    assert!(skills.iter().any(|skill| skill["name"] == skill_name));
 
+    let _ = std::fs::remove_dir_all(&user_skill_dir);
     server.abort();
     Ok(())
 }

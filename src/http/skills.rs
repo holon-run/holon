@@ -238,48 +238,20 @@ pub async fn skills_catalog(
         _ => None,
     });
 
-    let agent_id = params.get("agent_id").cloned();
     let user_home = crate::agent_template::user_home_dir().ok();
-    let mut roots = Vec::new();
-    if let Some(agent_id) = agent_id.as_deref() {
-        let runtime = state
-            .host
-            .get_public_agent(agent_id)
-            .await
-            .map_err(agent_access_error)?;
-        let identity = runtime
-            .agent_identity_view()
-            .await
-            .map_err(error_response)?;
-        let agent_home = runtime.agent_home();
-        let execution = runtime.execution_snapshot().await.map_err(error_response)?;
-        roots.extend(crate::skills::effective_skill_root_registrations(
-            if identity.kind == crate::types::AgentKind::Default {
-                crate::skills::SkillVisibility::DefaultAgent
-            } else {
-                crate::skills::SkillVisibility::NonDefaultAgent
-            },
-            user_home.as_deref(),
-            agent_id,
-            &agent_home,
-            Some(&execution.workspace_anchor),
-        ));
-    } else {
-        roots.extend(
-            crate::skills::existing_skill_roots(
-                user_home.as_deref(),
-                &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
-            )
-            .into_iter()
-            .map(|root| {
-                crate::skills::skill_root_registration(
-                    crate::types::SkillRootSourceKind::UserGlobal,
-                    None,
-                    root,
-                )
-            }),
-        );
-    }
+    let roots = crate::skills::existing_skill_roots(
+        user_home.as_deref(),
+        &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
+    )
+    .into_iter()
+    .map(|root| {
+        crate::skills::skill_root_registration(
+            crate::types::SkillRootSourceKind::UserGlobal,
+            None,
+            root,
+        )
+    })
+    .collect::<Vec<_>>();
 
     let mut registry = state.skills_registry.write().await;
     registry
@@ -288,7 +260,7 @@ pub async fn skills_catalog(
     let catalog = registry.catalog_for_roots(&roots, scope_filter);
     Ok(Json(json!({
         "ok": true,
-        "agent_id": agent_id,
+        "library": "user",
         "catalog": catalog,
         "scope": scope_filter,
     })))
