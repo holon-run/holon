@@ -835,7 +835,7 @@ impl RuntimeHost {
         Ok(snapshots)
     }
 
-    pub fn preview_public_agent_prompt(
+    pub async fn preview_public_agent_prompt(
         &self,
         agent_id: &str,
         text: String,
@@ -843,10 +843,11 @@ impl RuntimeHost {
     ) -> std::result::Result<EffectivePrompt, PublicAgentError> {
         let identity = self.public_agent_identity(agent_id)?;
         self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+            .await
             .map_err(PublicAgentError::Runtime)
     }
 
-    pub fn preview_agent_prompt(
+    pub async fn preview_agent_prompt(
         &self,
         agent_id: &str,
         text: String,
@@ -874,6 +875,7 @@ impl RuntimeHost {
             return Err(anyhow!("agent {} is archived", agent_id));
         }
         self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+            .await
     }
 
     pub fn public_agent_boundary_metadata(
@@ -885,7 +887,7 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)
     }
 
-    fn preview_agent_prompt_from_storage(
+    async fn preview_agent_prompt_from_storage(
         &self,
         identity: &AgentIdentityRecord,
         text: String,
@@ -943,22 +945,13 @@ impl RuntimeHost {
             agent_home.as_path(),
             workspace_anchor,
         );
-        let mut skills = if let Ok(mut skill_registry) = self.inner.skills_registry.try_write() {
-            skill_registry.replace_roots(skill_roots.clone())?;
-            skills_runtime_view_from_catalog(
-                skill_registry.catalog(),
-                &skill_roots,
-                &state.active_skills,
-            )
-        } else {
-            let mut skill_registry = SkillsRegistry::new();
-            skill_registry.replace_roots(skill_roots.clone())?;
-            skills_runtime_view_from_catalog(
-                skill_registry.catalog(),
-                &skill_roots,
-                &state.active_skills,
-            )
-        };
+        let mut skill_registry = self.inner.skills_registry.write().await;
+        skill_registry.replace_roots(skill_roots.clone())?;
+        let mut skills = skills_runtime_view_from_catalog(
+            skill_registry.catalog(),
+            &skill_roots,
+            &state.active_skills,
+        );
         skills.agent_templates_catalog = discover_agent_templates_catalog(
             std::env::var_os("HOME").map(PathBuf::from).as_deref(),
             agent_home.as_path(),
@@ -2283,6 +2276,7 @@ mod tests {
                 "inspect prompt".into(),
                 AuthorityClass::OperatorInstruction,
             )
+            .await
             .unwrap();
 
         assert!(prompt.render_dump().contains("inspect prompt"));
@@ -2314,6 +2308,7 @@ mod tests {
                 "inspect prompt".into(),
                 AuthorityClass::OperatorInstruction,
             )
+            .await
             .unwrap();
 
         assert!(prompt.render_dump().contains("inspect prompt"));
@@ -2350,6 +2345,7 @@ mod tests {
                 "inspect prompt".into(),
                 AuthorityClass::OperatorInstruction,
             )
+            .await
             .unwrap();
         let rendered = prompt.render_dump();
 
