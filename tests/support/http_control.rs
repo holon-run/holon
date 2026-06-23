@@ -712,7 +712,7 @@ pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
         .expect("catalog should be an array");
     assert!(skills
         .iter()
-        .any(|skill| skill["name"] == skill_name && skill["scope"] == "user"));
+        .any(|skill| skill["name"] == skill_name && skill["scope"] == "user_global"));
     assert!(!skills
         .iter()
         .any(|skill| skill["name"] == "shared-demo" || skill["name"] == "workspace-demo"));

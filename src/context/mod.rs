@@ -1346,7 +1346,7 @@ fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
 
 fn scope_label(scope: &crate::types::SkillScope) -> &'static str {
     match scope {
-        crate::types::SkillScope::User => "user",
+        crate::types::SkillScope::User => "user_global",
         crate::types::SkillScope::Agent => "agent",
         crate::types::SkillScope::Workspace => "workspace",
     }
@@ -4988,6 +4988,9 @@ mod tests {
             discoverable_skills: vec![
                 crate::types::SkillCatalogEntry {
                     skill_id: "agent:demo".into(),
+                    root_id: "agent_home:test-root".into(),
+                    skill_dir: "demo".into(),
+                    legacy_id: Some("agent:demo".into()),
                     name: "demo".into(),
                     description: "agent demo skill summary".into(),
                     path: PathBuf::from("/tmp/agent/skills/demo/SKILL.md"),
@@ -4995,6 +4998,9 @@ mod tests {
                 },
                 crate::types::SkillCatalogEntry {
                     skill_id: "workspace:other".into(),
+                    root_id: "workspace:test-root".into(),
+                    skill_dir: "other".into(),
+                    legacy_id: None,
                     name: "other".into(),
                     description: "other skill summary".into(),
                     path: PathBuf::from("/tmp/workspace/.agents/skills/other/SKILL.md"),
@@ -7570,6 +7576,9 @@ mod tests {
             agent_templates_catalog: Vec::new(),
             discoverable_skills: vec![crate::types::SkillCatalogEntry {
                 skill_id: "skill/large-catalog-entry".into(),
+                root_id: "workspace:test-root".into(),
+                skill_dir: "large-catalog-entry".into(),
+                legacy_id: None,
                 name: "Large Catalog Entry".into(),
                 description:
                     "catalog description repeats to consume prompt budget aggressively ".repeat(12),

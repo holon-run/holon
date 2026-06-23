@@ -2795,12 +2795,16 @@ async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapsho
     let identity = runtime.agent_identity_view().await.unwrap();
     let skills = runtime.skills_runtime_view(&identity).await.unwrap();
 
-    assert!(skills
+    let discoverable = skills
         .discoverable_skills
         .iter()
-        .any(|skill| skill.skill_id == "workspace:demo"));
+        .find(|skill| skill.name == "demo")
+        .unwrap();
+    assert!(discoverable.skill_id.starts_with("workspace:"));
+    assert!(discoverable.skill_id.ends_with(":demo"));
+    assert_eq!(discoverable.legacy_id.as_deref(), Some("workspace:demo"));
     assert_eq!(skills.active_skills.len(), 1);
-    assert_eq!(skills.active_skills[0].skill_id, "workspace:demo");
+    assert_eq!(skills.active_skills[0].skill_id, discoverable.skill_id);
 }
 
 #[tokio::test]

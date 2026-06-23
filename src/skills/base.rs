@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use tracing::warn;
 
 use crate::types::{
@@ -73,15 +74,7 @@ pub fn load_skills_runtime_view(
     discoverable_skills = retain_highest_precedence_skills(discoverable_skills);
     discoverable_skills.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
     let attached_skills = discoverable_skills.clone();
-    let active_skill_ids = discoverable_skills
-        .iter()
-        .map(|entry| entry.skill_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let active_skills = active_skills
-        .iter()
-        .filter(|record| active_skill_ids.contains(record.skill_id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
+    let active_skills = retain_active_skills_for_catalog(&discoverable_skills, active_skills);
 
     Ok(SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
@@ -135,6 +128,14 @@ pub(crate) fn existing_skill_roots(base: Option<&Path>, suffixes: &[&str]) -> Ve
 }
 
 pub fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCatalogEntry>> {
+    load_catalog_for_root(scope, root, skill_root_id_for_scope(scope, root))
+}
+
+pub(crate) fn load_catalog_for_root(
+    scope: SkillScope,
+    root: &Path,
+    root_id: String,
+) -> Result<Vec<SkillCatalogEntry>> {
     let mut entries = Vec::new();
     let read_dir = match fs::read_dir(root) {
         Ok(read_dir) => read_dir,
@@ -188,8 +189,12 @@ pub fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<Skil
         let description = parsed
             .description
             .unwrap_or_else(|| first_body_paragraph(&content));
+        let legacy_id = format!("{}:{skill_name}", scope_label(scope));
         entries.push(SkillCatalogEntry {
-            skill_id: format!("{}:{skill_name}", scope_label(scope)),
+            skill_id: format!("{root_id}:{skill_name}"),
+            root_id: root_id.clone(),
+            skill_dir: skill_name,
+            legacy_id: Some(legacy_id),
             name,
             description,
             path: skill_path,
@@ -248,15 +253,7 @@ pub fn skills_runtime_view_from_catalog(
             .then_with(|| left.skill_id.cmp(&right.skill_id))
             .then_with(|| left.path.cmp(&right.path))
     });
-    let active_skill_ids = catalog
-        .iter()
-        .map(|entry| entry.skill_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let active_skills = active_skills
-        .iter()
-        .filter(|record| active_skill_ids.contains(record.skill_id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
+    let active_skills = retain_active_skills_for_catalog(&catalog, active_skills);
     SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
         discovered_roots: collect_discovered_roots_from_registrations(roots),
@@ -304,6 +301,37 @@ pub fn skill_root_registration(
     }
 }
 
+pub(crate) fn skill_root_id(registration: &SkillRootRegistration) -> String {
+    let source = match registration.source_kind {
+        SkillRootSourceKind::UserGlobal => "user_global",
+        SkillRootSourceKind::AgentHome => "agent_home",
+        SkillRootSourceKind::Workspace => "workspace",
+    };
+    let hash = short_root_hash(&registration.root_path);
+    match (
+        registration.source_kind,
+        registration.owner_agent_id.as_deref(),
+    ) {
+        (SkillRootSourceKind::AgentHome, Some(owner)) => format!("{source}:{owner}:{hash}"),
+        _ => format!("{source}:{hash}"),
+    }
+}
+
+fn skill_root_id_for_scope(scope: SkillScope, root: &Path) -> String {
+    let source = match scope {
+        SkillScope::User => "user_global",
+        SkillScope::Agent => "agent_home",
+        SkillScope::Workspace => "workspace",
+    };
+    format!("{source}:{}", short_root_hash(root))
+}
+
+fn short_root_hash(root: &Path) -> String {
+    let normalized = root.components().collect::<PathBuf>();
+    let digest = Sha256::digest(normalized.to_string_lossy().as_bytes());
+    format!("{digest:x}")[..12].to_string()
+}
+
 fn retain_highest_precedence_skills(skills: Vec<SkillCatalogEntry>) -> Vec<SkillCatalogEntry> {
     let mut selected_by_name: std::collections::BTreeMap<String, SkillCatalogEntry> =
         std::collections::BTreeMap::new();
@@ -316,6 +344,34 @@ fn retain_highest_precedence_skills(skills: Vec<SkillCatalogEntry>) -> Vec<Skill
         }
     }
     selected_by_name.into_values().collect()
+}
+
+fn retain_active_skills_for_catalog(
+    catalog: &[SkillCatalogEntry],
+    active_skills: &[ActiveSkillRecord],
+) -> Vec<ActiveSkillRecord> {
+    active_skills
+        .iter()
+        .filter_map(|record| {
+            catalog
+                .iter()
+                .find(|entry| {
+                    entry.skill_id == record.skill_id
+                        || entry
+                            .legacy_id
+                            .as_deref()
+                            .is_some_and(|legacy_id| legacy_id == record.skill_id)
+                })
+                .map(|entry| {
+                    let mut record = record.clone();
+                    record.skill_id = entry.skill_id.clone();
+                    record.name = entry.name.clone();
+                    record.path = entry.path.clone();
+                    record.scope = entry.scope;
+                    record
+                })
+        })
+        .collect()
 }
 
 fn skill_wins_catalog_selection(
@@ -1341,6 +1397,7 @@ pub struct InstalledSkillView {
 pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView>> {
     let mut entries = Vec::new();
     for skills_root in existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
+        let root_id = skill_root_id_for_scope(SkillScope::Agent, &skills_root);
         let read_dir = match fs::read_dir(&skills_root) {
             Ok(read_dir) => read_dir,
             Err(error) => {
@@ -1359,13 +1416,17 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
             }
             let skill_name = child.file_name().to_string_lossy().to_string();
             let skill_path = child.path().join(SKILL_ENTRYPOINT);
+            let legacy_id = format!("agent:{skill_name}");
             let catalog = if skill_path.is_file() {
                 let content = fs::read_to_string(&skill_path).with_context(|| {
                     format!("failed to read installed skill {}", skill_path.display())
                 })?;
                 let parsed = parse_skill_metadata(&content);
                 SkillCatalogEntry {
-                    skill_id: format!("agent:{skill_name}"),
+                    skill_id: format!("{root_id}:{skill_name}"),
+                    root_id: root_id.clone(),
+                    skill_dir: skill_name.clone(),
+                    legacy_id: Some(legacy_id.clone()),
                     name: parsed.name.unwrap_or_else(|| skill_name.clone()),
                     description: parsed
                         .description
@@ -1375,7 +1436,10 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
                 }
             } else {
                 SkillCatalogEntry {
-                    skill_id: format!("agent:{skill_name}"),
+                    skill_id: format!("{root_id}:{skill_name}"),
+                    root_id: root_id.clone(),
+                    skill_dir: skill_name.clone(),
+                    legacy_id: Some(legacy_id),
                     name: skill_name.clone(),
                     description: String::new(),
                     path: skill_path,
@@ -1387,8 +1451,9 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
     }
     entries.sort_by(|left, right| {
         left.catalog
-            .skill_id
-            .cmp(&right.catalog.skill_id)
+            .name
+            .cmp(&right.catalog.name)
+            .then_with(|| left.catalog.skill_id.cmp(&right.catalog.skill_id))
             .then_with(|| left.catalog.path.cmp(&right.catalog.path))
     });
     Ok(entries)
@@ -1522,12 +1587,18 @@ mod tests {
                 .unwrap();
 
         assert_eq!(view.discovered_roots.len(), 2);
+        let ids = view
+            .discoverable_skills
+            .iter()
+            .map(|skill| skill.skill_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.iter().all(|id| id.starts_with("agent_home:")));
         let names = view
             .discoverable_skills
             .iter()
             .map(|skill| skill.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(names, vec!["beta", "alpha"]);
     }
 
     #[test]
@@ -1628,10 +1699,20 @@ mod tests {
         .unwrap();
 
         assert_eq!(view.discoverable_skills.len(), 1);
-        assert_eq!(view.discoverable_skills[0].skill_id, "agent:ghx");
+        assert!(view.discoverable_skills[0]
+            .skill_id
+            .starts_with("agent_home:"));
+        assert!(view.discoverable_skills[0].skill_id.ends_with(":ghx"));
+        assert_eq!(
+            view.discoverable_skills[0].legacy_id.as_deref(),
+            Some("agent:ghx")
+        );
         assert_eq!(view.discoverable_skills[0].description, "agent skill");
         assert_eq!(view.active_skills.len(), 1);
-        assert_eq!(view.active_skills[0].skill_id, "agent:ghx");
+        assert_eq!(
+            view.active_skills[0].skill_id,
+            view.discoverable_skills[0].skill_id
+        );
     }
 
     #[test]
@@ -1645,6 +1726,9 @@ mod tests {
         let selected = retain_highest_precedence_skills(vec![
             SkillCatalogEntry {
                 skill_id: "agent:z-skill".into(),
+                root_id: "agent_home:z-root".into(),
+                skill_dir: "z-skill".into(),
+                legacy_id: Some("agent:z-skill".into()),
                 name: "shared".into(),
                 description: "later id".into(),
                 path: later_id_path,
@@ -1652,6 +1736,9 @@ mod tests {
             },
             SkillCatalogEntry {
                 skill_id: "agent:a-skill".into(),
+                root_id: "agent_home:a-root".into(),
+                skill_dir: "a-skill".into(),
+                legacy_id: Some("agent:a-skill".into()),
                 name: "shared".into(),
                 description: "earlier id".into(),
                 path: earlier_id_path,
@@ -1659,6 +1746,9 @@ mod tests {
             },
             SkillCatalogEntry {
                 skill_id: "workspace:skill".into(),
+                root_id: "workspace:z-root".into(),
+                skill_dir: "skill".into(),
+                legacy_id: None,
                 name: "same-id".into(),
                 description: "later path".into(),
                 path: same_id_later_path,
@@ -1666,6 +1756,9 @@ mod tests {
             },
             SkillCatalogEntry {
                 skill_id: "workspace:skill".into(),
+                root_id: "workspace:a-root".into(),
+                skill_dir: "skill".into(),
+                legacy_id: None,
                 name: "same-id".into(),
                 description: "earlier path".into(),
                 path: same_id_earlier_path,
@@ -1746,7 +1839,10 @@ mod tests {
         let visible_path = PathBuf::from("/agent/skills/demo/SKILL.md");
         let view = skills_runtime_view_from_catalog(
             vec![SkillCatalogEntry {
-                skill_id: "agent:demo".into(),
+                skill_id: "agent_home:test-root:demo".into(),
+                root_id: "agent_home:test-root".into(),
+                skill_dir: "demo".into(),
+                legacy_id: Some("agent:demo".into()),
                 name: "demo".into(),
                 description: "visible".into(),
                 path: visible_path.clone(),
@@ -1783,7 +1879,7 @@ mod tests {
 
         assert_eq!(view.discoverable_skills.len(), 1);
         assert_eq!(view.active_skills.len(), 1);
-        assert_eq!(view.active_skills[0].skill_id, "agent:demo");
+        assert_eq!(view.active_skills[0].skill_id, "agent_home:test-root:demo");
     }
 
     #[test]

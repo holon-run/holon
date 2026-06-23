@@ -160,7 +160,11 @@ impl SkillsRegistry {
             SkillRootSourceKind::Workspace => SkillScope::Workspace,
         };
 
-        match crate::skills::load_catalog_for_scope(scope, &registration.root_path) {
+        match crate::skills::load_catalog_for_root(
+            scope,
+            &registration.root_path,
+            crate::skills::skill_root_id(registration),
+        ) {
             Ok(entries) => (
                 entries,
                 SkillRootScanStatus::Scanned {
@@ -302,6 +306,9 @@ mod tests {
 
         registry.entries.push(SkillCatalogEntry {
             skill_id: "user_skill".to_string(),
+            root_id: "user_global:test-root".to_string(),
+            skill_dir: "test".to_string(),
+            legacy_id: Some("user:test".to_string()),
             name: "test".to_string(),
             description: "user".to_string(),
             path: PathBuf::from("/user/test"),
@@ -310,6 +317,9 @@ mod tests {
 
         registry.entries.push(SkillCatalogEntry {
             skill_id: "agent_skill".to_string(),
+            root_id: "agent_home:test-root".to_string(),
+            skill_dir: "test".to_string(),
+            legacy_id: Some("agent:test".to_string()),
             name: "test".to_string(),
             description: "agent".to_string(),
             path: PathBuf::from("/agent/test"),
@@ -328,6 +338,9 @@ mod tests {
 
         registry.entries.push(SkillCatalogEntry {
             skill_id: "skill1".to_string(),
+            root_id: "agent_home:test-root".to_string(),
+            skill_dir: "skill_a".to_string(),
+            legacy_id: Some("agent:skill_a".to_string()),
             name: "skill_a".to_string(),
             description: "agent".to_string(),
             path: PathBuf::from("/a"),
@@ -336,6 +349,9 @@ mod tests {
 
         registry.entries.push(SkillCatalogEntry {
             skill_id: "skill2".to_string(),
+            root_id: "user_global:test-root".to_string(),
+            skill_dir: "skill_b".to_string(),
+            legacy_id: Some("user:skill_b".to_string()),
             name: "skill_b".to_string(),
             description: "user".to_string(),
             path: PathBuf::from("/b"),
