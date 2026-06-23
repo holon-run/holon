@@ -10,6 +10,7 @@ import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { SkillsPage } from "../features/skills/SkillsPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
@@ -21,6 +22,7 @@ import { pushBrowserRoute, routeFromLocation } from "./routes";
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
   { key: "dashboard", label: "Dashboard", icon: "◎" },
   { key: "search", label: "Search", icon: "⌕" },
+  { key: "skills", label: "Skills", icon: "◇" },
   { key: "settings", label: "Settings", icon: "⚙" },
 ];
 
@@ -65,8 +67,26 @@ export function App() {
   const searchResultContentBySourceRef = useRuntimeStore((state) => state.searchResultContentBySourceRef);
   const searchResultContentLoadingBySourceRef = useRuntimeStore((state) => state.searchResultContentLoadingBySourceRef);
   const searchResultContentErrorBySourceRef = useRuntimeStore((state) => state.searchResultContentErrorBySourceRef);
+  const skillCatalog = useRuntimeStore((state) => state.skillCatalog);
+  const skillCatalogLoading = useRuntimeStore((state) => state.skillCatalogLoading);
+  const skillCatalogError = useRuntimeStore((state) => state.skillCatalogError);
+  const addSkillToCatalog = useRuntimeStore((state) => state.addSkillToCatalog);
+  const removeSkillFromCatalog = useRuntimeStore((state) => state.removeSkillFromCatalog);
+  const agentSkillCatalog = useRuntimeStore((state) =>
+    activeAgentId ? state.agentSkillCatalogByAgentId[activeAgentId] : undefined,
+  );
+  const agentSkillCatalogLoading = useRuntimeStore((state) =>
+    activeAgentId ? state.agentSkillCatalogLoadingByAgentId[activeAgentId] ?? false : false,
+  );
+  const agentSkillCatalogError = useRuntimeStore((state) =>
+    activeAgentId ? state.agentSkillCatalogErrorByAgentId[activeAgentId] : undefined,
+  );
   const runSearch = useRuntimeStore((state) => state.runSearch);
   const loadSearchResultContent = useRuntimeStore((state) => state.loadSearchResultContent);
+  const refreshSkillCatalog = useRuntimeStore((state) => state.refreshSkillCatalog);
+  const refreshAgentSkillCatalog = useRuntimeStore((state) => state.refreshAgentSkillCatalog);
+  const enableAgentSkill = useRuntimeStore((state) => state.enableAgentSkill);
+  const disableAgentSkill = useRuntimeStore((state) => state.disableAgentSkill);
   const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
   const refreshRuntimeConfig = useRuntimeStore((state) => state.refreshRuntimeConfig);
   const updateRuntimeConfig = useRuntimeStore((state) => state.updateRuntimeConfig);
@@ -168,6 +188,16 @@ export function App() {
     if (route !== "settings" || runtimeConfigLoading || runtimeConfig.surface) return;
     void refreshRuntimeConfig();
   }, [refreshRuntimeConfig, route, runtimeConfig.surface, runtimeConfigLoading]);
+
+  useEffect(() => {
+    if (route !== "skills" || skillCatalogLoading || skillCatalog.catalog.length > 0) return;
+    void refreshSkillCatalog();
+  }, [refreshSkillCatalog, route, skillCatalog.catalog.length, skillCatalogLoading]);
+
+  useEffect(() => {
+    if (route !== "agent" || !activeAgentId || agentSkillCatalogLoading || agentSkillCatalog) return;
+    void refreshAgentSkillCatalog(activeAgentId);
+  }, [activeAgentId, agentSkillCatalog, agentSkillCatalogLoading, refreshAgentSkillCatalog, route]);
 
   useEffect(() => {
     document.title = browserWindowTitle(bootstrap.connection);
@@ -404,6 +434,16 @@ export function App() {
             onOpenAgent={navigateAgent}
           />
         ) : null}
+        {route === "skills" ? (
+          <SkillsPage
+            catalog={skillCatalog}
+            loading={skillCatalogLoading}
+            error={skillCatalogError}
+            onRefresh={refreshSkillCatalog}
+            onAddSkill={addSkillToCatalog}
+            onRemoveSkill={removeSkillFromCatalog}
+          />
+        ) : null}
         {route === "settings" ? (
           <SettingsPage
             connection={bootstrap.connection}
@@ -429,6 +469,11 @@ export function App() {
       {selectedAgent ? (
         <RightSidePanel
           agent={selectedAgent}
+          skillCatalog={agentSkillCatalog}
+          availableSkillCatalog={skillCatalog}
+          skillCatalogLoading={agentSkillCatalogLoading}
+          availableSkillCatalogLoading={skillCatalogLoading}
+          skillCatalogError={agentSkillCatalogError}
           workItemDetailsById={selectedAgentSession?.workItemDetailsById ?? {}}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
           open={rightPanelOpen}
@@ -436,6 +481,16 @@ export function App() {
           onOpenWorkItemDetail={(workItem) => {
             showWorkItemDetail(selectedAgent.id, workItem);
             loadAgentWorkItemDetail(selectedAgent.id, workItem.id);
+          }}
+          onRefreshAgentSkills={() => refreshAgentSkillCatalog(selectedAgent.id)}
+          onRefreshAvailableSkills={() => {
+            void refreshSkillCatalog();
+          }}
+          onEnableAgentSkill={(name) => {
+            void enableAgentSkill(selectedAgent.id, name);
+          }}
+          onDisableAgentSkill={(name) => {
+            void disableAgentSkill(selectedAgent.id, name);
           }}
           onShowAgentOverview={showAgentOverview}
           onClose={() => setRightPanelOpen(false)}
@@ -738,12 +793,14 @@ function agentStatusIcon(tone: string): string {
 
 function pageTitle(route: RouteKey): string {
   if (route === "search") return "Search";
+  if (route === "skills") return "Skills";
   if (route === "settings") return "Settings";
   return "Dashboard";
 }
 
 function pageSubtitle(route: RouteKey, attentionCount: number, agentCount: number): string {
   if (route === "search") return "cross-agent lookup · messages · briefs · work evidence";
+  if (route === "skills") return "global library · catalog · daemon-managed skills";
   if (route === "settings") return "local connection · providers · model defaults";
   return attentionCount > 0 ? `${agentCount} agents · ${attentionCount} need attention` : `${agentCount} agents · all clear`;
 }

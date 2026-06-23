@@ -1,6 +1,7 @@
 import { agentDetailFixtures } from "./fixtures";
 import { briefIdForPayload, reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
+  AddSkillInput,
   AgentDetail,
   AgentSummary,
   CredentialProfileStatus,
@@ -16,6 +17,9 @@ import type {
   RuntimeModelCatalog,
   RuntimeModelOption,
   RuntimeSearchOptions,
+  SkillCatalogState,
+  SkillScope,
+  SkillInstallMode,
   RuntimeTaskOutputResult,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
@@ -36,6 +40,7 @@ export interface RuntimeClientOptions {
 const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
+const SKILL_INSTALL_REQUEST_TIMEOUT_MS = 130_000;
 
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
@@ -508,6 +513,22 @@ interface AgentTranscriptEntriesBatchGetResponseDto {
   missing_entry_ids?: string[];
 }
 
+interface SkillCatalogEntryDto {
+  skill_id?: string;
+  name?: string;
+  description?: string;
+  path?: string;
+  scope?: "user" | "agent" | "workspace";
+}
+
+interface SkillCatalogResponseDto {
+  catalog?: SkillCatalogEntryDto[];
+}
+
+interface AgentSkillsResponseDto {
+  skills?: SkillCatalogEntryDto[];
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -646,6 +667,72 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       const response = await getJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { headers: requestHeaders });
       return projectRuntimeConfigState(response);
+    },
+    async getSkillCatalog(agentId?: string): Promise<SkillCatalogState> {
+      if (!baseUrl) {
+        return { source: "fixture", agentId, catalog: [] };
+      }
+      if (agentId) {
+        const response = await getJson<AgentSkillsResponseDto>(
+          fetchImpl,
+          baseUrl,
+          `/agents/${encodeURIComponent(agentId)}/skills`,
+          { headers: requestHeaders },
+        );
+        return projectSkillCatalog({ catalog: response.skills }, agentId);
+      }
+      const response = await getJson<SkillCatalogResponseDto>(fetchImpl, baseUrl, "/skills/catalog", { headers: requestHeaders });
+      return projectSkillCatalog(response, agentId);
+    },
+    async addSkillToCatalog(input: AddSkillInput): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/add", { kind: input }, requestHeaders, {
+        timeoutMs: SKILL_INSTALL_REQUEST_TIMEOUT_MS,
+      });
+    },
+    async removeSkillFromCatalog(name: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/remove", { name }, requestHeaders);
+    },
+    async updateSkillCatalog(name?: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/update", { name }, requestHeaders);
+    },
+    async checkSkillCatalog(name?: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/check", { name }, requestHeaders);
+    },
+    async enableAgentSkill(agentId: string, name: string, mode: SkillInstallMode = "linked"): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/skills/enable`,
+        { name, mode },
+        requestHeaders,
+      );
+    },
+    async disableAgentSkill(agentId: string, name: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/skills/disable`,
+        { name },
+        requestHeaders,
+      );
     },
     async updateRuntimeConfig(updates: RuntimeConfigUpdateEntry[]): Promise<RuntimeConfigState> {
       if (!baseUrl) {
@@ -1019,6 +1106,22 @@ function connectionBaseLabel(baseUrl: string): string {
   }
 }
 
+function projectSkillCatalog(response: SkillCatalogResponseDto, agentId?: string): SkillCatalogState {
+  return {
+    source: "http",
+    agentId,
+    catalog: (response.catalog ?? [])
+      .filter((entry) => Boolean(entry.name || entry.skill_id))
+      .map((entry) => ({
+        skillId: entry.skill_id ?? entry.name ?? "unknown",
+        name: entry.name ?? entry.skill_id ?? "unknown",
+        description: entry.description ?? "",
+        path: entry.path ?? "",
+        scope: entry.scope ?? "user",
+      })),
+  };
+}
+
 async function getJson<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
@@ -1043,9 +1146,10 @@ async function postJson<T>(
   path: string,
   body: unknown,
   headers: Record<string, string> = {},
+  options: { timeoutMs?: number } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "POST",
     headers: {

@@ -18,4 +18,10 @@ describe("routeFromLocation", () => {
       eventSeq: undefined,
     });
   });
+
+  it("parses the top-level skills route", () => {
+    expect(routeFromLocation({ pathname: "/skills", search: "" })).toEqual({
+      route: "skills",
+    });
+  });
 });

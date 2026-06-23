@@ -17,6 +17,7 @@ import {
   transcriptEntryIdForPayload,
 } from "./session-reducer";
 import type {
+  AddSkillInput,
   AgentDetail,
   AgentSummary,
   AgentTimelineActivity,
@@ -36,6 +37,7 @@ import type {
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeSearchOptions,
+  SkillCatalogState,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
   WorkItemSummary,
@@ -162,6 +164,12 @@ export interface RuntimeStoreState {
   runtimeConfigLoading: boolean;
   runtimeConfigSaving: boolean;
   runtimeConfigError?: string;
+  skillCatalog: SkillCatalogState;
+  skillCatalogLoading: boolean;
+  skillCatalogError?: string;
+  agentSkillCatalogByAgentId: Record<string, SkillCatalogState>;
+  agentSkillCatalogLoadingByAgentId: Record<string, boolean>;
+  agentSkillCatalogErrorByAgentId: Record<string, string | undefined>;
   credentialStore: CredentialStoreState;
   credentialStoreLoading: boolean;
   credentialStoreError?: string;
@@ -188,6 +196,14 @@ export interface RuntimeStoreState {
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  refreshSkillCatalog: () => Promise<void>;
+  addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
+  removeSkillFromCatalog: (name: string) => Promise<boolean>;
+  updateSkillCatalog: (name?: string) => Promise<boolean>;
+  checkSkillCatalog: (name?: string) => Promise<boolean>;
+  refreshAgentSkillCatalog: (agentId: string | undefined) => Promise<void>;
+  enableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
+  disableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
   refreshCredentialStore: () => Promise<void>;
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
@@ -529,6 +545,11 @@ const emptyRuntimeConfig: RuntimeConfigState = {
   source: "fixture",
 };
 
+const emptySkillCatalog: SkillCatalogState = {
+  source: "fixture",
+  catalog: [],
+};
+
 /**
  * Initialize session cache for the current remote and hydrate any cached
  * sessions into the store. Called on initial load and remote switch.
@@ -581,6 +602,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfig: emptyRuntimeConfig,
   runtimeConfigLoading: false,
   runtimeConfigSaving: false,
+  skillCatalog: emptySkillCatalog,
+  skillCatalogLoading: false,
+  agentSkillCatalogByAgentId: {},
+  agentSkillCatalogLoadingByAgentId: {},
+  agentSkillCatalogErrorByAgentId: {},
   search: null,
   searchLoading: false,
   searchResultContentBySourceRef: {},
@@ -717,6 +743,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       modelCatalogError: undefined,
       runtimeConfig: emptyRuntimeConfig,
       runtimeConfigError: undefined,
+      skillCatalog: emptySkillCatalog,
+      skillCatalogLoading: false,
+      skillCatalogError: undefined,
+      agentSkillCatalogByAgentId: {},
+      agentSkillCatalogLoadingByAgentId: {},
+      agentSkillCatalogErrorByAgentId: {},
       credentialStore: { profiles: [] },
       credentialStoreLoading: false,
       credentialStoreError: undefined,
@@ -842,6 +874,216 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         runtimeConfigError: message,
       }));
       return undefined;
+    }
+  },
+
+  refreshSkillCatalog: async () => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+    }
+  },
+
+  addSkillToCatalog: async (input) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.addSkillToCatalog(input);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  removeSkillFromCatalog: async (name) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.removeSkillFromCatalog(name);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  updateSkillCatalog: async (name) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.updateSkillCatalog(name);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  checkSkillCatalog: async (name) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.checkSkillCatalog(name);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  refreshAgentSkillCatalog: async (agentId) => {
+    if (!agentId) return;
+    set((state) => ({
+      agentSkillCatalogLoadingByAgentId: {
+        ...state.agentSkillCatalogLoadingByAgentId,
+        [agentId]: true,
+      },
+      agentSkillCatalogErrorByAgentId: {
+        ...state.agentSkillCatalogErrorByAgentId,
+        [agentId]: undefined,
+      },
+    }));
+    try {
+      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      set((state) => ({
+        agentSkillCatalogByAgentId: {
+          ...state.agentSkillCatalogByAgentId,
+          [agentId]: catalog,
+        },
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+        agentSkillCatalogErrorByAgentId: {
+          ...state.agentSkillCatalogErrorByAgentId,
+          [agentId]: message,
+        },
+      }));
+    }
+  },
+
+  enableAgentSkill: async (agentId, name) => {
+    if (!agentId) return false;
+    set((state) => ({
+      agentSkillCatalogLoadingByAgentId: {
+        ...state.agentSkillCatalogLoadingByAgentId,
+        [agentId]: true,
+      },
+      agentSkillCatalogErrorByAgentId: {
+        ...state.agentSkillCatalogErrorByAgentId,
+        [agentId]: undefined,
+      },
+    }));
+    try {
+      await runtimeClient.enableAgentSkill(agentId, name);
+      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      set((state) => ({
+        agentSkillCatalogByAgentId: {
+          ...state.agentSkillCatalogByAgentId,
+          [agentId]: catalog,
+        },
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+      }));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+        agentSkillCatalogErrorByAgentId: {
+          ...state.agentSkillCatalogErrorByAgentId,
+          [agentId]: message,
+        },
+      }));
+      return false;
+    }
+  },
+
+  disableAgentSkill: async (agentId, name) => {
+    if (!agentId) return false;
+    set((state) => ({
+      agentSkillCatalogLoadingByAgentId: {
+        ...state.agentSkillCatalogLoadingByAgentId,
+        [agentId]: true,
+      },
+      agentSkillCatalogErrorByAgentId: {
+        ...state.agentSkillCatalogErrorByAgentId,
+        [agentId]: undefined,
+      },
+    }));
+    try {
+      await runtimeClient.disableAgentSkill(agentId, name);
+      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      set((state) => ({
+        agentSkillCatalogByAgentId: {
+          ...state.agentSkillCatalogByAgentId,
+          [agentId]: catalog,
+        },
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+      }));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+        agentSkillCatalogErrorByAgentId: {
+          ...state.agentSkillCatalogErrorByAgentId,
+          [agentId]: message,
+        },
+      }));
+      return false;
     }
   },
 

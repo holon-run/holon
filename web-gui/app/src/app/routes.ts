@@ -18,6 +18,7 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
 
   if (path === "/") return { route: "dashboard" };
   if (path === "/search") return { route: "search" };
+  if (path === "/skills") return { route: "skills" };
   if (path === "/settings") return { route: "settings" };
 
   const agentMatch = path.match(/^\/agents\/([^/]+)(?:\/conversation)?$/);
@@ -35,6 +36,7 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
 export function pathForRoute(route: RouteKey, agentId?: string, query?: Record<string, string | number | undefined>): string {
   const queryString = query ? new URLSearchParams(Object.entries(query).flatMap(([key, value]) => (value == null ? [] : [[key, String(value)]]))).toString() : "";
   if (route === "search") return "/search";
+  if (route === "skills") return "/skills";
   if (route === "settings") return "/settings";
   if (route === "agent" && agentId) return `/agents/${encodeURIComponent(agentId)}/conversation${queryString ? `?${queryString}` : ""}`;
   return "/";
