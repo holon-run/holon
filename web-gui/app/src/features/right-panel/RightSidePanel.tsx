@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
+
 import type { AgentSummary, RightPanelView, SkillCatalogState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
-import { AgentOverviewPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
+import { AgentOverviewPanel, AgentSkillManagerPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -41,15 +43,30 @@ export function RightSidePanel({
   onShowAgentOverview,
   onClose,
 }: RightSidePanelProps) {
+  const [showSkillManager, setShowSkillManager] = useState(false);
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
+  const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
   const title =
-    activeView.kind === "activity_inspector"
+    skillManagerActive
+      ? "Manage agent skills"
+      : activeView.kind === "activity_inspector"
       ? activityInspectorTitle(activeView.activity)
       : activeView.kind === "work_item_detail"
         ? "Work item detail"
         : "Agent overview";
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail" ? detailState?.workItem ?? activeView.workItem : undefined;
+
+  useEffect(() => {
+    setShowSkillManager(false);
+  }, [agent.id, activeView.kind]);
+
+  const openSkillManager = () => {
+    setShowSkillManager(true);
+    if (!availableSkillCatalogLoading && (availableSkillCatalog?.catalog.length ?? 0) === 0) {
+      onRefreshAvailableSkills();
+    }
+  };
 
   return (
     <aside className="side-panel" aria-label="Context side panel" hidden={!open}>
@@ -59,8 +76,15 @@ export function RightSidePanel({
           <strong>{title}</strong>
         </div>
         <div className="panel-actions">
-          {activeView.kind !== "agent_overview" ? (
-            <button type="button" aria-label="Show agent overview" onClick={onShowAgentOverview}>
+          {activeView.kind !== "agent_overview" || skillManagerActive ? (
+            <button
+              type="button"
+              aria-label="Show agent overview"
+              onClick={() => {
+                setShowSkillManager(false);
+                onShowAgentOverview();
+              }}
+            >
               Agent Overview
             </button>
           ) : null}
@@ -70,7 +94,16 @@ export function RightSidePanel({
         </div>
       </div>
       <div className="panel-body">
-        {activeView.kind === "activity_inspector" ? (
+        {skillManagerActive ? (
+          <AgentSkillManagerPanel
+            skillCatalog={skillCatalog}
+            availableSkillCatalog={availableSkillCatalog}
+            skillCatalogLoading={skillCatalogLoading}
+            availableSkillCatalogLoading={availableSkillCatalogLoading}
+            onRefreshAvailableSkills={onRefreshAvailableSkills}
+            onEnableAgentSkill={onEnableAgentSkill}
+          />
+        ) : activeView.kind === "activity_inspector" ? (
           <ActivityInspectorPanel activity={activeView.activity} detailState={activeView.detailState} />
         ) : activeView.kind === "work_item_detail" && detailWorkItem ? (
           <div className="inspector-stack">
@@ -80,16 +113,13 @@ export function RightSidePanel({
           <AgentOverviewPanel
             agent={agent}
             skillCatalog={skillCatalog}
-            availableSkillCatalog={availableSkillCatalog}
             skillCatalogLoading={skillCatalogLoading}
-            availableSkillCatalogLoading={availableSkillCatalogLoading}
             skillCatalogError={skillCatalogError}
             onLoadWorkItemDetail={onLoadWorkItemDetail}
             onOpenWorkItemDetail={onOpenWorkItemDetail}
             onRefreshAgentSkills={onRefreshAgentSkills}
-            onRefreshAvailableSkills={onRefreshAvailableSkills}
-            onEnableAgentSkill={onEnableAgentSkill}
             onDisableAgentSkill={onDisableAgentSkill}
+            onOpenSkillManager={openSkillManager}
           />
         )}
       </div>

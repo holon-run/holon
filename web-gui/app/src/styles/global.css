@@ -3107,6 +3107,64 @@ code {
   outline-offset: 1px;
 }
 
+.agent-skill-manager {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-skill-manager-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-skill-manager-head h2 {
+  margin: 4px 0 6px;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.agent-skill-manager-head button {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.agent-skill-search {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-skill-search span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-skill-search input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 11px;
+  font: inherit;
+}
+
+.agent-skill-search input:focus {
+  outline: 2px solid rgba(96, 165, 250, 0.35);
+  outline-offset: 1px;
+}
+
+.agent-skill-manager-list {
+  padding-bottom: 16px;
+}
+
 .inspector-muted {
   margin: 0;
   color: var(--muted);
