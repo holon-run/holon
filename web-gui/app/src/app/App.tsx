@@ -474,7 +474,9 @@ export function App() {
         <RightSidePanel
           agent={selectedAgent}
           skillCatalog={agentSkillCatalog}
+          availableSkillCatalog={skillCatalog}
           skillCatalogLoading={agentSkillCatalogLoading}
+          availableSkillCatalogLoading={skillCatalogLoading}
           skillCatalogError={agentSkillCatalogError}
           workItemDetailsById={selectedAgentSession?.workItemDetailsById ?? {}}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
@@ -485,6 +487,9 @@ export function App() {
             loadAgentWorkItemDetail(selectedAgent.id, workItem.id);
           }}
           onRefreshAgentSkills={() => refreshAgentSkillCatalog(selectedAgent.id)}
+          onRefreshAvailableSkills={() => {
+            void refreshSkillCatalog();
+          }}
           onEnableAgentSkill={(name) => {
             void enableAgentSkill(selectedAgent.id, name);
           }}

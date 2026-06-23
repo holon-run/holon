@@ -3043,6 +3043,9 @@ code {
 }
 
 .agent-skill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 12px;
 }
 
@@ -3068,6 +3071,40 @@ code {
 .agent-skill-row-actions button {
   padding: 4px 10px;
   font-size: 12px;
+}
+
+.agent-skill-manage {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-skill-manage-head {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-skill-manage-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.agent-skill-manage-head input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.agent-skill-manage-head input:focus {
+  outline: 2px solid rgba(96, 165, 250, 0.35);
+  outline-offset: 1px;
 }
 
 .inspector-muted {

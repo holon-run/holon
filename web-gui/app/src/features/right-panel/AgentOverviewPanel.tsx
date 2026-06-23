@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -7,11 +8,14 @@ import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, WorkItemDetail
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
   skillCatalog?: SkillCatalogState;
+  availableSkillCatalog?: SkillCatalogState;
   skillCatalogLoading?: boolean;
+  availableSkillCatalogLoading?: boolean;
   skillCatalogError?: string;
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onRefreshAgentSkills: () => void;
+  onRefreshAvailableSkills: () => void;
   onEnableAgentSkill: (name: string) => void;
   onDisableAgentSkill: (name: string) => void;
 }
@@ -19,15 +23,12 @@ interface AgentOverviewPanelProps {
 function AgentSkillItem({
   skill,
   disabled,
-  onEnable,
   onDisable,
 }: {
   skill: SkillCatalogEntry;
   disabled?: boolean;
-  onEnable: (name: string) => void;
   onDisable: (name: string) => void;
 }) {
-  const canEnable = skill.scope === "user";
   const canDisable = skill.scope === "agent";
   return (
     <li>
@@ -36,20 +37,38 @@ function AgentSkillItem({
         <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
       </div>
       <small>{skill.description || skill.path || skill.skillId}</small>
-      {canEnable || canDisable ? (
+      {canDisable ? (
         <div className="agent-skill-row-actions">
-          {canEnable ? (
-            <button type="button" disabled={disabled} onClick={() => onEnable(skill.name)}>
-              Enable
-            </button>
-          ) : null}
-          {canDisable ? (
-            <button type="button" disabled={disabled} onClick={() => onDisable(skill.name)}>
-              Disable
-            </button>
-          ) : null}
+          <button type="button" disabled={disabled} onClick={() => onDisable(skill.name)}>
+            Disable
+          </button>
         </div>
       ) : null}
+    </li>
+  );
+}
+
+function ManageAgentSkillItem({
+  skill,
+  disabled,
+  onEnable,
+}: {
+  skill: SkillCatalogEntry;
+  disabled?: boolean;
+  onEnable: (name: string) => void;
+}) {
+  return (
+    <li>
+      <div className="inspector-list-head">
+        <strong>{skill.name}</strong>
+        <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
+      </div>
+      <small>{skill.description || skill.skillId}</small>
+      <div className="agent-skill-row-actions">
+        <button type="button" disabled={disabled} onClick={() => onEnable(skill.name)}>
+          Enable
+        </button>
+      </div>
     </li>
   );
 }
@@ -57,14 +76,19 @@ function AgentSkillItem({
 export function AgentOverviewPanel({
   agent,
   skillCatalog,
+  availableSkillCatalog,
   skillCatalogLoading,
+  availableSkillCatalogLoading,
   skillCatalogError,
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onRefreshAgentSkills,
+  onRefreshAvailableSkills,
   onEnableAgentSkill,
   onDisableAgentSkill,
 }: AgentOverviewPanelProps) {
+  const [manageSkillsOpen, setManageSkillsOpen] = useState(false);
+  const [skillQuery, setSkillQuery] = useState("");
   const workspace = agent.workspaceSummary;
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
@@ -76,10 +100,32 @@ export function AgentOverviewPanel({
   const modeLabel = workspace?.worktree ? "Managed worktree" : workspace?.projectionKind;
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
   const hasActiveTasks = agent.activeTaskCount > 0 || Boolean(agent.tasks?.length);
+  const effectiveSkillNames = useMemo(
+    () => new Set((skillCatalog?.catalog ?? []).map((skill) => skill.name)),
+    [skillCatalog?.catalog],
+  );
+  const availableAgentSkills = useMemo(() => {
+    const query = skillQuery.trim().toLowerCase();
+    return (availableSkillCatalog?.catalog ?? [])
+      .filter((skill) => skill.scope === "user" && !effectiveSkillNames.has(skill.name))
+      .filter((skill) => {
+        if (!query) return true;
+        return [skill.name, skill.description, skill.skillId].some((value) => value.toLowerCase().includes(query));
+      });
+  }, [availableSkillCatalog?.catalog, effectiveSkillNames, skillQuery]);
 
   const selectWorkItem = (workItem: WorkItemSummary) => {
     onOpenWorkItemDetail(workItem);
     onLoadWorkItemDetail(workItem.id);
+  };
+  const toggleManageSkills = () => {
+    setManageSkillsOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen && !availableSkillCatalogLoading && (availableSkillCatalog?.catalog.length ?? 0) === 0) {
+        onRefreshAvailableSkills();
+      }
+      return nextOpen;
+    });
   };
 
   return (
@@ -176,8 +222,8 @@ export function AgentOverviewPanel({
         badge={<StatusBadge className="state-chip" kind="connection" value={skillCatalogLoading ? "loading" : `${skillCatalog?.catalog.length ?? 0} active`} />}
       >
         <p className="inspector-muted">
-          Agent skills are the effective set from global/user skills plus agent-local overrides. Enable links a global or user
-          skill into this agent; Disable removes an agent-local skill.
+          Agent skills are the effective set from user library, workspace skills, and agent-local overrides. Use Manage skills to
+          choose user-library skills for this agent.
         </p>
         {skillCatalogError ? <p className="inspector-error">{skillCatalogError}</p> : null}
         {skillCatalog?.catalog.length ? (
@@ -187,7 +233,6 @@ export function AgentOverviewPanel({
                 key={`${skill.scope}:${skill.skillId}:${skill.path}`}
                 skill={skill}
                 disabled={skillCatalogLoading}
-                onEnable={onEnableAgentSkill}
                 onDisable={onDisableAgentSkill}
               />
             ))}
@@ -199,7 +244,47 @@ export function AgentOverviewPanel({
           <button type="button" className="agent-skill-refresh" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
             {skillCatalogLoading ? "Refreshing…" : "Refresh"}
           </button>
+          <button type="button" onClick={toggleManageSkills}>
+            {manageSkillsOpen ? "Hide manage" : "Manage skills…"}
+          </button>
         </div>
+        {manageSkillsOpen ? (
+          <section className="agent-skill-manage" aria-label="Manage agent skills">
+            <div className="agent-skill-manage-head">
+              <div>
+                <strong>Available user-library skills</strong>
+                <p className="inspector-muted">Enable adds a linked agent-local entry. Workspace skills are already effective and are not listed here.</p>
+              </div>
+              <input
+                type="search"
+                value={skillQuery}
+                placeholder="Search skills"
+                aria-label="Search available skills"
+                onChange={(event) => setSkillQuery(event.target.value)}
+              />
+            </div>
+            {availableSkillCatalog?.error ? <p className="inspector-error">{availableSkillCatalog.error}</p> : null}
+            {availableSkillCatalogLoading ? <p className="inspector-muted">Loading available skills…</p> : null}
+            {availableAgentSkills.length ? (
+              <ul className="inspector-list agent-skill-list">
+                {availableAgentSkills.slice(0, 12).map((skill) => (
+                  <ManageAgentSkillItem
+                    key={`${skill.scope}:${skill.skillId}:${skill.path}`}
+                    skill={skill}
+                    disabled={skillCatalogLoading || availableSkillCatalogLoading}
+                    onEnable={onEnableAgentSkill}
+                  />
+                ))}
+              </ul>
+            ) : !availableSkillCatalogLoading ? (
+              <p className="inspector-muted">
+                {availableSkillCatalog
+                  ? "No user-library skills are available to enable for this agent."
+                  : "Open the top-level Skills page or refresh the catalog to load available skills."}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
       </CollapsibleInspectorCard>
 
       {hasActiveTasks ? (

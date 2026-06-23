@@ -5,7 +5,9 @@ import { AgentOverviewPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 interface RightSidePanelProps {
   agent: AgentSummary;
   skillCatalog?: SkillCatalogState;
+  availableSkillCatalog?: SkillCatalogState;
   skillCatalogLoading?: boolean;
+  availableSkillCatalogLoading?: boolean;
   skillCatalogError?: string;
   workItemDetailsById?: Record<string, WorkItemDetailState>;
   view?: RightPanelView;
@@ -13,6 +15,7 @@ interface RightSidePanelProps {
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onRefreshAgentSkills: () => void;
+  onRefreshAvailableSkills: () => void;
   onEnableAgentSkill: (name: string) => void;
   onDisableAgentSkill: (name: string) => void;
   onShowAgentOverview: () => void;
@@ -22,7 +25,9 @@ interface RightSidePanelProps {
 export function RightSidePanel({
   agent,
   skillCatalog,
+  availableSkillCatalog,
   skillCatalogLoading,
+  availableSkillCatalogLoading,
   skillCatalogError,
   workItemDetailsById = {},
   view,
@@ -30,6 +35,7 @@ export function RightSidePanel({
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onRefreshAgentSkills,
+  onRefreshAvailableSkills,
   onEnableAgentSkill,
   onDisableAgentSkill,
   onShowAgentOverview,
@@ -74,11 +80,14 @@ export function RightSidePanel({
           <AgentOverviewPanel
             agent={agent}
             skillCatalog={skillCatalog}
+            availableSkillCatalog={availableSkillCatalog}
             skillCatalogLoading={skillCatalogLoading}
+            availableSkillCatalogLoading={availableSkillCatalogLoading}
             skillCatalogError={skillCatalogError}
             onLoadWorkItemDetail={onLoadWorkItemDetail}
             onOpenWorkItemDetail={onOpenWorkItemDetail}
             onRefreshAgentSkills={onRefreshAgentSkills}
+            onRefreshAvailableSkills={onRefreshAvailableSkills}
             onEnableAgentSkill={onEnableAgentSkill}
             onDisableAgentSkill={onDisableAgentSkill}
           />
