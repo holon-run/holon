@@ -73,6 +73,7 @@ pub(crate) use crate::{
     },
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
+    skills::registry::SkillsRegistry,
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
@@ -164,6 +165,7 @@ pub struct AppState {
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
     pub web_dist: Option<Arc<PathBuf>>,
+    pub skills_registry: Arc<tokio::sync::RwLock<SkillsRegistry>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -228,6 +230,7 @@ impl AppState {
             runtime_service,
             advertise_url: None,
             web_dist: None,
+            skills_registry: Arc::new(tokio::sync::RwLock::new(SkillsRegistry::new())),
         }
     }
 
@@ -246,6 +249,7 @@ impl AppState {
             runtime_service,
             advertise_url: None,
             web_dist: None,
+            skills_registry: Arc::new(tokio::sync::RwLock::new(SkillsRegistry::new())),
         }
     }
 

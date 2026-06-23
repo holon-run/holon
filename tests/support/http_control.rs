@@ -558,6 +558,59 @@ pub async fn list_skills_includes_all_agent_skill_roots() -> Result<()> {
     Ok(())
 }
 
+pub async fn skills_catalog_uses_shared_registry_with_agent_and_workspace_roots() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let agent_home = host.config().data_dir.join("agents/default");
+    let agent_skill_dir = agent_home.join("skills/agent-demo");
+    std::fs::create_dir_all(&agent_skill_dir)?;
+    std::fs::write(
+        agent_skill_dir.join("SKILL.md"),
+        "---\nname: shared-demo\ndescription: agent\n---\nbody",
+    )?;
+
+    let workspace_skill_dir = host
+        .config()
+        .workspace_dir
+        .join(".agents/skills/workspace-demo");
+    std::fs::create_dir_all(&workspace_skill_dir)?;
+    std::fs::write(
+        workspace_skill_dir.join("SKILL.md"),
+        "---\nname: workspace-demo\ndescription: workspace\n---\nbody",
+    )?;
+
+    let client = Client::new();
+    let payload: serde_json::Value = client
+        .get(format!("{base}/api/skills/catalog?agent_id=default"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let skills = payload["catalog"]
+        .as_array()
+        .expect("catalog should be an array");
+    assert!(skills
+        .iter()
+        .any(|skill| skill["name"] == "shared-demo" && skill["scope"] == "agent"));
+    assert!(skills
+        .iter()
+        .any(|skill| skill["name"] == "workspace-demo" && skill["scope"] == "workspace"));
+
+    std::fs::remove_dir_all(&agent_skill_dir)?;
+    let payload: serde_json::Value = client
+        .get(format!("{base}/api/skills/catalog?agent_id=default"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let skills = payload["catalog"]
+        .as_array()
+        .expect("catalog should be an array");
+    assert!(!skills.iter().any(|skill| skill["name"] == "shared-demo"));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn install_skill_existing_destination_returns_conflict() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = Client::new();

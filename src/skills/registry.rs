@@ -63,13 +63,17 @@ impl SkillsRegistry {
     }
 
     /// Rescan all registered roots and replace the complete registry snapshot.
-    pub fn rescan(&mut self) -> Result<()> {
-        let roots = self.roots.clone();
-        self.entries.clear();
-        for root in roots {
-            let _ = self.refresh_root(&root.root_path)?;
+    ///
+    /// Per-root scan failures are recorded on the root status and do not make
+    /// catalog reads fail.
+    pub fn rescan(&mut self) {
+        let mut next_entries = Vec::new();
+        for root in &mut self.roots {
+            let (entries, scan_status) = Self::scan_root(root);
+            next_entries.extend(entries);
+            root.scan_status = scan_status;
         }
-        Ok(())
+        self.entries = next_entries;
     }
 
     /// Record watcher setup or delivery failure without affecting catalog reads.
@@ -349,7 +353,7 @@ mod tests {
         assert_eq!(registry.catalog()[0].description, "agent");
 
         fs::remove_dir_all(agent_root.join("same")).unwrap();
-        registry.rescan().unwrap();
+        registry.rescan();
         assert_eq!(registry.catalog()[0].description, "user");
     }
 

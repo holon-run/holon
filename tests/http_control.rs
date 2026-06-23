@@ -20,6 +20,7 @@ http_async_tests!(
     agent_state_route_scopes_work_items_to_requested_agent,
     agent_state_route_includes_bootstrap_projection_fields_when_present,
     list_skills_includes_all_agent_skill_roots,
+    skills_catalog_uses_shared_registry_with_agent_and_workspace_roots,
     install_skill_existing_destination_returns_conflict,
     control_agent_model_override_set_and_clear_updates_status,
     control_prompt_requires_bearer_token_when_required,

@@ -1,6 +1,9 @@
 use super::*;
-use crate::types::SkillRootRegistration;
+use crate::types::{
+    SkillRootRegistration, SkillRootScanStatus, SkillRootSourceKind, SkillRootWatchStatus,
+};
 use axum::extract::Query;
+use std::path::PathBuf;
 
 pub async fn list_skills(
     Path(agent_id): Path<String>,
@@ -100,22 +103,75 @@ pub async fn skills_catalog(
         _ => None,
     });
 
-    let user_home = crate::agent_template::user_home_dir().ok();
-    let mut registry = crate::skills::registry::SkillsRegistry::new();
+    let agent_id = params.get("agent_id").cloned();
+    let mut roots = Vec::new();
+    if let Some(user_home) = crate::agent_template::user_home_dir().ok() {
+        for root in crate::skills::existing_skill_roots(
+            Some(&user_home),
+            &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
+        ) {
+            roots.push(skill_root_registration(
+                SkillRootSourceKind::UserGlobal,
+                None,
+                root,
+            ));
+        }
+    }
 
-    let root = SkillRootRegistration {
-        source_kind: crate::types::SkillRootSourceKind::UserGlobal,
-        owner_agent_id: None,
-        root_path: user_home.clone().unwrap_or_default().join(".agents/skills"),
-        scan_status: crate::types::SkillRootScanStatus::NeverScanned,
-        watch_status: crate::types::SkillRootWatchStatus::NotWatched,
-    };
-    registry.register_root(root).map_err(error_response)?;
+    if let Some(agent_id) = agent_id.as_deref() {
+        let runtime = state
+            .host
+            .get_public_agent(agent_id)
+            .await
+            .map_err(agent_access_error)?;
+        let agent_home = runtime.agent_home();
+        for root in crate::skills::existing_skill_roots(
+            Some(&agent_home),
+            &crate::skills::SKILL_ROOT_SUFFIXES,
+        ) {
+            roots.push(skill_root_registration(
+                SkillRootSourceKind::AgentHome,
+                Some(agent_id.to_string()),
+                root,
+            ));
+        }
+        let execution = runtime.execution_snapshot().await.map_err(error_response)?;
+        for root in crate::skills::existing_skill_roots(
+            Some(&execution.workspace_anchor),
+            &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
+        ) {
+            roots.push(skill_root_registration(
+                SkillRootSourceKind::Workspace,
+                None,
+                root,
+            ));
+        }
+    }
 
+    let mut registry = state.skills_registry.write().await;
+    for root in roots {
+        registry.register_root(root).map_err(error_response)?;
+    }
+    registry.rescan();
     let catalog = registry.catalog_with_filter(scope_filter);
     Ok(Json(json!({
         "ok": true,
+        "agent_id": agent_id,
         "catalog": catalog,
         "scope": scope_filter,
     })))
+}
+
+fn skill_root_registration(
+    source_kind: SkillRootSourceKind,
+    owner_agent_id: Option<String>,
+    root_path: PathBuf,
+) -> SkillRootRegistration {
+    SkillRootRegistration {
+        source_kind,
+        owner_agent_id,
+        root_path,
+        scan_status: SkillRootScanStatus::NeverScanned,
+        watch_status: SkillRootWatchStatus::NotWatched,
+    }
 }
