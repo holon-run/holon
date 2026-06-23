@@ -235,11 +235,12 @@ pub fn search_memory_query_for_agent_storages(
     active_workspace_id: Option<&str>,
     include_all_workspaces: bool,
     agent_ids: &[String],
-    agent_storages: &[AppStorage],
+    _agent_storages: &[AppStorage],
 ) -> Result<MemorySearchQueryResult> {
     let agent_id = storage_agent_id(storage);
     let agent_filter = normalize_memory_search_agent_filter(&agent_id, agent_ids);
-    let index = ensure_memory_indexes_current(storage, active_workspace_id, agent_storages)?;
+    log_legacy_index_deprecation(storage);
+    let index = MemoryIndex::open(storage)?;
     let results = index.search(
         query,
         limit,
