@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -25,6 +26,7 @@ pub(crate) const SKILL_ROOT_SUFFIXES: [&str; 4] = [
 ];
 pub(crate) const COMPAT_SKILL_ROOT_SUFFIXES: [&str; 3] =
     [".agents/skills", ".codex/skills", ".claude/skills"];
+const SKILL_LOCK_FILENAME: &str = ".agents/.skill-lock.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillVisibility {
@@ -779,6 +781,7 @@ fn add_library_skill_with_remote_installer(
             materialize_local_skill(&skills_root, &path, mode)?
         }
     };
+    sync_skill_lock_entry(user_home, &name)?;
     Ok(name)
 }
 
@@ -1040,7 +1043,9 @@ pub fn remove_library_skill(user_home: &Path, name: &str) -> Result<()> {
         name,
         &COMPAT_SKILL_ROOT_SUFFIXES,
         "Skill Library",
-    )
+    )?;
+    remove_skill_lock_entry(user_home, name)?;
+    Ok(())
 }
 
 pub fn disable_agent_skill(agent_home: &Path, name: &str) -> Result<()> {
@@ -1080,6 +1085,246 @@ fn remove_skill_from_roots(base: &Path, name: &str, suffixes: &[&str], label: &s
     }
     crate::agent_template::remove_materialized_skill_destination(destination)?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillLibraryCheckResult {
+    pub skills_root: PathBuf,
+    pub lock_path: PathBuf,
+    pub skill_count: usize,
+    pub lock_skill_count: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillLibraryUpdateResult {
+    pub skills_root: PathBuf,
+    pub lock_path: PathBuf,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub checked: SkillLibraryCheckResult,
+}
+
+pub fn check_library_skills(
+    user_home: &Path,
+    name_filter: Option<&str>,
+) -> Result<SkillLibraryCheckResult> {
+    if let Some(name) = name_filter {
+        validate_skill_name(name)?;
+    }
+    let skills_root = user_library_skills_root(user_home);
+    let lock_path = skill_lock_path(user_home);
+    let present = library_skill_dirs(&skills_root, name_filter)?;
+    let lock = read_skill_lock(user_home)?;
+    let locked = locked_skill_names(&lock, name_filter);
+    let present_names = present.keys().cloned().collect::<BTreeSet<_>>();
+    let mut warnings = Vec::new();
+    for name in present_names.difference(&locked) {
+        warnings.push(format!(
+            "skill '{name}' is present in ~/.agents/skills but missing from .skill-lock.json"
+        ));
+    }
+    for name in locked.difference(&present_names) {
+        warnings.push(format!(
+            "skill '{name}' is present in .skill-lock.json but missing from ~/.agents/skills"
+        ));
+    }
+    Ok(SkillLibraryCheckResult {
+        skills_root,
+        lock_path,
+        skill_count: present_names.len(),
+        lock_skill_count: locked.len(),
+        warnings,
+    })
+}
+
+pub fn update_library_skills(
+    user_home: &Path,
+    name_filter: Option<&str>,
+) -> Result<SkillLibraryUpdateResult> {
+    if let Some(name) = name_filter {
+        validate_skill_name(name)?;
+    }
+    let skills_root = user_library_skills_root(user_home);
+    let lock_path = skill_lock_path(user_home);
+    let present = library_skill_dirs(&skills_root, name_filter)?;
+    let mut lock = read_skill_lock(user_home)?;
+    let locked = locked_skill_names(&lock, name_filter);
+    let present_names = present.keys().cloned().collect::<BTreeSet<_>>();
+    let mut added = Vec::new();
+    for name in present_names.difference(&locked) {
+        upsert_skill_lock_entry(
+            &mut lock,
+            name,
+            present.get(name).expect("present skill path"),
+        )?;
+        added.push(name.clone());
+    }
+    let mut removed = Vec::new();
+    for name in locked.difference(&present_names) {
+        remove_skill_lock_name(&mut lock, name);
+        removed.push(name.clone());
+    }
+    if !added.is_empty() || !removed.is_empty() {
+        write_skill_lock(user_home, &lock)?;
+    }
+    let checked = check_library_skills(user_home, name_filter)?;
+    Ok(SkillLibraryUpdateResult {
+        skills_root,
+        lock_path,
+        added,
+        removed,
+        checked,
+    })
+}
+
+fn sync_skill_lock_entry(user_home: &Path, name: &str) -> Result<()> {
+    validate_skill_name(name)?;
+    let destination = user_library_skills_root(user_home).join(name);
+    let mut lock = read_skill_lock(user_home)?;
+    upsert_skill_lock_entry(&mut lock, name, &destination)?;
+    write_skill_lock(user_home, &lock)
+}
+
+fn remove_skill_lock_entry(user_home: &Path, name: &str) -> Result<()> {
+    let mut lock = read_skill_lock(user_home)?;
+    remove_skill_lock_name(&mut lock, name);
+    write_skill_lock(user_home, &lock)
+}
+
+fn skill_lock_path(user_home: &Path) -> PathBuf {
+    user_home.join(SKILL_LOCK_FILENAME)
+}
+
+fn read_skill_lock(user_home: &Path) -> Result<serde_json::Value> {
+    let path = skill_lock_path(user_home);
+    if !path.exists() {
+        return Ok(serde_json::json!({
+            "version": 1,
+            "skills": {},
+        }));
+    }
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    match value {
+        serde_json::Value::Object(_) => Ok(value),
+        _ => bail!("skill lock {} must contain a JSON object", path.display()),
+    }
+}
+
+fn write_skill_lock(user_home: &Path, lock: &serde_json::Value) -> Result<()> {
+    let path = skill_lock_path(user_home);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_vec_pretty(lock)?)
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn lock_skills_mut(
+    lock: &mut serde_json::Value,
+) -> Result<&mut serde_json::Map<String, serde_json::Value>> {
+    let object = lock
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("skill lock must contain a JSON object"))?;
+    let skills = object
+        .entry("skills")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !skills.is_object() {
+        *skills = serde_json::Value::Object(serde_json::Map::new());
+    }
+    Ok(skills.as_object_mut().expect("skills is an object"))
+}
+
+fn lock_skills(lock: &serde_json::Value) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    lock.get("skills").and_then(|value| value.as_object())
+}
+
+fn upsert_skill_lock_entry(
+    lock: &mut serde_json::Value,
+    name: &str,
+    skill_dir: &Path,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(skill_dir)
+        .with_context(|| format!("failed to inspect {}", skill_dir.display()))?;
+    let path = if metadata.file_type().is_symlink() {
+        fs::read_link(skill_dir)
+            .with_context(|| format!("failed to read {}", skill_dir.display()))?
+    } else {
+        skill_dir.to_path_buf()
+    };
+    let source = if metadata.file_type().is_symlink() {
+        "linked"
+    } else if read_install_metadata(skill_dir)
+        .as_ref()
+        .is_some_and(|metadata| metadata.install_mode == "builtin")
+    {
+        "builtin"
+    } else {
+        "local"
+    };
+    let skills = lock_skills_mut(lock)?;
+    let mut entry = skills
+        .remove(name)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    entry.insert("name".into(), serde_json::Value::String(name.into()));
+    entry.insert(
+        "path".into(),
+        serde_json::Value::String(path.to_string_lossy().to_string()),
+    );
+    entry.insert("source".into(), serde_json::Value::String(source.into()));
+    entry.insert(
+        "updated_at".into(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    skills.insert(name.into(), serde_json::Value::Object(entry));
+    Ok(())
+}
+
+fn remove_skill_lock_name(lock: &mut serde_json::Value, name: &str) {
+    if let Ok(skills) = lock_skills_mut(lock) {
+        skills.remove(name);
+    }
+}
+
+fn locked_skill_names(lock: &serde_json::Value, name_filter: Option<&str>) -> BTreeSet<String> {
+    lock_skills(lock)
+        .into_iter()
+        .flat_map(|skills| skills.keys())
+        .filter(|name| name_filter.is_none_or(|filter| name.as_str() == filter))
+        .cloned()
+        .collect()
+}
+
+fn library_skill_dirs(
+    skills_root: &Path,
+    name_filter: Option<&str>,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let mut skills = BTreeMap::new();
+    let read_dir = match fs::read_dir(skills_root) {
+        Ok(read_dir) => read_dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(skills),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", skills_root.display()))
+        }
+    };
+    for child in read_dir {
+        let child = child?;
+        let file_type = child.file_type()?;
+        if !file_type.is_dir() && !file_type.is_symlink() {
+            continue;
+        }
+        let name = child.file_name().to_string_lossy().to_string();
+        if name_filter.is_some_and(|filter| name != filter) {
+            continue;
+        }
+        skills.insert(name, child.path());
+    }
+    Ok(skills)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

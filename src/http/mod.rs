@@ -466,6 +466,14 @@ pub fn router(state: AppState) -> Router {
             post(skills::remove_skill_from_catalog),
         )
         .route(
+            "/api/skills/catalog/update",
+            post(skills::update_skill_catalog),
+        )
+        .route(
+            "/api/skills/catalog/check",
+            post(skills::check_skill_catalog),
+        )
+        .route(
             "/control/agents/{agent_id}/skills/enable",
             post(skills::enable_skill),
         )

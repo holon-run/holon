@@ -2850,6 +2850,22 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             )
             .await
         }
+        SkillsCommands::Update { name } => {
+            post_control_json(
+                config,
+                "/api/skills/catalog/update",
+                &holon::types::UpdateSkillRequest { name },
+            )
+            .await
+        }
+        SkillsCommands::Check { name } => {
+            post_control_json(
+                config,
+                "/api/skills/catalog/check",
+                &holon::types::CheckSkillRequest { name },
+            )
+            .await
+        }
         SkillsCommands::Enable { name, copy, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let mode = if copy {
