@@ -1557,7 +1557,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3.6-plus",
             1_000_000,
             65_536,
-            true,
+            false,
             true,
         ),
         catalog_model(
@@ -1566,7 +1566,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3.5-plus",
             1_000_000,
             65_536,
-            true,
+            false,
             true,
         ),
         catalog_model(
