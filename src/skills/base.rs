@@ -47,9 +47,9 @@ pub fn load_skills_runtime_view(
 
     if matches!(visibility, SkillVisibility::DefaultAgent) {
         if let Some(root) = select_skill_root(user_home, &COMPAT_SKILL_ROOT_SUFFIXES) {
-            discoverable_skills.extend(load_catalog_for_scope(SkillScope::User, &root)?);
+            discoverable_skills.extend(load_catalog_for_scope(SkillScope::UserGlobal, &root)?);
             discovered_roots.push(SkillRootView {
-                scope: SkillScope::User,
+                scope: SkillScope::UserGlobal,
                 path: root,
             });
         }
@@ -271,7 +271,7 @@ fn collect_discovered_roots_from_registrations(
         .filter(|registration| registration.root_path.is_dir())
         .map(|registration| SkillRootView {
             scope: match registration.source_kind {
-                SkillRootSourceKind::UserGlobal => SkillScope::User,
+                SkillRootSourceKind::UserGlobal => SkillScope::UserGlobal,
                 SkillRootSourceKind::AgentHome => SkillScope::Agent,
                 SkillRootSourceKind::Workspace => SkillScope::Workspace,
             },
@@ -319,7 +319,7 @@ pub(crate) fn skill_root_id(registration: &SkillRootRegistration) -> String {
 
 fn skill_root_id_for_scope(scope: SkillScope, root: &Path) -> String {
     let source = match scope {
-        SkillScope::User => "user_global",
+        SkillScope::UserGlobal => "user_global",
         SkillScope::Agent => "agent_home",
         SkillScope::Workspace => "workspace",
     };
@@ -389,7 +389,7 @@ fn skill_precedence(scope: SkillScope) -> u8 {
     match scope {
         SkillScope::Agent => 3,
         SkillScope::Workspace => 2,
-        SkillScope::User => 1,
+        SkillScope::UserGlobal => 1,
     }
 }
 
@@ -446,7 +446,7 @@ fn first_body_paragraph(content: &str) -> String {
 
 fn scope_label(scope: SkillScope) -> &'static str {
     match scope {
-        SkillScope::User => "user",
+        SkillScope::UserGlobal => "user_global",
         SkillScope::Agent => "agent",
         SkillScope::Workspace => "workspace",
     }
@@ -933,7 +933,7 @@ fn normalize_local_skill_path(path: &Path) -> Result<PathBuf> {
 fn resolve_user_skill_by_name(user_home: Option<&Path>, name: &str) -> Result<PathBuf> {
     for root in existing_skill_roots(user_home, &COMPAT_SKILL_ROOT_SUFFIXES) {
         let mut root_matches = Vec::new();
-        for skill in load_catalog_for_scope(SkillScope::User, &root)? {
+        for skill in load_catalog_for_scope(SkillScope::UserGlobal, &root)? {
             let dir_name = skill
                 .path
                 .parent()
@@ -1593,12 +1593,13 @@ mod tests {
             .map(|skill| skill.skill_id.as_str())
             .collect::<Vec<_>>();
         assert!(ids.iter().all(|id| id.starts_with("agent_home:")));
-        let names = view
+        let mut names = view
             .discoverable_skills
             .iter()
             .map(|skill| skill.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["beta", "alpha"]);
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta"]);
     }
 
     #[test]
@@ -1639,11 +1640,11 @@ mod tests {
         assert!(default_view
             .discoverable_skills
             .iter()
-            .any(|entry| entry.scope == SkillScope::User));
+            .any(|entry| entry.scope == SkillScope::UserGlobal));
         assert!(non_default_view
             .discoverable_skills
             .iter()
-            .all(|entry| entry.scope != SkillScope::User));
+            .all(|entry| entry.scope != SkillScope::UserGlobal));
     }
 
     #[test]

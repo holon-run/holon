@@ -155,7 +155,7 @@ impl SkillsRegistry {
         registration: &SkillRootRegistration,
     ) -> (Vec<SkillCatalogEntry>, SkillRootScanStatus) {
         let scope = match registration.source_kind {
-            SkillRootSourceKind::UserGlobal => SkillScope::User,
+            SkillRootSourceKind::UserGlobal => SkillScope::UserGlobal,
             SkillRootSourceKind::AgentHome => SkillScope::Agent,
             SkillRootSourceKind::Workspace => SkillScope::Workspace,
         };
@@ -246,7 +246,7 @@ impl SkillsRegistry {
         match scope {
             SkillScope::Agent => 3,
             SkillScope::Workspace => 2,
-            SkillScope::User => 1,
+            SkillScope::UserGlobal => 1,
         }
     }
 }
@@ -312,7 +312,7 @@ mod tests {
             name: "test".to_string(),
             description: "user".to_string(),
             path: PathBuf::from("/user/test"),
-            scope: SkillScope::User,
+            scope: SkillScope::UserGlobal,
         });
 
         registry.entries.push(SkillCatalogEntry {
@@ -355,7 +355,7 @@ mod tests {
             name: "skill_b".to_string(),
             description: "user".to_string(),
             path: PathBuf::from("/b"),
-            scope: SkillScope::User,
+            scope: SkillScope::UserGlobal,
         });
 
         let agent_catalog = registry.catalog_with_filter(Some(SkillScope::Agent));

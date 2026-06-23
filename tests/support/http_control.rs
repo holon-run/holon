@@ -706,7 +706,7 @@ pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
         .await?
         .json()
         .await?;
-    assert_eq!(payload["library"], "user");
+    assert_eq!(payload["library"], "user_global");
     let skills = payload["catalog"]
         .as_array()
         .expect("catalog should be an array");
@@ -718,6 +718,17 @@ pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
         .any(|skill| skill["name"] == "shared-demo" || skill["name"] == "workspace-demo"));
 
     std::fs::remove_dir_all(&agent_skill_dir)?;
+    let payload: serde_json::Value = client
+        .get(format!("{base}/api/skills/catalog?scope=user_global"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let skills = payload["catalog"]
+        .as_array()
+        .expect("catalog should be an array");
+    assert!(skills.iter().any(|skill| skill["name"] == skill_name));
+
     let payload: serde_json::Value = client
         .get(format!("{base}/api/skills/catalog?scope=user"))
         .send()

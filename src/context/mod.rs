@@ -1346,7 +1346,7 @@ fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
 
 fn scope_label(scope: &crate::types::SkillScope) -> &'static str {
     match scope {
-        crate::types::SkillScope::User => "user_global",
+        crate::types::SkillScope::UserGlobal => "user_global",
         crate::types::SkillScope::Agent => "agent",
         crate::types::SkillScope::Workspace => "workspace",
     }

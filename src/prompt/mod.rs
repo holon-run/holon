@@ -2477,7 +2477,7 @@ mod tests {
                     name: "demo".into(),
                     description: "demo skill".into(),
                     path: PathBuf::from("/tmp/user/.agents/skills/demo/SKILL.md"),
-                    scope: crate::types::SkillScope::User,
+                    scope: crate::types::SkillScope::UserGlobal,
                 }],
                 ..SkillsRuntimeView::default()
             },
