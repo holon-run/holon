@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardHeader } from "../../components/ui/Card";
@@ -15,24 +15,36 @@ interface SkillsPageProps {
 
 export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPageProps) {
   const skills = catalog.catalog;
+  const [query, setQuery] = useState("");
+  const [scopeFilter, setScopeFilter] = useState<"all" | SkillCatalogEntry["scope"]>("all");
   const stats = useMemo(() => skillStats(skills), [skills]);
+  const visibleSkills = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return skills.filter((skill) => {
+      const matchesScope = scopeFilter === "all" || skill.scope === scopeFilter;
+      if (!matchesScope) return false;
+      if (!normalizedQuery) return true;
+      return [skill.name, skill.description, skill.skillId, skill.path]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(normalizedQuery));
+    });
+  }, [query, scopeFilter, skills]);
 
   return (
     <div className="skills-inner scroll-surface">
       <section className="skills-hero context-card">
-        <span className="eyebrow">Skill Library</span>
-        <h1>Manage global skills</h1>
-        <p>
-          This page represents the global Holon skill library. It reads the daemon catalog now; add, remove, update,
-          and check actions are reserved for the daemon-backed skills management API.
-        </p>
-        <div className="skills-actions">
-          <Button type="button" variant="accent" disabled title="Waiting for daemon add API">
-            Add skill
-          </Button>
-          <Button type="button" variant="secondary" disabled title="Waiting for daemon update/check API">
-            Check updates
-          </Button>
+        <div className="skills-hero-copy">
+          <span className="eyebrow">Skill Library</span>
+          <h1>Global skills</h1>
+          <p>
+            Browse the daemon catalog for the global Holon skill library. Mutating actions such as add, remove, update,
+            and check are intentionally read-only here until the daemon skills control API lands.
+          </p>
+        </div>
+        <div className="skills-actions" aria-label="Skill library actions">
+          <span className="skills-readonly-note" title="The current daemon only exposes the catalog read API.">
+            Read-only catalog
+          </span>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? "Refreshing…" : "Refresh"}
           </Button>
@@ -60,21 +72,56 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
           <div>
             <span className="eyebrow">Installed catalog</span>
             <h2>Global library</h2>
+            <p>
+              Showing {visibleSkills.length} of {skills.length} skills
+            </p>
           </div>
           <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </CardHeader>
         <CardContent>
-          {skills.length ? (
+          <div className="skills-toolbar" role="search">
+            <label className="skills-search">
+              <span>Search skills</span>
+              <input
+                id="skills-search"
+                name="skills-search"
+                type="search"
+                value={query}
+                placeholder="Name, description, id, or path"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+            <label className="skills-scope-filter">
+              <span>Scope</span>
+              <select
+                id="skills-scope"
+                name="skills-scope"
+                value={scopeFilter}
+                onChange={(event) => setScopeFilter(event.target.value as typeof scopeFilter)}
+              >
+                <option value="all">All scopes</option>
+                <option value="user">User/global</option>
+                <option value="workspace">Workspace</option>
+                <option value="agent">Agent</option>
+              </select>
+            </label>
+          </div>
+
+          {visibleSkills.length ? (
             <ul className="skills-list">
-              {skills.map((skill) => (
+              {visibleSkills.map((skill) => (
                 <SkillRow key={`${skill.scope}:${skill.skillId}:${skill.path}`} skill={skill} />
               ))}
             </ul>
           ) : (
             <EmptyState
               icon="◇"
-              title={loading ? "Loading skills…" : "No skills in the global catalog"}
-              description="Refresh after adding skills through the daemon API or CLI."
+              title={loading ? "Loading skills…" : skills.length ? "No skills match the current filters" : "No skills in the global catalog"}
+              description={
+                skills.length
+                  ? "Try a different query or scope filter."
+                  : "Refresh after adding skills through the daemon API or CLI."
+              }
             />
           )}
         </CardContent>
@@ -94,14 +141,9 @@ function SkillRow({ skill }: { skill: SkillCatalogEntry }) {
         <p>{skill.description || "No description provided."}</p>
         <code>{skill.path || skill.skillId}</code>
       </div>
-      <div className="skills-row-actions">
-        <Button type="button" size="sm" variant="ghost" disabled title="Waiting for daemon update API">
-          Update
-        </Button>
-        <Button type="button" size="sm" variant="ghost" disabled title="Waiting for daemon remove API">
-          Remove
-        </Button>
-      </div>
+      <span className="skills-row-status" title="Update and remove require the daemon skills control API.">
+        catalog only
+      </span>
     </li>
   );
 }

@@ -161,12 +161,9 @@ export function AgentOverviewPanel({
           <button type="button" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
             {skillCatalogLoading ? "Refreshing…" : "Refresh"}
           </button>
-          <button type="button" disabled title="Waiting for daemon enable API">
-            Enable
-          </button>
-          <button type="button" disabled title="Waiting for daemon disable API">
-            Disable
-          </button>
+          <span className="agent-skill-readonly" title="Enable and disable require the daemon skills control API.">
+            read-only
+          </span>
         </div>
       </section>
 
