@@ -2052,6 +2052,15 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "dashscope",
+            "ZHIPU/GLM-5.2",
+            "ZHIPU/GLM-5.2",
+            1_000_000,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
             "glm-5.1",
             "glm-5.1",
             202_752,
@@ -2061,12 +2070,30 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "dashscope",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code",
+            262_144,
+            98_304,
+            true,
+            true,
+        ),
+        catalog_model(
+            "dashscope",
             "kimi-k2.6",
             "kimi-k2.6",
             262_144,
             98_304,
             true,
             false,
+        ),
+        catalog_model(
+            "dashscope",
+            "MiniMax/MiniMax-M3",
+            "MiniMax/MiniMax-M3",
+            1_000_000,
+            32_768,
+            true,
+            true,
         ),
         catalog_model(
             "dashscope",
@@ -2365,10 +2392,19 @@ mod tests {
             .get(&ModelRef::parse("dashscope/MiniMax-M2.5").unwrap())
             .is_some());
         assert!(catalog
+            .get(&ModelRef::parse("dashscope/MiniMax/MiniMax-M3").unwrap())
+            .is_some());
+        assert!(catalog
             .get(&ModelRef::parse("dashscope/glm-5.1").unwrap())
             .is_some());
         assert!(catalog
+            .get(&ModelRef::parse("dashscope/ZHIPU/GLM-5.2").unwrap())
+            .is_some());
+        assert!(catalog
             .get(&ModelRef::parse("dashscope/kimi-k2.6").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope/kimi-k2.7-code").unwrap())
             .is_some());
         assert!(catalog
             .get(&ModelRef::parse("dashscope-openai/qwen3.7-plus").unwrap())

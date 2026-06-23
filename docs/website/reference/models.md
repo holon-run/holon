@@ -6,7 +6,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **36 providers** and **191 models**.
+Holon includes built-in configuration for **37 providers** and **194 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -95,6 +95,8 @@ and capabilities.
 | `chutes` | `openai/gpt-oss-120b-TEE` | `chutes/openai/gpt-oss-120b-TEE` | 131072 | 65536 | ✅ | — |
 | `chutes` | `zai-org/GLM-4.7-TEE` | `chutes/zai-org/GLM-4.7-TEE` | 202752 | 65535 | ✅ | — |
 | `dashscope` | `MiniMax-M2.5` | `dashscope/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
+| `dashscope` | `MiniMax/MiniMax-M3` | `dashscope/MiniMax/MiniMax-M3` | 1000000 | 32768 | ✅ | ✅ |
+| `dashscope` | `ZHIPU/GLM-5.2` | `dashscope/ZHIPU/GLM-5.2` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `deepseek-v4-flash` | `dashscope/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `dashscope` | `deepseek-v4-pro` | `dashscope/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `dashscope` | `glm-4.7` | `dashscope/glm-4.7` | 202752 | 16384 | — | — |
@@ -102,6 +104,7 @@ and capabilities.
 | `dashscope` | `glm-5.1` | `dashscope/glm-5.1` | 202752 | 131072 | ✅ | — |
 | `dashscope` | `kimi-k2.5` | `dashscope/kimi-k2.5` | 262144 | 32768 | — | ✅ |
 | `dashscope` | `kimi-k2.6` | `dashscope/kimi-k2.6` | 262144 | 98304 | ✅ | — |
+| `dashscope` | `kimi-k2.7-code` | `dashscope/kimi-k2.7-code` | 262144 | 98304 | ✅ | ✅ |
 | `dashscope` | `mimo-v2.5-pro` | `dashscope/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `qwen3-coder-flash` | `dashscope/qwen3-coder-flash` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3-coder-next` | `dashscope/qwen3-coder-next` | 262144 | 65536 | — | — |
