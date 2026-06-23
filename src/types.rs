@@ -611,6 +611,7 @@ pub struct LoadedAgentMemoryView {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillScope {
+    #[serde(alias = "user")]
     UserGlobal,
     Agent,
     Workspace,

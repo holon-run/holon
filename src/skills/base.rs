@@ -445,8 +445,11 @@ fn first_body_paragraph(content: &str) -> String {
 }
 
 fn scope_label(scope: SkillScope) -> &'static str {
+    // Preserve the legacy label for backward-compatible `legacy_id` values.
+    // `UserGlobal` was previously `User` with label "user"; `legacy_id` must
+    // match old active-skill records that use the "user:" prefix.
     match scope {
-        SkillScope::UserGlobal => "user_global",
+        SkillScope::UserGlobal => "user",
         SkillScope::Agent => "agent",
         SkillScope::Workspace => "workspace",
     }
