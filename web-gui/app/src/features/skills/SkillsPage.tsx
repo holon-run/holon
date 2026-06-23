@@ -13,8 +13,6 @@ interface SkillsPageProps {
   onRefresh: () => void;
   onAddSkill: (input: AddSkillInput) => Promise<boolean>;
   onRemoveSkill: (name: string) => Promise<boolean>;
-  onUpdateSkill: (name?: string) => Promise<boolean>;
-  onCheckSkill: (name?: string) => Promise<boolean>;
 }
 
 type AddSourceType = Extract<AddSkillInput["kind"], "local" | "remote">;
@@ -26,8 +24,6 @@ export function SkillsPage({
   onRefresh,
   onAddSkill,
   onRemoveSkill,
-  onUpdateSkill,
-  onCheckSkill,
 }: SkillsPageProps) {
   const skills = catalog.catalog;
   const [query, setQuery] = useState("");
@@ -64,11 +60,6 @@ export function SkillsPage({
     }
   }
 
-  async function runCatalogAction(action: "update" | "check", name?: string) {
-    const ok = action === "update" ? await onUpdateSkill(name) : await onCheckSkill(name);
-    if (ok) setMessage(`${action === "update" ? "Updated" : "Checked"} ${name ?? "the Skill Library"}.`);
-  }
-
   async function removeSkill(name: string) {
     const ok = await onRemoveSkill(name);
     if (ok) setMessage(`Removed ${name} from the Global Skill Library.`);
@@ -86,12 +77,6 @@ export function SkillsPage({
           </p>
         </div>
         <div className="skills-actions" aria-label="Skill library actions">
-          <Button type="button" variant="outline" disabled={loading} onClick={() => void runCatalogAction("check")}>
-            Check
-          </Button>
-          <Button type="button" variant="outline" disabled={loading} onClick={() => void runCatalogAction("update")}>
-            Update
-          </Button>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? "Refreshing…" : "Refresh"}
           </Button>
@@ -215,8 +200,6 @@ export function SkillsPage({
                   skill={skill}
                   loading={loading}
                   onRemove={removeSkill}
-                  onUpdate={(name) => runCatalogAction("update", name)}
-                  onCheck={(name) => runCatalogAction("check", name)}
                 />
               ))}
             </ul>
@@ -241,14 +224,10 @@ function SkillRow({
   skill,
   loading,
   onRemove,
-  onUpdate,
-  onCheck,
 }: {
   skill: SkillCatalogEntry;
   loading: boolean;
   onRemove: (name: string) => void;
-  onUpdate: (name: string) => void;
-  onCheck: (name: string) => void;
 }) {
   return (
     <li className="skills-row">
@@ -262,12 +241,6 @@ function SkillRow({
         <p>{skill.description || "No description provided."}</p>
       </div>
       <div className="skills-row-actions">
-        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => onCheck(skill.name)}>
-          Check
-        </Button>
-        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => onUpdate(skill.name)}>
-          Update
-        </Button>
         <Button type="button" size="sm" variant="outline" disabled={loading || skill.scope !== "user"} onClick={() => onRemove(skill.name)}>
           Remove
         </Button>

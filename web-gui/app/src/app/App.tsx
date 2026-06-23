@@ -72,8 +72,6 @@ export function App() {
   const skillCatalogError = useRuntimeStore((state) => state.skillCatalogError);
   const addSkillToCatalog = useRuntimeStore((state) => state.addSkillToCatalog);
   const removeSkillFromCatalog = useRuntimeStore((state) => state.removeSkillFromCatalog);
-  const updateSkillCatalog = useRuntimeStore((state) => state.updateSkillCatalog);
-  const checkSkillCatalog = useRuntimeStore((state) => state.checkSkillCatalog);
   const agentSkillCatalog = useRuntimeStore((state) =>
     activeAgentId ? state.agentSkillCatalogByAgentId[activeAgentId] : undefined,
   );
@@ -444,8 +442,6 @@ export function App() {
             onRefresh={refreshSkillCatalog}
             onAddSkill={addSkillToCatalog}
             onRemoveSkill={removeSkillFromCatalog}
-            onUpdateSkill={updateSkillCatalog}
-            onCheckSkill={checkSkillCatalog}
           />
         ) : null}
         {route === "settings" ? (
