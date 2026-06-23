@@ -386,6 +386,16 @@ impl SleepOnlyToolProvider {
     }
 }
 
+pub(crate) struct WaitForOnlyToolProvider {
+    pub(crate) calls: Mutex<usize>,
+}
+
+impl WaitForOnlyToolProvider {
+    pub(crate) async fn call_count(&self) -> usize {
+        *self.calls.lock().await
+    }
+}
+
 pub(crate) struct DisallowedToolThenTextProvider {
     pub(crate) calls: Mutex<usize>,
 }
@@ -664,6 +674,39 @@ impl AgentProvider for SleepOnlyToolProvider {
                 input: serde_json::json!({
                     "reason": "waiting for review",
                     "duration_ms": 250,
+                }),
+            }],
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for WaitForOnlyToolProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls > 1 {
+            anyhow::bail!("wait-for-only round should not force another provider turn");
+        }
+        assert!(
+            request.tools.iter().any(|tool| tool.name == "WaitFor"),
+            "WaitFor must be exposed to the provider tool surface"
+        );
+
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::ToolUse {
+                id: "wait-for-1".into(),
+                name: "WaitFor".into(),
+                input: serde_json::json!({
+                    "reason": "waiting for PR checks",
+                    "wake": "external",
+                    "resource": "github:holon-run/holon#1939",
+                    "recheck_after_ms": 1800000,
                 }),
             }],
             stop_reason: None,
