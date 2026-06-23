@@ -635,6 +635,62 @@ pub async fn agent_skills_endpoint_uses_effective_registry_snapshot() -> Result<
     Ok(())
 }
 
+pub async fn agent_skills_endpoint_does_not_leak_stale_roots_between_agents() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("alpha", None).await?;
+
+    let default_home = host.config().data_dir.join("agents/default");
+    let default_skill_dir = default_home.join("skills/default-only");
+    std::fs::create_dir_all(&default_skill_dir)?;
+    std::fs::write(
+        default_skill_dir.join("SKILL.md"),
+        "---\nname: default-only\ndescription: default\n---\nbody",
+    )?;
+
+    let alpha_home = host.config().data_dir.join("agents/alpha");
+    let alpha_skill_dir = alpha_home.join("skills/alpha-only");
+    std::fs::create_dir_all(&alpha_skill_dir)?;
+    std::fs::write(
+        alpha_skill_dir.join("SKILL.md"),
+        "---\nname: alpha-only\ndescription: alpha\n---\nbody",
+    )?;
+
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+
+    let default_payload: serde_json::Value = client
+        .get(format!("{base}/agents/default/skills"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(default_payload["skills"]
+        .as_array()
+        .expect("default skills should be an array")
+        .iter()
+        .any(|skill| skill["name"] == "default-only"));
+
+    let alpha_payload: serde_json::Value = client
+        .get(format!("{base}/agents/alpha/skills"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let alpha_skills = alpha_payload["skills"]
+        .as_array()
+        .expect("alpha skills should be an array");
+    assert!(alpha_skills
+        .iter()
+        .any(|skill| skill["name"] == "alpha-only"));
+    assert!(!alpha_skills
+        .iter()
+        .any(|skill| skill["name"] == "default-only"));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn skills_catalog_uses_shared_registry_with_agent_and_workspace_roots() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let agent_home = host.config().data_dir.join("agents/default");

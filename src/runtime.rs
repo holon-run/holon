@@ -1097,18 +1097,12 @@ impl RuntimeHandle {
         let mut view = if let Some(bridge) = self.inner.host_bridge.as_ref() {
             let registry = bridge.skills_registry()?;
             let mut registry = registry.write().await;
-            for root in skill_roots {
-                registry.register_root(root)?;
-            }
-            registry.rescan();
-            skills_runtime_view_from_catalog(registry.catalog(), &state.active_skills)
+            registry.replace_roots(skill_roots.clone())?;
+            skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
         } else {
             let mut registry = crate::skills::SkillsRegistry::new();
-            for root in skill_roots {
-                registry.register_root(root)?;
-            }
-            registry.rescan();
-            skills_runtime_view_from_catalog(registry.catalog(), &state.active_skills)
+            registry.replace_roots(skill_roots.clone())?;
+            skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
         };
         view.agent_templates_catalog = discover_agent_templates_catalog(
             self.user_home().as_deref(),

@@ -149,10 +149,7 @@ pub async fn skills_catalog(
     }
 
     let mut registry = state.skills_registry.write().await;
-    for root in roots {
-        registry.register_root(root).map_err(error_response)?;
-    }
-    registry.rescan();
+    registry.replace_roots(roots).map_err(error_response)?;
     let catalog = registry.catalog_with_filter(scope_filter);
     Ok(Json(json!({
         "ok": true,

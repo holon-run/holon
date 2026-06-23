@@ -44,6 +44,22 @@ impl SkillsRegistry {
         Ok(())
     }
 
+    /// Replace the registered roots with the provided effective set.
+    ///
+    /// This keeps shared registries scoped to the current caller's effective
+    /// roots instead of accumulating stale roots from other agents or workspaces.
+    pub fn replace_roots(&mut self, registrations: Vec<SkillRootRegistration>) -> Result<()> {
+        self.roots.clear();
+        self.entries.clear();
+        for registration in registrations {
+            if registration.root_path.exists() {
+                self.upsert_root(registration);
+            }
+        }
+        self.rescan();
+        Ok(())
+    }
+
     /// Refresh a single registered root, replacing that root's snapshot entries.
     ///
     /// Scan failures are recorded on the root and remove stale entries for that
@@ -355,6 +371,38 @@ mod tests {
         fs::remove_dir_all(agent_root.join("same")).unwrap();
         registry.rescan();
         assert_eq!(registry.catalog()[0].description, "user");
+    }
+
+    #[test]
+    fn replace_roots_removes_stale_root_entries() {
+        let temp = TempDir::new().unwrap();
+        let first_root = temp.path().join("first");
+        let second_root = temp.path().join("second");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        write_skill(&first_root, "first", "first", "old");
+        write_skill(&second_root, "second", "second", "new");
+
+        let mut registry = SkillsRegistry::new();
+        registry
+            .replace_roots(vec![registration(
+                first_root.clone(),
+                SkillRootSourceKind::Workspace,
+            )])
+            .unwrap();
+        assert_eq!(registry.catalog()[0].name, "first");
+
+        registry
+            .replace_roots(vec![registration(
+                second_root.clone(),
+                SkillRootSourceKind::Workspace,
+            )])
+            .unwrap();
+        let catalog = registry.catalog();
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].name, "second");
+        assert_eq!(registry.roots().len(), 1);
+        assert_eq!(registry.roots()[0].root_path, second_root);
     }
 
     #[test]

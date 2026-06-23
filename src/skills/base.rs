@@ -237,6 +237,7 @@ pub fn effective_skill_root_registrations(
 
 pub fn skills_runtime_view_from_catalog(
     mut catalog: Vec<SkillCatalogEntry>,
+    roots: &[SkillRootRegistration],
     active_skills: &[ActiveSkillRecord],
 ) -> SkillsRuntimeView {
     catalog.sort_by(|left, right| {
@@ -256,23 +257,26 @@ pub fn skills_runtime_view_from_catalog(
         .collect::<Vec<_>>();
     SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
-        discovered_roots: collect_discovered_roots_from_catalog(&catalog),
+        discovered_roots: collect_discovered_roots_from_registrations(roots),
         discoverable_skills: catalog.clone(),
         attached_skills: catalog,
         active_skills,
     }
 }
 
-fn collect_discovered_roots_from_catalog(entries: &[SkillCatalogEntry]) -> Vec<SkillRootView> {
-    let mut roots = entries
+fn collect_discovered_roots_from_registrations(
+    registrations: &[SkillRootRegistration],
+) -> Vec<SkillRootView> {
+    let mut roots = registrations
         .iter()
-        .filter_map(|entry| {
-            let skill_dir = entry.path.parent()?;
-            let root = skill_dir.parent()?;
-            Some(SkillRootView {
-                scope: entry.scope,
-                path: root.to_path_buf(),
-            })
+        .filter(|registration| registration.root_path.is_dir())
+        .map(|registration| SkillRootView {
+            scope: match registration.source_kind {
+                SkillRootSourceKind::UserGlobal => SkillScope::User,
+                SkillRootSourceKind::AgentHome => SkillScope::Agent,
+                SkillRootSourceKind::Workspace => SkillScope::Workspace,
+            },
+            path: registration.root_path.clone(),
         })
         .collect::<Vec<_>>();
     roots.sort_by(|left, right| {
@@ -1369,6 +1373,11 @@ mod tests {
                 path: visible_path.clone(),
                 scope: SkillScope::Agent,
             }],
+            &[skill_root_registration(
+                SkillRootSourceKind::AgentHome,
+                Some("default".into()),
+                PathBuf::from("/agent/skills"),
+            )],
             &[
                 ActiveSkillRecord {
                     skill_id: "agent:demo".into(),

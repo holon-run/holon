@@ -944,18 +944,20 @@ impl RuntimeHost {
             workspace_anchor,
         );
         let mut skills = if let Ok(mut skill_registry) = self.inner.skills_registry.try_write() {
-            for root in skill_roots {
-                skill_registry.register_root(root)?;
-            }
-            skill_registry.rescan();
-            skills_runtime_view_from_catalog(skill_registry.catalog(), &state.active_skills)
+            skill_registry.replace_roots(skill_roots.clone())?;
+            skills_runtime_view_from_catalog(
+                skill_registry.catalog(),
+                &skill_roots,
+                &state.active_skills,
+            )
         } else {
             let mut skill_registry = SkillsRegistry::new();
-            for root in skill_roots {
-                skill_registry.register_root(root)?;
-            }
-            skill_registry.rescan();
-            skills_runtime_view_from_catalog(skill_registry.catalog(), &state.active_skills)
+            skill_registry.replace_roots(skill_roots.clone())?;
+            skills_runtime_view_from_catalog(
+                skill_registry.catalog(),
+                &skill_roots,
+                &state.active_skills,
+            )
         };
         skills.agent_templates_catalog = discover_agent_templates_catalog(
             std::env::var_os("HOME").map(PathBuf::from).as_deref(),
