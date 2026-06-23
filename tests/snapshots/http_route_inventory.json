@@ -503,6 +503,22 @@
   },
   {
     "method": "get",
+    "path": "/api/skills/catalog",
+    "handler": "skills_catalog",
+    "operation_id": "skillsCatalog",
+    "tag": "skills",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/briefs",
     "handler": "briefs_default",
     "operation_id": "defaultBriefs",
