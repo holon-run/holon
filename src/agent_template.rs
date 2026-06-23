@@ -19,13 +19,18 @@ const TEMPLATE_PROVENANCE_FILENAME: &str = "template-provenance.json";
 const BUILTIN_TEMPLATE_STATE_FILENAME: &str = ".holon-builtin-template.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
 const MEMORY_SELF_INITIAL: &str = "# Self Memory\n\n";
-const MEMORY_OPERATOR_INITIAL: &str = "# Operator Memory\n\n";
+const MEMORY_OPERATOR_INITIAL: &str = r#"# Operator Memory
+
+Use this file for stable operator preferences that should influence future turns, such as preferred reply language, communication style, naming conventions, tool defaults, and recurring collaboration expectations.
+
+"#;
 
 pub const REQUIRED_AGENT_HOME_GUIDANCE: &str = r#"## Holon Agent Home
 
 - `agent_home` is this agent's default workspace. Use it for agent-local state, notes, memory, and non-project-local work.
 - `AGENTS.md` is automatically loaded as concise agent guidance. Keep durable behavior here, not transient plans or copied project docs.
 - `memory/self.md` and `memory/operator.md` are curated agent-scoped Markdown memory. They are searched or retrieved on demand and are not the same as always-loaded guidance.
+- Use `memory/operator.md` for stable operator preferences such as preferred reply language, communication style, naming conventions, tool defaults, and recurring collaboration expectations.
 - `notes/` is ordinary working notes.
 - `work/` is for non-project-local work artifacts. Project-scoped files and memory belong in the active project workspace.
 - `skills/` is for agent-local skills.
