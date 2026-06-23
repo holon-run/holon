@@ -6,10 +6,14 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **37 providers** and **194 models**.
+Holon includes built-in configuration for **39 providers** and **218 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
+
+Note: subscription-scoped providers such as `dashscope-token-plan` and
+`dashscope-coding-plan` are intended for interactive AI coding/agent tool usage
+under the upstream service terms, not backend automation or generic scripts.
 
 ## Provider Setup
 
@@ -25,6 +29,8 @@ running Holon.
 | `byteplus-coding` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` | `BYTEPLUS_CODING_API_KEY or BYTEPLUS_API_KEY` |
 | `chutes` | OpenAI Chat Completions | `https://llm.chutes.ai/v1` | `CHUTES_API_KEY` |
 | `dashscope` | Anthropic Messages | `https://dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_API_KEY or QWEN_API_KEY` |
+| `dashscope-coding-plan` | Anthropic Messages | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_CODING_PLAN_API_KEY` |
+| `dashscope-token-plan` | Anthropic Messages | `https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic` | `DASHSCOPE_TOKEN_PLAN_API_KEY` |
 | `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
 | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
 | `gemini` | Gemini Generate Content | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
@@ -119,6 +125,30 @@ and capabilities.
 | `dashscope` | `qwen3.7-max-2026-06-08` | `dashscope/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-plus` | `dashscope/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.7-plus-2026-05-26` | `dashscope/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-coding-plan` | `MiniMax-M2.5` | `dashscope-coding-plan/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
+| `dashscope-coding-plan` | `glm-4.7` | `dashscope-coding-plan/glm-4.7` | 202752 | 16384 | — | — |
+| `dashscope-coding-plan` | `glm-5` | `dashscope-coding-plan/glm-5` | 202752 | 16384 | ✅ | — |
+| `dashscope-coding-plan` | `kimi-k2.5` | `dashscope-coding-plan/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
+| `dashscope-coding-plan` | `qwen3-coder-next` | `dashscope-coding-plan/qwen3-coder-next` | 262144 | 65536 | — | — |
+| `dashscope-coding-plan` | `qwen3-coder-plus` | `dashscope-coding-plan/qwen3-coder-plus` | 1000000 | 65536 | — | — |
+| `dashscope-coding-plan` | `qwen3-max-2026-01-23` | `dashscope-coding-plan/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
+| `dashscope-coding-plan` | `qwen3.5-plus` | `dashscope-coding-plan/qwen3.5-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-coding-plan` | `qwen3.6-plus` | `dashscope-coding-plan/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-coding-plan` | `qwen3.7-plus` | `dashscope-coding-plan/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-token-plan` | `MiniMax-M2.5` | `dashscope-token-plan/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
+| `dashscope-token-plan` | `deepseek-v3.2` | `dashscope-token-plan/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
+| `dashscope-token-plan` | `deepseek-v4-flash` | `dashscope-token-plan/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
+| `dashscope-token-plan` | `deepseek-v4-pro` | `dashscope-token-plan/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `dashscope-token-plan` | `glm-5` | `dashscope-token-plan/glm-5` | 202752 | 16384 | ✅ | — |
+| `dashscope-token-plan` | `glm-5.1` | `dashscope-token-plan/glm-5.1` | 202752 | 131072 | ✅ | — |
+| `dashscope-token-plan` | `glm-5.2` | `dashscope-token-plan/glm-5.2` | 1000000 | 131072 | ✅ | — |
+| `dashscope-token-plan` | `kimi-k2.5` | `dashscope-token-plan/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
+| `dashscope-token-plan` | `kimi-k2.6` | `dashscope-token-plan/kimi-k2.6` | 262144 | 98304 | ✅ | ✅ |
+| `dashscope-token-plan` | `kimi-k2.7-code` | `dashscope-token-plan/kimi-k2.7-code` | 262144 | 98304 | ✅ | ✅ |
+| `dashscope-token-plan` | `qwen3.6-flash` | `dashscope-token-plan/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-token-plan` | `qwen3.6-plus` | `dashscope-token-plan/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-token-plan` | `qwen3.7-max` | `dashscope-token-plan/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
+| `dashscope-token-plan` | `qwen3.7-plus` | `dashscope-token-plan/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `deepseek` | `deepseek-chat` | `deepseek/deepseek-chat` | 131072 | 8192 | — | — |
 | `deepseek` | `deepseek-reasoner` | `deepseek/deepseek-reasoner` | 131072 | 65536 | ✅ | — |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |

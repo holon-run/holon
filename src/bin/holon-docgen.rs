@@ -61,6 +61,10 @@ Holon includes built-in configuration for **{provider_count} providers** and **{
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
 
+Note: subscription-scoped providers such as `dashscope-token-plan` and
+`dashscope-coding-plan` are intended for interactive AI coding/agent tool usage
+under the upstream service terms, not backend automation or generic scripts.
+
 ## Provider Setup
 
 Each provider requires an API key or credential to use. Set the listed environment variable before

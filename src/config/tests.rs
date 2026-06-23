@@ -1252,6 +1252,14 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
     settings_env.insert("ZAI_API_KEY".to_string(), "zai-key".to_string());
     settings_env.insert("BIGMODEL_API_KEY".to_string(), "bigmodel-key".to_string());
     settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
+    settings_env.insert(
+        "DASHSCOPE_TOKEN_PLAN_API_KEY".to_string(),
+        "dashscope-token-plan-key".to_string(),
+    );
+    settings_env.insert(
+        "DASHSCOPE_CODING_PLAN_API_KEY".to_string(),
+        "dashscope-coding-plan-key".to_string(),
+    );
     settings_env.insert("NEARAI_API_KEY".to_string(), "nearai-key".to_string());
     settings_env.insert("GEMINI_API_KEY".to_string(), "gemini-key".to_string());
     settings_env.insert(
@@ -1299,6 +1307,46 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
     assert_eq!(
         dashscope.context_management.cache_strategy,
         AnthropicCacheStrategy::ClaudeCodePromptCache
+    );
+
+    let dashscope_token_plan = providers
+        .get(&ProviderId::parse("dashscope-token-plan").unwrap())
+        .unwrap();
+    assert_eq!(
+        dashscope_token_plan.transport,
+        ProviderTransportKind::AnthropicMessages
+    );
+    assert_eq!(
+        dashscope_token_plan.base_url,
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+    );
+    assert_eq!(
+        dashscope_token_plan.auth.env.as_deref(),
+        Some("DASHSCOPE_TOKEN_PLAN_API_KEY")
+    );
+    assert_eq!(
+        dashscope_token_plan.credential.as_deref(),
+        Some("dashscope-token-plan-key")
+    );
+
+    let dashscope_coding_plan = providers
+        .get(&ProviderId::parse("dashscope-coding-plan").unwrap())
+        .unwrap();
+    assert_eq!(
+        dashscope_coding_plan.transport,
+        ProviderTransportKind::AnthropicMessages
+    );
+    assert_eq!(
+        dashscope_coding_plan.base_url,
+        "https://coding.dashscope.aliyuncs.com/apps/anthropic"
+    );
+    assert_eq!(
+        dashscope_coding_plan.auth.env.as_deref(),
+        Some("DASHSCOPE_CODING_PLAN_API_KEY")
+    );
+    assert_eq!(
+        dashscope_coding_plan.credential.as_deref(),
+        Some("dashscope-coding-plan-key")
     );
 
     let nearai = providers
