@@ -1,3 +1,5 @@
+import type React from "react";
+
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
@@ -82,17 +84,13 @@ export function AgentOverviewPanel({
 
   return (
     <div className="inspector-stack">
-      <section className="context-card inspector-card">
-        <div className="context-head">
-          <span className="eyebrow">Agent</span>
-          <StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} />
-        </div>
+      <CollapsibleInspectorCard
+        title="Agent"
+        summary={`Lifecycle: ${agent.lifecycle}`}
+        badge={<StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} />}
+      >
         <h2>{agent.id}</h2>
         <dl className="inspector-facts">
-          <div>
-            <dt>Lifecycle</dt>
-            <dd>{agent.lifecycle}</dd>
-          </div>
           <div>
             <dt>Model</dt>
             <dd>{agent.model}</dd>
@@ -106,13 +104,13 @@ export function AgentOverviewPanel({
             <dd>{compactMeta([agent.posture, agent.postureReason])}</dd>
           </div>
         </dl>
-      </section>
+      </CollapsibleInspectorCard>
 
-      <section className="context-card inspector-card">
-        <div className="context-head">
-          <span className="eyebrow">Workspace</span>
-          <StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />
-        </div>
+      <CollapsibleInspectorCard
+        title="Workspace"
+        summary={workspaceName}
+        badge={<StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />}
+      >
         <h2>{workspaceName}</h2>
         <dl className="inspector-facts">
           <div>
@@ -169,14 +167,18 @@ export function AgentOverviewPanel({
             </dl>
           </details>
         ) : null}
-      </section>
+      </CollapsibleInspectorCard>
 
-      <section className="context-card inspector-card">
-        <div className="context-head">
-          <span className="eyebrow">Skills</span>
-          <StatusBadge className="state-chip" kind="connection" value={skillCatalogLoading ? "loading" : `${skillCatalog?.catalog.length ?? 0} active`} />
-        </div>
-        <h2>Effective skills</h2>
+      <CollapsibleInspectorCard
+        title="Skills"
+        summary={`${skillCatalog?.catalog.length ?? 0} effective`}
+        defaultOpen={false}
+        badge={<StatusBadge className="state-chip" kind="connection" value={skillCatalogLoading ? "loading" : `${skillCatalog?.catalog.length ?? 0} active`} />}
+      >
+        <p className="inspector-muted">
+          Agent skills are the effective set from global/user skills plus agent-local overrides. Enable links a global or user
+          skill into this agent; Disable removes an agent-local skill.
+        </p>
         {skillCatalogError ? <p className="inspector-error">{skillCatalogError}</p> : null}
         {skillCatalog?.catalog.length ? (
           <ul className="inspector-list agent-skill-list">
@@ -194,20 +196,18 @@ export function AgentOverviewPanel({
           <p className="inspector-muted">{skillCatalogLoading ? "Loading effective skills…" : "No effective skills reported for this agent."}</p>
         )}
         <div className="agent-skill-actions">
-          <button type="button" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
+          <button type="button" className="agent-skill-refresh" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
             {skillCatalogLoading ? "Refreshing…" : "Refresh"}
           </button>
-          <span>Enable links global skills into this agent; Disable removes agent-local skills.</span>
         </div>
-      </section>
+      </CollapsibleInspectorCard>
 
       {hasActiveTasks ? (
-        <section className="context-card inspector-card">
-          <div className="context-head">
-            <span className="eyebrow">Tasks</span>
-            <StatusBadge className="state-chip" kind="connection" value="active" />
-          </div>
-          <h2>{agent.activeTaskCount} active</h2>
+        <CollapsibleInspectorCard
+          title="Tasks"
+          summary={`${agent.activeTaskCount} active`}
+          badge={<StatusBadge className="state-chip" kind="connection" value="active" />}
+        >
           {agent.tasks?.length ? (
             <ul className="inspector-list">
               {agent.tasks.map((task) => (
@@ -222,15 +222,16 @@ export function AgentOverviewPanel({
               ))}
             </ul>
           ) : null}
-        </section>
+        </CollapsibleInspectorCard>
       ) : null}
 
       {workItems.length ? (
-        <section className="context-card current-work inspector-card">
-          <div className="context-head">
-            <span className="eyebrow">Work items</span>
-            <StatusBadge className="state-chip" kind="work" value={`${openWorkItems.length + currentWorkItems.length} open`} />
-          </div>
+        <CollapsibleInspectorCard
+          title="Work items"
+          summary={`${openWorkItems.length + currentWorkItems.length} open`}
+          className="current-work"
+          badge={<StatusBadge className="state-chip" kind="work" value={`${openWorkItems.length + currentWorkItems.length} open`} />}
+        >
           {currentWorkItems.map((workItem) => (
             <WorkItemCard key={workItem.id} workItem={workItem} featured onSelect={selectWorkItem} />
           ))}
@@ -251,7 +252,7 @@ export function AgentOverviewPanel({
               </div>
             </details>
           ) : null}
-        </section>
+        </CollapsibleInspectorCard>
       ) : (
         <EmptyState
           className="inspector-empty"
@@ -261,6 +262,35 @@ export function AgentOverviewPanel({
         />
       )}
     </div>
+  );
+}
+
+function CollapsibleInspectorCard({
+  title,
+  summary,
+  badge,
+  children,
+  defaultOpen = true,
+  className,
+}: {
+  title: string;
+  summary?: string;
+  badge?: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  className?: string;
+}) {
+  return (
+    <details className={`context-card inspector-card collapsible-inspector-card${className ? ` ${className}` : ""}`} open={defaultOpen}>
+      <summary className="collapsible-inspector-summary">
+        <span className="collapsible-inspector-title">
+          <span className="eyebrow">{title}</span>
+          {summary ? <strong>{summary}</strong> : null}
+        </span>
+        {badge}
+      </summary>
+      <div className="collapsible-inspector-body">{children}</div>
+    </details>
   );
 }
 
