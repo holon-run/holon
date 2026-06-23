@@ -40,6 +40,7 @@ export interface RuntimeClientOptions {
 const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
+const SKILL_INSTALL_REQUEST_TIMEOUT_MS = 130_000;
 
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
@@ -688,7 +689,9 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/add", { kind: input }, requestHeaders);
+      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/add", { kind: input }, requestHeaders, {
+        timeoutMs: SKILL_INSTALL_REQUEST_TIMEOUT_MS,
+      });
     },
     async removeSkillFromCatalog(name: string): Promise<void> {
       if (!baseUrl) {
@@ -1144,9 +1147,10 @@ async function postJson<T>(
   path: string,
   body: unknown,
   headers: Record<string, string> = {},
+  options: { timeoutMs?: number } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
