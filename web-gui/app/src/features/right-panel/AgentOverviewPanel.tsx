@@ -10,9 +10,23 @@ interface AgentOverviewPanelProps {
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onRefreshAgentSkills: () => void;
+  onEnableAgentSkill: (name: string) => void;
+  onDisableAgentSkill: (name: string) => void;
 }
 
-function AgentSkillItem({ skill }: { skill: SkillCatalogEntry }) {
+function AgentSkillItem({
+  skill,
+  disabled,
+  onEnable,
+  onDisable,
+}: {
+  skill: SkillCatalogEntry;
+  disabled?: boolean;
+  onEnable: (name: string) => void;
+  onDisable: (name: string) => void;
+}) {
+  const canEnable = skill.scope === "user";
+  const canDisable = skill.scope === "agent";
   return (
     <li>
       <div className="inspector-list-head">
@@ -20,6 +34,20 @@ function AgentSkillItem({ skill }: { skill: SkillCatalogEntry }) {
         <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
       </div>
       <small>{skill.description || skill.path || skill.skillId}</small>
+      {canEnable || canDisable ? (
+        <div className="agent-skill-row-actions">
+          {canEnable ? (
+            <button type="button" disabled={disabled} onClick={() => onEnable(skill.name)}>
+              Enable
+            </button>
+          ) : null}
+          {canDisable ? (
+            <button type="button" disabled={disabled} onClick={() => onDisable(skill.name)}>
+              Disable
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -32,6 +60,8 @@ export function AgentOverviewPanel({
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onRefreshAgentSkills,
+  onEnableAgentSkill,
+  onDisableAgentSkill,
 }: AgentOverviewPanelProps) {
   const workspace = agent.workspaceSummary;
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
@@ -151,7 +181,13 @@ export function AgentOverviewPanel({
         {skillCatalog?.catalog.length ? (
           <ul className="inspector-list agent-skill-list">
             {skillCatalog.catalog.slice(0, 8).map((skill) => (
-              <AgentSkillItem key={`${skill.scope}:${skill.skillId}:${skill.path}`} skill={skill} />
+              <AgentSkillItem
+                key={`${skill.scope}:${skill.skillId}:${skill.path}`}
+                skill={skill}
+                disabled={skillCatalogLoading}
+                onEnable={onEnableAgentSkill}
+                onDisable={onDisableAgentSkill}
+              />
             ))}
           </ul>
         ) : (
@@ -161,9 +197,7 @@ export function AgentOverviewPanel({
           <button type="button" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
             {skillCatalogLoading ? "Refreshing…" : "Refresh"}
           </button>
-          <span className="agent-skill-readonly" title="Enable and disable require the daemon skills control API.">
-            read-only
-          </span>
+          <span>Enable links global skills into this agent; Disable removes agent-local skills.</span>
         </div>
       </section>
 

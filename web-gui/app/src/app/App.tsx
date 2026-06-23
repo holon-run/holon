@@ -87,6 +87,8 @@ export function App() {
   const loadSearchResultContent = useRuntimeStore((state) => state.loadSearchResultContent);
   const refreshSkillCatalog = useRuntimeStore((state) => state.refreshSkillCatalog);
   const refreshAgentSkillCatalog = useRuntimeStore((state) => state.refreshAgentSkillCatalog);
+  const enableAgentSkill = useRuntimeStore((state) => state.enableAgentSkill);
+  const disableAgentSkill = useRuntimeStore((state) => state.disableAgentSkill);
   const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
   const refreshRuntimeConfig = useRuntimeStore((state) => state.refreshRuntimeConfig);
   const updateRuntimeConfig = useRuntimeStore((state) => state.updateRuntimeConfig);
@@ -483,6 +485,12 @@ export function App() {
             loadAgentWorkItemDetail(selectedAgent.id, workItem.id);
           }}
           onRefreshAgentSkills={() => refreshAgentSkillCatalog(selectedAgent.id)}
+          onEnableAgentSkill={(name) => {
+            void enableAgentSkill(selectedAgent.id, name);
+          }}
+          onDisableAgentSkill={(name) => {
+            void disableAgentSkill(selectedAgent.id, name);
+          }}
           onShowAgentOverview={showAgentOverview}
           onClose={() => setRightPanelOpen(false)}
         />

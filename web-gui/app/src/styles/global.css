@@ -3046,11 +3046,23 @@ code {
   margin-top: 12px;
 }
 
-.agent-skill-actions button {
+.agent-skill-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.agent-skill-actions button,
+.agent-skill-row-actions button {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface-soft);
   color: var(--text);
+}
+
+.agent-skill-row-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .inspector-muted {

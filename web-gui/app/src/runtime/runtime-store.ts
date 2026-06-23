@@ -202,6 +202,8 @@ export interface RuntimeStoreState {
   updateSkillCatalog: (name?: string) => Promise<boolean>;
   checkSkillCatalog: (name?: string) => Promise<boolean>;
   refreshAgentSkillCatalog: (agentId: string | undefined) => Promise<void>;
+  enableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
+  disableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
   refreshCredentialStore: () => Promise<void>;
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
@@ -998,6 +1000,90 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           [agentId]: message,
         },
       }));
+    }
+  },
+
+  enableAgentSkill: async (agentId, name) => {
+    if (!agentId) return false;
+    set((state) => ({
+      agentSkillCatalogLoadingByAgentId: {
+        ...state.agentSkillCatalogLoadingByAgentId,
+        [agentId]: true,
+      },
+      agentSkillCatalogErrorByAgentId: {
+        ...state.agentSkillCatalogErrorByAgentId,
+        [agentId]: undefined,
+      },
+    }));
+    try {
+      await runtimeClient.enableAgentSkill(agentId, name);
+      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      set((state) => ({
+        agentSkillCatalogByAgentId: {
+          ...state.agentSkillCatalogByAgentId,
+          [agentId]: catalog,
+        },
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+      }));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+        agentSkillCatalogErrorByAgentId: {
+          ...state.agentSkillCatalogErrorByAgentId,
+          [agentId]: message,
+        },
+      }));
+      return false;
+    }
+  },
+
+  disableAgentSkill: async (agentId, name) => {
+    if (!agentId) return false;
+    set((state) => ({
+      agentSkillCatalogLoadingByAgentId: {
+        ...state.agentSkillCatalogLoadingByAgentId,
+        [agentId]: true,
+      },
+      agentSkillCatalogErrorByAgentId: {
+        ...state.agentSkillCatalogErrorByAgentId,
+        [agentId]: undefined,
+      },
+    }));
+    try {
+      await runtimeClient.disableAgentSkill(agentId, name);
+      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      set((state) => ({
+        agentSkillCatalogByAgentId: {
+          ...state.agentSkillCatalogByAgentId,
+          [agentId]: catalog,
+        },
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+      }));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+        agentSkillCatalogErrorByAgentId: {
+          ...state.agentSkillCatalogErrorByAgentId,
+          [agentId]: message,
+        },
+      }));
+      return false;
     }
   },
 

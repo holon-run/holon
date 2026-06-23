@@ -13,6 +13,8 @@ interface RightSidePanelProps {
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onRefreshAgentSkills: () => void;
+  onEnableAgentSkill: (name: string) => void;
+  onDisableAgentSkill: (name: string) => void;
   onShowAgentOverview: () => void;
   onClose: () => void;
 }
@@ -28,6 +30,8 @@ export function RightSidePanel({
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onRefreshAgentSkills,
+  onEnableAgentSkill,
+  onDisableAgentSkill,
   onShowAgentOverview,
   onClose,
 }: RightSidePanelProps) {
@@ -75,6 +79,8 @@ export function RightSidePanel({
             onLoadWorkItemDetail={onLoadWorkItemDetail}
             onOpenWorkItemDetail={onOpenWorkItemDetail}
             onRefreshAgentSkills={onRefreshAgentSkills}
+            onEnableAgentSkill={onEnableAgentSkill}
+            onDisableAgentSkill={onDisableAgentSkill}
           />
         )}
       </div>

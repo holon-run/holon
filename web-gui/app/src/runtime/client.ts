@@ -18,6 +18,8 @@ import type {
   RuntimeModelOption,
   RuntimeSearchOptions,
   SkillCatalogState,
+  SkillScope,
+  SkillInstallMode,
   RuntimeTaskOutputResult,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
@@ -522,6 +524,10 @@ interface SkillCatalogResponseDto {
   catalog?: SkillCatalogEntryDto[];
 }
 
+interface AgentSkillsResponseDto {
+  skills?: SkillCatalogEntryDto[];
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -665,6 +671,15 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         return { source: "fixture", agentId, catalog: [] };
       }
+      if (agentId) {
+        const response = await getJson<AgentSkillsResponseDto>(
+          fetchImpl,
+          baseUrl,
+          `/agents/${encodeURIComponent(agentId)}/skills`,
+          { headers: requestHeaders },
+        );
+        return projectSkillCatalog({ catalog: response.skills }, agentId);
+      }
       const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
       const response = await getJson<SkillCatalogResponseDto>(fetchImpl, baseUrl, `/api/skills/catalog${query}`, { headers: requestHeaders });
       return projectSkillCatalog(response, agentId);
@@ -692,6 +707,30 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         throw new Error("Holon API base URL is not configured.");
       }
       await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/check", { name }, requestHeaders);
+    },
+    async enableAgentSkill(agentId: string, name: string, mode: SkillInstallMode = "linked"): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/skills/enable`,
+        { name, mode },
+        requestHeaders,
+      );
+    },
+    async disableAgentSkill(agentId: string, name: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/skills/disable`,
+        { name },
+        requestHeaders,
+      );
     },
     async updateRuntimeConfig(updates: RuntimeConfigUpdateEntry[]): Promise<RuntimeConfigState> {
       if (!baseUrl) {
