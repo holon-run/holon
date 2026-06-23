@@ -681,15 +681,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         );
         return projectSkillCatalog({ catalog: response.skills }, agentId);
       }
-      const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
-      const response = await getJson<SkillCatalogResponseDto>(fetchImpl, baseUrl, `/api/skills/catalog${query}`, { headers: requestHeaders });
+      const response = await getJson<SkillCatalogResponseDto>(fetchImpl, baseUrl, "/skills/catalog", { headers: requestHeaders });
       return projectSkillCatalog(response, agentId);
     },
     async addSkillToCatalog(input: AddSkillInput): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/add", { kind: input }, requestHeaders, {
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/add", { kind: input }, requestHeaders, {
         timeoutMs: SKILL_INSTALL_REQUEST_TIMEOUT_MS,
       });
     },
@@ -697,19 +696,19 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/remove", { name }, requestHeaders);
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/remove", { name }, requestHeaders);
     },
     async updateSkillCatalog(name?: string): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/update", { name }, requestHeaders);
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/update", { name }, requestHeaders);
     },
     async checkSkillCatalog(name?: string): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/check", { name }, requestHeaders);
+      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/check", { name }, requestHeaders);
     },
     async enableAgentSkill(agentId: string, name: string, mode: SkillInstallMode = "linked"): Promise<void> {
       if (!baseUrl) {
