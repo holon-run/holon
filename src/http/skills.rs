@@ -93,6 +93,38 @@ pub async fn remove_skill_from_catalog(
     })))
 }
 
+pub async fn update_skill_catalog(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::types::UpdateSkillRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let result = crate::skills::update_library_skills(&user_home, request.name.as_deref())
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "library": "user",
+        "result": result,
+    })))
+}
+
+pub async fn check_skill_catalog(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::types::CheckSkillRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let result = crate::skills::check_library_skills(&user_home, request.name.as_deref())
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "library": "user",
+        "result": result,
+    })))
+}
+
 pub async fn enable_skill(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,

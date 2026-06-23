@@ -853,6 +853,22 @@
   },
   {
     "method": "post",
+    "path": "/api/skills/catalog/check",
+    "handler": "check_skill_catalog",
+    "operation_id": "checkSkillCatalog",
+    "tag": "skills",
+    "parameters": [],
+    "request_schema": "CheckSkillRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/skills/catalog/remove",
     "handler": "remove_skill_from_catalog",
     "operation_id": "removeSkillFromCatalog",
@@ -860,6 +876,22 @@
     "parameters": [],
     "request_schema": "RemoveSkillRequest",
     "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/skills/catalog/update",
+    "handler": "update_skill_catalog",
+    "operation_id": "updateSkillCatalog",
+    "tag": "skills",
+    "parameters": [],
+    "request_schema": "UpdateSkillRequest",
+    "request_strict": null,
     "response_content_types": [
       "application/json"
     ],

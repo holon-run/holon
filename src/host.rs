@@ -48,7 +48,7 @@ use crate::{
         ClosureOutcome, ExternalTriggerRecord, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
         RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
-        TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkspaceEntry,
+        TaskKind, TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkspaceEntry,
         WorkspaceOccupancyRecord,
     },
 };
@@ -2162,16 +2162,20 @@ impl RuntimeHostBridge {
 }
 
 fn child_has_active_lifecycle_blockers(storage: &AppStorage, child_agent_id: &str) -> Result<bool> {
-    if storage
-        .latest_active_task_records_for_agent(child_agent_id, 1)?
+    // Check if the child agent has any active tasks other than its own ChildAgentTask.
+    // A child's ChildAgentTask reflects the parent-child supervision relationship, not
+    // an independent lifecycle blocker. Only other tasks (command tasks, etc.) block recovery.
+    let has_active_tasks = storage
+        .latest_active_task_records_for_agent(child_agent_id, usize::MAX)?
         .into_iter()
+        .filter(|task| !matches!(task.kind, TaskKind::ChildAgentTask))
         .any(|task| {
             matches!(
                 task.status,
                 TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
             )
-        })
-    {
+        });
+    if has_active_tasks {
         return Ok(true);
     }
 

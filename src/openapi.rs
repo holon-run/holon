@@ -94,6 +94,8 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/api/skills/catalog", "skillsCatalog", "skills", "Skills catalog", "Return the precedence-resolved skills catalog. Query parameters: agent_id, scope.", None, AuthKind::RemoteAccess),
     route("post", "/api/skills/catalog/add", "addSkillToCatalog", "skills", "Add skill to library", "Add or import a skill into the local Skill Library.", Some("AddSkillRequest"), AuthKind::Control),
     route("post", "/api/skills/catalog/remove", "removeSkillFromCatalog", "skills", "Remove skill from library", "Remove a skill from the local Skill Library.", Some("RemoveSkillRequest"), AuthKind::Control),
+    route("post", "/api/skills/catalog/update", "updateSkillCatalog", "skills", "Update skill library", "Refresh Skill Library lock state for one skill or all skills.", Some("UpdateSkillRequest"), AuthKind::Control),
+    route("post", "/api/skills/catalog/check", "checkSkillCatalog", "skills", "Check skill library", "Check Skill Library and lock-file consistency.", Some("CheckSkillRequest"), AuthKind::Control),
     route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime memory", "Search the same memory v2 index used by the agent MemorySearch tool.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
     route_with_response("post", "/memory/get", "runtimeMemoryGet", "search", "Fetch runtime memory source", "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.", Some("MemoryGetRequest"), "MemoryGetResult", AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),

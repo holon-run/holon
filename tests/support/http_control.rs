@@ -931,6 +931,74 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
     Ok(())
 }
 
+pub async fn skill_library_update_and_check_reconcile_lock_file() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = Client::new();
+    let skill_name = format!("http-lock-skill-{}", std::process::id());
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let library_root = user_home.join(".agents").join("skills");
+    let library_path = library_root.join(&skill_name);
+    let lock_path = user_home.join(".agents").join(".skill-lock.json");
+    let original_lock = std::fs::read(&lock_path).ok();
+    let _ = std::fs::remove_file(&library_path);
+    let _ = std::fs::remove_dir_all(&library_path);
+    std::fs::create_dir_all(&library_path)?;
+    std::fs::write(
+        library_path.join("SKILL.md"),
+        format!("# {skill_name}\n\nTemporary lock reconciliation test skill.\n"),
+    )?;
+
+    let check = client
+        .post(format!("{base}/api/skills/catalog/check"))
+        .json(&serde_json::json!({ "name": skill_name }))
+        .send()
+        .await?;
+    assert!(check.status().is_success());
+    let check_body: serde_json::Value = check.json().await?;
+    assert!(check_body["result"]["warnings"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("missing from .skill-lock.json")));
+
+    let update = client
+        .post(format!("{base}/api/skills/catalog/update"))
+        .json(&serde_json::json!({ "name": skill_name }))
+        .send()
+        .await?;
+    assert!(update.status().is_success());
+    let update_body: serde_json::Value = update.json().await?;
+    assert_eq!(update_body["result"]["added"][0], skill_name);
+    assert!(update_body["result"]["checked"]["warnings"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .is_empty());
+
+    let lock: serde_json::Value = serde_json::from_slice(&std::fs::read(&lock_path)?)?;
+    assert_eq!(lock["skills"][&skill_name]["name"], skill_name);
+    assert_eq!(
+        lock["skills"][&skill_name]["path"],
+        library_path.to_string_lossy().to_string()
+    );
+    assert_eq!(lock["skills"][&skill_name]["source"], "local");
+
+    let _ = std::fs::remove_file(&library_path);
+    let _ = std::fs::remove_dir_all(&library_path);
+    match original_lock {
+        Some(contents) => std::fs::write(&lock_path, contents)?,
+        None => {
+            let _ = std::fs::remove_file(&lock_path);
+        }
+    }
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_model_override_set_and_clear_updates_status() -> Result<()> {
     let mut config = test_config();
     config.default_model = holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap();
