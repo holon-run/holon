@@ -2920,14 +2920,6 @@ code {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-.skills-row-id {
-  display: inline-flex;
-  align-items: center;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
 .skills-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

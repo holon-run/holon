@@ -45,7 +45,7 @@ export function SkillsPage({
       const matchesScope = scopeFilter === "all" || skill.scope === scopeFilter;
       if (!matchesScope) return false;
       if (!normalizedQuery) return true;
-      return [skill.name, skill.description, skill.skillId, skill.path]
+      return [skill.name, skill.description, skill.path]
         .filter(Boolean)
         .some((value) => value.toLowerCase().includes(normalizedQuery));
     });
@@ -187,7 +187,7 @@ export function SkillsPage({
                 name="skills-search"
                 type="search"
                 value={query}
-                placeholder="Name, description, or id"
+                placeholder="Name, description, or path"
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
@@ -255,10 +255,11 @@ function SkillRow({
       <div className="skills-row-main">
         <div>
           <strong>{skill.name}</strong>
-          <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
+          <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
+            {skillScopeLabel(skill.scope)}
+          </StatusBadge>
         </div>
         <p>{skill.description || "No description provided."}</p>
-        <span className="skills-row-id">{skill.skillId}</span>
       </div>
       <div className="skills-row-actions">
         <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => onCheck(skill.name)}>
@@ -283,6 +284,12 @@ function buildAddSkillInput(type: AddSourceType, source: string, skill: string, 
 function sourcePlaceholder(type: AddSourceType) {
   if (type === "local") return "/path/to/skill";
   return "owner/repo or package";
+}
+
+function skillScopeLabel(scope: SkillCatalogEntry["scope"]) {
+  if (scope === "user") return "Global";
+  if (scope === "workspace") return "Workspace";
+  return "Agent";
 }
 
 function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
