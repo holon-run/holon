@@ -130,7 +130,7 @@ fn existing_skill_roots(base: Option<&Path>, suffixes: &[&str]) -> Vec<PathBuf> 
         .collect()
 }
 
-fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCatalogEntry>> {
+pub fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCatalogEntry>> {
     let mut entries = Vec::new();
     let read_dir = match fs::read_dir(root) {
         Ok(read_dir) => read_dir,

@@ -5842,3 +5842,65 @@ mod tests {
         assert!(payload.get("apply_patch_result").is_none());
     }
 }
+
+/// Source kind of a skill root registration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillRootSourceKind {
+    /// Global user library (~/.agents/skills).
+    UserGlobal,
+    /// Agent-local skills (agent_home/skills).
+    AgentHome,
+    /// Workspace-local skills (workspace/.agents/skills or workspace/.codex/skills).
+    Workspace,
+}
+
+/// Last scan status of a registered skill root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SkillRootScanStatus {
+    /// Root has never been scanned.
+    NeverScanned,
+    /// Last scan succeeded at the given timestamp.
+    Scanned { at: i64 },
+    /// Last scan failed with an error message.
+    Failed { error: String },
+}
+
+impl Default for SkillRootScanStatus {
+    fn default() -> Self {
+        Self::NeverScanned
+    }
+}
+
+/// Filesystem watcher status for a registered skill root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SkillRootWatchStatus {
+    /// No watcher has been started for this root.
+    NotWatched,
+    /// A watcher is active for this root.
+    Watching,
+    /// Watcher setup or delivery failed; manual rescan remains available.
+    Failed { error: String },
+}
+
+impl Default for SkillRootWatchStatus {
+    fn default() -> Self {
+        Self::NotWatched
+    }
+}
+/// A registered skill root with metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillRootRegistration {
+    pub source_kind: SkillRootSourceKind,
+    /// Owner agent id for agent-local roots; None for user-global or workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_agent_id: Option<String>,
+    /// Root path on disk.
+    pub root_path: PathBuf,
+    /// Last scan status.
+    #[serde(default)]
+    pub scan_status: SkillRootScanStatus,
+    /// Filesystem watcher status. Watch failures must not make catalog reads fail.
+    #[serde(default)]
+    pub watch_status: SkillRootWatchStatus,
+}

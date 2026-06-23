@@ -108,7 +108,7 @@ pub use agents::*;
 pub use control::*;
 pub use events::{events, events_stream, global_events_stream, message, messages_batch_get};
 pub use ingress::{callback_ingress_enqueue, callback_ingress_wake, generic_webhook};
-pub use skills::{install_skill, list_skills, uninstall_skill};
+pub use skills::{install_skill, list_skills, skills_catalog, uninstall_skill};
 pub use state::{
     agent_state, brief, briefs, briefs_default, enqueue, enqueue_default, state_default, status,
     status_default, transcript, transcript_batch_get, transcript_default, transcript_entry,
@@ -447,6 +447,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/enqueue", post(state::enqueue_default))
         .route("/agents/{agent_id}/skills", get(skills::list_skills))
+        .route("/api/skills/catalog", get(skills::skills_catalog))
         .route(
             "/control/agents/{agent_id}/skills/install",
             post(skills::install_skill),
