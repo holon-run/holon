@@ -36,6 +36,7 @@ import type {
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeSearchOptions,
+  SkillCatalogState,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
   WorkItemSummary,
@@ -162,6 +163,12 @@ export interface RuntimeStoreState {
   runtimeConfigLoading: boolean;
   runtimeConfigSaving: boolean;
   runtimeConfigError?: string;
+  skillCatalog: SkillCatalogState;
+  skillCatalogLoading: boolean;
+  skillCatalogError?: string;
+  agentSkillCatalogByAgentId: Record<string, SkillCatalogState>;
+  agentSkillCatalogLoadingByAgentId: Record<string, boolean>;
+  agentSkillCatalogErrorByAgentId: Record<string, string | undefined>;
   credentialStore: CredentialStoreState;
   credentialStoreLoading: boolean;
   credentialStoreError?: string;
@@ -188,6 +195,8 @@ export interface RuntimeStoreState {
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  refreshSkillCatalog: () => Promise<void>;
+  refreshAgentSkillCatalog: (agentId: string | undefined) => Promise<void>;
   refreshCredentialStore: () => Promise<void>;
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
@@ -529,6 +538,11 @@ const emptyRuntimeConfig: RuntimeConfigState = {
   source: "fixture",
 };
 
+const emptySkillCatalog: SkillCatalogState = {
+  source: "fixture",
+  catalog: [],
+};
+
 /**
  * Initialize session cache for the current remote and hydrate any cached
  * sessions into the store. Called on initial load and remote switch.
@@ -581,6 +595,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfig: emptyRuntimeConfig,
   runtimeConfigLoading: false,
   runtimeConfigSaving: false,
+  skillCatalog: emptySkillCatalog,
+  skillCatalogLoading: false,
+  agentSkillCatalogByAgentId: {},
+  agentSkillCatalogLoadingByAgentId: {},
+  agentSkillCatalogErrorByAgentId: {},
   search: null,
   searchLoading: false,
   searchResultContentBySourceRef: {},
@@ -717,6 +736,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       modelCatalogError: undefined,
       runtimeConfig: emptyRuntimeConfig,
       runtimeConfigError: undefined,
+      skillCatalog: emptySkillCatalog,
+      skillCatalogLoading: false,
+      skillCatalogError: undefined,
+      agentSkillCatalogByAgentId: {},
+      agentSkillCatalogLoadingByAgentId: {},
+      agentSkillCatalogErrorByAgentId: {},
       credentialStore: { profiles: [] },
       credentialStoreLoading: false,
       credentialStoreError: undefined,
@@ -842,6 +867,60 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         runtimeConfigError: message,
       }));
       return undefined;
+    }
+  },
+
+  refreshSkillCatalog: async () => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+    }
+  },
+
+  refreshAgentSkillCatalog: async (agentId) => {
+    if (!agentId) return;
+    set((state) => ({
+      agentSkillCatalogLoadingByAgentId: {
+        ...state.agentSkillCatalogLoadingByAgentId,
+        [agentId]: true,
+      },
+      agentSkillCatalogErrorByAgentId: {
+        ...state.agentSkillCatalogErrorByAgentId,
+        [agentId]: undefined,
+      },
+    }));
+    try {
+      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      set((state) => ({
+        agentSkillCatalogByAgentId: {
+          ...state.agentSkillCatalogByAgentId,
+          [agentId]: catalog,
+        },
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        agentSkillCatalogLoadingByAgentId: {
+          ...state.agentSkillCatalogLoadingByAgentId,
+          [agentId]: false,
+        },
+        agentSkillCatalogErrorByAgentId: {
+          ...state.agentSkillCatalogErrorByAgentId,
+          [agentId]: message,
+        },
+      }));
     }
   },
 

@@ -1,25 +1,33 @@
-import type { AgentSummary, RightPanelView, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, RightPanelView, SkillCatalogState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
+  skillCatalog?: SkillCatalogState;
+  skillCatalogLoading?: boolean;
+  skillCatalogError?: string;
   workItemDetailsById?: Record<string, WorkItemDetailState>;
   view?: RightPanelView;
   open: boolean;
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
+  onRefreshAgentSkills: () => void;
   onShowAgentOverview: () => void;
   onClose: () => void;
 }
 
 export function RightSidePanel({
   agent,
+  skillCatalog,
+  skillCatalogLoading,
+  skillCatalogError,
   workItemDetailsById = {},
   view,
   open,
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
+  onRefreshAgentSkills,
   onShowAgentOverview,
   onClose,
 }: RightSidePanelProps) {
@@ -59,7 +67,15 @@ export function RightSidePanel({
             <WorkItemDetailPanel workItem={detailWorkItem} detailState={detailState} />
           </div>
         ) : (
-          <AgentOverviewPanel agent={agent} onLoadWorkItemDetail={onLoadWorkItemDetail} onOpenWorkItemDetail={onOpenWorkItemDetail} />
+          <AgentOverviewPanel
+            agent={agent}
+            skillCatalog={skillCatalog}
+            skillCatalogLoading={skillCatalogLoading}
+            skillCatalogError={skillCatalogError}
+            onLoadWorkItemDetail={onLoadWorkItemDetail}
+            onOpenWorkItemDetail={onOpenWorkItemDetail}
+            onRefreshAgentSkills={onRefreshAgentSkills}
+          />
         )}
       </div>
     </aside>

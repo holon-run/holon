@@ -16,6 +16,7 @@ import type {
   RuntimeModelCatalog,
   RuntimeModelOption,
   RuntimeSearchOptions,
+  SkillCatalogState,
   RuntimeTaskOutputResult,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
@@ -508,6 +509,18 @@ interface AgentTranscriptEntriesBatchGetResponseDto {
   missing_entry_ids?: string[];
 }
 
+interface SkillCatalogEntryDto {
+  skill_id?: string;
+  name?: string;
+  description?: string;
+  path?: string;
+  scope?: "user" | "agent" | "workspace";
+}
+
+interface SkillCatalogResponseDto {
+  catalog?: SkillCatalogEntryDto[];
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -646,6 +659,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       const response = await getJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { headers: requestHeaders });
       return projectRuntimeConfigState(response);
+    },
+    async getSkillCatalog(agentId?: string): Promise<SkillCatalogState> {
+      if (!baseUrl) {
+        return { source: "fixture", agentId, catalog: [] };
+      }
+      const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+      const response = await getJson<SkillCatalogResponseDto>(fetchImpl, baseUrl, `/api/skills/catalog${query}`, { headers: requestHeaders });
+      return projectSkillCatalog(response, agentId);
     },
     async updateRuntimeConfig(updates: RuntimeConfigUpdateEntry[]): Promise<RuntimeConfigState> {
       if (!baseUrl) {
@@ -1017,6 +1038,22 @@ function connectionBaseLabel(baseUrl: string): string {
   } catch {
     return baseUrl;
   }
+}
+
+function projectSkillCatalog(response: SkillCatalogResponseDto, agentId?: string): SkillCatalogState {
+  return {
+    source: "http",
+    agentId,
+    catalog: (response.catalog ?? [])
+      .filter((entry) => Boolean(entry.name || entry.skill_id))
+      .map((entry) => ({
+        skillId: entry.skill_id ?? entry.name ?? "unknown",
+        name: entry.name ?? entry.skill_id ?? "unknown",
+        description: entry.description ?? "",
+        path: entry.path ?? "",
+        scope: entry.scope ?? "user",
+      })),
+  };
 }
 
 async function getJson<T>(

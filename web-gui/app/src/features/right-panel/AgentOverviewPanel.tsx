@@ -1,14 +1,38 @@
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
-import type { AgentSummary, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
+  skillCatalog?: SkillCatalogState;
+  skillCatalogLoading?: boolean;
+  skillCatalogError?: string;
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
+  onRefreshAgentSkills: () => void;
 }
 
-export function AgentOverviewPanel({ agent, onLoadWorkItemDetail, onOpenWorkItemDetail }: AgentOverviewPanelProps) {
+function AgentSkillItem({ skill }: { skill: SkillCatalogEntry }) {
+  return (
+    <li>
+      <div className="inspector-list-head">
+        <strong>{skill.name}</strong>
+        <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
+      </div>
+      <small>{skill.description || skill.path || skill.skillId}</small>
+    </li>
+  );
+}
+
+export function AgentOverviewPanel({
+  agent,
+  skillCatalog,
+  skillCatalogLoading,
+  skillCatalogError,
+  onLoadWorkItemDetail,
+  onOpenWorkItemDetail,
+  onRefreshAgentSkills,
+}: AgentOverviewPanelProps) {
   const workspace = agent.workspaceSummary;
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
@@ -115,6 +139,35 @@ export function AgentOverviewPanel({ agent, onLoadWorkItemDetail, onOpenWorkItem
             </dl>
           </details>
         ) : null}
+      </section>
+
+      <section className="context-card inspector-card">
+        <div className="context-head">
+          <span className="eyebrow">Skills</span>
+          <StatusBadge className="state-chip" kind="connection" value={skillCatalogLoading ? "loading" : `${skillCatalog?.catalog.length ?? 0} active`} />
+        </div>
+        <h2>Effective skills</h2>
+        {skillCatalogError ? <p className="inspector-error">{skillCatalogError}</p> : null}
+        {skillCatalog?.catalog.length ? (
+          <ul className="inspector-list agent-skill-list">
+            {skillCatalog.catalog.slice(0, 8).map((skill) => (
+              <AgentSkillItem key={`${skill.scope}:${skill.skillId}:${skill.path}`} skill={skill} />
+            ))}
+          </ul>
+        ) : (
+          <p className="inspector-muted">{skillCatalogLoading ? "Loading effective skills…" : "No effective skills reported for this agent."}</p>
+        )}
+        <div className="agent-skill-actions">
+          <button type="button" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
+            {skillCatalogLoading ? "Refreshing…" : "Refresh"}
+          </button>
+          <button type="button" disabled title="Waiting for daemon enable API">
+            Enable
+          </button>
+          <button type="button" disabled title="Waiting for daemon disable API">
+            Disable
+          </button>
+        </div>
       </section>
 
       {hasActiveTasks ? (

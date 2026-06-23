@@ -2803,6 +2803,157 @@ code {
   line-height: 1.5;
 }
 
+.skills-inner {
+  display: grid;
+  gap: 18px;
+}
+
+.skills-hero {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.skills-hero h1 {
+  margin: 4px 0 0;
+  font-size: clamp(28px, 4vw, 42px);
+  letter-spacing: -0.04em;
+}
+
+.skills-hero p {
+  max-width: 820px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.skills-actions,
+.skills-row-actions,
+.agent-skill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.skills-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.skills-stat {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+}
+
+.skills-stat strong {
+  font-size: 26px;
+}
+
+.skills-stat span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.skills-error {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--muted);
+}
+
+.skills-error strong {
+  color: var(--text);
+}
+
+.skills-library-card {
+  display: grid;
+  gap: 0;
+}
+
+.skills-library-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.skills-library-head h2 {
+  margin: 2px 0 0;
+}
+
+.skills-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skills-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.skills-row-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skills-row-main > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.skills-row-main p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.skills-row-main code {
+  overflow-wrap: anywhere;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.agent-skill-actions {
+  margin-top: 12px;
+}
+
+.agent-skill-actions button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.inspector-muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-builtins {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

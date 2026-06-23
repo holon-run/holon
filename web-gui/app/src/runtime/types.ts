@@ -1,6 +1,6 @@
 export type DisplayLevel = "info" | "verbose" | "debug";
 
-export type RouteKey = "dashboard" | "agent" | "search" | "settings";
+export type RouteKey = "dashboard" | "agent" | "search" | "skills" | "settings";
 
 export interface RuntimeConnection {
   mode: "local" | "remote";
@@ -21,6 +21,23 @@ export interface RuntimeConnectionConfig {
 export interface RuntimeConnectionProfile {
   baseUrl: string;
   hasToken: boolean;
+}
+
+export type SkillScope = "user" | "agent" | "workspace";
+
+export interface SkillCatalogEntry {
+  skillId: string;
+  name: string;
+  description: string;
+  path: string;
+  scope: SkillScope;
+}
+
+export interface SkillCatalogState {
+  source: "http" | "fixture";
+  agentId?: string;
+  catalog: SkillCatalogEntry[];
+  error?: string;
 }
 
 export interface WorkItemSummary {
