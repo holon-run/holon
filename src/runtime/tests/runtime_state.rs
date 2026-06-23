@@ -1,7 +1,8 @@
 use super::super::*;
 use super::support::*;
 use crate::types::{
-    AuthorityClass, QueueEntryStatus, SkillLoadReason, WaitConditionKind, WaitConditionRecord,
+    ActiveSkillRecord, AuthorityClass, QueueEntryStatus, SkillActivationSource,
+    SkillActivationState, SkillLoadReason, SkillScope, WaitConditionKind, WaitConditionRecord,
     WaitConditionStatus, WakeSource, WorkItemPlanStatus, WorkItemSchedulingState,
 };
 
@@ -2737,6 +2738,69 @@ async fn runtime_does_not_force_completion_after_post_verification_stagnation() 
         "unexpected final_text: {}",
         outcome.final_text
     );
+}
+
+#[tokio::test]
+async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapshot() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let skill_dir = workspace.path().join(".agents/skills/demo");
+    let skill_path = skill_dir.join("SKILL.md");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        &skill_path,
+        "---\nname: demo\ndescription: demo skill\n---\nFollow the demo workflow.",
+    )
+    .unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .update_agent_state(|state| {
+            state.active_skills = vec![
+                ActiveSkillRecord {
+                    skill_id: "workspace:demo".into(),
+                    name: "demo".into(),
+                    path: skill_path.clone(),
+                    scope: SkillScope::Workspace,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 1,
+                },
+                ActiveSkillRecord {
+                    skill_id: "agent:stale".into(),
+                    name: "stale".into(),
+                    path: dir.path().join("skills/stale/SKILL.md"),
+                    scope: SkillScope::Agent,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 1,
+                },
+            ];
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let identity = runtime.agent_identity_view().await.unwrap();
+    let skills = runtime.skills_runtime_view(&identity).await.unwrap();
+
+    assert!(skills
+        .discoverable_skills
+        .iter()
+        .any(|skill| skill.skill_id == "workspace:demo"));
+    assert_eq!(skills.active_skills.len(), 1);
+    assert_eq!(skills.active_skills[0].skill_id, "workspace:demo");
 }
 
 #[tokio::test]

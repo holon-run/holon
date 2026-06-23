@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::types::{
-    ActiveSkillRecord, SkillCatalogEntry, SkillInstallMode, SkillRootView, SkillScope,
+    ActiveSkillRecord, SkillCatalogEntry, SkillInstallMode, SkillRootRegistration,
+    SkillRootScanStatus, SkillRootSourceKind, SkillRootView, SkillRootWatchStatus, SkillScope,
     SkillsRuntimeView,
 };
 
@@ -194,6 +195,107 @@ pub fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<Skil
         });
     }
     Ok(entries)
+}
+
+pub fn effective_skill_root_registrations(
+    visibility: SkillVisibility,
+    user_home: Option<&Path>,
+    agent_id: &str,
+    agent_home: &Path,
+    workspace_anchor: Option<&Path>,
+) -> Vec<SkillRootRegistration> {
+    let mut roots = Vec::new();
+    if matches!(visibility, SkillVisibility::DefaultAgent) {
+        roots.extend(
+            existing_skill_roots(user_home, &COMPAT_SKILL_ROOT_SUFFIXES)
+                .into_iter()
+                .map(|root_path| {
+                    skill_root_registration(SkillRootSourceKind::UserGlobal, None, root_path)
+                }),
+        );
+    }
+    roots.extend(
+        existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES)
+            .into_iter()
+            .map(|root_path| {
+                skill_root_registration(
+                    SkillRootSourceKind::AgentHome,
+                    Some(agent_id.to_string()),
+                    root_path,
+                )
+            }),
+    );
+    roots.extend(
+        existing_skill_roots(workspace_anchor, &COMPAT_SKILL_ROOT_SUFFIXES)
+            .into_iter()
+            .map(|root_path| {
+                skill_root_registration(SkillRootSourceKind::Workspace, None, root_path)
+            }),
+    );
+    roots
+}
+
+pub fn skills_runtime_view_from_catalog(
+    mut catalog: Vec<SkillCatalogEntry>,
+    active_skills: &[ActiveSkillRecord],
+) -> SkillsRuntimeView {
+    catalog.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.skill_id.cmp(&right.skill_id))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let active_skill_ids = catalog
+        .iter()
+        .map(|entry| entry.skill_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let active_skills = active_skills
+        .iter()
+        .filter(|record| active_skill_ids.contains(record.skill_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    SkillsRuntimeView {
+        agent_templates_catalog: Vec::new(),
+        discovered_roots: collect_discovered_roots_from_catalog(&catalog),
+        discoverable_skills: catalog.clone(),
+        attached_skills: catalog,
+        active_skills,
+    }
+}
+
+fn collect_discovered_roots_from_catalog(entries: &[SkillCatalogEntry]) -> Vec<SkillRootView> {
+    let mut roots = entries
+        .iter()
+        .filter_map(|entry| {
+            let skill_dir = entry.path.parent()?;
+            let root = skill_dir.parent()?;
+            Some(SkillRootView {
+                scope: entry.scope,
+                path: root.to_path_buf(),
+            })
+        })
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| {
+        skill_precedence(left.scope)
+            .cmp(&skill_precedence(right.scope))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    roots.dedup_by(|left, right| left.scope == right.scope && left.path == right.path);
+    roots
+}
+
+pub fn skill_root_registration(
+    source_kind: SkillRootSourceKind,
+    owner_agent_id: Option<String>,
+    root_path: PathBuf,
+) -> SkillRootRegistration {
+    SkillRootRegistration {
+        source_kind,
+        owner_agent_id,
+        root_path,
+        scan_status: SkillRootScanStatus::NeverScanned,
+        watch_status: SkillRootWatchStatus::NotWatched,
+    }
 }
 
 fn retain_highest_precedence_skills(skills: Vec<SkillCatalogEntry>) -> Vec<SkillCatalogEntry> {
@@ -1254,6 +1356,46 @@ mod tests {
         .unwrap();
 
         assert_eq!(view.active_skills.len(), 1);
+    }
+
+    #[test]
+    fn catalog_runtime_view_filters_active_skills_to_effective_catalog_snapshot() {
+        let visible_path = PathBuf::from("/agent/skills/demo/SKILL.md");
+        let view = skills_runtime_view_from_catalog(
+            vec![SkillCatalogEntry {
+                skill_id: "agent:demo".into(),
+                name: "demo".into(),
+                description: "visible".into(),
+                path: visible_path.clone(),
+                scope: SkillScope::Agent,
+            }],
+            &[
+                ActiveSkillRecord {
+                    skill_id: "agent:demo".into(),
+                    name: "demo".into(),
+                    path: visible_path,
+                    scope: SkillScope::Agent,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 1,
+                },
+                ActiveSkillRecord {
+                    skill_id: "workspace:stale".into(),
+                    name: "stale".into(),
+                    path: PathBuf::from("/workspace/.agents/skills/stale/SKILL.md"),
+                    scope: SkillScope::Workspace,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 1,
+                },
+            ],
+        );
+
+        assert_eq!(view.discoverable_skills.len(), 1);
+        assert_eq!(view.active_skills.len(), 1);
+        assert_eq!(view.active_skills[0].skill_id, "agent:demo");
     }
 
     #[test]
