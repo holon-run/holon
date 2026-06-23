@@ -608,10 +608,42 @@ pub enum AgentModelCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum SkillsCommands {
+    #[command(about = "List skills enabled/effective for an agent")]
     List {
         #[arg(long)]
         agent: Option<String>,
     },
+    #[command(about = "List the local Skill Library catalog")]
+    Catalog,
+    #[command(about = "Add or import a skill into the local Skill Library")]
+    Add {
+        source: String,
+        #[arg(long)]
+        builtin: bool,
+        #[arg(long)]
+        remote: bool,
+        #[arg(long)]
+        skill: Option<String>,
+        #[arg(long)]
+        copy: bool,
+    },
+    #[command(about = "Remove a skill from the local Skill Library")]
+    Remove { name: String },
+    #[command(about = "Enable a locally known skill for an agent")]
+    Enable {
+        name: String,
+        #[arg(long)]
+        copy: bool,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    #[command(about = "Disable a skill for an agent")]
+    Disable {
+        name: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    #[command(about = "Compatibility alias for enabling or importing a skill for an agent")]
     Install {
         name_or_path: String,
         #[arg(long)]
@@ -625,6 +657,7 @@ pub enum SkillsCommands {
         #[arg(long)]
         agent: Option<String>,
     },
+    #[command(about = "Compatibility alias for disabling a skill for an agent")]
     Uninstall {
         name: String,
         #[arg(long)]

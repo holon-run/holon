@@ -6,6 +6,11 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "AddSkillRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
       "AttachWorkspaceRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -319,6 +324,16 @@
         "type": "object"
       },
       "DetachWorkspaceRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "DisableSkillRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "EnableSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
@@ -1426,6 +1441,11 @@
           "transition"
         ],
         "title": "PickWorkItemResponse",
+        "type": "object"
+      },
+      "RemoveSkillRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
       "RuntimeConfigReadResponse": {
@@ -4932,7 +4952,7 @@
     },
     "/agents/{agent_id}/skills": {
       "get": {
-        "description": "Return installed skills for an agent.",
+        "description": "Return skills enabled/effective for an agent.",
         "operationId": "agentSkills",
         "parameters": [
           {
@@ -4982,7 +5002,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "List skills",
+        "summary": "List agent skills",
         "tags": [
           "skills"
         ]
@@ -5911,6 +5931,122 @@
         ]
       }
     },
+    "/api/skills/catalog/add": {
+      "post": {
+        "description": "Add or import a skill into the local Skill Library.",
+        "operationId": "addSkillToCatalog",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Add skill to library",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/api/skills/catalog/remove": {
+      "post": {
+        "description": "Remove a skill from the local Skill Library.",
+        "operationId": "removeSkillFromCatalog",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Remove skill from library",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
     "/briefs": {
       "get": {
         "description": "Compatibility alias for the default agent briefs route. Query parameter: limit.",
@@ -6707,9 +6843,145 @@
         ]
       }
     },
+    "/control/agents/{agent_id}/skills/disable": {
+      "post": {
+        "description": "Disable a skill for an agent.",
+        "operationId": "disableSkill",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisableSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Disable agent skill",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/control/agents/{agent_id}/skills/enable": {
+      "post": {
+        "description": "Enable a locally known skill for an agent.",
+        "operationId": "enableSkill",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnableSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Enable agent skill",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
     "/control/agents/{agent_id}/skills/install": {
       "post": {
-        "description": "Install an agent skill.",
+        "description": "Compatibility alias for older agent skill install behavior.",
         "operationId": "installSkill",
         "parameters": [
           {
@@ -6769,7 +7041,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Install skill",
+        "summary": "Install skill compatibility alias",
         "tags": [
           "skills"
         ]
@@ -6777,7 +7049,7 @@
     },
     "/control/agents/{agent_id}/skills/uninstall": {
       "post": {
-        "description": "Uninstall an agent skill.",
+        "description": "Compatibility alias for disabling an agent skill.",
         "operationId": "uninstallSkill",
         "parameters": [
           {
@@ -6837,7 +7109,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Uninstall skill",
+        "summary": "Uninstall skill compatibility alias",
         "tags": [
           "skills"
         ]

@@ -2823,6 +2823,56 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
                 get_json(config, &format!("/agents/{agent}/skills")).await?;
             print_json(&response)
         }
+        SkillsCommands::Catalog => {
+            let response: serde_json::Value = get_json(config, "/api/skills/catalog").await?;
+            print_json(&response)
+        }
+        SkillsCommands::Add {
+            source,
+            builtin,
+            remote,
+            skill,
+            copy,
+        } => {
+            let kind = build_skill_add_kind(&source, builtin, remote, skill, copy)?;
+            post_control_json(
+                config,
+                "/api/skills/catalog/add",
+                &holon::types::AddSkillRequest { kind },
+            )
+            .await
+        }
+        SkillsCommands::Remove { name } => {
+            post_control_json(
+                config,
+                "/api/skills/catalog/remove",
+                &holon::types::RemoveSkillRequest { name },
+            )
+            .await
+        }
+        SkillsCommands::Enable { name, copy, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            let mode = if copy {
+                holon::types::SkillInstallMode::Copied
+            } else {
+                holon::types::SkillInstallMode::Linked
+            };
+            post_control_json(
+                config,
+                &format!("/control/agents/{agent}/skills/enable"),
+                &holon::types::EnableSkillRequest { name, mode },
+            )
+            .await
+        }
+        SkillsCommands::Disable { name, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            post_control_json(
+                config,
+                &format!("/control/agents/{agent}/skills/disable"),
+                &holon::types::DisableSkillRequest { name },
+            )
+            .await
+        }
         SkillsCommands::Install {
             name_or_path,
             builtin,
@@ -2870,6 +2920,39 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             )
             .await
         }
+    }
+}
+
+fn build_skill_add_kind(
+    source: &str,
+    builtin: bool,
+    remote: bool,
+    skill: Option<String>,
+    copy: bool,
+) -> Result<holon::types::SkillInstallKind> {
+    if builtin {
+        if remote || skill.is_some() {
+            anyhow::bail!("--builtin cannot be combined with --remote or --skill");
+        }
+        Ok(holon::types::SkillInstallKind::Builtin {
+            name: source.to_string(),
+        })
+    } else if remote {
+        let mode = if copy {
+            holon::types::SkillInstallMode::Copied
+        } else {
+            holon::types::SkillInstallMode::Linked
+        };
+        Ok(holon::types::SkillInstallKind::Remote {
+            package: source.to_string(),
+            skill,
+            mode,
+        })
+    } else {
+        if skill.is_some() {
+            anyhow::bail!("--skill requires --remote");
+        }
+        build_skill_install_kind(source, copy)
     }
 }
 

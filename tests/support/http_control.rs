@@ -782,6 +782,104 @@ pub async fn install_skill_existing_destination_returns_conflict() -> Result<()>
     Ok(())
 }
 
+pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() -> Result<()> {
+    let config = test_config();
+    let skill_name = format!("http-split-skill-{}", std::process::id());
+    let local_skill_root = tempdir()?;
+    let local_skill_path = local_skill_root.path().join(&skill_name);
+    std::fs::create_dir_all(&local_skill_path)?;
+    std::fs::write(
+        local_skill_path.join("SKILL.md"),
+        format!("# {skill_name}\n\nTemporary split API test skill.\n"),
+    )?;
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
+        .iter()
+        .map(|suffix| user_home.join(suffix))
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| user_home.join(".agents").join("skills"));
+    let library_path = library_root.join(&skill_name);
+    let agent_skill_path = config
+        .data_dir
+        .join("agents")
+        .join("default")
+        .join("skills")
+        .join(&skill_name);
+    let _ = std::fs::remove_file(&library_path);
+    let _ = std::fs::remove_dir_all(&library_path);
+    let _ = std::fs::remove_file(&agent_skill_path);
+    let _ = std::fs::remove_dir_all(&agent_skill_path);
+    let bind_addr = config.http_addr.clone();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("route result")))?;
+    attach_default_workspace(&host).await?;
+    let router: Router = http::router(AppState::for_tcp(host));
+    let listener = TcpListener::bind(&bind_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let base = format!("http://{addr}");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+    let client = Client::new();
+
+    let add = client
+        .post(format!("{base}/api/skills/catalog/add"))
+        .json(&serde_json::json!({
+            "kind": {
+                "kind": "local",
+                "path": local_skill_path,
+            }
+        }))
+        .send()
+        .await?;
+    let add_status = add.status();
+    let add_body = add.text().await?;
+    assert!(
+        add_status.is_success(),
+        "add failed: status={add_status}, body={add_body}"
+    );
+    assert!(library_path.join("SKILL.md").exists());
+    assert!(!agent_skill_path.exists());
+
+    let enable = client
+        .post(format!("{base}/control/agents/default/skills/enable"))
+        .json(&serde_json::json!({
+            "name": skill_name,
+        }))
+        .send()
+        .await?;
+    assert!(enable.status().is_success());
+    assert!(agent_skill_path.exists());
+
+    let disable = client
+        .post(format!("{base}/control/agents/default/skills/disable"))
+        .json(&serde_json::json!({
+            "name": skill_name,
+        }))
+        .send()
+        .await?;
+    assert!(disable.status().is_success());
+    assert!(library_path.exists());
+    assert!(!agent_skill_path.exists());
+
+    let remove = client
+        .post(format!("{base}/api/skills/catalog/remove"))
+        .json(&serde_json::json!({
+            "name": skill_name,
+        }))
+        .send()
+        .await?;
+    assert!(remove.status().is_success());
+    assert!(!library_path.exists());
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_model_override_set_and_clear_updates_status() -> Result<()> {
     let mut config = test_config();
     config.default_model = holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap();

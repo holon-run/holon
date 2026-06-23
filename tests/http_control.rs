@@ -24,6 +24,7 @@ http_async_tests!(
     agent_skills_endpoint_does_not_leak_stale_roots_between_agents,
     skills_catalog_uses_shared_registry_with_agent_and_workspace_roots,
     install_skill_existing_destination_returns_conflict,
+    skill_library_add_remove_and_agent_enable_disable_are_separate,
     control_agent_model_override_set_and_clear_updates_status,
     control_prompt_requires_bearer_token_when_required,
     remote_tcp_surfaces_require_bearer_token_when_required,
