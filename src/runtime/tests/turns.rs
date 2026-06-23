@@ -226,6 +226,54 @@ async fn sleep_only_tool_round_completes_without_extra_provider_turn() {
 }
 
 #[tokio::test]
+async fn wait_for_only_tool_round_completes_without_extra_provider_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(WaitForOnlyToolProvider {
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*provider.calls.lock().await, 1);
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
+    assert!(outcome.final_text.is_empty());
+    assert!(outcome.should_sleep);
+    assert_eq!(outcome.sleep_duration_ms, None);
+
+    let waiting = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].waiting_for, "waiting for PR checks");
+    assert_eq!(
+        waiting[0].subject_ref.as_deref(),
+        Some("github:holon-run/holon#1939")
+    );
+}
+
+#[tokio::test]
 async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

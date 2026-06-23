@@ -1002,9 +1002,9 @@ impl TurnExecution<'_> {
             crate::diagnostics::record_turn_provider_round(provider_round_started.elapsed());
             crate::diagnostics::record_provider_round_total(provider_round_started.elapsed());
             let completed_round_assistant_blocks = assistant_blocks.clone();
-            let only_sleep_tools =
+            let only_legacy_sleep_tool_calls =
                 !tool_calls.is_empty() && tool_calls.iter().all(|call| call.name == "Sleep");
-            let legacy_sleep_duration_ms = if only_sleep_tools {
+            let legacy_sleep_duration_ms = if only_legacy_sleep_tool_calls {
                 tool_calls
                     .iter()
                     .filter_map(|call| call.input.get("duration_ms").and_then(Value::as_u64))
@@ -1062,7 +1062,7 @@ impl TurnExecution<'_> {
                     "tool_names": tool_calls.iter().map(|call| call.name.clone()).collect::<Vec<_>>(),
                     "text_block_count": text_blocks.len(),
                     "text_char_count": combined_text.chars().count(),
-                    "only_sleep_tools": only_sleep_tools,
+                    "only_sleep_tools": only_legacy_sleep_tool_calls,
                     "provider_cache_usage": cache_usage,
                     "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
                     "context_fingerprint": effective_prompt.cache_identity.context_fingerprint.clone(),
@@ -1349,6 +1349,7 @@ impl TurnExecution<'_> {
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
             let mut tool_execution_refs: Vec<(String, String)> = Vec::new();
+            let mut all_tool_results_should_sleep = !round_tool_calls.is_empty();
             for call in tool_calls {
                 if let Err(err) = runtime.ensure_not_aborted().await {
                     if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
@@ -1418,6 +1419,7 @@ impl TurnExecution<'_> {
                         error: Some(error.clone()),
                     });
                     tool_result_envelopes.push(result.envelope);
+                    all_tool_results_should_sleep = false;
                     continue;
                 }
                 if is_max_output_stop_reason(stop_reason.as_deref())
@@ -1457,6 +1459,7 @@ impl TurnExecution<'_> {
                         error: Some(error.clone()),
                     });
                     tool_result_envelopes.push(result.envelope);
+                    all_tool_results_should_sleep = false;
                     continue;
                 }
                 let pre_tool_work_item_id = {
@@ -1514,6 +1517,8 @@ impl TurnExecution<'_> {
 
                         if result.should_sleep {
                             sleep_duration_ms = result.sleep_duration_ms;
+                        } else {
+                            all_tool_results_should_sleep = false;
                         }
                         tool_execution_refs.push((tool_call_id.clone(), record.id.clone()));
                         runtime.persist_tool_execution_evidence(&record)?;
@@ -1625,6 +1630,7 @@ impl TurnExecution<'_> {
                             error: Some(error.clone()),
                         });
                         tool_result_envelopes.push(result.envelope);
+                        all_tool_results_should_sleep = false;
                     }
                 }
             }
@@ -1725,7 +1731,7 @@ impl TurnExecution<'_> {
                 },
             ));
 
-            if only_sleep_tools && !has_operator_interjections {
+            if all_tool_results_should_sleep && !has_operator_interjections {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
                 let terminal = runtime
                     .persist_turn_terminal_record(
