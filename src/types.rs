@@ -611,7 +611,8 @@ pub struct LoadedAgentMemoryView {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillScope {
-    User,
+    #[serde(alias = "user")]
+    UserGlobal,
     Agent,
     Workspace,
 }
@@ -619,6 +620,10 @@ pub enum SkillScope {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillCatalogEntry {
     pub skill_id: String,
+    pub root_id: String,
+    pub skill_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_id: Option<String>,
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,

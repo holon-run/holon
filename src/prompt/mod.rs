@@ -2112,6 +2112,9 @@ mod tests {
             &SkillsRuntimeView {
                 discoverable_skills: vec![crate::types::SkillCatalogEntry {
                     skill_id: "workspace:review".into(),
+                    root_id: "workspace:test-root".into(),
+                    skill_dir: "review".into(),
+                    legacy_id: None,
                     name: "review".into(),
                     description: "Review workflow".into(),
                     path: PathBuf::from("/repo/.agents/skills/review/SKILL.md"),
@@ -2468,10 +2471,13 @@ mod tests {
             &SkillsRuntimeView {
                 discoverable_skills: vec![crate::types::SkillCatalogEntry {
                     skill_id: "user:demo".into(),
+                    root_id: "user_global:test-root".into(),
+                    skill_dir: "demo".into(),
+                    legacy_id: Some("user:demo".into()),
                     name: "demo".into(),
                     description: "demo skill".into(),
                     path: PathBuf::from("/tmp/user/.agents/skills/demo/SKILL.md"),
-                    scope: crate::types::SkillScope::User,
+                    scope: crate::types::SkillScope::UserGlobal,
                 }],
                 ..SkillsRuntimeView::default()
             },

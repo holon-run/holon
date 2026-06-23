@@ -222,7 +222,7 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
                 skill.name,
                 match skill.scope {
                     crate::types::SkillScope::Agent => "agent",
-                    crate::types::SkillScope::User => "user",
+                    crate::types::SkillScope::UserGlobal => "user_global",
                     crate::types::SkillScope::Workspace => "workspace",
                 }
             ));

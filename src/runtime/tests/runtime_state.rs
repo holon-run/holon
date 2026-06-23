@@ -2795,12 +2795,16 @@ async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapsho
     let identity = runtime.agent_identity_view().await.unwrap();
     let skills = runtime.skills_runtime_view(&identity).await.unwrap();
 
-    assert!(skills
+    let discoverable = skills
         .discoverable_skills
         .iter()
-        .any(|skill| skill.skill_id == "workspace:demo"));
+        .find(|skill| skill.name == "demo")
+        .unwrap();
+    assert!(discoverable.skill_id.starts_with("workspace:"));
+    assert!(discoverable.skill_id.ends_with(":demo"));
+    assert_eq!(discoverable.legacy_id.as_deref(), Some("workspace:demo"));
     assert_eq!(skills.active_skills.len(), 1);
-    assert_eq!(skills.active_skills[0].skill_id, "workspace:demo");
+    assert_eq!(skills.active_skills[0].skill_id, discoverable.skill_id);
 }
 
 #[tokio::test]
@@ -2860,7 +2864,8 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.active_skills.len(), 1);
     let skill = &state.active_skills[0];
-    assert_eq!(skill.skill_id, "workspace:demo");
+    assert!(skill.skill_id.starts_with("workspace:"));
+    assert!(skill.skill_id.ends_with(":demo"));
     assert_eq!(
         skill.activation_source,
         SkillActivationSource::ImplicitFromCatalog
@@ -2871,7 +2876,7 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
     let events = runtime.storage().read_recent_events(20).unwrap();
     let activation = events
         .iter()
-        .find(|event| event.kind == "skill_activated" && event.data["skill_id"] == "workspace:demo")
+        .find(|event| event.kind == "skill_activated" && event.data["skill_id"] == skill.skill_id)
         .expect("skill_activated event should be recorded");
     assert_eq!(activation.data["skill_name"], "demo");
     assert_eq!(activation.data["load_reason"], "read_skill_md");
@@ -2909,9 +2914,11 @@ async fn batch_command_reading_discovered_skill_marks_it_active() {
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.active_skills.len(), 1);
-    assert_eq!(state.active_skills[0].skill_id, "workspace:demo");
+    let skill_id = state.active_skills[0].skill_id.clone();
+    assert!(skill_id.starts_with("workspace:"));
+    assert!(skill_id.ends_with(":demo"));
 
-    let activation = skill_activation_event(&runtime, "workspace:demo");
+    let activation = skill_activation_event(&runtime, &skill_id);
     assert_eq!(activation.data["skill_name"], "demo");
     assert_eq!(activation.data["load_reason"], "read_skill_md");
     assert_eq!(activation.data["path"], activation.data["entrypoint_path"]);
@@ -2933,9 +2940,11 @@ async fn command_running_skill_script_marks_it_active_with_script_reason() {
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.active_skills.len(), 1);
-    assert_eq!(state.active_skills[0].skill_id, "workspace:demo");
+    let skill_id = state.active_skills[0].skill_id.clone();
+    assert!(skill_id.starts_with("workspace:"));
+    assert!(skill_id.ends_with(":demo"));
 
-    let activation = skill_activation_event(&runtime, "workspace:demo");
+    let activation = skill_activation_event(&runtime, &skill_id);
     assert_eq!(activation.data["skill_name"], "demo");
     assert_eq!(
         activation.data["load_reason"],

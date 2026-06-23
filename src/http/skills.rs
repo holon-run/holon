@@ -1,6 +1,8 @@
 use super::*;
 use axum::extract::Query;
 
+const USER_GLOBAL_LIBRARY_LABEL: &str = "user_global";
+
 pub async fn list_skills(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -74,7 +76,7 @@ pub async fn add_skill_to_catalog(
     Ok(Json(json!({
         "ok": true,
         "skill_name": skill_name,
-        "library": "user",
+        "library": USER_GLOBAL_LIBRARY_LABEL,
     })))
 }
 
@@ -89,7 +91,7 @@ pub async fn remove_skill_from_catalog(
     Ok(Json(json!({
         "ok": true,
         "skill_name": request.name,
-        "library": "user",
+        "library": USER_GLOBAL_LIBRARY_LABEL,
     })))
 }
 
@@ -104,7 +106,7 @@ pub async fn update_skill_catalog(
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
-        "library": "user",
+        "library": USER_GLOBAL_LIBRARY_LABEL,
         "result": result,
     })))
 }
@@ -120,7 +122,7 @@ pub async fn check_skill_catalog(
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
-        "library": "user",
+        "library": USER_GLOBAL_LIBRARY_LABEL,
         "result": result,
     })))
 }
@@ -234,7 +236,8 @@ pub async fn skills_catalog(
     let scope_filter = params.get("scope").and_then(|s| match s.as_str() {
         "agent" => Some(crate::types::SkillScope::Agent),
         "workspace" => Some(crate::types::SkillScope::Workspace),
-        "user" => Some(crate::types::SkillScope::User),
+        "user" => Some(crate::types::SkillScope::UserGlobal),
+        "user_global" => Some(crate::types::SkillScope::UserGlobal),
         _ => None,
     });
 
@@ -260,7 +263,7 @@ pub async fn skills_catalog(
     let catalog = registry.catalog_for_roots(&roots, scope_filter);
     Ok(Json(json!({
         "ok": true,
-        "library": "user",
+        "library": USER_GLOBAL_LIBRARY_LABEL,
         "catalog": catalog,
         "scope": scope_filter,
     })))
