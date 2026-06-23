@@ -132,8 +132,8 @@ and capabilities.
 | `dashscope-coding-plan` | `qwen3-coder-next` | `dashscope-coding-plan/qwen3-coder-next` | 262144 | 65536 | — | — |
 | `dashscope-coding-plan` | `qwen3-coder-plus` | `dashscope-coding-plan/qwen3-coder-plus` | 1000000 | 65536 | — | — |
 | `dashscope-coding-plan` | `qwen3-max-2026-01-23` | `dashscope-coding-plan/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
-| `dashscope-coding-plan` | `qwen3.5-plus` | `dashscope-coding-plan/qwen3.5-plus` | 1000000 | 65536 | ✅ | ✅ |
-| `dashscope-coding-plan` | `qwen3.6-plus` | `dashscope-coding-plan/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-coding-plan` | `qwen3.5-plus` | `dashscope-coding-plan/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope-coding-plan` | `qwen3.6-plus` | `dashscope-coding-plan/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
 | `dashscope-coding-plan` | `qwen3.7-plus` | `dashscope-coding-plan/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope-token-plan` | `MiniMax-M2.5` | `dashscope-token-plan/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
 | `dashscope-token-plan` | `deepseek-v3.2` | `dashscope-token-plan/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
