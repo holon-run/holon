@@ -47,6 +47,20 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
             &["skills", "uninstall", "demo"],
             "/api/control/agents/main/skills/uninstall",
         ),
+        (&["skills", "catalog"], "/api/skills/catalog"),
+        (
+            &["skills", "add", "ghx", "--builtin"],
+            "/api/skills/catalog/add",
+        ),
+        (&["skills", "remove", "ghx"], "/api/skills/catalog/remove"),
+        (
+            &["skills", "enable", "ghx"],
+            "/api/control/agents/main/skills/enable",
+        ),
+        (
+            &["skills", "disable", "ghx"],
+            "/api/control/agents/main/skills/disable",
+        ),
     ];
 
     for (args, expected_path) in cases {

@@ -837,6 +837,38 @@
   },
   {
     "method": "post",
+    "path": "/api/skills/catalog/add",
+    "handler": "add_skill_to_catalog",
+    "operation_id": "addSkillToCatalog",
+    "tag": "skills",
+    "parameters": [],
+    "request_schema": "AddSkillRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/skills/catalog/remove",
+    "handler": "remove_skill_from_catalog",
+    "operation_id": "removeSkillFromCatalog",
+    "tag": "skills",
+    "parameters": [],
+    "request_schema": "RemoveSkillRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/callbacks/enqueue/{callback_token}",
     "handler": "callback_ingress_enqueue",
     "operation_id": "callbackEnqueue",
@@ -1069,6 +1101,50 @@
       }
     ],
     "request_schema": "ControlPromptRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/skills/disable",
+    "handler": "disable_skill",
+    "operation_id": "disableSkill",
+    "tag": "skills",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "DisableSkillRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/skills/enable",
+    "handler": "enable_skill",
+    "operation_id": "enableSkill",
+    "tag": "skills",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "EnableSkillRequest",
     "request_strict": false,
     "response_content_types": [
       "application/json"

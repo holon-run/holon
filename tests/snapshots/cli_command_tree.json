@@ -1046,6 +1046,115 @@
     "aliases": []
   },
   {
+    "path": "skills.add",
+    "positionals": [
+      {
+        "name": "source",
+        "value_name": "SOURCE",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "builtin",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "copy",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "remote",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "skill",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "skills.catalog",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "skills.disable",
+    "positionals": [
+      {
+        "name": "name",
+        "value_name": "NAME",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "skills.enable",
+    "positionals": [
+      {
+        "name": "name",
+        "value_name": "NAME",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "copy",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "skills.install",
     "positionals": [
       {
@@ -1115,6 +1224,19 @@
         "required": false
       }
     ],
+    "aliases": []
+  },
+  {
+    "path": "skills.remove",
+    "positionals": [
+      {
+        "name": "name",
+        "value_name": "NAME",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [],
     "aliases": []
   },
   {

@@ -395,6 +395,7 @@ fn scope_label(scope: SkillScope) -> &'static str {
 }
 
 const SKILL_ROOT_SUFFIX_AGENT: &str = "skills";
+const SKILL_ROOT_SUFFIX_USER_LIBRARY: &str = ".agents/skills";
 
 fn agent_skills_root(agent_home: &Path) -> PathBuf {
     // Prefer an existing skill root if one already exists (e.g. .agents/skills, .codex/skills).
@@ -403,6 +404,14 @@ fn agent_skills_root(agent_home: &Path) -> PathBuf {
         existing
     } else {
         agent_home.join(SKILL_ROOT_SUFFIX_AGENT)
+    }
+}
+
+fn user_library_skills_root(user_home: &Path) -> PathBuf {
+    if let Some(existing) = select_skill_root(Some(user_home), &COMPAT_SKILL_ROOT_SUFFIXES) {
+        existing
+    } else {
+        user_home.join(SKILL_ROOT_SUFFIX_USER_LIBRARY)
     }
 }
 
@@ -712,6 +721,83 @@ fn install_skill_with_user_home_and_remote_installer(
     Ok(name)
 }
 
+pub fn add_library_skill(
+    user_home: &Path,
+    kind: &crate::types::SkillInstallKind,
+) -> Result<String> {
+    add_library_skill_with_remote_installer(user_home, kind, &NpxRemoteSkillInstaller)
+}
+
+fn add_library_skill_with_remote_installer(
+    user_home: &Path,
+    kind: &crate::types::SkillInstallKind,
+    remote_installer: &dyn RemoteSkillInstaller,
+) -> Result<String> {
+    let skills_root = user_library_skills_root(user_home);
+    fs::create_dir_all(&skills_root)
+        .with_context(|| format!("failed to create {}", skills_root.display()))?;
+    let name = match kind {
+        crate::types::SkillInstallKind::Builtin { name } => {
+            validate_skill_name(name)?;
+            let _ = install_destination(&skills_root, name)?;
+            let destination =
+                crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
+            record_install_metadata(&destination, "builtin")?;
+            name.clone()
+        }
+        crate::types::SkillInstallKind::Named { name, mode } => {
+            if crate::agent_template::builtin_skill_names().contains(&name.as_str()) {
+                validate_skill_name(name)?;
+                let _ = install_destination(&skills_root, name)?;
+                let destination =
+                    crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
+                record_install_metadata(&destination, "builtin")?;
+                name.clone()
+            } else {
+                let path = resolve_user_skill_by_name(Some(user_home), name)?;
+                materialize_local_skill(&skills_root, &path, mode)?
+            }
+        }
+        crate::types::SkillInstallKind::Local { path, mode } => {
+            materialize_local_skill(&skills_root, path, mode)?
+        }
+        crate::types::SkillInstallKind::Remote {
+            package,
+            skill,
+            mode,
+        } => {
+            validate_remote_package(package)?;
+            if let Some(skill) = skill {
+                validate_skill_name(skill)?;
+            }
+            remote_installer.add_global(package, skill.as_deref())?;
+            let skill_name = match skill {
+                Some(skill) => skill.as_str(),
+                None => remote_package_default_skill_name(package)?,
+            };
+            let path = resolve_user_skill_by_name(Some(user_home), skill_name)?;
+            materialize_local_skill(&skills_root, &path, mode)?
+        }
+    };
+    Ok(name)
+}
+
+pub fn enable_agent_skill(
+    agent_home: &Path,
+    user_home: Option<&Path>,
+    name: &str,
+    mode: &SkillInstallMode,
+) -> Result<String> {
+    install_skill_with_user_home(
+        agent_home,
+        user_home,
+        &crate::types::SkillInstallKind::Named {
+            name: name.to_string(),
+            mode: mode.clone(),
+        },
+    )
+}
+
 fn validate_remote_package(package: &str) -> Result<()> {
     if package.trim().is_empty() {
         bail!("remote skill package must not be empty");
@@ -945,6 +1031,54 @@ pub fn uninstall_skill(agent_home: &Path, name: &str) -> Result<()> {
         );
     }
     crate::agent_template::remove_materialized_skill_destination(&destination)?;
+    Ok(())
+}
+
+pub fn remove_library_skill(user_home: &Path, name: &str) -> Result<()> {
+    remove_skill_from_roots(
+        user_home,
+        name,
+        &COMPAT_SKILL_ROOT_SUFFIXES,
+        "Skill Library",
+    )
+}
+
+pub fn disable_agent_skill(agent_home: &Path, name: &str) -> Result<()> {
+    uninstall_skill(agent_home, name)
+}
+
+fn remove_skill_from_roots(base: &Path, name: &str, suffixes: &[&str], label: &str) -> Result<()> {
+    validate_skill_name(name)?;
+    let mut matches = Vec::new();
+    for skills_root in existing_skill_roots(Some(base), suffixes) {
+        let destination = skills_root.join(name);
+        if let Ok(meta) = fs::symlink_metadata(&destination) {
+            matches.push((destination, meta));
+        }
+    }
+    let [(destination, meta)] = matches.as_slice() else {
+        if matches.is_empty() {
+            bail!("skill '{}' is not present in the {}", name, label);
+        }
+        bail!(
+            "skill '{}' is present in multiple {} roots: {}; remove the duplicate directories manually",
+            name,
+            label,
+            matches
+                .iter()
+                .map(|(path, _)| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    };
+    if !destination.join(SKILL_ENTRYPOINT).exists() && !meta.is_symlink() {
+        bail!(
+            "directory '{}' does not appear to be a skill installation (missing {})",
+            destination.display(),
+            SKILL_ENTRYPOINT
+        );
+    }
+    crate::agent_template::remove_materialized_skill_destination(destination)?;
     Ok(())
 }
 

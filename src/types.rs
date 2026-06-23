@@ -939,6 +939,28 @@ pub struct InstallSkillRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AddSkillRequest {
+    pub kind: SkillInstallKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoveSkillRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnableSkillRequest {
+    pub name: String,
+    #[serde(default)]
+    pub mode: SkillInstallMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DisableSkillRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UninstallSkillRequest {
     pub name: String,
 }
