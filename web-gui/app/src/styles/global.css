@@ -2873,6 +2873,13 @@ code {
   background: var(--surface);
 }
 
+.skills-add-help {
+  margin: -4px 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .skills-add-form label,
 .skills-search,
 .skills-scope-filter {

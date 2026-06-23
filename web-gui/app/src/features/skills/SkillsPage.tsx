@@ -17,7 +17,7 @@ interface SkillsPageProps {
   onCheckSkill: (name?: string) => Promise<boolean>;
 }
 
-type AddSourceType = AddSkillInput["kind"];
+type AddSourceType = Extract<AddSkillInput["kind"], "local" | "remote">;
 
 export function SkillsPage({
   catalog,
@@ -32,7 +32,7 @@ export function SkillsPage({
   const skills = catalog.catalog;
   const [query, setQuery] = useState("");
   const [scopeFilter, setScopeFilter] = useState<"all" | SkillCatalogEntry["scope"]>("all");
-  const [addSourceType, setAddSourceType] = useState<AddSourceType>("named");
+  const [addSourceType, setAddSourceType] = useState<AddSourceType>("remote");
   const [addSource, setAddSource] = useState("");
   const [addSkillName, setAddSkillName] = useState("");
   const [addMode, setAddMode] = useState<SkillInstallMode>("linked");
@@ -60,7 +60,7 @@ export function SkillsPage({
     if (ok) {
       setAddSource("");
       setAddSkillName("");
-      setMessage(`Added ${source} to the global Skill Library.`);
+      setMessage(`Installed ${source} to the User Skill Library.`);
     }
   }
 
@@ -71,7 +71,7 @@ export function SkillsPage({
 
   async function removeSkill(name: string) {
     const ok = await onRemoveSkill(name);
-    if (ok) setMessage(`Removed ${name} from the global Skill Library.`);
+    if (ok) setMessage(`Removed ${name} from the User Skill Library.`);
   }
 
   return (
@@ -79,9 +79,9 @@ export function SkillsPage({
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
           <span className="eyebrow">Skill Library</span>
-          <h1>Global skills</h1>
+          <h1>User Skill Library</h1>
           <p>
-            Manage the global Holon Skill Library through the daemon API. Skills are stored under{" "}
+            Install reusable skills into the User Skill Library through the daemon API. Skills are stored under{" "}
             <code>{libraryRoots.user}</code>; workspace and agent-scoped skills may also appear in the effective catalog.
           </p>
         </div>
@@ -131,16 +131,14 @@ export function SkillsPage({
         <CardContent>
           <form className="skills-add-form" onSubmit={(event) => void handleAddSkill(event)}>
             <label>
-              <span>Add skill</span>
+              <span>Install skill to User Library</span>
               <select
                 value={addSourceType}
                 onChange={(event) => setAddSourceType(event.target.value as AddSourceType)}
                 disabled={loading}
               >
-                <option value="named">Name</option>
-                <option value="local">Local path</option>
                 <option value="remote">Remote package</option>
-                <option value="builtin">Builtin</option>
+                <option value="local">Local folder</option>
               </select>
             </label>
             <label className="skills-add-source">
@@ -157,25 +155,27 @@ export function SkillsPage({
                 <span>Skill</span>
                 <input
                   value={addSkillName}
-                  placeholder="optional"
+                  placeholder="optional package skill name"
                   onChange={(event) => setAddSkillName(event.target.value)}
                   disabled={loading}
                 />
               </label>
             ) : null}
-            {addSourceType === "named" || addSourceType === "local" || addSourceType === "remote" ? (
-              <label>
-                <span>Mode</span>
-                <select value={addMode} onChange={(event) => setAddMode(event.target.value as SkillInstallMode)} disabled={loading}>
-                  <option value="linked">Linked</option>
-                  <option value="copied">Copied</option>
-                </select>
-              </label>
-            ) : null}
+            <label>
+              <span>Install mode</span>
+              <select value={addMode} onChange={(event) => setAddMode(event.target.value as SkillInstallMode)} disabled={loading}>
+                <option value="linked">Linked local ref</option>
+                <option value="copied">Copied snapshot</option>
+              </select>
+            </label>
             <Button type="submit" variant="accent" disabled={loading || !addSource.trim()}>
-              Add
+              Install
             </Button>
           </form>
+          <p className="skills-add-help">
+            Remote packages are downloaded into the user skill cache first; Linked then points the User Library at that local
+            folder, while Copied stores a snapshot in the User Library. Local folders use the same link-or-copy behavior directly.
+          </p>
 
           <div className="skills-toolbar" role="search">
             <label className="skills-search">
@@ -274,17 +274,13 @@ function SkillRow({
 }
 
 function buildAddSkillInput(type: AddSourceType, source: string, skill: string, mode: SkillInstallMode): AddSkillInput {
-  if (type === "builtin") return { kind: "builtin", name: source };
   if (type === "local") return { kind: "local", path: source, mode };
-  if (type === "remote") return { kind: "remote", package: source, skill: skill || undefined, mode };
-  return { kind: "named", name: source, mode };
+  return { kind: "remote", package: source, skill: skill || undefined, mode };
 }
 
 function sourcePlaceholder(type: AddSourceType) {
   if (type === "local") return "/path/to/skill";
-  if (type === "remote") return "owner/repo or package";
-  if (type === "builtin") return "builtin skill name";
-  return "skill name";
+  return "owner/repo or package";
 }
 
 function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
