@@ -76,8 +76,8 @@ use crate::{
     queue::RuntimeQueue,
     runtime_db::RuntimeDb,
     skills::{
-        find_skill_by_entrypoint, find_skill_by_script_path, load_skills_runtime_view,
-        SkillVisibility,
+        effective_skill_root_registrations, find_skill_by_entrypoint, find_skill_by_script_path,
+        skills_runtime_view_from_catalog, SkillVisibility,
     },
     storage::{to_json_value, AppStorage, PollActivityMarker},
     system::{
@@ -1076,23 +1076,34 @@ impl RuntimeHandle {
     ) -> Result<SkillsRuntimeView> {
         let guard = self.inner.agent.lock().await;
         self.skills_runtime_view_for_state(&guard.state, identity)
+            .await
     }
 
-    fn skills_runtime_view_for_state(
+    async fn skills_runtime_view_for_state(
         &self,
         state: &AgentState,
         identity: &AgentIdentityView,
     ) -> Result<SkillsRuntimeView> {
-        let mut view = load_skills_runtime_view(
+        let skill_roots = effective_skill_root_registrations(
             self.skill_visibility(identity),
             self.user_home().as_deref(),
+            &state.id,
             self.agent_home().as_path(),
             state
                 .active_workspace_entry
                 .as_ref()
                 .map(|entry| entry.workspace_anchor.as_path()),
-            &state.active_skills,
-        )?;
+        );
+        let mut view = if let Some(bridge) = self.inner.host_bridge.as_ref() {
+            let registry = bridge.skills_registry()?;
+            let mut registry = registry.write().await;
+            registry.replace_roots(skill_roots.clone())?;
+            skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
+        } else {
+            let mut registry = crate::skills::SkillsRegistry::new();
+            registry.replace_roots(skill_roots.clone())?;
+            skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
+        };
         view.agent_templates_catalog = discover_agent_templates_catalog(
             self.user_home().as_deref(),
             self.agent_home().as_path(),
@@ -1254,7 +1265,9 @@ impl RuntimeHandle {
             guard.state.clone()
         };
         let identity = self.agent_identity_view().await?;
-        let skills = self.skills_runtime_view_for_state(&state_snapshot, &identity)?;
+        let skills = self
+            .skills_runtime_view_for_state(&state_snapshot, &identity)
+            .await?;
         let Some(skill) = skill_for_activation_path(&skills.discoverable_skills, &resolved_path)
         else {
             return Ok(());
@@ -1320,7 +1333,9 @@ impl RuntimeHandle {
             guard.state.clone()
         };
         let identity = self.agent_identity_view().await?;
-        let skills = self.skills_runtime_view_for_state(&state_snapshot, &identity)?;
+        let skills = self
+            .skills_runtime_view_for_state(&state_snapshot, &identity)
+            .await?;
 
         for skill in skills.discoverable_skills {
             if let Some((activation_path, load_reason)) =

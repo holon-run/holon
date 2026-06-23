@@ -34,7 +34,10 @@ use crate::{
     provider::{build_provider_from_config, AgentProvider},
     runtime::{InitialWorkspaceBinding, RuntimeHandle},
     runtime_db::RuntimeDb,
-    skills::{load_skills_runtime_view, SkillVisibility},
+    skills::{
+        effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
+        SkillsRegistry,
+    },
     storage::{AppStorage, EventBus, PublishedAuditEvent},
     system::{ExecutionScopeKind, HostLocalBoundary, WorkspaceAccessMode},
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
@@ -102,6 +105,7 @@ struct HostInner {
     registry: RuntimeRegistry,
     runtime_db: RuntimeDb,
     event_bus: EventBus,
+    skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
     agents: RwLock<HashMap<String, AgentEntry>>,
 }
@@ -200,6 +204,7 @@ impl RuntimeHost {
                 registry,
                 runtime_db,
                 event_bus: EventBus::new(1024),
+                skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider,
                 agents: RwLock::new(HashMap::new()),
             }),
@@ -240,6 +245,10 @@ impl RuntimeHost {
 
     pub fn runtime_db(&self) -> &RuntimeDb {
         &self.inner.runtime_db
+    }
+
+    pub(crate) fn skills_registry(&self) -> Arc<RwLock<SkillsRegistry>> {
+        self.inner.skills_registry.clone()
     }
 
     pub fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
@@ -826,7 +835,7 @@ impl RuntimeHost {
         Ok(snapshots)
     }
 
-    pub fn preview_public_agent_prompt(
+    pub async fn preview_public_agent_prompt(
         &self,
         agent_id: &str,
         text: String,
@@ -834,10 +843,11 @@ impl RuntimeHost {
     ) -> std::result::Result<EffectivePrompt, PublicAgentError> {
         let identity = self.public_agent_identity(agent_id)?;
         self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+            .await
             .map_err(PublicAgentError::Runtime)
     }
 
-    pub fn preview_agent_prompt(
+    pub async fn preview_agent_prompt(
         &self,
         agent_id: &str,
         text: String,
@@ -865,6 +875,7 @@ impl RuntimeHost {
             return Err(anyhow!("agent {} is archived", agent_id));
         }
         self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+            .await
     }
 
     pub fn public_agent_boundary_metadata(
@@ -876,7 +887,7 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)
     }
 
-    fn preview_agent_prompt_from_storage(
+    async fn preview_agent_prompt_from_storage(
         &self,
         identity: &AgentIdentityRecord,
         text: String,
@@ -921,16 +932,26 @@ impl RuntimeHost {
             crate::runtime::workspace::workspace_anchor_for_state_ref(&state),
         )?;
         let loaded_agent_memory = load_agent_memory(agent_home.as_path())?;
-        let mut skills = load_skills_runtime_view(
-            skill_visibility(&identity_view),
-            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        let skill_visibility = skill_visibility(&identity_view);
+        let user_home = std::env::var_os("HOME").map(PathBuf::from);
+        let workspace_anchor = state
+            .active_workspace_entry
+            .as_ref()
+            .map(|entry| entry.workspace_anchor.as_path());
+        let skill_roots = effective_skill_root_registrations(
+            skill_visibility,
+            user_home.as_deref(),
+            &state.id,
             agent_home.as_path(),
-            state
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.workspace_anchor.as_path()),
+            workspace_anchor,
+        );
+        let mut skill_registry = self.inner.skills_registry.write().await;
+        skill_registry.replace_roots(skill_roots.clone())?;
+        let mut skills = skills_runtime_view_from_catalog(
+            skill_registry.catalog(),
+            &skill_roots,
             &state.active_skills,
-        )?;
+        );
         skills.agent_templates_catalog = discover_agent_templates_catalog(
             std::env::var_os("HOME").map(PathBuf::from).as_deref(),
             agent_home.as_path(),
@@ -1900,6 +1921,10 @@ impl RuntimeHostBridge {
         self.host()?.agent_storage(agent_id)
     }
 
+    pub(crate) fn skills_registry(&self) -> Result<Arc<RwLock<SkillsRegistry>>> {
+        Ok(self.host()?.skills_registry())
+    }
+
     pub(crate) async fn identity_for_agent(
         &self,
         agent_id: &str,
@@ -2251,6 +2276,7 @@ mod tests {
                 "inspect prompt".into(),
                 AuthorityClass::OperatorInstruction,
             )
+            .await
             .unwrap();
 
         assert!(prompt.render_dump().contains("inspect prompt"));
@@ -2282,6 +2308,7 @@ mod tests {
                 "inspect prompt".into(),
                 AuthorityClass::OperatorInstruction,
             )
+            .await
             .unwrap();
 
         assert!(prompt.render_dump().contains("inspect prompt"));
@@ -2318,6 +2345,7 @@ mod tests {
                 "inspect prompt".into(),
                 AuthorityClass::OperatorInstruction,
             )
+            .await
             .unwrap();
         let rendered = prompt.render_dump();
 

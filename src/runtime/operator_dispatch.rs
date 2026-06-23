@@ -52,7 +52,9 @@ impl RuntimeHandle {
             );
             let loaded_agents_md = self.loaded_agents_md_for_state(&state)?;
             let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
-            let skills = self.skills_runtime_view_for_state(&state, &identity)?;
+            let skills = self
+                .skills_runtime_view_for_state(&state, &identity)
+                .await?;
             build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
                 &self.inner.storage,
                 &state,
@@ -221,7 +223,9 @@ impl RuntimeHandle {
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
         let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
-        let skills = self.skills_runtime_view_for_state(&agent, &identity)?;
+        let skills = self
+            .skills_runtime_view_for_state(&agent, &identity)
+            .await?;
         build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
             &self.inner.storage,
             &agent,
@@ -290,7 +294,9 @@ impl RuntimeHandle {
             lineage_parent_agent_id: None,
             delegated_from_task_id: None,
         };
-        let skills = self.skills_runtime_view_for_state(&state, &identity)?;
+        let skills = self
+            .skills_runtime_view_for_state(&state, &identity)
+            .await?;
         let continuation = ContinuationTrigger::from_message(&message, None).map(|trigger| {
             resolve_continuation(
                 &ClosureDecision {

@@ -224,13 +224,14 @@ impl AppState {
         let require_control_token = host
             .config()
             .control_token_required(ControlTransportKind::Tcp);
+        let skills_registry = host.skills_registry();
         Self {
             host,
             require_control_token,
             runtime_service,
             advertise_url: None,
             web_dist: None,
-            skills_registry: Arc::new(tokio::sync::RwLock::new(SkillsRegistry::new())),
+            skills_registry,
         }
     }
 
@@ -243,13 +244,14 @@ impl AppState {
         runtime_service: Option<RuntimeServiceHandle>,
     ) -> Self {
         // Unix control is local IPC; filesystem permissions are the access boundary.
+        let skills_registry = host.skills_registry();
         Self {
             host,
             require_control_token: false,
             runtime_service,
             advertise_url: None,
             web_dist: None,
-            skills_registry: Arc::new(tokio::sync::RwLock::new(SkillsRegistry::new())),
+            skills_registry,
         }
     }
 

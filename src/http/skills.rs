@@ -1,9 +1,5 @@
 use super::*;
-use crate::types::{
-    SkillRootRegistration, SkillRootScanStatus, SkillRootSourceKind, SkillRootWatchStatus,
-};
 use axum::extract::Query;
-use std::path::PathBuf;
 
 pub async fn list_skills(
     Path(agent_id): Path<String>,
@@ -16,12 +12,18 @@ pub async fn list_skills(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let agent_home = runtime.agent_home();
-    let skills = crate::skills::list_installed_skills(&agent_home).map_err(error_response)?;
+    let identity = runtime
+        .agent_identity_view()
+        .await
+        .map_err(error_response)?;
+    let skills = runtime
+        .skills_runtime_view(&identity)
+        .await
+        .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
         "agent_id": agent_id,
-        "skills": skills,
+        "skills": skills.discoverable_skills,
     })))
 }
 
@@ -104,55 +106,50 @@ pub async fn skills_catalog(
     });
 
     let agent_id = params.get("agent_id").cloned();
+    let user_home = crate::agent_template::user_home_dir().ok();
     let mut roots = Vec::new();
-    if let Some(user_home) = crate::agent_template::user_home_dir().ok() {
-        for root in crate::skills::existing_skill_roots(
-            Some(&user_home),
-            &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
-        ) {
-            roots.push(skill_root_registration(
-                SkillRootSourceKind::UserGlobal,
-                None,
-                root,
-            ));
-        }
-    }
-
     if let Some(agent_id) = agent_id.as_deref() {
         let runtime = state
             .host
             .get_public_agent(agent_id)
             .await
             .map_err(agent_access_error)?;
+        let identity = runtime
+            .agent_identity_view()
+            .await
+            .map_err(error_response)?;
         let agent_home = runtime.agent_home();
-        for root in crate::skills::existing_skill_roots(
-            Some(&agent_home),
-            &crate::skills::SKILL_ROOT_SUFFIXES,
-        ) {
-            roots.push(skill_root_registration(
-                SkillRootSourceKind::AgentHome,
-                Some(agent_id.to_string()),
-                root,
-            ));
-        }
         let execution = runtime.execution_snapshot().await.map_err(error_response)?;
-        for root in crate::skills::existing_skill_roots(
+        roots.extend(crate::skills::effective_skill_root_registrations(
+            if identity.kind == crate::types::AgentKind::Default {
+                crate::skills::SkillVisibility::DefaultAgent
+            } else {
+                crate::skills::SkillVisibility::NonDefaultAgent
+            },
+            user_home.as_deref(),
+            agent_id,
+            &agent_home,
             Some(&execution.workspace_anchor),
-            &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
-        ) {
-            roots.push(skill_root_registration(
-                SkillRootSourceKind::Workspace,
-                None,
-                root,
-            ));
-        }
+        ));
+    } else {
+        roots.extend(
+            crate::skills::existing_skill_roots(
+                user_home.as_deref(),
+                &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
+            )
+            .into_iter()
+            .map(|root| {
+                crate::skills::skill_root_registration(
+                    crate::types::SkillRootSourceKind::UserGlobal,
+                    None,
+                    root,
+                )
+            }),
+        );
     }
 
     let mut registry = state.skills_registry.write().await;
-    for root in roots {
-        registry.register_root(root).map_err(error_response)?;
-    }
-    registry.rescan();
+    registry.replace_roots(roots).map_err(error_response)?;
     let catalog = registry.catalog_with_filter(scope_filter);
     Ok(Json(json!({
         "ok": true,
@@ -160,18 +157,4 @@ pub async fn skills_catalog(
         "catalog": catalog,
         "scope": scope_filter,
     })))
-}
-
-fn skill_root_registration(
-    source_kind: SkillRootSourceKind,
-    owner_agent_id: Option<String>,
-    root_path: PathBuf,
-) -> SkillRootRegistration {
-    SkillRootRegistration {
-        source_kind,
-        owner_agent_id,
-        root_path,
-        scan_status: SkillRootScanStatus::NeverScanned,
-        watch_status: SkillRootWatchStatus::NotWatched,
-    }
 }

@@ -932,7 +932,9 @@ async fn dump_prompt(
 ) -> Result<()> {
     let host = RuntimeHost::new(config.clone())?;
     let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-    let prompt = host.preview_agent_prompt(&agent, text, authority_class)?;
+    let prompt = host
+        .preview_agent_prompt(&agent, text, authority_class)
+        .await?;
     println!("{}", prompt.render_dump());
     Ok(())
 }

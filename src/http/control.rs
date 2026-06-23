@@ -859,6 +859,7 @@ pub async fn control_debug_prompt(
     let dump = state
         .host
         .preview_public_agent_prompt(&agent_id, request.text.clone(), effective_trust.clone())
+        .await
         .map_err(agent_access_error)?
         .render_dump();
     Ok(Json(json!({
