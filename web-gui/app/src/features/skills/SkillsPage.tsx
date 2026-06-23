@@ -1,23 +1,44 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardHeader } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
-import type { SkillCatalogEntry, SkillCatalogState } from "../../runtime/types";
+import type { AddSkillInput, SkillCatalogEntry, SkillCatalogState, SkillInstallMode } from "../../runtime/types";
 
 interface SkillsPageProps {
   catalog: SkillCatalogState;
   loading: boolean;
   error?: string;
   onRefresh: () => void;
+  onAddSkill: (input: AddSkillInput) => Promise<boolean>;
+  onRemoveSkill: (name: string) => Promise<boolean>;
+  onUpdateSkill: (name?: string) => Promise<boolean>;
+  onCheckSkill: (name?: string) => Promise<boolean>;
 }
 
-export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPageProps) {
+type AddSourceType = AddSkillInput["kind"];
+
+export function SkillsPage({
+  catalog,
+  loading,
+  error,
+  onRefresh,
+  onAddSkill,
+  onRemoveSkill,
+  onUpdateSkill,
+  onCheckSkill,
+}: SkillsPageProps) {
   const skills = catalog.catalog;
   const [query, setQuery] = useState("");
   const [scopeFilter, setScopeFilter] = useState<"all" | SkillCatalogEntry["scope"]>("all");
+  const [addSourceType, setAddSourceType] = useState<AddSourceType>("named");
+  const [addSource, setAddSource] = useState("");
+  const [addSkillName, setAddSkillName] = useState("");
+  const [addMode, setAddMode] = useState<SkillInstallMode>("linked");
+  const [message, setMessage] = useState<string>();
   const stats = useMemo(() => skillStats(skills), [skills]);
+  const libraryRoots = useMemo(() => summarizeLibraryRoots(skills), [skills]);
   const visibleSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return skills.filter((skill) => {
@@ -30,6 +51,29 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
     });
   }, [query, scopeFilter, skills]);
 
+  async function handleAddSkill(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const source = addSource.trim();
+    if (!source) return;
+    const input = buildAddSkillInput(addSourceType, source, addSkillName.trim(), addMode);
+    const ok = await onAddSkill(input);
+    if (ok) {
+      setAddSource("");
+      setAddSkillName("");
+      setMessage(`Added ${source} to the global Skill Library.`);
+    }
+  }
+
+  async function runCatalogAction(action: "update" | "check", name?: string) {
+    const ok = action === "update" ? await onUpdateSkill(name) : await onCheckSkill(name);
+    if (ok) setMessage(`${action === "update" ? "Updated" : "Checked"} ${name ?? "the Skill Library"}.`);
+  }
+
+  async function removeSkill(name: string) {
+    const ok = await onRemoveSkill(name);
+    if (ok) setMessage(`Removed ${name} from the global Skill Library.`);
+  }
+
   return (
     <div className="skills-inner scroll-surface">
       <section className="skills-hero context-card">
@@ -37,14 +81,17 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
           <span className="eyebrow">Skill Library</span>
           <h1>Global skills</h1>
           <p>
-            Browse the daemon catalog for the global Holon skill library. Mutating actions such as add, remove, update,
-            and check are intentionally read-only here until the daemon skills control API lands.
+            Manage the global Holon Skill Library through the daemon API. Skills are stored under{" "}
+            <code>{libraryRoots.user}</code>; workspace and agent-scoped skills may also appear in the effective catalog.
           </p>
         </div>
         <div className="skills-actions" aria-label="Skill library actions">
-          <span className="skills-readonly-note" title="The current daemon only exposes the catalog read API.">
-            Read-only catalog
-          </span>
+          <Button type="button" variant="outline" disabled={loading} onClick={() => void runCatalogAction("check")}>
+            Check
+          </Button>
+          <Button type="button" variant="outline" disabled={loading} onClick={() => void runCatalogAction("update")}>
+            Update
+          </Button>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? "Refreshing…" : "Refresh"}
           </Button>
@@ -62,16 +109,19 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
 
       {error ? (
         <div className="skills-error" role="alert">
-          <strong>Skill catalog unavailable</strong>
+          <strong>Skill operation failed</strong>
           <span>{error}</span>
+        </div>
+      ) : null}
+      {message && !error ? (
+        <div className="skills-message" role="status">
+          {message}
         </div>
       ) : null}
 
       <Card className="skills-library-card">
         <CardHeader className="skills-library-head">
           <div>
-            <span className="eyebrow">Installed catalog</span>
-            <h2>Global library</h2>
             <p>
               Showing {visibleSkills.length} of {skills.length} skills
             </p>
@@ -79,6 +129,54 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
           <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </CardHeader>
         <CardContent>
+          <form className="skills-add-form" onSubmit={(event) => void handleAddSkill(event)}>
+            <label>
+              <span>Add skill</span>
+              <select
+                value={addSourceType}
+                onChange={(event) => setAddSourceType(event.target.value as AddSourceType)}
+                disabled={loading}
+              >
+                <option value="named">Name</option>
+                <option value="local">Local path</option>
+                <option value="remote">Remote package</option>
+                <option value="builtin">Builtin</option>
+              </select>
+            </label>
+            <label className="skills-add-source">
+              <span>Source</span>
+              <input
+                value={addSource}
+                placeholder={sourcePlaceholder(addSourceType)}
+                onChange={(event) => setAddSource(event.target.value)}
+                disabled={loading}
+              />
+            </label>
+            {addSourceType === "remote" ? (
+              <label>
+                <span>Skill</span>
+                <input
+                  value={addSkillName}
+                  placeholder="optional"
+                  onChange={(event) => setAddSkillName(event.target.value)}
+                  disabled={loading}
+                />
+              </label>
+            ) : null}
+            {addSourceType === "named" || addSourceType === "local" || addSourceType === "remote" ? (
+              <label>
+                <span>Mode</span>
+                <select value={addMode} onChange={(event) => setAddMode(event.target.value as SkillInstallMode)} disabled={loading}>
+                  <option value="linked">Linked</option>
+                  <option value="copied">Copied</option>
+                </select>
+              </label>
+            ) : null}
+            <Button type="submit" variant="accent" disabled={loading || !addSource.trim()}>
+              Add
+            </Button>
+          </form>
+
           <div className="skills-toolbar" role="search">
             <label className="skills-search">
               <span>Search skills</span>
@@ -87,7 +185,7 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
                 name="skills-search"
                 type="search"
                 value={query}
-                placeholder="Name, description, id, or path"
+                placeholder="Name, description, or id"
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
@@ -110,7 +208,14 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
           {visibleSkills.length ? (
             <ul className="skills-list">
               {visibleSkills.map((skill) => (
-                <SkillRow key={`${skill.scope}:${skill.skillId}:${skill.path}`} skill={skill} />
+                <SkillRow
+                  key={`${skill.scope}:${skill.skillId}:${skill.path}`}
+                  skill={skill}
+                  loading={loading}
+                  onRemove={removeSkill}
+                  onUpdate={(name) => runCatalogAction("update", name)}
+                  onCheck={(name) => runCatalogAction("check", name)}
+                />
               ))}
             </ul>
           ) : (
@@ -130,7 +235,19 @@ export function SkillsPage({ catalog, loading, error, onRefresh }: SkillsPagePro
   );
 }
 
-function SkillRow({ skill }: { skill: SkillCatalogEntry }) {
+function SkillRow({
+  skill,
+  loading,
+  onRemove,
+  onUpdate,
+  onCheck,
+}: {
+  skill: SkillCatalogEntry;
+  loading: boolean;
+  onRemove: (name: string) => void;
+  onUpdate: (name: string) => void;
+  onCheck: (name: string) => void;
+}) {
   return (
     <li className="skills-row">
       <div className="skills-row-main">
@@ -139,13 +256,52 @@ function SkillRow({ skill }: { skill: SkillCatalogEntry }) {
           <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
         </div>
         <p>{skill.description || "No description provided."}</p>
-        <code>{skill.path || skill.skillId}</code>
+        <span className="skills-row-id">{skill.skillId}</span>
       </div>
-      <span className="skills-row-status" title="Update and remove require the daemon skills control API.">
-        catalog only
-      </span>
+      <div className="skills-row-actions">
+        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => onCheck(skill.name)}>
+          Check
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => onUpdate(skill.name)}>
+          Update
+        </Button>
+        <Button type="button" size="sm" variant="outline" disabled={loading || skill.scope !== "user"} onClick={() => onRemove(skill.name)}>
+          Remove
+        </Button>
+      </div>
     </li>
   );
+}
+
+function buildAddSkillInput(type: AddSourceType, source: string, skill: string, mode: SkillInstallMode): AddSkillInput {
+  if (type === "builtin") return { kind: "builtin", name: source };
+  if (type === "local") return { kind: "local", path: source, mode };
+  if (type === "remote") return { kind: "remote", package: source, skill: skill || undefined, mode };
+  return { kind: "named", name: source, mode };
+}
+
+function sourcePlaceholder(type: AddSourceType) {
+  if (type === "local") return "/path/to/skill";
+  if (type === "remote") return "owner/repo or package";
+  if (type === "builtin") return "builtin skill name";
+  return "skill name";
+}
+
+function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
+  const userPath = skills.find((skill) => skill.scope === "user")?.path;
+  return { user: collapseHome(skillRoot(userPath) ?? "~/.agents/skills") };
+}
+
+function skillRoot(path?: string) {
+  if (!path) return undefined;
+  const marker = "/.agents/skills/";
+  const index = path.indexOf(marker);
+  if (index >= 0) return path.slice(0, index + marker.length - 1);
+  return path.replace(/\/[^/]+$/, "");
+}
+
+function collapseHome(path: string) {
+  return path.replace(/^\/Users\/[^/]+/, "~");
 }
 
 function skillStats(skills: SkillCatalogEntry[]) {

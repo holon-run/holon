@@ -40,6 +40,14 @@ export interface SkillCatalogState {
   error?: string;
 }
 
+export type SkillInstallMode = "linked" | "copied";
+
+export type AddSkillInput =
+  | { kind: "builtin"; name: string }
+  | { kind: "named"; name: string; mode?: SkillInstallMode }
+  | { kind: "local"; path: string; mode?: SkillInstallMode }
+  | { kind: "remote"; package: string; skill?: string; mode?: SkillInstallMode };
+
 export interface WorkItemSummary {
   id: string;
   objective: string;

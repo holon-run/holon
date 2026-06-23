@@ -17,6 +17,7 @@ import {
   transcriptEntryIdForPayload,
 } from "./session-reducer";
 import type {
+  AddSkillInput,
   AgentDetail,
   AgentSummary,
   AgentTimelineActivity,
@@ -196,6 +197,10 @@ export interface RuntimeStoreState {
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   refreshSkillCatalog: () => Promise<void>;
+  addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
+  removeSkillFromCatalog: (name: string) => Promise<boolean>;
+  updateSkillCatalog: (name?: string) => Promise<boolean>;
+  checkSkillCatalog: (name?: string) => Promise<boolean>;
   refreshAgentSkillCatalog: (agentId: string | undefined) => Promise<void>;
   refreshCredentialStore: () => Promise<void>;
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
@@ -882,6 +887,78 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         skillCatalogLoading: false,
         skillCatalogError: message,
       }));
+    }
+  },
+
+  addSkillToCatalog: async (input) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.addSkillToCatalog(input);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  removeSkillFromCatalog: async (name) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.removeSkillFromCatalog(name);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  updateSkillCatalog: async (name) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.updateSkillCatalog(name);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  checkSkillCatalog: async (name) => {
+    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    try {
+      await runtimeClient.checkSkillCatalog(name);
+      const skillCatalog = await runtimeClient.getSkillCatalog();
+      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalogLoading: false,
+        skillCatalogError: message,
+      }));
+      return false;
     }
   },
 

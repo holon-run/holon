@@ -1,6 +1,7 @@
 import { agentDetailFixtures } from "./fixtures";
 import { briefIdForPayload, reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
+  AddSkillInput,
   AgentDetail,
   AgentSummary,
   CredentialProfileStatus,
@@ -667,6 +668,30 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
       const response = await getJson<SkillCatalogResponseDto>(fetchImpl, baseUrl, `/api/skills/catalog${query}`, { headers: requestHeaders });
       return projectSkillCatalog(response, agentId);
+    },
+    async addSkillToCatalog(input: AddSkillInput): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/add", { kind: input }, requestHeaders);
+    },
+    async removeSkillFromCatalog(name: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/remove", { name }, requestHeaders);
+    },
+    async updateSkillCatalog(name?: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/update", { name }, requestHeaders);
+    },
+    async checkSkillCatalog(name?: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/api/skills/catalog/check", { name }, requestHeaders);
     },
     async updateRuntimeConfig(updates: RuntimeConfigUpdateEntry[]): Promise<RuntimeConfigState> {
       if (!baseUrl) {
