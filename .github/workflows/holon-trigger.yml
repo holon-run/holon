@@ -32,6 +32,7 @@ jobs:
       - name: Run Holon
         uses: ./
         with:
+          build_from_source: 'true'
           trigger: auto
           auto_review: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
           auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
