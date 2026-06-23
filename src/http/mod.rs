@@ -73,6 +73,7 @@ pub(crate) use crate::{
     },
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
+    skills::registry::SkillsRegistry,
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
@@ -108,7 +109,7 @@ pub use agents::*;
 pub use control::*;
 pub use events::{events, events_stream, global_events_stream, message, messages_batch_get};
 pub use ingress::{callback_ingress_enqueue, callback_ingress_wake, generic_webhook};
-pub use skills::{install_skill, list_skills, uninstall_skill};
+pub use skills::{install_skill, list_skills, skills_catalog, uninstall_skill};
 pub use state::{
     agent_state, brief, briefs, briefs_default, enqueue, enqueue_default, state_default, status,
     status_default, transcript, transcript_batch_get, transcript_default, transcript_entry,
@@ -164,6 +165,7 @@ pub struct AppState {
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
     pub web_dist: Option<Arc<PathBuf>>,
+    pub skills_registry: Arc<tokio::sync::RwLock<SkillsRegistry>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -228,6 +230,7 @@ impl AppState {
             runtime_service,
             advertise_url: None,
             web_dist: None,
+            skills_registry: Arc::new(tokio::sync::RwLock::new(SkillsRegistry::new())),
         }
     }
 
@@ -246,6 +249,7 @@ impl AppState {
             runtime_service,
             advertise_url: None,
             web_dist: None,
+            skills_registry: Arc::new(tokio::sync::RwLock::new(SkillsRegistry::new())),
         }
     }
 
@@ -447,6 +451,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/enqueue", post(state::enqueue_default))
         .route("/agents/{agent_id}/skills", get(skills::list_skills))
+        .route("/api/skills/catalog", get(skills::skills_catalog))
         .route(
             "/control/agents/{agent_id}/skills/install",
             post(skills::install_skill),

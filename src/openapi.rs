@@ -91,6 +91,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List skills", "Return installed skills for an agent.", None, AuthKind::RemoteAccess),
+    route("get", "/api/skills/catalog", "skillsCatalog", "skills", "Skills catalog", "Return the precedence-resolved skills catalog. Query parameters: agent_id, scope.", None, AuthKind::RemoteAccess),
     route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime memory", "Search the same memory v2 index used by the agent MemorySearch tool.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
     route_with_response("post", "/memory/get", "runtimeMemoryGet", "search", "Fetch runtime memory source", "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.", Some("MemoryGetRequest"), "MemoryGetResult", AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),

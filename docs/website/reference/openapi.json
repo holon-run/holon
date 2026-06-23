@@ -5863,6 +5863,54 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
+    "/api/skills/catalog": {
+      "get": {
+        "description": "Return the precedence-resolved skills catalog. Query parameters: agent_id, scope.",
+        "operationId": "skillsCatalog",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Skills catalog",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
     "/briefs": {
       "get": {
         "description": "Compatibility alias for the default agent briefs route. Query parameter: limit.",

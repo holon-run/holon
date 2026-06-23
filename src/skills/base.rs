@@ -16,13 +16,14 @@ use crate::types::{
 
 const SKILL_ENTRYPOINT: &str = "SKILL.md";
 const INSTALL_METADATA_FILENAME: &str = ".holon-skill-install.json";
-const SKILL_ROOT_SUFFIXES: [&str; 4] = [
+pub(crate) const SKILL_ROOT_SUFFIXES: [&str; 4] = [
     "skills",
     ".agents/skills",
     ".codex/skills",
     ".claude/skills",
 ];
-const COMPAT_SKILL_ROOT_SUFFIXES: [&str; 3] = [".agents/skills", ".codex/skills", ".claude/skills"];
+pub(crate) const COMPAT_SKILL_ROOT_SUFFIXES: [&str; 3] =
+    [".agents/skills", ".codex/skills", ".claude/skills"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillVisibility {
@@ -119,7 +120,7 @@ fn select_skill_root(base: Option<&Path>, suffixes: &[&str]) -> Option<PathBuf> 
     None
 }
 
-fn existing_skill_roots(base: Option<&Path>, suffixes: &[&str]) -> Vec<PathBuf> {
+pub(crate) fn existing_skill_roots(base: Option<&Path>, suffixes: &[&str]) -> Vec<PathBuf> {
     let Some(base) = base else {
         return Vec::new();
     };
@@ -130,7 +131,7 @@ fn existing_skill_roots(base: Option<&Path>, suffixes: &[&str]) -> Vec<PathBuf> 
         .collect()
 }
 
-fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCatalogEntry>> {
+pub fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCatalogEntry>> {
     let mut entries = Vec::new();
     let read_dir = match fs::read_dir(root) {
         Ok(read_dir) => read_dir,
