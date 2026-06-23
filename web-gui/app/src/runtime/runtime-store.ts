@@ -38,6 +38,7 @@ import type {
   RuntimeModelCatalog,
   RuntimeSearchOptions,
   SkillCatalogState,
+  SkillDetailState,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
   WorkItemSummary,
@@ -148,6 +149,7 @@ function markOptimisticOperatorPromptsSent(detail: AgentDetail | null): AgentDet
 export interface RuntimeStoreState {
   route: RouteKey;
   selectedAgentId: string;
+  selectedSkillId: string;
   displayLevel: DisplayLevel;
   displayLevelsByAgentId: Record<string, DisplayLevel>;
   rightPanelOpen: boolean;
@@ -167,6 +169,9 @@ export interface RuntimeStoreState {
   skillCatalog: SkillCatalogState;
   skillCatalogLoading: boolean;
   skillCatalogError?: string;
+  skillDetailById: Record<string, SkillDetailState>;
+  skillDetailLoadingById: Record<string, boolean>;
+  skillDetailErrorById: Record<string, string | undefined>;
   agentSkillCatalogByAgentId: Record<string, SkillCatalogState>;
   agentSkillCatalogLoadingByAgentId: Record<string, boolean>;
   agentSkillCatalogErrorByAgentId: Record<string, string | undefined>;
@@ -184,6 +189,7 @@ export interface RuntimeStoreState {
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string, targetEventSeq?: number) => void;
+  openSkill: (skillId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
@@ -197,6 +203,7 @@ export interface RuntimeStoreState {
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   refreshSkillCatalog: () => Promise<void>;
+  refreshSkillDetail: (skillId: string | undefined) => Promise<void>;
   addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
   removeSkillFromCatalog: (name: string) => Promise<boolean>;
   updateSkillCatalog: (name?: string) => Promise<boolean>;
@@ -589,6 +596,7 @@ function initSessionCacheForRemote(set: StoreSet): void {
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
+  selectedSkillId: "",
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
   rightPanelOpen: true,
@@ -604,6 +612,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfigSaving: false,
   skillCatalog: emptySkillCatalog,
   skillCatalogLoading: false,
+  skillDetailById: {},
+  skillDetailLoadingById: {},
+  skillDetailErrorById: {},
   agentSkillCatalogByAgentId: {},
   agentSkillCatalogLoadingByAgentId: {},
   agentSkillCatalogErrorByAgentId: {},
@@ -619,6 +630,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   sessionsByAgentId: {},
 
   setRoute: (route) => set({ route }),
+  openSkill: (skillId) => set({ route: "skillDetail", selectedSkillId: skillId }),
   openAgent: (agentId, targetEventSeq) =>
     set((state) => {
       const currentSession = state.sessionsByAgentId[agentId];
@@ -746,6 +758,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       skillCatalog: emptySkillCatalog,
       skillCatalogLoading: false,
       skillCatalogError: undefined,
+      skillDetailById: {},
+      skillDetailLoadingById: {},
+      skillDetailErrorById: {},
       agentSkillCatalogByAgentId: {},
       agentSkillCatalogLoadingByAgentId: {},
       agentSkillCatalogErrorByAgentId: {},
@@ -757,6 +772,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       sessionsByAgentId: {},
       rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
       selectedAgentId: "",
+      selectedSkillId: "",
       route: "dashboard",
     });
     await get().refreshBootstrap();
@@ -888,6 +904,32 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         skillCatalog: { ...state.skillCatalog, error: message },
         skillCatalogLoading: false,
         skillCatalogError: message,
+      }));
+    }
+  },
+
+  refreshSkillDetail: async (skillId) => {
+    if (!skillId) return;
+    set((state) => ({
+      skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: true },
+      skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: undefined },
+    }));
+    try {
+      const detail = await runtimeClient.getSkillDetail(skillId);
+      set((state) => ({
+        skillDetailById: { ...state.skillDetailById, [skillId]: detail },
+        skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: false },
+        skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: detail.error },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        skillDetailById: {
+          ...state.skillDetailById,
+          [skillId]: { source: "http", error: message },
+        },
+        skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: false },
+        skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: message },
       }));
     }
   },

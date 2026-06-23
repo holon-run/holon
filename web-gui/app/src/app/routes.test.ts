@@ -24,4 +24,11 @@ describe("routeFromLocation", () => {
       route: "skills",
     });
   });
+
+  it("parses skill detail links", () => {
+    expect(routeFromLocation({ pathname: "/skills/user_global%3Aghx", search: "" })).toEqual({
+      route: "skillDetail",
+      skillId: "user_global:ghx",
+    });
+  });
 });

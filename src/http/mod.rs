@@ -457,6 +457,7 @@ pub fn router(state: AppState) -> Router {
         .route("/enqueue", post(state::enqueue_default))
         .route("/agents/{agent_id}/skills", get(skills::list_skills))
         .route("/api/skills/catalog", get(skills::skills_catalog))
+        .route("/api/skills/catalog/{skill_id}", get(skills::skill_detail))
         .route(
             "/api/skills/catalog/add",
             post(skills::add_skill_to_catalog),

@@ -1,6 +1,6 @@
 export type DisplayLevel = "info" | "verbose" | "debug";
 
-export type RouteKey = "dashboard" | "agent" | "search" | "skills" | "settings";
+export type RouteKey = "dashboard" | "agent" | "search" | "skills" | "skillDetail" | "settings";
 
 export interface RuntimeConnection {
   mode: "local" | "remote";
@@ -31,6 +31,13 @@ export interface SkillCatalogEntry {
   description: string;
   path: string;
   scope: SkillScope;
+}
+
+export interface SkillDetailState {
+  source: "http" | "fixture";
+  skill?: SkillCatalogEntry;
+  content?: string;
+  error?: string;
 }
 
 export interface SkillCatalogState {
