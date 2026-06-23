@@ -60,7 +60,7 @@ export function SkillsPage({
     if (ok) {
       setAddSource("");
       setAddSkillName("");
-      setMessage(`Installed ${source} to the User Skill Library.`);
+      setMessage(`Installed ${source} to the Global Skill Library.`);
     }
   }
 
@@ -71,7 +71,7 @@ export function SkillsPage({
 
   async function removeSkill(name: string) {
     const ok = await onRemoveSkill(name);
-    if (ok) setMessage(`Removed ${name} from the User Skill Library.`);
+    if (ok) setMessage(`Removed ${name} from the Global Skill Library.`);
   }
 
   return (
@@ -79,9 +79,9 @@ export function SkillsPage({
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
           <span className="eyebrow">Skill Library</span>
-          <h1>User Skill Library</h1>
+          <h1>Global Skill Library</h1>
           <p>
-            Install reusable skills into the User Skill Library through the daemon API. Skills are stored under{" "}
+            Install reusable skills into the Global Skill Library through the daemon API. Skills are stored under{" "}
             <code>{libraryRoots.user}</code>; workspace and agent-scoped skills may also appear in the effective catalog.
           </p>
         </div>
@@ -131,7 +131,7 @@ export function SkillsPage({
         <CardContent>
           <form className="skills-add-form" onSubmit={(event) => void handleAddSkill(event)}>
             <label>
-              <span>Install skill to User Library</span>
+              <span>Install skill to Global Library</span>
               <select
                 value={addSourceType}
                 onChange={(event) => setAddSourceType(event.target.value as AddSourceType)}
@@ -175,7 +175,7 @@ export function SkillsPage({
             </Button>
           </form>
           <p className="skills-add-help">
-            Remote packages are imported into the User Library by the skill manager and do not need a link/copy choice here.
+            Remote packages are imported into the Global Library by the skill manager and do not need a link/copy choice here.
             Local folders can be linked in place or copied as a snapshot.
           </p>
 
@@ -200,7 +200,7 @@ export function SkillsPage({
                 onChange={(event) => setScopeFilter(event.target.value as typeof scopeFilter)}
               >
                 <option value="all">All scopes</option>
-                <option value="user">User/global</option>
+                <option value="user">Global</option>
                 <option value="workspace">Workspace</option>
                 <option value="agent">Agent</option>
               </select>
@@ -309,7 +309,7 @@ function skillStats(skills: SkillCatalogEntry[]) {
   }, {});
   return [
     { label: "total skills", value: String(skills.length) },
-    { label: "user/global", value: String(byScope.user ?? 0) },
+    { label: "global", value: String(byScope.user ?? 0) },
     { label: "workspace", value: String(byScope.workspace ?? 0) },
     { label: "agent scoped", value: String(byScope.agent ?? 0) },
   ];
