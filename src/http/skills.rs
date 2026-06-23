@@ -69,8 +69,8 @@ pub async fn add_skill_to_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
-    let skill_name =
-        crate::skills::add_library_skill(&user_home, &request.kind).map_err(error_response)?;
+    let skill_name = crate::skills::add_library_skill(&user_home, &request.kind)
+        .map_err(skill_install_error_response)?;
     Ok(Json(json!({
         "ok": true,
         "skill_name": skill_name,

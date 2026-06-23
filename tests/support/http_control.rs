@@ -782,6 +782,57 @@ pub async fn install_skill_existing_destination_returns_conflict() -> Result<()>
     Ok(())
 }
 
+pub async fn add_skill_to_catalog_existing_destination_returns_conflict() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = Client::new();
+    let skill_name = format!("http-catalog-conflict-{}", std::process::id());
+    let local_skill_root = tempdir()?;
+    let local_skill_path = local_skill_root.path().join(&skill_name);
+    std::fs::create_dir_all(&local_skill_path)?;
+    std::fs::write(
+        local_skill_path.join("SKILL.md"),
+        format!("# {skill_name}\n\nTemporary catalog conflict test skill.\n"),
+    )?;
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
+        .iter()
+        .map(|suffix| user_home.join(suffix))
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| user_home.join(".agents").join("skills"));
+    let library_path = library_root.join(&skill_name);
+    let _ = std::fs::remove_file(&library_path);
+    let _ = std::fs::remove_dir_all(&library_path);
+    let payload = serde_json::json!({
+        "kind": {
+            "kind": "local",
+            "path": local_skill_path,
+        }
+    });
+
+    let first = client
+        .post(format!("{base}/api/skills/catalog/add"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert!(first.status().is_success());
+
+    let second = client
+        .post(format!("{base}/api/skills/catalog/add"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert_eq!(second.status(), reqwest::StatusCode::CONFLICT);
+    let body: serde_json::Value = second.json().await?;
+    assert_eq!(body["code"], "skill_already_installed");
+
+    let _ = std::fs::remove_file(&library_path);
+    let _ = std::fs::remove_dir_all(&library_path);
+    server.abort();
+    Ok(())
+}
+
 pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() -> Result<()> {
     let config = test_config();
     let skill_name = format!("http-split-skill-{}", std::process::id());
