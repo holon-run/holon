@@ -1103,6 +1103,19 @@
     "aliases": []
   },
   {
+    "path": "skills.check",
+    "positionals": [
+      {
+        "name": "name",
+        "value_name": "NAME",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "skills.disable",
     "positionals": [
       {
@@ -1258,6 +1271,19 @@
         "required": false
       }
     ],
+    "aliases": []
+  },
+  {
+    "path": "skills.update",
+    "positionals": [
+      {
+        "name": "name",
+        "value_name": "NAME",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [],
     "aliases": []
   },
   {
