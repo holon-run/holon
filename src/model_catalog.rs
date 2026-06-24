@@ -358,6 +358,15 @@ impl BuiltInModelCatalog {
             .or_else(|| built_in.and_then(|entry| entry.default_max_output_tokens))
             .or_else(|| fallback_override.and_then(|value| value.runtime_max_output_tokens))
             .unwrap_or(configured_runtime_max_output_tokens);
+        let max_output_tokens_upper_limit =
+            built_in.and_then(|entry| entry.max_output_tokens_upper_limit);
+        // Clamp runtime_max_output_tokens to the model's declared upper limit so
+        // wire-level requests (e.g. Anthropic max_tokens) never exceed what the
+        // provider accepts.
+        let runtime_max_output_tokens = match max_output_tokens_upper_limit {
+            Some(upper) => runtime_max_output_tokens.min(upper),
+            None => runtime_max_output_tokens,
+        };
         let verbosity = override_config
             .and_then(|value| value.verbosity)
             .or_else(|| built_in.and_then(|entry| entry.default_verbosity))
@@ -370,8 +379,6 @@ impl BuiltInModelCatalog {
                 fallback_override.and_then(|value| value.tool_output_truncation_estimated_tokens)
             })
             .unwrap_or(DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS);
-        let max_output_tokens_upper_limit =
-            built_in.and_then(|entry| entry.max_output_tokens_upper_limit);
         let mut capabilities = built_in
             .map(|entry| entry.capabilities.clone())
             .unwrap_or_default();
@@ -1159,7 +1166,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "zai-org/GLM-5.1-FP8",
             "GLM 5.1 (NEAR AI Cloud TEE)",
             202_752,
-            131_100,
+            131_072,
             true,
             false,
         ),
@@ -2184,14 +2191,14 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model("zai", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false),
-        catalog_model("zai", "glm-5.1", "GLM-5.1", 202_800, 131_100, true, false),
-        catalog_model("zai", "glm-5", "GLM-5", 202_800, 131_100, true, false),
+        catalog_model("zai", "glm-5.1", "GLM-5.1", 202_800, 131_072, true, false),
+        catalog_model("zai", "glm-5", "GLM-5", 202_800, 131_072, true, false),
         catalog_model(
             "zai",
             "glm-5-turbo",
             "GLM-5 Turbo",
             202_800,
-            131_100,
+            131_072,
             true,
             false,
         ),
@@ -2200,7 +2207,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "glm-5v-turbo",
             "GLM-5V Turbo",
             202_800,
-            131_100,
+            131_072,
             true,
             true,
         ),
@@ -2453,7 +2460,7 @@ mod tests {
         );
         assert_eq!(nearai.display_name, "GLM 5.1 (NEAR AI Cloud TEE)");
         assert_eq!(nearai.context_window_tokens, Some(202_752));
-        assert_eq!(nearai.runtime_max_output_tokens, 131_100);
+        assert_eq!(nearai.runtime_max_output_tokens, 131_072);
         assert!(nearai.capabilities.reasoning_summaries);
         assert_eq!(nearai.source, ModelMetadataSource::BuiltInCatalog);
     }
@@ -2778,5 +2785,45 @@ mod tests {
         assert_eq!(policy.prompt_budget_estimated_tokens, 32_000);
         assert_eq!(policy.runtime_max_output_tokens, 4_096);
         assert_eq!(policy.source, ModelMetadataSource::ConfigOverride);
+    }
+
+    #[test]
+    fn clamps_runtime_max_output_tokens_to_catalog_upper_limit() {
+        // Regression test for #1962: when the configured runtime max output
+        // tokens exceeds the model's declared upper limit, the resolved policy
+        // must clamp it so wire-level requests (e.g. Anthropic max_tokens)
+        // never exceed what the provider accepts.
+        let catalog = BuiltInModelCatalog::new();
+
+        // bigmodel/glm-5.1 has a catalog upper limit of 131_072.
+        let policy = catalog.resolve_policy(
+            &ModelRef::parse("bigmodel/glm-5.1").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            200_000, // configured runtime max well above the catalog limit
+        );
+        assert_eq!(policy.runtime_max_output_tokens, 131_072);
+        assert_eq!(policy.max_output_tokens_upper_limit, Some(131_072));
+
+        // Override that exceeds the limit should also be clamped.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            ModelRef::parse("bigmodel/glm-5.1").unwrap(),
+            ModelRuntimeOverride {
+                runtime_max_output_tokens: Some(200_000),
+                ..ModelRuntimeOverride::default()
+            },
+        );
+        let policy = catalog.resolve_policy(
+            &ModelRef::parse("bigmodel/glm-5.1").unwrap(),
+            &overrides,
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(policy.runtime_max_output_tokens, 131_072);
     }
 }
