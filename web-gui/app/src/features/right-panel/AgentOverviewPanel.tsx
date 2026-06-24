@@ -8,6 +8,7 @@ import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, WorkItemDetail
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
   skillCatalog?: SkillCatalogState;
+  availableSkillCatalog?: SkillCatalogState;
   skillCatalogLoading?: boolean;
   skillCatalogError?: string;
   onLoadWorkItemDetail: (workItemId: string) => void;
@@ -20,19 +21,22 @@ interface AgentOverviewPanelProps {
 
 function AgentSkillItem({
   skill,
+  availableSkillCatalog,
   disabled,
   onDisable,
   onOpen,
 }: {
   skill: SkillCatalogEntry;
+  availableSkillCatalog?: SkillCatalogState;
   disabled?: boolean;
   onDisable: (name: string) => void;
   onOpen: (skillId: string) => void;
 }) {
   const canDisable = skill.scope === "agent";
+  const detailSkillId = skillDetailLookupId(skill, availableSkillCatalog);
   return (
     <li>
-      <button type="button" className="agent-skill-open" onClick={() => onOpen(skill.skillId)}>
+      <button type="button" className="agent-skill-open" onClick={() => onOpen(detailSkillId)}>
         <div className="inspector-list-head">
           <strong>{skill.name}</strong>
           <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
@@ -75,9 +79,20 @@ function ManageAgentSkillItem({
   );
 }
 
+export function skillDetailLookupId(skill: SkillCatalogEntry, availableSkillCatalog?: SkillCatalogState) {
+  if (skill.scope !== "agent") return skill.skillId;
+  const match = (availableSkillCatalog?.catalog ?? []).find(
+    (entry) => entry.skillDir === skill.skillDir || entry.name === skill.name || entry.legacyId === `user:${skill.skillDir}`,
+  );
+  if (match) return match.skillId;
+  if (skill.legacyId && !skill.legacyId.startsWith("agent:")) return skill.legacyId;
+  return `user:${skill.skillDir || skill.name}`;
+}
+
 export function AgentOverviewPanel({
   agent,
   skillCatalog,
+  availableSkillCatalog,
   skillCatalogLoading,
   skillCatalogError,
   onLoadWorkItemDetail,
@@ -207,6 +222,7 @@ export function AgentOverviewPanel({
               <AgentSkillItem
                 key={`${skill.scope}:${skill.skillId}:${skill.path}`}
                 skill={skill}
+                availableSkillCatalog={availableSkillCatalog}
                 disabled={skillCatalogLoading}
                 onDisable={onDisableAgentSkill}
                 onOpen={onOpenSkill}

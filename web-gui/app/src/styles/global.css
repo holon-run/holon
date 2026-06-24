@@ -1014,6 +1014,8 @@ code {
 }
 
 .markdown-content {
+  max-width: 100%;
+  min-width: 0;
   overflow-wrap: anywhere;
   line-height: 1.5;
 }
@@ -1093,6 +1095,12 @@ code {
   overflow: auto;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.markdown-content img,
+.markdown-content svg {
+  max-width: 100%;
+  height: auto;
 }
 
 .markdown-content th,
@@ -2807,9 +2815,15 @@ code {
   display: grid;
   flex: 1 1 auto;
   gap: 18px;
+  min-width: 0;
   min-height: 0;
-  overflow-y: auto;
+  max-height: 100%;
+  overflow: auto;
   padding: 18px 22px 24px;
+}
+
+.skill-detail-page {
+  align-content: start;
 }
 
 .skills-hero {
@@ -3054,6 +3068,7 @@ code {
 }
 
 .skill-detail-card {
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -3063,10 +3078,14 @@ code {
 }
 
 .skill-detail-content {
+  min-width: 0;
   padding: 18px 20px 22px;
 }
 
 .skill-detail-markdown {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: 14px;

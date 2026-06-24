@@ -274,7 +274,7 @@ export function SkillDetailPage({
 }) {
   const skill = detail?.skill;
   return (
-    <div className="skills-inner scroll-surface">
+    <div className="skills-inner skill-detail-page scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
           <span className="eyebrow">Skill detail</span>

@@ -115,6 +115,7 @@ export function RightSidePanel({
           <AgentOverviewPanel
             agent={agent}
             skillCatalog={skillCatalog}
+            availableSkillCatalog={availableSkillCatalog}
             skillCatalogLoading={skillCatalogLoading}
             skillCatalogError={skillCatalogError}
             onLoadWorkItemDetail={onLoadWorkItemDetail}
