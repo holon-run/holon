@@ -7,6 +7,7 @@ const USER_GLOBAL_LIBRARY_LABEL: &str = "user_global";
 
 #[derive(Clone, Default)]
 pub struct JobRegistry {
+    // TODO: retain terminal jobs for a bounded window before evicting them.
     jobs: Arc<Mutex<BTreeMap<String, JobSnapshot>>>,
 }
 
@@ -133,6 +134,7 @@ async fn create_skill_install_job(
     state.jobs.insert(job.clone());
 
     let jobs = state.jobs.clone();
+    let skill_install_jobs = state.skill_install_jobs.clone();
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -148,8 +150,29 @@ async fn create_skill_install_job(
                 error: None,
             }];
         });
+        let permit = match skill_install_jobs.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let message = format!("skill install queue closed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.progress.current = 1;
+                    job.summary = "Skill install queue closed".into();
+                    job.error = Some(message.clone());
+                    job.items = vec![JobItem {
+                        id: "skill.install".into(),
+                        status: JobStatus::Failed,
+                        summary: "Skill install queue closed".into(),
+                        error: Some(message),
+                    }];
+                });
+                return;
+            }
+        };
         let kind = request.kind.clone();
         let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             crate::skills::add_library_skill(&user_home, &kind)
         })
         .await;

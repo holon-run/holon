@@ -546,7 +546,7 @@ interface JobResponseDto {
 interface JobDto {
   id?: string;
   kind?: string;
-  status?: "queued" | "running" | "completed" | "failed" | "cancelled";
+  status?: "queued" | "running" | "completed" | "failed";
   phase?: string;
   summary?: string;
   error?: string | null;
@@ -1239,7 +1239,7 @@ async function waitForJob(
     );
     const job = response.job;
     if (job?.status === "completed") return job;
-    if (job?.status === "failed" || job?.status === "cancelled") {
+    if (job?.status === "failed") {
       throw new Error(job.error || job.summary || `Job ${jobId} ${job.status}.`);
     }
     await sleep(JOB_POLL_INTERVAL_MS);

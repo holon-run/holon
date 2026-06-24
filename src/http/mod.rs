@@ -172,6 +172,7 @@ pub struct AppState {
     pub web_dist: Option<Arc<PathBuf>>,
     pub skills_registry: Arc<tokio::sync::RwLock<SkillsRegistry>>,
     pub jobs: JobRegistry,
+    pub skill_install_jobs: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,6 +233,7 @@ impl AppState {
             .control_token_required(ControlTransportKind::Tcp);
         let skills_registry = host.skills_registry();
         let jobs = JobRegistry::default();
+        let skill_install_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         Self {
             host,
             require_control_token,
@@ -240,6 +242,7 @@ impl AppState {
             web_dist: None,
             skills_registry,
             jobs,
+            skill_install_jobs,
         }
     }
 
@@ -254,6 +257,7 @@ impl AppState {
         // Unix control is local IPC; filesystem permissions are the access boundary.
         let skills_registry = host.skills_registry();
         let jobs = JobRegistry::default();
+        let skill_install_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         Self {
             host,
             require_control_token: false,
@@ -262,6 +266,7 @@ impl AppState {
             web_dist: None,
             skills_registry,
             jobs,
+            skill_install_jobs,
         }
     }
 

@@ -946,10 +946,7 @@ pub async fn create_skill_install_job_installs_local_skill() -> Result<()> {
         assert!(status.status().is_success());
         let body: serde_json::Value = status.json().await?;
         let job = &body["job"];
-        if matches!(
-            job["status"].as_str(),
-            Some("completed") | Some("failed") | Some("cancelled")
-        ) {
+        if matches!(job["status"].as_str(), Some("completed") | Some("failed")) {
             terminal = Some(job.clone());
             break;
         }
