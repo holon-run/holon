@@ -105,7 +105,7 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This patch release improves memory indexing and search, hardens GitHub Action event handling, fixes model discovery refresh behavior, and corrects several runtime lifecycle edge cases.
+          This release introduces web GUI skill management, a skill detail API, refreshed TUI skill commands, DashScope plan providers and new models, and a SkillsRegistry refresh mechanism, alongside fixes for skill lifecycle, provider parameter clamping, and runtime continuation edge cases.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
