@@ -41,11 +41,11 @@ export function SkillsPage({
   const visibleSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return skills.filter((skill) => {
-      const matchesScope = scopeFilter === "all" || skill.scope === scopeFilter;
+      const matchesScope = scopeFilter === "all" || normalizedSkillScope(skill.scope) === scopeFilter;
       if (!matchesScope) return false;
       if (!normalizedQuery) return true;
-      return [skill.name, skill.description, skill.path]
-        .filter(Boolean)
+      return [skill.name, skill.description, skill.skillId, skill.rootId, skill.skillDir, skill.legacyId]
+        .filter((value): value is string => Boolean(value))
         .some((value) => value.toLowerCase().includes(normalizedQuery));
     });
   }, [query, scopeFilter, skills]);
@@ -143,7 +143,7 @@ export function SkillsPage({
                 <span>Skill</span>
                 <input
                   value={addSkillName}
-                  placeholder="optional package skill name"
+                  placeholder="optional; leave empty to install all skills"
                   onChange={(event) => setAddSkillName(event.target.value)}
                   disabled={loading}
                 />
@@ -164,6 +164,8 @@ export function SkillsPage({
           </form>
           <p className="skills-add-help">
             Remote packages are imported into the Global Library by the skill manager and do not need a link/copy choice here.
+            Leave Skill empty to import every skill under a GitHub repository's <code>skills/</code> directory,
+            or provide one concrete skill such as <code>docx</code>.
             Local folders can be linked in place or copied as a snapshot.
           </p>
 
@@ -175,7 +177,7 @@ export function SkillsPage({
                 name="skills-search"
                 type="search"
                 value={query}
-                placeholder="Name, description, or path"
+                placeholder="Name, description, or skill id"
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
@@ -199,7 +201,7 @@ export function SkillsPage({
             <ul className="skills-list">
               {visibleSkills.map((skill) => (
                 <SkillRow
-                  key={`${skill.scope}:${skill.skillId}:${skill.path}`}
+                  key={skill.skillId}
                   skill={skill}
                   loading={loading}
                   onRemove={removeSkill}
@@ -237,7 +239,7 @@ function SkillRow({
 }) {
   return (
     <li className="skills-row">
-      <div className="skills-row-main">
+      <button type="button" className="skills-row-open" onClick={() => onOpen(skill.skillId)}>
         <div>
           <strong>{skill.name}</strong>
           <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
@@ -245,12 +247,9 @@ function SkillRow({
           </StatusBadge>
         </div>
         <p>{skill.description || "No description provided."}</p>
-      </div>
+      </button>
       <div className="skills-row-actions">
-        <Button type="button" size="sm" variant="outline" onClick={() => onOpen(skill.skillId)}>
-          Details
-        </Button>
-        <Button type="button" size="sm" variant="outline" disabled={loading || skill.scope !== "user"} onClick={() => onRemove(skill.name)}>
+        <Button type="button" size="sm" variant="outline" disabled={loading || normalizedSkillScope(skill.scope) !== "user"} onClick={() => onRemove(skill.name)}>
           Remove
         </Button>
       </div>
@@ -275,7 +274,8 @@ export function SkillDetailPage({
 }) {
   const skill = detail?.skill;
   return (
-    <div className="skills-inner scroll-surface">
+    <section className="page skill-detail-route" aria-label="Skill detail">
+      <div className="skills-inner skill-detail-page scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
           <span className="eyebrow">Skill detail</span>
@@ -300,20 +300,30 @@ export function SkillDetailPage({
       ) : null}
 
       {skill ? (
-        <Card className="skills-library-card">
+        <Card className="skills-library-card skill-detail-card">
           <CardHeader className="skills-library-head">
             <div>
-              <p>
-                <code>{skill.skillId}</code>
-              </p>
-              <p>{collapseHome(skill.path)}</p>
+              <h2>{skill.name}</h2>
+              <p>{skill.rootId ? `Root ${skill.rootId}` : "Root metadata unavailable"}</p>
             </div>
             <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
               {skillScopeLabel(skill.scope)}
             </StatusBadge>
           </CardHeader>
-          <CardContent>
-            <MarkdownContent text={detail?.content ?? ""} />
+          <CardContent className="skill-detail-content">
+            <dl className="skills-detail-meta">
+              <div>
+                <dt>Skill directory</dt>
+                <dd>{skill.skillDir || "unknown"}</dd>
+              </div>
+              <div>
+                <dt>Path</dt>
+                <dd>{collapseHome(skill.path)}</dd>
+              </div>
+            </dl>
+            <div className="skill-detail-markdown">
+              <MarkdownContent text={detail?.content ?? ""} />
+            </div>
           </CardContent>
         </Card>
       ) : (
@@ -327,7 +337,8 @@ export function SkillDetailPage({
           }
         />
       )}
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -338,25 +349,30 @@ function buildAddSkillInput(type: AddSourceType, source: string, skill: string, 
 
 function sourcePlaceholder(type: AddSourceType) {
   if (type === "local") return "/path/to/skill";
-  return "owner/repo or package";
+  return "owner/repo, owner/repo@skill, or GitHub tree URL";
 }
 
 function skillScopeLabel(scope: SkillCatalogEntry["scope"]) {
-  if (scope === "user") return "Global";
+  if (normalizedSkillScope(scope) === "user") return "Global";
   if (scope === "workspace") return "Workspace";
   return "Agent";
 }
 
-function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
-  const userPath = skills.find((skill) => skill.scope === "user")?.path;
-  return { user: collapseHome(skillRoot(userPath) ?? "~/.agents/skills") };
+function normalizedSkillScope(scope: SkillCatalogEntry["scope"]) {
+  return scope === "user_global" ? "user" : scope;
 }
 
-function skillRoot(path?: string) {
+export function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
+  void skills;
+  return { user: "~/.agents/skills" };
+}
+
+export function skillRoot(path?: string) {
   if (!path) return undefined;
-  const marker = "/.agents/skills/";
-  const index = path.indexOf(marker);
-  if (index >= 0) return path.slice(0, index + marker.length - 1);
+  for (const marker of ["/skills/", "/.agents/skills/", "/.codex/skills/", "/.claude/skills/"]) {
+    const index = path.indexOf(marker);
+    if (index >= 0) return path.slice(0, index + marker.length - 1);
+  }
   return path.replace(/\/[^/]+$/, "");
 }
 
@@ -366,7 +382,8 @@ function collapseHome(path: string) {
 
 function skillStats(skills: SkillCatalogEntry[]) {
   const byScope = skills.reduce<Record<string, number>>((counts, skill) => {
-    counts[skill.scope] = (counts[skill.scope] ?? 0) + 1;
+    const scope = normalizedSkillScope(skill.scope);
+    counts[scope] = (counts[scope] ?? 0) + 1;
     return counts;
   }, {});
   return [

@@ -1014,6 +1014,8 @@ code {
 }
 
 .markdown-content {
+  max-width: 100%;
+  min-width: 0;
   overflow-wrap: anywhere;
   line-height: 1.5;
 }
@@ -1093,6 +1095,12 @@ code {
   overflow: auto;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.markdown-content img,
+.markdown-content svg {
+  max-width: 100%;
+  height: auto;
 }
 
 .markdown-content th,
@@ -2807,9 +2815,20 @@ code {
   display: grid;
   flex: 1 1 auto;
   gap: 18px;
+  min-width: 0;
   min-height: 0;
-  overflow-y: auto;
+  max-height: 100%;
+  overflow: auto;
   padding: 18px 22px 24px;
+}
+
+.skill-detail-page {
+  align-content: start;
+  overflow: visible;
+}
+
+.skill-detail-route {
+  overflow-y: auto;
 }
 
 .skills-hero {
@@ -3007,20 +3026,32 @@ code {
   background: var(--surface);
 }
 
-.skills-row-main {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
+.skills-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 
-.skills-row-main > div {
+.skills-row-open {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.skills-row-open > div {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
-.skills-row-main p {
+.skills-row-open p {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -3041,6 +3072,68 @@ code {
   min-width: 190px;
 }
 
+.skill-detail-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.skill-detail-card .skills-library-head {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.skill-detail-content {
+  min-width: 0;
+  padding: 18px 20px 22px;
+}
+
+.skill-detail-markdown {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--page) 44%, var(--surface));
+}
+
+.skills-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.skills-detail-meta div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.skills-detail-meta dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.skills-detail-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.skills-detail-meta code {
+  font-family: var(--mono);
+}
+
 .agent-skill-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3052,6 +3145,23 @@ code {
   display: flex;
   justify-content: flex-end;
   margin-top: 8px;
+}
+
+.agent-skill-open {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-skill-list li:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 
 .agent-skill-actions button,

@@ -53,8 +53,9 @@ export function App() {
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
+  const sidePanelAgentId = selectedAgent?.id ?? selectedAgentId;
   const selectedAgentSession = useRuntimeStore((state) =>
-    activeAgentId ? state.sessionsByAgentId[activeAgentId] : undefined,
+    sidePanelAgentId ? state.sessionsByAgentId[sidePanelAgentId] : undefined,
   );
   const modelCatalog = useRuntimeStore((state) => state.modelCatalog);
   const modelCatalogLoading = useRuntimeStore((state) => state.modelCatalogLoading);
@@ -84,13 +85,13 @@ export function App() {
   const addSkillToCatalog = useRuntimeStore((state) => state.addSkillToCatalog);
   const removeSkillFromCatalog = useRuntimeStore((state) => state.removeSkillFromCatalog);
   const agentSkillCatalog = useRuntimeStore((state) =>
-    activeAgentId ? state.agentSkillCatalogByAgentId[activeAgentId] : undefined,
+    sidePanelAgentId ? state.agentSkillCatalogByAgentId[sidePanelAgentId] : undefined,
   );
   const agentSkillCatalogLoading = useRuntimeStore((state) =>
-    activeAgentId ? state.agentSkillCatalogLoadingByAgentId[activeAgentId] ?? false : false,
+    sidePanelAgentId ? state.agentSkillCatalogLoadingByAgentId[sidePanelAgentId] ?? false : false,
   );
   const agentSkillCatalogError = useRuntimeStore((state) =>
-    activeAgentId ? state.agentSkillCatalogErrorByAgentId[activeAgentId] : undefined,
+    sidePanelAgentId ? state.agentSkillCatalogErrorByAgentId[sidePanelAgentId] : undefined,
   );
   const runSearch = useRuntimeStore((state) => state.runSearch);
   const loadSearchResultContent = useRuntimeStore((state) => state.loadSearchResultContent);
@@ -216,9 +217,9 @@ export function App() {
   }, [refreshSkillDetail, route, selectedSkillId, skillDetail, skillDetailLoading]);
 
   useEffect(() => {
-    if (route !== "agent" || !activeAgentId || agentSkillCatalogLoading || agentSkillCatalog) return;
-    void refreshAgentSkillCatalog(activeAgentId);
-  }, [activeAgentId, agentSkillCatalog, agentSkillCatalogLoading, refreshAgentSkillCatalog, route]);
+    if (!sidePanelAgentId || agentSkillCatalogLoading || agentSkillCatalog) return;
+    void refreshAgentSkillCatalog(sidePanelAgentId);
+  }, [agentSkillCatalog, agentSkillCatalogLoading, refreshAgentSkillCatalog, sidePanelAgentId]);
 
   useEffect(() => {
     document.title = browserWindowTitle(bootstrap.connection);
@@ -529,6 +530,7 @@ export function App() {
           onDisableAgentSkill={(name) => {
             void disableAgentSkill(selectedAgent.id, name);
           }}
+          onOpenSkill={navigateSkill}
           onShowAgentOverview={showAgentOverview}
           onClose={() => setRightPanelOpen(false)}
         />

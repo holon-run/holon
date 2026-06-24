@@ -543,17 +543,39 @@ impl std::fmt::Display for RemoteSkillInstallTimedOut {
 impl std::error::Error for RemoteSkillInstallTimedOut {}
 
 trait RemoteSkillInstaller {
-    fn add_global(&self, user_home: &Path, package: &str, skill: Option<&str>) -> Result<String>;
+    fn add_global(
+        &self,
+        user_home: &Path,
+        package: &str,
+        skill: Option<&str>,
+    ) -> Result<Vec<String>>;
 }
 
 struct RustRemoteSkillInstaller;
 
 impl RemoteSkillInstaller for RustRemoteSkillInstaller {
-    fn add_global(&self, user_home: &Path, package: &str, skill: Option<&str>) -> Result<String> {
+    fn add_global(
+        &self,
+        user_home: &Path,
+        package: &str,
+        skill: Option<&str>,
+    ) -> Result<Vec<String>> {
+        if skill.is_none() && remote_package_ref_installs_all_skills(package) {
+            let source = RemoteSkillSetSource::parse(package)?;
+            return install_github_remote_skill_set(user_home, package, &source);
+        }
         let source = RemoteSkillSource::parse(package, skill)?;
         install_github_remote_skill(user_home, package, &source)?;
-        Ok(source.skill_name)
+        Ok(vec![source.skill_name])
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteSkillSetSource {
+    owner: String,
+    repo: String,
+    reference: String,
+    path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -563,6 +585,58 @@ struct RemoteSkillSource {
     reference: String,
     path: String,
     skill_name: String,
+}
+
+impl RemoteSkillSetSource {
+    fn parse(package: &str) -> Result<Self> {
+        let trimmed = package.trim_end_matches('/');
+        if let Some(url) = trimmed.strip_prefix("https://github.com/") {
+            return Self::parse_github_path(url);
+        }
+        if let Some(url) = trimmed.strip_prefix("http://github.com/") {
+            return Self::parse_github_path(url);
+        }
+        let mut parts = trimmed.split('/');
+        let owner = parts.next().unwrap_or_default();
+        let repo = parts.next().unwrap_or_default().trim_end_matches(".git");
+        if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+            bail!("remote skill package must be a GitHub owner/repo ref or GitHub tree URL");
+        }
+        Ok(Self {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            reference: "main".to_string(),
+            path: "skills".to_string(),
+        })
+    }
+
+    fn parse_github_path(path: &str) -> Result<Self> {
+        let parts = path.split('/').collect::<Vec<_>>();
+        if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+            bail!("remote GitHub skill URL must include owner and repo");
+        }
+        let owner = parts[0].to_string();
+        let repo = parts[1].trim_end_matches(".git").to_string();
+        let mut reference = "main".to_string();
+        let mut skill_path = "skills".to_string();
+        if parts.get(2) == Some(&"tree") {
+            reference = parts
+                .get(3)
+                .filter(|part| !part.is_empty())
+                .unwrap_or(&"main")
+                .to_string();
+            let tree_path = parts.get(4..).unwrap_or(&[]).join("/");
+            if !tree_path.is_empty() {
+                skill_path = tree_path;
+            }
+        }
+        Ok(Self {
+            owner,
+            repo,
+            reference,
+            path: skill_path,
+        })
+    }
 }
 
 impl RemoteSkillSource {
@@ -650,6 +724,23 @@ impl RemoteSkillSource {
     }
 }
 
+fn remote_package_ref_installs_all_skills(package: &str) -> bool {
+    let trimmed = package.trim_end_matches('/');
+    if trimmed
+        .rsplit_once('@')
+        .is_some_and(|(repo, skill)| !repo.is_empty() && !skill.is_empty())
+    {
+        return false;
+    }
+    if let Some(path) = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+    {
+        return path.split('/').nth(2) != Some("tree");
+    }
+    true
+}
+
 fn install_github_remote_skill(
     user_home: &Path,
     package: &str,
@@ -702,6 +793,44 @@ fn install_github_remote_skill(
     result
 }
 
+fn install_github_remote_skill_set(
+    user_home: &Path,
+    package: &str,
+    source: &RemoteSkillSetSource,
+) -> Result<Vec<String>> {
+    const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
+        Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REMOTE_SKILL_INSTALL_TIMEOUT)
+        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+        .default_headers(github_auth_headers())
+        .build()
+        .context("failed to create remote skill HTTP client")?;
+    let skills = list_github_skill_dirs(&client, source, package)?;
+    if skills.is_empty() {
+        bail!(
+            "remote skill package '{}' did not contain any skill directories under {}",
+            package,
+            source.path
+        );
+    }
+
+    let mut installed = Vec::new();
+    for skill_name in skills {
+        let source = RemoteSkillSource {
+            owner: source.owner.clone(),
+            repo: source.repo.clone(),
+            reference: source.reference.clone(),
+            path: format!("{}/{}", source.path.trim_end_matches('/'), skill_name),
+            skill_name,
+        };
+        install_github_remote_skill(user_home, package, &source)?;
+        installed.push(source.skill_name);
+    }
+    Ok(installed)
+}
+
 #[derive(Debug, Deserialize)]
 struct GithubContentEntry {
     name: String,
@@ -709,6 +838,38 @@ struct GithubContentEntry {
     #[serde(rename = "type")]
     kind: String,
     download_url: Option<String>,
+}
+
+fn list_github_skill_dirs(
+    client: &reqwest::blocking::Client,
+    source: &RemoteSkillSetSource,
+    package: &str,
+) -> Result<Vec<String>> {
+    let url =
+        github_contents_url_parts(&source.owner, &source.repo, &source.reference, &source.path);
+    let response = remote_skill_request(client.get(&url).send(), package, || {
+        format!("failed to fetch remote skill directory {url}")
+    })?;
+    if !response.status().is_success() {
+        return Err(RemoteSkillInstallFailed {
+            package: package.to_string(),
+            status: Some(response.status().as_u16().into()),
+            stdout: String::new(),
+            stderr: response.text().unwrap_or_default(),
+        }
+        .into());
+    }
+    let entries: Vec<GithubContentEntry> = response
+        .json()
+        .with_context(|| format!("failed to parse GitHub contents response for {url}"))?;
+    entries
+        .into_iter()
+        .filter(|entry| entry.kind == "dir")
+        .map(|entry| {
+            validate_skill_name(&entry.name)?;
+            Ok(entry.name)
+        })
+        .collect()
 }
 
 fn github_auth_headers() -> HeaderMap {
@@ -822,15 +983,24 @@ fn validate_github_download_url(download_url: &str) -> Result<()> {
 }
 
 fn github_contents_url(source: &RemoteSkillSource, remote_path: &str) -> String {
+    github_contents_url_parts(&source.owner, &source.repo, &source.reference, remote_path)
+}
+
+fn github_contents_url_parts(
+    owner: &str,
+    repo: &str,
+    reference: &str,
+    remote_path: &str,
+) -> String {
     let encoded_path = remote_path
         .split('/')
         .map(|part| utf8_percent_encode(part, NON_ALPHANUMERIC).to_string())
         .collect::<Vec<_>>()
         .join("/");
-    let reference = utf8_percent_encode(&source.reference, NON_ALPHANUMERIC);
+    let reference = utf8_percent_encode(reference, NON_ALPHANUMERIC);
     format!(
         "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-        source.owner, source.repo, encoded_path, reference
+        owner, repo, encoded_path, reference
     )
 }
 
@@ -856,14 +1026,19 @@ struct RecordingRemoteSkillInstaller {
 
 #[cfg(test)]
 impl RemoteSkillInstaller for RecordingRemoteSkillInstaller {
-    fn add_global(&self, user_home: &Path, package: &str, skill: Option<&str>) -> Result<String> {
+    fn add_global(
+        &self,
+        user_home: &Path,
+        package: &str,
+        skill: Option<&str>,
+    ) -> Result<Vec<String>> {
         let skill_name = skill.unwrap_or(remote_package_default_skill_name(package)?);
         self.calls.lock().unwrap().push(RecordedRemoteSkillInstall {
             user_home: user_home.into(),
             package: package.into(),
             skill: skill.map(str::to_string),
         });
-        Ok(skill_name.to_string())
+        Ok(vec![skill_name.to_string()])
     }
 }
 
@@ -877,7 +1052,7 @@ impl RemoteSkillInstaller for UnavailableRemoteSkillInstaller {
         _user_home: &Path,
         _package: &str,
         _skill: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<Vec<String>> {
         bail!("remote installer unavailable")
     }
 }
@@ -971,11 +1146,14 @@ fn install_skill_with_user_home_and_remote_installer(
             if let Some(skill) = skill {
                 validate_skill_name(skill)?;
             }
-            let skill_name = remote_installer.add_global(
+            let skill_names = remote_installer.add_global(
                 user_home.context("remote skill install requires a user home")?,
                 package,
                 skill.as_deref(),
             )?;
+            let skill_name = skill_names
+                .first()
+                .context("remote skill install did not install any skills")?;
             let path = resolve_user_skill_by_name(user_home, &skill_name)?;
             materialize_local_skill(&skills_root, &path, mode)?
         }
@@ -1026,18 +1204,26 @@ fn add_library_skill_with_remote_installer(
         crate::types::SkillInstallKind::Remote {
             package,
             skill,
-            mode,
+            mode: _,
         } => {
             validate_remote_package(package)?;
             if let Some(skill) = skill {
                 validate_skill_name(skill)?;
             }
-            let skill_name = remote_installer.add_global(user_home, package, skill.as_deref())?;
-            let path = resolve_user_skill_by_name(Some(user_home), &skill_name)?;
-            materialize_local_skill(&skills_root, &path, mode)?
+            let skill_names = remote_installer.add_global(user_home, package, skill.as_deref())?;
+            let first_skill_name = skill_names
+                .first()
+                .context("remote skill install did not install any skills")?
+                .clone();
+            for skill_name in &skill_names {
+                sync_skill_lock_entry(user_home, skill_name)?;
+            }
+            first_skill_name
         }
     };
-    sync_skill_lock_entry(user_home, &name)?;
+    if !matches!(kind, crate::types::SkillInstallKind::Remote { .. }) {
+        sync_skill_lock_entry(user_home, &name)?;
+    }
     Ok(name)
 }
 

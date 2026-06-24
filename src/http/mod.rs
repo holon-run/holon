@@ -928,13 +928,12 @@ pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode,
         ),
         Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallFailed>() {
             Ok(failed) => http_error(
-                StatusCode::BAD_GATEWAY,
-                HttpErrorEnvelope::new(failed.to_string())
-                    .code("remote_skill_install_failed")
-                    .extension("package", failed.package)
-                    .extension("exit_status", failed.status)
-                    .extension("stdout", failed.stdout)
-                    .extension("stderr", failed.stderr),
+                if failed.status == Some(404) {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::BAD_GATEWAY
+                },
+                remote_skill_install_failed_envelope(failed),
             ),
             Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallTimedOut>() {
                 Ok(timeout) => http_error(
@@ -948,6 +947,30 @@ pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode,
             },
         },
     }
+}
+
+fn remote_skill_install_failed_envelope(
+    failed: crate::skills::RemoteSkillInstallFailed,
+) -> HttpErrorEnvelope {
+    if failed.status == Some(404) {
+        let package = failed.package;
+        return HttpErrorEnvelope::new(format!(
+            "remote skill '{package}' was not found; for multi-skill GitHub repositories, specify a skill name such as '{package}@<skill>' or fill the Skill field"
+        ))
+        .code("remote_skill_not_found")
+        .hint("browse the repository's skills/ directory and install one concrete skill")
+        .extension("package", package)
+        .extension("exit_status", 404)
+        .extension("stdout", failed.stdout)
+        .extension("stderr", failed.stderr);
+    }
+
+    HttpErrorEnvelope::new(failed.to_string())
+        .code("remote_skill_install_failed")
+        .extension("package", failed.package)
+        .extension("exit_status", failed.status)
+        .extension("stdout", failed.stdout)
+        .extension("stderr", failed.stderr)
 }
 
 pub(crate) fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
