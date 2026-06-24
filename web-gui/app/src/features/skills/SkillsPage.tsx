@@ -143,7 +143,7 @@ export function SkillsPage({
                 <span>Skill</span>
                 <input
                   value={addSkillName}
-                  placeholder="optional package skill name"
+                  placeholder="optional; leave empty to install all skills"
                   onChange={(event) => setAddSkillName(event.target.value)}
                   disabled={loading}
                 />
@@ -164,6 +164,8 @@ export function SkillsPage({
           </form>
           <p className="skills-add-help">
             Remote packages are imported into the Global Library by the skill manager and do not need a link/copy choice here.
+            Leave Skill empty to import every skill under a GitHub repository's <code>skills/</code> directory,
+            or provide one concrete skill such as <code>docx</code>.
             Local folders can be linked in place or copied as a snapshot.
           </p>
 
@@ -353,7 +355,7 @@ function buildAddSkillInput(type: AddSourceType, source: string, skill: string, 
 
 function sourcePlaceholder(type: AddSourceType) {
   if (type === "local") return "/path/to/skill";
-  return "owner/repo or package";
+  return "owner/repo, owner/repo@skill, or GitHub tree URL";
 }
 
 function skillScopeLabel(scope: SkillCatalogEntry["scope"]) {
