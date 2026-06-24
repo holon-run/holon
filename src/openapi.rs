@@ -405,6 +405,9 @@ fn path_parameters(path: &str) -> Vec<Value> {
     if path.contains("{message_id}") {
         params.push(path_param("message_id", "Message id."));
     }
+    if path.contains("{skill_id}") {
+        params.push(path_param("skill_id", "Root-qualified skill id."));
+    }
     if path.contains("{callback_token}") {
         params.push(path_param(
             "callback_token",
