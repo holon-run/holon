@@ -14,6 +14,7 @@ interface AgentOverviewPanelProps {
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onRefreshAgentSkills: () => void;
   onDisableAgentSkill: (name: string) => void;
+  onOpenSkill: (skillId: string) => void;
   onOpenSkillManager: () => void;
 }
 
@@ -21,19 +22,23 @@ function AgentSkillItem({
   skill,
   disabled,
   onDisable,
+  onOpen,
 }: {
   skill: SkillCatalogEntry;
   disabled?: boolean;
   onDisable: (name: string) => void;
+  onOpen: (skillId: string) => void;
 }) {
   const canDisable = skill.scope === "agent";
   return (
     <li>
-      <div className="inspector-list-head">
-        <strong>{skill.name}</strong>
-        <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
-      </div>
-      <small>{skill.description || skill.path || skill.skillId}</small>
+      <button type="button" className="agent-skill-open" onClick={() => onOpen(skill.skillId)}>
+        <div className="inspector-list-head">
+          <strong>{skill.name}</strong>
+          <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
+        </div>
+        <small>{skill.description || skill.path || skill.name}</small>
+      </button>
       {canDisable ? (
         <div className="agent-skill-row-actions">
           <button type="button" disabled={disabled} onClick={() => onDisable(skill.name)}>
@@ -79,6 +84,7 @@ export function AgentOverviewPanel({
   onOpenWorkItemDetail,
   onRefreshAgentSkills,
   onDisableAgentSkill,
+  onOpenSkill,
   onOpenSkillManager,
 }: AgentOverviewPanelProps) {
   const workspace = agent.workspaceSummary;
@@ -203,6 +209,7 @@ export function AgentOverviewPanel({
                 skill={skill}
                 disabled={skillCatalogLoading}
                 onDisable={onDisableAgentSkill}
+                onOpen={onOpenSkill}
               />
             ))}
           </ul>

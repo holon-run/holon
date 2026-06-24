@@ -20,6 +20,7 @@ interface RightSidePanelProps {
   onRefreshAvailableSkills: () => void;
   onEnableAgentSkill: (name: string) => void;
   onDisableAgentSkill: (name: string) => void;
+  onOpenSkill: (skillId: string) => void;
   onShowAgentOverview: () => void;
   onClose: () => void;
 }
@@ -40,6 +41,7 @@ export function RightSidePanel({
   onRefreshAvailableSkills,
   onEnableAgentSkill,
   onDisableAgentSkill,
+  onOpenSkill,
   onShowAgentOverview,
   onClose,
 }: RightSidePanelProps) {
@@ -119,6 +121,7 @@ export function RightSidePanel({
             onOpenWorkItemDetail={onOpenWorkItemDetail}
             onRefreshAgentSkills={onRefreshAgentSkills}
             onDisableAgentSkill={onDisableAgentSkill}
+            onOpenSkill={onOpenSkill}
             onOpenSkillManager={openSkillManager}
           />
         )}

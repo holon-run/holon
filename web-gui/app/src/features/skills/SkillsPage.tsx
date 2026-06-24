@@ -239,7 +239,7 @@ function SkillRow({
 }) {
   return (
     <li className="skills-row">
-      <div className="skills-row-main">
+      <button type="button" className="skills-row-open" onClick={() => onOpen(skill.skillId)}>
         <div>
           <strong>{skill.name}</strong>
           <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
@@ -247,12 +247,8 @@ function SkillRow({
           </StatusBadge>
         </div>
         <p>{skill.description || "No description provided."}</p>
-        <code className="skills-row-id">{skill.skillId}</code>
-      </div>
+      </button>
       <div className="skills-row-actions">
-        <Button type="button" size="sm" variant="outline" onClick={() => onOpen(skill.skillId)}>
-          Details
-        </Button>
         <Button type="button" size="sm" variant="outline" disabled={loading || normalizedSkillScope(skill.scope) !== "user"} onClick={() => onRemove(skill.name)}>
           Remove
         </Button>
@@ -303,19 +299,17 @@ export function SkillDetailPage({
       ) : null}
 
       {skill ? (
-        <Card className="skills-library-card">
+        <Card className="skills-library-card skill-detail-card">
           <CardHeader className="skills-library-head">
             <div>
-              <p>
-                <code>{skill.skillId}</code>
-              </p>
+              <h2>{skill.name}</h2>
               <p>{skill.rootId ? `Root ${skill.rootId}` : "Root metadata unavailable"}</p>
             </div>
             <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
               {skillScopeLabel(skill.scope)}
             </StatusBadge>
           </CardHeader>
-          <CardContent>
+          <CardContent className="skill-detail-content">
             <dl className="skills-detail-meta">
               <div>
                 <dt>Skill directory</dt>
@@ -330,7 +324,9 @@ export function SkillDetailPage({
                 <dd>{collapseHome(skill.path)}</dd>
               </div>
             </dl>
-            <MarkdownContent text={detail?.content ?? ""} />
+            <div className="skill-detail-markdown">
+              <MarkdownContent text={detail?.content ?? ""} />
+            </div>
           </CardContent>
         </Card>
       ) : (

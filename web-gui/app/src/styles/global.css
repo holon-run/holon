@@ -3007,20 +3007,32 @@ code {
   background: var(--surface);
 }
 
-.skills-row-main {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
+.skills-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 
-.skills-row-main > div {
+.skills-row-open {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.skills-row-open > div {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
-.skills-row-main p {
+.skills-row-open p {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -3031,16 +3043,6 @@ code {
   line-height: 1.45;
 }
 
-.skills-row-id {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .skills-row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3049,6 +3051,26 @@ code {
   gap: 6px;
   align-self: flex-start;
   min-width: 190px;
+}
+
+.skill-detail-card {
+  overflow: hidden;
+}
+
+.skill-detail-card .skills-library-head {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.skill-detail-content {
+  padding: 18px 20px 22px;
+}
+
+.skill-detail-markdown {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--page) 44%, var(--surface));
 }
 
 .skills-detail-meta {
@@ -3084,8 +3106,7 @@ code {
   font-size: 12px;
 }
 
-.skills-detail-meta code,
-.skills-row-id {
+.skills-detail-meta code {
   font-family: var(--mono);
 }
 
@@ -3100,6 +3121,23 @@ code {
   display: flex;
   justify-content: flex-end;
   margin-top: 8px;
+}
+
+.agent-skill-open {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-skill-list li:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 
 .agent-skill-actions button,
