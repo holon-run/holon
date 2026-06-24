@@ -2,11 +2,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
     time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
@@ -496,19 +496,6 @@ impl std::fmt::Display for SkillInstallConflict {
 impl std::error::Error for SkillInstallConflict {}
 
 #[derive(Debug, Clone)]
-pub struct SkillManagerUnavailable {
-    pub manager: String,
-}
-
-impl std::fmt::Display for SkillManagerUnavailable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "remote skill install requires {}", self.manager)
-    }
-}
-
-impl std::error::Error for SkillManagerUnavailable {}
-
-#[derive(Debug, Clone)]
 pub struct RemoteSkillInstallFailed {
     pub package: String,
     pub status: Option<i32>,
@@ -535,109 +522,250 @@ impl std::fmt::Display for RemoteSkillInstallFailed {
 
 impl std::error::Error for RemoteSkillInstallFailed {}
 
-#[derive(Debug, Clone)]
-pub struct RemoteSkillInstallTimedOut {
-    pub package: String,
-    pub timeout: Duration,
-}
-
-impl std::fmt::Display for RemoteSkillInstallTimedOut {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "remote skill install for '{}' timed out after {}s",
-            self.package,
-            self.timeout.as_secs()
-        )
-    }
-}
-
-impl std::error::Error for RemoteSkillInstallTimedOut {}
-
 trait RemoteSkillInstaller {
-    fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()>;
+    fn add_global(&self, user_home: &Path, package: &str, skill: Option<&str>) -> Result<String>;
 }
 
-struct NpxRemoteSkillInstaller;
+struct RustRemoteSkillInstaller;
 
-impl RemoteSkillInstaller for NpxRemoteSkillInstaller {
-    fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()> {
-        const REMOTE_SKILL_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
+impl RemoteSkillInstaller for RustRemoteSkillInstaller {
+    fn add_global(&self, user_home: &Path, package: &str, skill: Option<&str>) -> Result<String> {
+        let source = RemoteSkillSource::parse(package, skill)?;
+        install_github_remote_skill(user_home, package, &source)?;
+        Ok(source.skill_name)
+    }
+}
 
-        match command_output_with_timeout(
-            Command::new("npx").arg("--version"),
-            Duration::from_secs(10),
-        ) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return Err(RemoteSkillInstallTimedOut {
-                    package: package.into(),
-                    timeout: Duration::from_secs(10),
-                }
-                .into());
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(SkillManagerUnavailable {
-                    manager: "npx".into(),
-                }
-                .into());
-            }
-            Err(error) => return Err(error).context("failed to check npx availability"),
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteSkillSource {
+    owner: String,
+    repo: String,
+    reference: String,
+    path: String,
+    skill_name: String,
+}
+
+impl RemoteSkillSource {
+    fn parse(package: &str, skill: Option<&str>) -> Result<Self> {
+        let trimmed = package.trim_end_matches('/');
+        if let Some(url) = trimmed.strip_prefix("https://github.com/") {
+            return Self::parse_github_path(url, skill);
         }
+        if let Some(url) = trimmed.strip_prefix("http://github.com/") {
+            return Self::parse_github_path(url, skill);
+        }
+        Self::parse_package_ref(trimmed, skill)
+    }
 
-        let mut command = Command::new("npx");
-        command.args(["--yes", "skills", "add", package, "--global", "--yes"]);
+    fn parse_github_path(path: &str, skill: Option<&str>) -> Result<Self> {
+        let parts = path.split('/').collect::<Vec<_>>();
+        if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+            bail!("remote GitHub skill URL must include owner and repo");
+        }
+        let owner = parts[0].to_string();
+        let repo = parts[1].trim_end_matches(".git").to_string();
+        let mut reference = "main".to_string();
+        let mut skill_path = String::new();
+        if parts.get(2) == Some(&"tree") {
+            reference = parts
+                .get(3)
+                .filter(|part| !part.is_empty())
+                .unwrap_or(&"main")
+                .to_string();
+            skill_path = parts.get(4..).unwrap_or(&[]).join("/");
+        }
         if let Some(skill) = skill {
-            command.args(["--skill", skill]);
-        }
-        let output = command_output_with_timeout(&mut command, REMOTE_SKILL_INSTALL_TIMEOUT)
-            .with_context(|| format!("failed to run npx skills add for {package}"))?;
-        let Some(output) = output else {
-            return Err(RemoteSkillInstallTimedOut {
-                package: package.into(),
-                timeout: REMOTE_SKILL_INSTALL_TIMEOUT,
+            validate_skill_name(skill)?;
+            if skill_path.is_empty() {
+                skill_path = format!("skills/{skill}");
             }
-            .into());
-        };
-        if !output.status.success() {
-            return Err(RemoteSkillInstallFailed {
-                package: package.into(),
-                status: output.status.code(),
-                stdout: bounded_output_excerpt(&output.stdout),
-                stderr: bounded_output_excerpt(&output.stderr),
-            }
-            .into());
         }
-        Ok(())
+        let skill_name = skill
+            .map(str::to_string)
+            .or_else(|| {
+                skill_path
+                    .rsplit('/')
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| repo.clone());
+        validate_skill_name(&skill_name)?;
+        if skill_path.is_empty() {
+            skill_path = format!("skills/{skill_name}");
+        }
+        Ok(Self {
+            owner,
+            repo,
+            reference,
+            path: skill_path,
+            skill_name,
+        })
+    }
+
+    fn parse_package_ref(package: &str, skill: Option<&str>) -> Result<Self> {
+        let (repo_ref, embedded_skill) = package
+            .rsplit_once('@')
+            .filter(|(repo, skill)| !repo.is_empty() && !skill.is_empty())
+            .map(|(repo, skill)| (repo, Some(skill)))
+            .unwrap_or((package, None));
+        let mut parts = repo_ref.split('/');
+        let owner = parts.next().unwrap_or_default();
+        let repo = parts.next().unwrap_or_default().trim_end_matches(".git");
+        if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+            bail!("remote skill package must be a GitHub owner/repo ref or GitHub tree URL");
+        }
+        let skill_name = skill
+            .or(embedded_skill)
+            .map(str::to_string)
+            .unwrap_or_else(|| repo.to_string());
+        validate_skill_name(&skill_name)?;
+        Ok(Self {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            reference: "main".to_string(),
+            path: format!("skills/{skill_name}"),
+            skill_name,
+        })
     }
 }
 
-fn command_output_with_timeout(
-    command: &mut Command,
-    timeout: Duration,
-) -> std::io::Result<Option<Output>> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if child.try_wait()?.is_some() {
-            return child.wait_with_output().map(Some);
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(None);
-        }
-        std::thread::sleep(Duration::from_millis(50));
+fn install_github_remote_skill(
+    user_home: &Path,
+    package: &str,
+    source: &RemoteSkillSource,
+) -> Result<()> {
+    const REMOTE_SKILL_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
+
+    let skills_root = user_library_skills_root(user_home);
+    fs::create_dir_all(&skills_root)
+        .with_context(|| format!("failed to create {}", skills_root.display()))?;
+    let destination = install_destination(&skills_root, &source.skill_name)?;
+    let tmp = skills_root.join(format!(
+        ".tmp-holon-skill-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp).with_context(|| format!("failed to clear {}", tmp.display()))?;
     }
+    fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REMOTE_SKILL_INSTALL_TIMEOUT)
+        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to create remote skill HTTP client")?;
+
+    let result = download_github_directory(&client, source, &source.path, &tmp).and_then(|()| {
+        if !tmp.join(SKILL_ENTRYPOINT).is_file() {
+            bail!(
+                "remote skill '{}' did not contain {} at {}",
+                package,
+                SKILL_ENTRYPOINT,
+                source.path
+            );
+        }
+        record_install_metadata(&tmp, "remote")?;
+        fs::rename(&tmp, &destination).with_context(|| {
+            format!(
+                "failed to install remote skill {} -> {}",
+                package,
+                destination.display()
+            )
+        })
+    });
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&tmp);
+    }
+    result
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubContentEntry {
+    name: String,
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+    download_url: Option<String>,
+}
+
+fn download_github_directory(
+    client: &reqwest::blocking::Client,
+    source: &RemoteSkillSource,
+    remote_path: &str,
+    destination: &Path,
+) -> Result<()> {
+    let url = github_contents_url(source, remote_path);
+    let response = client
+        .get(&url)
+        .send()
+        .with_context(|| format!("failed to fetch remote skill directory {url}"))?;
+    if !response.status().is_success() {
+        return Err(RemoteSkillInstallFailed {
+            package: format!("{}/{}", source.owner, source.repo),
+            status: Some(response.status().as_u16().into()),
+            stdout: String::new(),
+            stderr: response.text().unwrap_or_default(),
+        }
+        .into());
+    }
+    let entries: Vec<GithubContentEntry> = response
+        .json()
+        .with_context(|| format!("failed to parse GitHub contents response for {url}"))?;
+    for entry in entries {
+        validate_skill_archive_entry(&entry.name)?;
+        let child = destination.join(&entry.name);
+        match entry.kind.as_str() {
+            "dir" => {
+                fs::create_dir_all(&child)
+                    .with_context(|| format!("failed to create {}", child.display()))?;
+                download_github_directory(client, source, &entry.path, &child)?;
+            }
+            "file" => {
+                let download_url = entry.download_url.ok_or_else(|| {
+                    anyhow::anyhow!("GitHub file {} has no download URL", entry.path)
+                })?;
+                let bytes = client
+                    .get(&download_url)
+                    .send()
+                    .with_context(|| format!("failed to download {download_url}"))?
+                    .error_for_status()
+                    .with_context(|| format!("GitHub file download failed for {download_url}"))?
+                    .bytes()
+                    .with_context(|| format!("failed to read {download_url}"))?;
+                fs::write(&child, bytes)
+                    .with_context(|| format!("failed to write {}", child.display()))?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn github_contents_url(source: &RemoteSkillSource, remote_path: &str) -> String {
+    let encoded_path = remote_path
+        .split('/')
+        .map(|part| utf8_percent_encode(part, NON_ALPHANUMERIC).to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    let reference = utf8_percent_encode(&source.reference, NON_ALPHANUMERIC);
+    format!(
+        "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
+        source.owner, source.repo, encoded_path, reference
+    )
+}
+
+fn validate_skill_archive_entry(name: &str) -> Result<()> {
+    if name.is_empty() || name.contains(std::path::is_separator) || name == "." || name == ".." {
+        bail!("remote skill archive contains invalid entry name: {name}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 #[derive(Clone)]
 struct RecordedRemoteSkillInstall {
+    user_home: PathBuf,
     package: String,
     skill: Option<String>,
 }
@@ -649,12 +777,14 @@ struct RecordingRemoteSkillInstaller {
 
 #[cfg(test)]
 impl RemoteSkillInstaller for RecordingRemoteSkillInstaller {
-    fn add_global(&self, package: &str, skill: Option<&str>) -> Result<()> {
+    fn add_global(&self, user_home: &Path, package: &str, skill: Option<&str>) -> Result<String> {
+        let skill_name = skill.unwrap_or(remote_package_default_skill_name(package)?);
         self.calls.lock().unwrap().push(RecordedRemoteSkillInstall {
+            user_home: user_home.into(),
             package: package.into(),
             skill: skill.map(str::to_string),
         });
-        Ok(())
+        Ok(skill_name.to_string())
     }
 }
 
@@ -663,22 +793,14 @@ struct UnavailableRemoteSkillInstaller;
 
 #[cfg(test)]
 impl RemoteSkillInstaller for UnavailableRemoteSkillInstaller {
-    fn add_global(&self, _package: &str, _skill: Option<&str>) -> Result<()> {
-        Err(SkillManagerUnavailable {
-            manager: "npx".into(),
-        }
-        .into())
+    fn add_global(
+        &self,
+        _user_home: &Path,
+        _package: &str,
+        _skill: Option<&str>,
+    ) -> Result<String> {
+        bail!("remote installer unavailable")
     }
-}
-
-fn bounded_output_excerpt(bytes: &[u8]) -> String {
-    const MAX_OUTPUT_BYTES: usize = 2048;
-    let excerpt = if bytes.len() > MAX_OUTPUT_BYTES {
-        &bytes[..MAX_OUTPUT_BYTES]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(excerpt).to_string()
 }
 
 /// Validate that a skill name is a single path component with no traversal.
@@ -723,7 +845,7 @@ pub fn install_skill_with_user_home(
         agent_home,
         user_home,
         kind,
-        &NpxRemoteSkillInstaller,
+        &RustRemoteSkillInstaller,
     )
 }
 
@@ -770,12 +892,12 @@ fn install_skill_with_user_home_and_remote_installer(
             if let Some(skill) = skill {
                 validate_skill_name(skill)?;
             }
-            remote_installer.add_global(package, skill.as_deref())?;
-            let skill_name = match skill {
-                Some(skill) => skill.as_str(),
-                None => remote_package_default_skill_name(package)?,
-            };
-            let path = resolve_user_skill_by_name(user_home, skill_name)?;
+            let skill_name = remote_installer.add_global(
+                user_home.context("remote skill install requires a user home")?,
+                package,
+                skill.as_deref(),
+            )?;
+            let path = resolve_user_skill_by_name(user_home, &skill_name)?;
             materialize_local_skill(&skills_root, &path, mode)?
         }
     };
@@ -786,7 +908,7 @@ pub fn add_library_skill(
     user_home: &Path,
     kind: &crate::types::SkillInstallKind,
 ) -> Result<String> {
-    add_library_skill_with_remote_installer(user_home, kind, &NpxRemoteSkillInstaller)
+    add_library_skill_with_remote_installer(user_home, kind, &RustRemoteSkillInstaller)
 }
 
 fn add_library_skill_with_remote_installer(
@@ -831,12 +953,8 @@ fn add_library_skill_with_remote_installer(
             if let Some(skill) = skill {
                 validate_skill_name(skill)?;
             }
-            remote_installer.add_global(package, skill.as_deref())?;
-            let skill_name = match skill {
-                Some(skill) => skill.as_str(),
-                None => remote_package_default_skill_name(package)?,
-            };
-            let path = resolve_user_skill_by_name(Some(user_home), skill_name)?;
+            let skill_name = remote_installer.add_global(user_home, package, skill.as_deref())?;
+            let path = resolve_user_skill_by_name(Some(user_home), &skill_name)?;
             materialize_local_skill(&skills_root, &path, mode)?
         }
     };
@@ -879,6 +997,7 @@ fn validate_remote_package(package: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn remote_package_default_skill_name(package: &str) -> Result<&str> {
     package
         .trim_end_matches('/')
@@ -2264,7 +2383,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_install_requires_skill_manager() {
+    fn remote_install_surfaces_installer_errors() {
         let dir = tempdir().unwrap();
         let error = install_skill_with_user_home_and_remote_installer(
             &dir.path().join("agent"),
@@ -2278,10 +2397,7 @@ mod tests {
         )
         .unwrap_err();
 
-        let unavailable = error
-            .downcast_ref::<SkillManagerUnavailable>()
-            .expect("missing remote manager should be structured");
-        assert_eq!(unavailable.manager, "npx");
+        assert!(error.to_string().contains("remote installer unavailable"));
     }
 
     #[test]
@@ -2304,20 +2420,34 @@ mod tests {
     }
 
     #[test]
-    fn command_output_with_timeout_captures_failed_process_output() {
-        let mut command = Command::new("sh");
-        command.args([
-            "-c",
-            "read ignored || true; printf captured-stdout; printf captured-stderr >&2; exit 7",
-        ]);
+    fn remote_skill_source_parses_github_tree_url() {
+        let source = RemoteSkillSource::parse(
+            "https://github.com/user/repo/tree/main/skills/my-skill",
+            None,
+        )
+        .unwrap();
 
-        let output = command_output_with_timeout(&mut command, Duration::from_secs(5))
-            .unwrap()
-            .expect("process should exit before timeout");
+        assert_eq!(
+            source,
+            RemoteSkillSource {
+                owner: "user".into(),
+                repo: "repo".into(),
+                reference: "main".into(),
+                path: "skills/my-skill".into(),
+                skill_name: "my-skill".into(),
+            }
+        );
+    }
 
-        assert_eq!(output.status.code(), Some(7));
-        assert_eq!(bounded_output_excerpt(&output.stdout), "captured-stdout");
-        assert_eq!(bounded_output_excerpt(&output.stderr), "captured-stderr");
+    #[test]
+    fn remote_skill_source_parses_owner_repo_skill_package() {
+        let source = RemoteSkillSource::parse("vercel-labs/agent-skills@pr-review", None).unwrap();
+
+        assert_eq!(source.owner, "vercel-labs");
+        assert_eq!(source.repo, "agent-skills");
+        assert_eq!(source.reference, "main");
+        assert_eq!(source.path, "skills/pr-review");
+        assert_eq!(source.skill_name, "pr-review");
     }
 
     #[test]
@@ -2352,6 +2482,7 @@ mod tests {
         assert_eq!(installed, "demo");
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].user_home, user_home);
         assert_eq!(calls[0].package, "vercel-labs/agent-skills");
         assert_eq!(calls[0].skill.as_deref(), Some("demo"));
         assert_eq!(
