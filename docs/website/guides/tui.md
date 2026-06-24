@@ -93,11 +93,21 @@ and `Enter` to select. Press `Esc` to dismiss.
 
 ### Skills Commands
 
+Manage skills from the TUI:
+
 | Command | Description |
 |---------|-------------|
-| `/skills` | Show installed skills |
-| `/skill-install <name>` | Install a builtin skill |
-| `/skill-uninstall <name>` | Uninstall a skill |
+| `/skills` | Show enabled skills for the selected agent |
+| `/skill-catalog` | Browse the Skill Library catalog |
+| `/skill-add <source>` | Add a skill to the library |
+| `/skill-remove <name>` | Remove a skill from the library |
+| `/skill-enable <name>` | Enable a known skill for the agent |
+| `/skill-disable <name>` | Disable a skill for the agent |
+
+> `/skill-install` and `/skill-uninstall` are no longer the primary
+> slash commands. Use `/skill-add` and `/skill-enable` to add and
+> activate skills, or `/skill-remove` and `/skill-disable` to remove
+> and deactivate them.
 
 ### Debug Commands
 

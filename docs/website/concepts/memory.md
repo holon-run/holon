@@ -10,6 +10,17 @@ Holon is designed for long-lived agents. Memory preserves what matters across
 turns without replaying the entire conversation history. The runtime derives
 memory from durable evidence rather than relying on free-form model summaries.
 
+## Memory Indexing
+
+Holon indexes memory asynchronously at startup. The index build runs in the
+background and does **not block daemon startup**. New events continue to be
+indexed as they are written to the durable ledger.
+
+During the initial index build, search results may be incomplete. The
+runtime prioritizes newly written events so recent memory is always
+findable, even while the background build catches up on historical
+records.
+
 ## Memory Layers
 
 Holon's context memory has four layers, each with a distinct role:

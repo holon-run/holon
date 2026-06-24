@@ -52,11 +52,37 @@ Select an agent from the Dashboard to open its conversation page:
 
 ### Search
 
-Search across agent memory from the browser:
+Search across agent memory from the browser.
 
-- **Full-text search** — query runtime memory index across agents.
-- **Filter by agent** — scope results to one or more agent IDs.
-- **Result navigation** — click a result to view the full memory record.
+Results include:
+
+- **Excerpts** — Each result shows a contextual snippet highlighting the
+  matched terms so you can evaluate relevance without opening the full
+  record.
+- **Expandable sources** — Click a result to expand its full content
+  inline without navigating away from the search page.
+- **Agent filtering** — Scope results to one or more agent IDs.
+- **Full-text search** — Query the runtime memory index across agents.
+
+### Skill Management
+
+Manage the Skill Library and agent skills from the browser:
+
+- **Library catalog** — Browse all skills registered in the local Skill
+  Library with name, description, and source information.
+- **Add skill** — Import a skill from a local path, remote URL, or
+  built-in catalog.
+- **Remove skill** — Remove a skill from the library.
+- **Enable/disable** — Enable or disable individual skills per agent
+  with a toggle. View which skills are active for each agent.
+- **Skill detail** — Click a skill to view its full metadata including
+  scope, source root, and discovery path.
+
+The Skill Management page is available at `/app/skills` in the Web GUI.
+It is also accessible from the navigation sidebar when the daemon is
+running with the embedded GUI.
+
+For CLI-based skill management, see [Skills Guide](/guides/skills.md).
 
 ### Settings
 

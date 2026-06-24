@@ -71,10 +71,17 @@ holon (v0.16.0)
 │       ├── get  Get agent model override
 │       ├── set  Set agent model override
 │       └── clear Clear agent model override
-├── skills       Manage skills
-│   ├── list     List installed skills
-│   ├── install  Install a skill
-│   └── uninstall Uninstall a skill
+├── skills         Manage skills
+│   ├── catalog    List Skill Library catalog
+│   ├── add        Add a skill to the library
+│   ├── remove     Remove a skill from the library
+│   ├── check      Check library consistency
+│   ├── reconcile  Reconcile library with lock file
+│   ├── list       List agent enabled skills
+│   ├── enable     Enable a skill for an agent
+│   ├── disable    Disable a skill for an agent
+│   ├── install    [deprecated] Compatibility alias
+│   └── uninstall  [deprecated] Compatibility alias
 ├── run          One-shot agent interaction
 ├── solve        Solve a GitHub issue or similar target
 ├── workspace    Workspace management (attach, exit, detach)
