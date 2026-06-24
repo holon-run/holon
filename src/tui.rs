@@ -11,7 +11,8 @@ use crate::{
     tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
         AgentListEntry, AgentSummary, AuthorityClass, MessageBody, OperatorMessageRecord,
-        OperatorMessageStatus, ResolvedModelAvailability, TaskRecord,
+        OperatorMessageStatus, ResolvedModelAvailability, SkillCatalogEntry, SkillScope,
+        TaskRecord,
     },
 };
 use anyhow::{anyhow, Result};
@@ -49,7 +50,9 @@ mod state;
 mod view_model;
 
 use app::TuiApp;
-use chat::{chat_text_for_width, paragraph_max_scroll_unframed, ChatScrollState};
+use chat::{
+    chat_text_for_width, paragraph_max_scroll_unframed, ChatScrollState, LocalCommandOutput,
+};
 use composer::ComposerState;
 use logging::TuiLogWriter;
 use overlay::OverlayState;

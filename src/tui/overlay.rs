@@ -25,6 +25,11 @@ pub(super) enum OverlayState {
         selected: usize,
         detail_scroll: u16,
     },
+    SkillCatalog {
+        catalog: Vec<SkillCatalogEntry>,
+        selected: usize,
+        detail_scroll: u16,
+    },
     ModelPicker {
         provider: Option<String>,
         filter: String,
@@ -63,6 +68,11 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             selected,
             detail_scroll,
         } => draw_tasks_overlay(frame, app, *selected, *detail_scroll),
+        OverlayState::SkillCatalog {
+            catalog,
+            selected,
+            detail_scroll,
+        } => draw_skill_catalog_overlay(frame, catalog, *selected, *detail_scroll),
         OverlayState::ModelPicker {
             provider,
             filter,
@@ -305,6 +315,102 @@ fn draw_tasks_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize, deta
         .scroll((detail_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(detail, layout[1]);
+}
+
+fn draw_skill_catalog_overlay(
+    frame: &mut Frame<'_>,
+    catalog: &[SkillCatalogEntry],
+    selected: usize,
+    detail_scroll: u16,
+) {
+    let popup = centered_rect(92, 80, frame.area());
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(42), Constraint::Min(0)])
+        .split(popup);
+    frame.render_widget(Clear, popup);
+
+    let items = if catalog.is_empty() {
+        vec![ListItem::new("No skills in catalog")]
+    } else {
+        catalog
+            .iter()
+            .map(|skill| {
+                ListItem::new(format!(
+                    "[{}] {}\n  {}",
+                    skill_scope_label(skill.scope),
+                    skill.name,
+                    render::trim(&skill.description, 64)
+                ))
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut state = ListState::default();
+    if !catalog.is_empty() {
+        state.select(Some(selected.min(catalog.len().saturating_sub(1))));
+    }
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(format!("Skill Catalog ({})", catalog.len()))
+                .borders(Borders::ALL),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, layout[0], &mut state);
+
+    let detail_text = catalog
+        .get(selected)
+        .map(render_skill_catalog_detail)
+        .unwrap_or_else(|| "No skill selected.".to_string());
+    let detail = Paragraph::new(detail_text)
+        .block(
+            Block::default()
+                .title("Skill Detail · Up/Down select · PgUp/PgDn scroll · Esc close")
+                .borders(Borders::ALL),
+        )
+        .scroll((detail_scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(detail, layout[1]);
+}
+
+fn render_skill_catalog_detail(skill: &SkillCatalogEntry) -> String {
+    let mut lines = vec![
+        format!("Name: {}", skill.name),
+        format!("Scope: {}", skill_scope_label(skill.scope)),
+        format!("Skill id: {}", skill.skill_id),
+    ];
+    if let Some(legacy_id) = skill.legacy_id.as_deref() {
+        lines.push(format!("Legacy id: {legacy_id}"));
+    }
+    lines.extend([
+        format!("Root: {}", skill.root_id),
+        format!("Directory: {}", skill.skill_dir),
+        format!("Path: {}", skill.path.display()),
+    ]);
+    if !skill.description.trim().is_empty() {
+        lines.extend(["".into(), "Description:".into(), skill.description.clone()]);
+    }
+    lines.extend([
+        "".into(),
+        format!(
+            "Use /skill-enable {} to enable this skill for the selected agent.",
+            skill.name
+        ),
+        format!(
+            "Use /skill-remove {} to remove it from the Skill Library.",
+            skill.name
+        ),
+    ]);
+    lines.join("\n")
+}
+
+fn skill_scope_label(scope: SkillScope) -> &'static str {
+    match scope {
+        SkillScope::Agent => "agent",
+        SkillScope::Workspace => "workspace",
+        SkillScope::UserGlobal => "user_global",
+    }
 }
 
 fn draw_model_picker_overlay(

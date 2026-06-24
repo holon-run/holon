@@ -3,7 +3,7 @@ use super::{
     chat::{
         build_chat_text, build_chat_text_for_width, chat_text, collect_chat_items,
         is_operator_origin_value, paragraph_max_scroll, paragraph_max_scroll_unframed,
-        ChatScrollState, ConversationCell, ConversationDisplayKind,
+        ChatScrollState, ConversationCell, ConversationDisplayKind, LocalCommandOutput,
     },
     composer::ComposerState,
     determine_alt_screen_mode_for_terminal,
@@ -505,6 +505,35 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
 
     assert_eq!(first, second);
     assert!(!app.log_writer.root().join("presentation.jsonl").exists());
+}
+
+#[test]
+fn collect_chat_items_includes_local_command_outputs() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.local_command_outputs.push(LocalCommandOutput {
+        created_at: Utc::now(),
+        title: "Skill added".into(),
+        body: "Added `ghx` to the user_global Skill Library.".into(),
+        is_error: false,
+    });
+
+    let items = collect_chat_items(&app);
+
+    assert!(items.iter().any(|item| matches!(
+        item,
+        ConversationCell::SystemNotice {
+            speaker,
+            body,
+            header_hint,
+            ..
+        } if speaker == "command"
+            && body.contains("Added `ghx`")
+            && header_hint.as_deref() == Some("Skill added")
+    )));
 }
 
 #[test]

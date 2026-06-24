@@ -536,6 +536,17 @@ fn json_array_names(value: &serde_json::Value, field: &str) -> Option<Vec<String
         })
 }
 
+fn parse_skill_catalog_entries(value: &serde_json::Value) -> Option<Vec<SkillCatalogEntry>> {
+    serde_json::from_value(value.get("catalog")?.clone()).ok()
+}
+
+fn skill_install_mode_label(mode: &crate::types::SkillInstallMode) -> &'static str {
+    match mode {
+        crate::types::SkillInstallMode::Linked => "linked",
+        crate::types::SkillInstallMode::Copied => "copied",
+    }
+}
+
 fn summarize_names(prefix: &str, names: &[String]) -> String {
     if names.is_empty() {
         format!("{prefix}: none")
@@ -668,6 +679,30 @@ fn paste_single_line_text(text: &str) -> String {
 }
 
 impl TuiApp {
+    fn append_command_output(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        is_error: bool,
+    ) {
+        self.local_command_outputs.push(LocalCommandOutput {
+            created_at: chrono::Utc::now(),
+            title: title.into(),
+            body: body.into(),
+            is_error,
+        });
+        const MAX_LOCAL_COMMAND_OUTPUTS: usize = 50;
+        let overflow = self
+            .local_command_outputs
+            .len()
+            .saturating_sub(MAX_LOCAL_COMMAND_OUTPUTS);
+        if overflow > 0 {
+            self.local_command_outputs.drain(0..overflow);
+        }
+        self.chat_scroll.follow_tail();
+        self.chat_text_cache.borrow_mut().take();
+    }
+
     fn should_treat_enter_as_paste_newline(&self, key: KeyEvent) -> bool {
         should_treat_enter_as_paste_newline_state(
             self.composer.as_str(),
@@ -1017,10 +1052,21 @@ impl TuiApp {
             }
             SlashCommand::SkillCatalog => {
                 let response = self.client.skills_catalog().await?;
-                if let Some(names) = json_array_names(&response, "catalog") {
-                    self.status_line = summarize_names("Skill catalog", &names);
+                if let Some(catalog) = parse_skill_catalog_entries(&response) {
+                    let count = catalog.len();
+                    self.overlay = OverlayState::SkillCatalog {
+                        catalog,
+                        selected: 0,
+                        detail_scroll: 0,
+                    };
+                    self.status_line = format!("Opened Skill Catalog: {count} skills");
                 } else {
                     self.status_line = "Failed to list skill catalog".into();
+                    self.append_command_output(
+                        "Skill Catalog",
+                        "Failed to list skill catalog: response did not include a catalog array.",
+                        true,
+                    );
                 }
             }
             SlashCommand::SkillAdd => {
@@ -1031,6 +1077,13 @@ impl TuiApp {
                     .and_then(|name| name.as_str())
                     .unwrap_or("skill");
                 self.status_line = format!("Added skill to catalog: {skill_name}");
+                self.append_command_output(
+                    "Skill added",
+                    format!(
+                        "Added `{skill_name}` to the user_global Skill Library.\nUse `/skill-enable {skill_name}` to enable it for the selected agent."
+                    ),
+                    false,
+                );
             }
             SlashCommand::SkillRemove => {
                 let skill_name = args
@@ -1039,6 +1092,11 @@ impl TuiApp {
                     .expect("slash command /skill-remove requires one argument");
                 self.client.remove_skill(&skill_name).await?;
                 self.status_line = format!("Removed skill from catalog: {skill_name}");
+                self.append_command_output(
+                    "Skill removed",
+                    format!("Removed `{skill_name}` from the user_global Skill Library."),
+                    false,
+                );
             }
             SlashCommand::SkillEnable => {
                 let (skill_name, mode) = parse_skill_enable_args(&args)?;
@@ -1049,9 +1107,18 @@ impl TuiApp {
                         return Ok(());
                     }
                 };
+                let mode_label = skill_install_mode_label(&mode);
                 match self.client.enable_skill(&agent_id, &skill_name, mode).await {
                     Ok(_) => {
                         self.status_line = format!("Enabled skill for {agent_id}: {skill_name}");
+                        self.append_command_output(
+                            "Skill enabled",
+                            format!(
+                                "Enabled `{skill_name}` for agent `{agent_id}` with mode `{}`.\nThe selected agent is being bootstrapped so active skills refresh.",
+                                mode_label
+                            ),
+                            false,
+                        );
                         self.begin_bootstrap_selected_agent();
                     }
                     Err(error) => return Err(error),
@@ -1071,6 +1138,13 @@ impl TuiApp {
                 };
                 self.client.disable_skill(&agent_id, &skill_name).await?;
                 self.status_line = format!("Disabled skill for {agent_id}: {skill_name}");
+                self.append_command_output(
+                    "Skill disabled",
+                    format!(
+                        "Disabled `{skill_name}` for agent `{agent_id}`.\nThe selected agent is being bootstrapped so active skills refresh."
+                    ),
+                    false,
+                );
                 self.begin_bootstrap_selected_agent();
             }
         }
@@ -1191,6 +1265,50 @@ impl TuiApp {
                     }
                     _ => {
                         self.overlay = OverlayState::Tasks {
+                            selected,
+                            detail_scroll,
+                        };
+                    }
+                }
+                Ok(())
+            }
+            OverlayState::SkillCatalog {
+                catalog,
+                selected,
+                detail_scroll,
+            } => {
+                let mut selected = selected;
+                let mut detail_scroll = detail_scroll;
+                match resolve_key(KeyContext::TasksOverlay, key) {
+                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayMoveUp => {
+                        selected = selected.saturating_sub(1);
+                        self.overlay = OverlayState::SkillCatalog {
+                            catalog,
+                            selected,
+                            detail_scroll: 0,
+                        };
+                    }
+                    TuiKeyAction::OverlayMoveDown => {
+                        let max = catalog.len().saturating_sub(1);
+                        selected = (selected + 1).min(max);
+                        self.overlay = OverlayState::SkillCatalog {
+                            catalog,
+                            selected,
+                            detail_scroll: 0,
+                        };
+                    }
+                    TuiKeyAction::OverlayScroll(action) => {
+                        detail_scroll = adjust_scroll_for_action(detail_scroll, action);
+                        self.overlay = OverlayState::SkillCatalog {
+                            catalog,
+                            selected,
+                            detail_scroll,
+                        };
+                    }
+                    _ => {
+                        self.overlay = OverlayState::SkillCatalog {
+                            catalog,
                             selected,
                             detail_scroll,
                         };
@@ -2190,11 +2308,12 @@ impl TuiApp {
 mod tests {
     use super::{
         onboarding_runtime_config_status, parse_agent_slash_action, parse_composer_submission,
-        should_treat_enter_as_paste_newline_state, slash_command_spec, slash_help_lines,
-        slash_menu_enter_submission, slash_menu_specs, slash_prompt_lines, AgentSlashAction,
-        ComposerSubmission, SlashCommand,
+        parse_skill_catalog_entries, should_treat_enter_as_paste_newline_state, slash_command_spec,
+        slash_help_lines, slash_menu_enter_submission, slash_menu_specs, slash_prompt_lines,
+        AgentSlashAction, ComposerSubmission, SlashCommand,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use serde_json::json;
     use std::time::Instant;
 
     #[test]
@@ -2203,6 +2322,27 @@ mod tests {
             parse_composer_submission("hello world").unwrap(),
             Some(ComposerSubmission::Chat("hello world".into()))
         );
+    }
+
+    #[test]
+    fn parses_skill_catalog_entries_from_response() {
+        let entries = parse_skill_catalog_entries(&json!({
+            "catalog": [{
+                "name": "ghx",
+                "skill_id": "agent:ghx",
+                "legacy_id": null,
+                "description": "GitHub CLI workflows",
+                "scope": "agent",
+                "root_id": "agent_home:holon-dev",
+                "skill_dir": "ghx",
+                "path": "/agent/skills/ghx"
+            }]
+        }))
+        .expect("catalog entries");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "ghx");
+        assert_eq!(entries[0].description, "GitHub CLI workflows");
     }
 
     #[test]
