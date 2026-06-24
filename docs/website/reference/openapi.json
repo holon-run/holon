@@ -7,8 +7,110 @@
         "type": "object"
       },
       "AddSkillRequest": {
-        "additionalProperties": true,
-        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "properties": {
+          "kind": {
+            "oneOf": [
+              {
+                "properties": {
+                  "kind": {
+                    "const": "builtin",
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "named",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "default": "linked",
+                    "enum": [
+                      "linked",
+                      "copied"
+                    ],
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "local",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "default": "linked",
+                    "enum": [
+                      "linked",
+                      "copied"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "path"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "remote",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "default": "linked",
+                    "enum": [
+                      "linked",
+                      "copied"
+                    ],
+                    "type": "string"
+                  },
+                  "package": {
+                    "type": "string"
+                  },
+                  "skill": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "package"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "AddSkillRequest",
         "type": "object"
       },
       "AttachWorkspaceRequest": {
@@ -271,6 +373,25 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "CreateJobRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "skill.install"
+            ],
+            "type": "string"
+          },
+          "params": {
+            "$ref": "#/components/schemas/AddSkillRequest"
+          }
+        },
+        "required": [
+          "kind",
+          "params"
+        ],
+        "type": "object"
+      },
       "CreateTimerRequest": {
         "additionalProperties": false,
         "properties": {
@@ -392,6 +513,83 @@
       "InstallSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "JobResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "additionalProperties": true,
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "items": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "progress": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "result": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "status": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "completed",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "status",
+              "phase",
+              "progress",
+              "summary",
+              "items",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "job"
+        ],
         "type": "object"
       },
       "JsonValue": {
@@ -5883,6 +6081,112 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
+    "/api/jobs": {
+      "post": {
+        "description": "Create an asynchronous job. Currently supports kind=skill.install for Global Skill Library installation.",
+        "operationId": "createJob",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "description": "Return a generic asynchronous job snapshot by id.",
+        "operationId": "jobStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Job status",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/api/skills/catalog": {
       "get": {
         "description": "Return the global user Skill Library catalog. Query parameter: scope.",
@@ -9336,6 +9640,9 @@
     },
     {
       "name": "skills"
+    },
+    {
+      "name": "jobs"
     },
     {
       "name": "search"

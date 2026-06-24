@@ -26,6 +26,7 @@ http_async_tests!(
     skill_detail_returns_catalog_skill_markdown,
     install_skill_existing_destination_returns_conflict,
     add_skill_to_catalog_existing_destination_returns_conflict,
+    create_skill_install_job_installs_local_skill,
     skill_library_add_remove_and_agent_enable_disable_are_separate,
     skill_library_reconcile_and_check_lock_file,
     control_agent_model_override_set_and_clear_updates_status,

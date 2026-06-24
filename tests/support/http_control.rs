@@ -894,6 +894,78 @@ pub async fn add_skill_to_catalog_existing_destination_returns_conflict() -> Res
     Ok(())
 }
 
+pub async fn create_skill_install_job_installs_local_skill() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = Client::new();
+    let skill_name = format!("http-job-skill-{}", std::process::id());
+    let local_skill_root = tempdir()?;
+    let local_skill_path = local_skill_root.path().join(&skill_name);
+    std::fs::create_dir_all(&local_skill_path)?;
+    std::fs::write(
+        local_skill_path.join("SKILL.md"),
+        format!("# {skill_name}\n\nTemporary job API test skill.\n"),
+    )?;
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
+        .iter()
+        .map(|suffix| user_home.join(suffix))
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| user_home.join(".agents").join("skills"));
+    let library_path = library_root.join(&skill_name);
+    let _ = std::fs::remove_file(&library_path);
+    let _ = std::fs::remove_dir_all(&library_path);
+
+    let response = client
+        .post(format!("{base}/api/jobs"))
+        .json(&serde_json::json!({
+            "kind": "skill.install",
+            "params": {
+                "kind": {
+                    "kind": "local",
+                    "path": local_skill_path,
+                }
+            }
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let body: serde_json::Value = response.json().await?;
+    let job_id = body["job"]["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("job id missing from response: {body}"))?
+        .to_string();
+
+    let mut terminal = None;
+    for _ in 0..40 {
+        let status = client
+            .get(format!("{base}/api/jobs/{job_id}"))
+            .send()
+            .await?;
+        assert!(status.status().is_success());
+        let body: serde_json::Value = status.json().await?;
+        let job = &body["job"];
+        if matches!(job["status"].as_str(), Some("completed") | Some("failed")) {
+            terminal = Some(job.clone());
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    let terminal = terminal.ok_or_else(|| anyhow::anyhow!("skill install job did not finish"))?;
+    assert_eq!(terminal["kind"], "skill.install");
+    assert_eq!(terminal["status"], "completed");
+    assert_eq!(terminal["progress"]["current"], 1);
+    assert_eq!(terminal["result"]["skill_name"], skill_name);
+    assert!(library_path.join("SKILL.md").exists());
+
+    let _ = std::fs::remove_file(&library_path);
+    let _ = std::fs::remove_dir_all(&library_path);
+    server.abort();
+    Ok(())
+}
+
 pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() -> Result<()> {
     let config = test_config();
     let skill_name = format!("http-split-skill-{}", std::process::id());

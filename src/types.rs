@@ -900,7 +900,7 @@ pub struct SkillsRuntimeView {
     pub active_skills: Vec<ActiveSkillRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillInstallMode {
     Linked,
@@ -913,7 +913,7 @@ impl Default for SkillInstallMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SkillInstallKind {
     Builtin {
@@ -938,12 +938,12 @@ pub enum SkillInstallKind {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct InstallSkillRequest {
     pub kind: SkillInstallKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AddSkillRequest {
     pub kind: SkillInstallKind,
 }
