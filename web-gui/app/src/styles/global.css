@@ -2824,6 +2824,11 @@ code {
 
 .skill-detail-page {
   align-content: start;
+  overflow: visible;
+}
+
+.skill-detail-route {
+  overflow-y: auto;
 }
 
 .skills-hero {

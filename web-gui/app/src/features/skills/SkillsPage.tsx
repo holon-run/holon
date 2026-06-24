@@ -274,7 +274,8 @@ export function SkillDetailPage({
 }) {
   const skill = detail?.skill;
   return (
-    <div className="skills-inner skill-detail-page scroll-surface">
+    <section className="page skill-detail-route" aria-label="Skill detail">
+      <div className="skills-inner skill-detail-page scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
           <span className="eyebrow">Skill detail</span>
@@ -316,10 +317,6 @@ export function SkillDetailPage({
                 <dd>{skill.skillDir || "unknown"}</dd>
               </div>
               <div>
-                <dt>Legacy id</dt>
-                <dd>{skill.legacyId ?? "none"}</dd>
-              </div>
-              <div>
                 <dt>Path</dt>
                 <dd>{collapseHome(skill.path)}</dd>
               </div>
@@ -340,7 +337,8 @@ export function SkillDetailPage({
           }
         />
       )}
-    </div>
+      </div>
+    </section>
   );
 }
 
