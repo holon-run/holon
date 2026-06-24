@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use reqwest::{Client, RequestBuilder, Response};
+use reqwest::{header::HeaderMap, Client, RequestBuilder, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -1228,6 +1228,24 @@ impl ProviderTurnResponse {
         self.request_diagnostics = Some(diagnostics);
         self
     }
+}
+
+impl ParsedOpenAiResponse {
+    fn with_provider_request_id(mut self, provider_request_id: Option<String>) -> Self {
+        self.response.provider_request_id = provider_request_id;
+        self
+    }
+}
+
+fn provider_request_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-request-id")
+        .or_else(|| headers.get("request-id"))
+        .or_else(|| headers.get("openai-request-id"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 pub(crate) fn build_chat_completion_request(
@@ -3394,6 +3412,7 @@ async fn send_chat_completion_request(
         response.status(),
         response.headers(),
     );
+    let provider_request_id = provider_request_id_from_headers(response.headers());
 
     if !response.status().is_success() {
         let status = response.status();
@@ -3443,6 +3462,7 @@ async fn send_chat_completion_request(
         .map_err(|error| invalid_response_error("invalid OpenAI Chat Completions JSON", error))?;
 
     parse_chat_completion_response(parsed)
+        .map(|parsed| parsed.with_provider_request_id(provider_request_id))
 }
 
 fn classify_chat_completion_status_error(
@@ -3715,6 +3735,8 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
             cache_usage,
+            provider_message_id: response_id.clone(),
+            provider_request_id: None,
             request_diagnostics: None,
         },
         response_id,
@@ -4102,6 +4124,7 @@ async fn send_openai_responses_request(
         response.status(),
         response.headers(),
     );
+    let provider_request_id = provider_request_id_from_headers(response.headers());
 
     if !response.status().is_success() {
         let status = response.status();
@@ -4151,6 +4174,7 @@ async fn send_openai_responses_request(
     let parsed: Value = serde_json::from_str(&body)
         .map_err(|error| invalid_response_error("invalid OpenAI-style JSON", error))?;
     parse_openai_response_with_transport_state(parsed)
+        .map(|parsed| parsed.with_provider_request_id(provider_request_id))
 }
 
 async fn send_openai_compact_request(
@@ -4299,6 +4323,7 @@ async fn send_openai_responses_streaming_request(
         response.status(),
         response.headers(),
     );
+    let provider_request_id = provider_request_id_from_headers(response.headers());
 
     if !response.status().is_success() {
         let status = response.status();
@@ -4322,6 +4347,7 @@ async fn send_openai_responses_streaming_request(
     let terminal_response =
         read_openai_streaming_response(response, request_trace.as_ref()).await?;
     parse_openai_response_with_transport_state(terminal_response)
+        .map(|parsed| parsed.with_provider_request_id(provider_request_id))
 }
 
 fn openai_codex_auth_error(
@@ -4882,6 +4908,8 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
             cache_usage,
+            provider_message_id: response_id.clone(),
+            provider_request_id: None,
             request_diagnostics: None,
         },
         response_id,

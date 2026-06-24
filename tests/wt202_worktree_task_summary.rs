@@ -113,6 +113,8 @@ impl AgentProvider for ParallelWorktreeProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }

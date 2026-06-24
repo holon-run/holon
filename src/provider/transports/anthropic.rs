@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use reqwest::{Client, Response};
+use reqwest::{header::HeaderMap, Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -102,6 +102,7 @@ struct ApiMessage {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct MessagesResponse {
+    id: Option<String>,
     content: Vec<ApiResponseBlock>,
     stop_reason: Option<String>,
     usage: Option<ApiUsage>,
@@ -273,6 +274,7 @@ impl AgentProvider for AnthropicProvider {
         if let Some(trace) = request_trace.as_ref() {
             trace.write_response_headers(response.status(), response.headers());
         }
+        let provider_request_id = provider_request_id_from_headers(response.headers());
 
         if !response.status().is_success() {
             let status = response.status();
@@ -309,6 +311,7 @@ impl AgentProvider for AnthropicProvider {
         };
         anthropic_messages_response_to_turn_response(
             parsed,
+            provider_request_id,
             &request,
             &wire_conversation,
             rolling_cache_marker,
@@ -523,6 +526,7 @@ async fn read_anthropic_streaming_response(
 
 fn anthropic_messages_response_to_turn_response(
     parsed: MessagesResponse,
+    provider_request_id: Option<String>,
     request: &ProviderTurnRequest,
     wire_conversation: &[ConversationMessage],
     rolling_cache_marker: Option<(usize, usize)>,
@@ -619,6 +623,8 @@ fn anthropic_messages_response_to_turn_response(
         input_tokens,
         output_tokens,
         cache_usage,
+        provider_message_id: parsed.id,
+        provider_request_id,
         request_diagnostics: Some(crate::provider::ProviderRequestDiagnostics {
             request_lowering_mode: request_lowering_mode.to_string(),
             anthropic_cache: Some(cache_diagnostics),
@@ -630,6 +636,16 @@ fn anthropic_messages_response_to_turn_response(
             response_format: response_format_diagnostics(request),
         }),
     })
+}
+
+fn provider_request_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-request-id")
+        .or_else(|| headers.get("request-id"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 #[derive(Default)]

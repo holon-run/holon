@@ -69,6 +69,8 @@ mod tests {
                     read_input_tokens: 0,
                     creation_input_tokens: 0,
                 }),
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             })
         }
@@ -104,6 +106,8 @@ mod tests {
                     read_input_tokens: 0,
                     creation_input_tokens: 0,
                 }),
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             })
         }
@@ -124,6 +128,8 @@ mod tests {
                     read_input_tokens: 0,
                     creation_input_tokens: 0,
                 }),
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             })
         }

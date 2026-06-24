@@ -325,6 +325,8 @@ impl AgentProvider for OneToolThenTextProvider {
             input_tokens: 10,
             output_tokens: 10,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -430,6 +432,8 @@ impl AgentProvider for TruncatingProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -452,6 +456,8 @@ impl AgentProvider for TruncatingProvider {
             input_tokens: 50,
             output_tokens: 25,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -468,6 +474,8 @@ impl AgentProvider for TimelineProvider {
             input_tokens: 12,
             output_tokens: 6,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -542,6 +550,8 @@ impl AgentProvider for ToolCaptureProvider {
             input_tokens: 8,
             output_tokens: 4,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -572,6 +582,8 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             },
             2 => ProviderTurnResponse {
@@ -592,6 +604,8 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             },
             3 => ProviderTurnResponse {
@@ -612,6 +626,8 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             },
             _ => ProviderTurnResponse {
@@ -622,6 +638,8 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             },
         };
@@ -647,6 +665,8 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => panic!("continuation request should not be sent after baseline-over-budget"),
@@ -680,6 +700,8 @@ impl AgentProvider for SleepOnlyToolProvider {
             input_tokens: 10,
             output_tokens: 5,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -713,6 +735,8 @@ impl AgentProvider for WaitForOnlyToolProvider {
             input_tokens: 10,
             output_tokens: 5,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -736,6 +760,8 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             2 => {
@@ -762,6 +788,8 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                     input_tokens: 10,
                     output_tokens: 5,
                     cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
                     request_diagnostics: None,
                 })
             }
@@ -788,6 +816,8 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                 input_tokens: 20,
                 output_tokens: 10,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             2 => {
@@ -814,6 +844,8 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                     input_tokens: 15,
                     output_tokens: 8,
                     cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
                     request_diagnostics: None,
                 })
             }
@@ -960,6 +992,8 @@ impl AgentProvider for TextThenFailingFallbackProvider {
                 input_tokens: 20,
                 output_tokens: 10,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -1057,7 +1091,9 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                 input_tokens: 25,
                 output_tokens: 25,
                 cache_usage: None,
-                request_diagnostics: None,
+                provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
             });
         }
 
@@ -1103,6 +1139,8 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
             input_tokens: 25,
             output_tokens: 25,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -1134,6 +1172,8 @@ impl AgentProvider for SkillReadProvider {
             input_tokens: 20,
             output_tokens: 20,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -1162,6 +1202,8 @@ impl AgentProvider for SkillActivationCommandProvider {
             input_tokens: 20,
             output_tokens: 20,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -1180,6 +1222,8 @@ impl AgentProvider for CountingProvider {
             input_tokens: 10,
             output_tokens: 5,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }

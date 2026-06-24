@@ -58,6 +58,8 @@ impl AgentProvider for ToolUsingProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -71,6 +73,8 @@ impl AgentProvider for ToolUsingProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -119,6 +123,8 @@ impl AgentProvider for FileEditingProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -132,6 +138,8 @@ impl AgentProvider for FileEditingProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -185,6 +193,8 @@ impl AgentProvider for TerminalResultBriefProvider {
                     input_tokens: 100,
                     output_tokens: 50,
                     cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
                     request_diagnostics: None,
                 })
             }
@@ -205,6 +215,8 @@ impl AgentProvider for TerminalResultBriefProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => {
@@ -220,7 +232,9 @@ impl AgentProvider for TerminalResultBriefProvider {
                     input_tokens: 100,
                     output_tokens: 50,
                     cache_usage: None,
-                    request_diagnostics: None,
+                    provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
                 })
             }
         }
@@ -267,6 +281,8 @@ impl AgentProvider for SleepOnlyCompletionAfterTextProvider {
                     input_tokens: 100,
                     output_tokens: 50,
                     cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
                     request_diagnostics: None,
                 })
             }
@@ -282,6 +298,8 @@ impl AgentProvider for SleepOnlyCompletionAfterTextProvider {
                 input_tokens: 100,
                 output_tokens: 20,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => anyhow::bail!("unexpected provider call"),
@@ -321,6 +339,8 @@ impl AgentProvider for ShellProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -348,6 +368,8 @@ impl AgentProvider for ShellProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -389,6 +411,8 @@ impl AgentProvider for TruncatedShellReinjectionProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -419,6 +443,8 @@ impl AgentProvider for TruncatedShellReinjectionProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -456,6 +482,8 @@ impl AgentProvider for LongShellProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -485,6 +513,8 @@ impl AgentProvider for LongShellProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -519,6 +549,8 @@ impl AgentProvider for DelegatedBoundaryProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -552,6 +584,8 @@ impl AgentProvider for WakeHintProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             })
         } else {
@@ -563,6 +597,8 @@ impl AgentProvider for WakeHintProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             })
         }
@@ -634,6 +670,8 @@ impl AgentProvider for RecordingPromptProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -684,6 +722,8 @@ impl AgentProvider for ToolErrorProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -725,6 +765,8 @@ impl AgentProvider for ToolErrorProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -792,6 +834,8 @@ impl AgentProvider for UseWorkspaceProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -821,6 +865,8 @@ impl AgentProvider for UseWorkspaceProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -872,6 +918,8 @@ impl AgentProvider for WorktreeLifecycleProvider {
                     input_tokens: 100,
                     output_tokens: 50,
                     cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
                     request_diagnostics: None,
                 })
             }
@@ -883,6 +931,8 @@ impl AgentProvider for WorktreeLifecycleProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             3 => {
@@ -899,6 +949,8 @@ impl AgentProvider for WorktreeLifecycleProvider {
                     input_tokens: 100,
                     output_tokens: 50,
                     cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
                     request_diagnostics: None,
                 })
             }
@@ -923,6 +975,8 @@ impl AgentProvider for WorktreeLifecycleProvider {
                     input_tokens: 100,
                     output_tokens: 50,
                     cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
                     request_diagnostics: None,
                 })
             }
@@ -934,6 +988,8 @@ impl AgentProvider for WorktreeLifecycleProvider {
                 input_tokens: 50,
                 output_tokens: 20,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
         }
@@ -974,6 +1030,8 @@ impl AgentProvider for WorktreeCapturingProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -994,6 +1052,8 @@ impl AgentProvider for DelayedTextProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }

@@ -65,6 +65,8 @@ impl AgentProvider for MaxOutputRecoveryProvider {
                 input_tokens: 100,
                 output_tokens: 1000,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -94,6 +96,8 @@ impl AgentProvider for MaxOutputRecoveryProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -150,6 +154,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
@@ -170,6 +176,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             3 => Ok(ProviderTurnResponse {
@@ -190,6 +198,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             4 => Ok(ProviderTurnResponse {
@@ -201,6 +211,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
@@ -212,6 +224,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
         }
@@ -256,6 +270,8 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 1500,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
@@ -278,6 +294,8 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 60,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             3 => Ok(ProviderTurnResponse {
@@ -299,6 +317,8 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 60,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             4 => Ok(ProviderTurnResponse {
@@ -310,6 +330,8 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 30,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
@@ -320,6 +342,8 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 input_tokens: 100,
                 output_tokens: 20,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
         }
@@ -384,7 +408,9 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
-                request_diagnostics: None,
+                provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
                 blocks: vec![
@@ -407,7 +433,9 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
-                request_diagnostics: None,
+                provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
             }),
             3 => {
                 let task_id = self
@@ -437,7 +465,9 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                     input_tokens: 0,
                     output_tokens: 0,
                     cache_usage: None,
-                    request_diagnostics: None,
+                    provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
                 })
             }
             4 => Ok(ProviderTurnResponse {
@@ -461,7 +491,9 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
-                request_diagnostics: None,
+                provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::Text {
@@ -471,7 +503,9 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_usage: None,
-                request_diagnostics: None,
+                provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
             }),
         }
     }

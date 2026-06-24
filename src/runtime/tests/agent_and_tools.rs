@@ -14,6 +14,8 @@ impl AgentProvider for FreeformPromptProvider {
             input_tokens: 0,
             output_tokens: 0,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
