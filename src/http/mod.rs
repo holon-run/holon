@@ -92,6 +92,7 @@ mod agents;
 mod control;
 mod events;
 mod ingress;
+mod jobs;
 mod skills;
 mod state;
 mod tasks;
@@ -109,6 +110,7 @@ pub use agents::*;
 pub use control::*;
 pub use events::{events, events_stream, global_events_stream, message, messages_batch_get};
 pub use ingress::{callback_ingress_enqueue, callback_ingress_wake, generic_webhook};
+pub use jobs::{create_job, job_status, JobRegistry};
 pub use skills::{
     add_skill_to_catalog, disable_skill, enable_skill, install_skill, list_skills,
     remove_skill_from_catalog, skills_catalog, uninstall_skill,
@@ -169,6 +171,7 @@ pub struct AppState {
     pub advertise_url: Option<String>,
     pub web_dist: Option<Arc<PathBuf>>,
     pub skills_registry: Arc<tokio::sync::RwLock<SkillsRegistry>>,
+    pub jobs: JobRegistry,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -228,6 +231,7 @@ impl AppState {
             .config()
             .control_token_required(ControlTransportKind::Tcp);
         let skills_registry = host.skills_registry();
+        let jobs = JobRegistry::default();
         Self {
             host,
             require_control_token,
@@ -235,6 +239,7 @@ impl AppState {
             advertise_url: None,
             web_dist: None,
             skills_registry,
+            jobs,
         }
     }
 
@@ -248,6 +253,7 @@ impl AppState {
     ) -> Self {
         // Unix control is local IPC; filesystem permissions are the access boundary.
         let skills_registry = host.skills_registry();
+        let jobs = JobRegistry::default();
         Self {
             host,
             require_control_token: false,
@@ -255,6 +261,7 @@ impl AppState {
             advertise_url: None,
             web_dist: None,
             skills_registry,
+            jobs,
         }
     }
 
@@ -282,6 +289,8 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/briefs/{brief_id}", get(state::brief))
         .route("/agents/{agent_id}/state", get(state::agent_state))
         .route("/events/stream", get(events::global_events_stream))
+        .route("/jobs", post(jobs::create_job))
+        .route("/jobs/{job_id}", get(jobs::job_status))
         .route("/agents/{agent_id}/events", get(events::events))
         .route(
             "/agents/{agent_id}/events/stream",

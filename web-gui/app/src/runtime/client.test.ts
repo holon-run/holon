@@ -215,6 +215,39 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info"]);
   });
 
+  it("installs skills through the generic job API", async () => {
+    const seen: Array<{ url: string; body?: unknown }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith("/jobs") && init?.method === "POST") {
+        return Response.json({ job: { id: "job_123", kind: "skill.install", status: "queued" } }, { status: 202 });
+      }
+      if (url.endsWith("/jobs/job_123")) {
+        return Response.json({ job: { id: "job_123", kind: "skill.install", status: "completed" } });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.addSkillToCatalog({ kind: "remote", package: "owner/repo" })).resolves.toBeUndefined();
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/jobs",
+        body: {
+          kind: "skill.install",
+          params: { kind: { kind: "remote", package: "owner/repo" } },
+        },
+      },
+      { url: "http://example.test:7878/api/jobs/job_123", body: undefined },
+    ]);
+  });
+
   it("posts runtime search filters for cross-agent all-workspace search", async () => {
     const seen: Array<{ url: string; body: unknown }> = [];
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {

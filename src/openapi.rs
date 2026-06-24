@@ -15,8 +15,8 @@ use crate::{
     },
     memory::MemoryGetResult,
     types::{
-        BriefRecord, TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult,
-        TimerRecord, ToolExecutionRecord, WorkItemRecord,
+        AddSkillRequest, BriefRecord, TaskInputResult, TaskOutputResult, TaskStatusSnapshot,
+        TaskStopResult, TimerRecord, ToolExecutionRecord, WorkItemRecord,
     },
 };
 
@@ -93,6 +93,8 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List agent skills", "Return skills enabled/effective for an agent.", None, AuthKind::RemoteAccess),
     route("get", "/api/skills/catalog", "skillsCatalog", "skills", "Skills catalog", "Return the global user Skill Library catalog. Query parameter: scope.", None, AuthKind::RemoteAccess),
     route("get", "/api/skills/catalog/{skill_id}", "skillDetail", "skills", "Skill detail", "Return catalog metadata and SKILL.md content for a Global Skill Library skill.", None, AuthKind::RemoteAccess),
+    route_with_response("post", "/api/jobs", "createJob", "jobs", "Create job", "Create an asynchronous job. Currently supports kind=skill.install for Global Skill Library installation.", Some("CreateJobRequest"), "JobResponse", AuthKind::Control),
+    route_with_response("get", "/api/jobs/{job_id}", "jobStatus", "jobs", "Job status", "Return a generic asynchronous job snapshot by id.", None, "JobResponse", AuthKind::RemoteAccess),
     route("post", "/api/skills/catalog/add", "addSkillToCatalog", "skills", "Add skill to library", "Add or import a skill into the local Skill Library.", Some("AddSkillRequest"), AuthKind::Control),
     route("post", "/api/skills/catalog/remove", "removeSkillFromCatalog", "skills", "Remove skill from library", "Remove a skill from the local Skill Library.", Some("RemoveSkillRequest"), AuthKind::Control),
     route("post", "/api/skills/catalog/reconcile", "reconcileSkillCatalog", "skills", "Reconcile skill library lock", "Reconcile local Skill Library contents with .skill-lock.json, then check consistency. This does not fetch remote updates.", Some("ReconcileSkillRequest"), AuthKind::Control),
@@ -283,6 +285,7 @@ fn openapi_value() -> Value {
             { "name": "work-items" },
             { "name": "timers" },
             { "name": "skills" },
+            { "name": "jobs" },
             { "name": "search" },
             { "name": "callbacks", "description": "Capability-token callback ingress. Never publish real callback_token values." },
             { "name": "compat" }
@@ -503,6 +506,47 @@ fn component_schemas() -> Value {
         "description": "Raw callback request body. JSON and text bodies are parsed; other content types are represented internally as base64 JSON."
     }));
     schemas.insert(
+        "CreateJobRequest".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "enum": ["skill.install"] },
+                "params": { "$ref": "#/components/schemas/AddSkillRequest" }
+            },
+            "required": ["kind", "params"],
+            "additionalProperties": false
+        }),
+    );
+    schemas.insert(
+        "JobResponse".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "job": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "kind": { "type": "string" },
+                        "status": { "type": "string", "enum": ["queued", "running", "completed", "failed"] },
+                        "phase": { "type": "string" },
+                        "progress": { "type": "object", "additionalProperties": true },
+                        "summary": { "type": "string" },
+                        "items": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+                        "result": { "type": "object", "additionalProperties": true },
+                        "error": { "type": "string" },
+                        "created_at": { "type": "string", "format": "date-time" },
+                        "updated_at": { "type": "string", "format": "date-time" }
+                    },
+                    "required": ["id", "kind", "status", "phase", "progress", "summary", "items", "created_at", "updated_at"],
+                    "additionalProperties": true
+                }
+            },
+            "required": ["ok", "job"],
+            "additionalProperties": false
+        }),
+    );
+    schemas.insert(
         "TaskStatusSnapshot".into(),
         component_schema::<TaskStatusSnapshot>(),
     );
@@ -582,6 +626,10 @@ fn component_schemas() -> Value {
         component_schema::<MemoryGetResult>(),
     );
     schemas.insert(
+        "AddSkillRequest".into(),
+        component_schema::<AddSkillRequest>(),
+    );
+    schemas.insert(
         "BatchGetMessagesRequest".into(),
         component_schema::<BatchGetMessagesRequest>(),
     );
@@ -624,7 +672,6 @@ fn component_schemas() -> Value {
         "SetCredentialRequest",
         "DebugPromptRequest",
         "ControlWakeRequest",
-        "AddSkillRequest",
         "RemoveSkillRequest",
         "EnableSkillRequest",
         "DisableSkillRequest",

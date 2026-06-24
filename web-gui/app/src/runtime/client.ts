@@ -41,7 +41,8 @@ export interface RuntimeClientOptions {
 const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
-const SKILL_INSTALL_REQUEST_TIMEOUT_MS = 130_000;
+const JOB_POLL_INTERVAL_MS = 750;
+const JOB_WAIT_TIMEOUT_MS = 180_000;
 
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
@@ -538,6 +539,19 @@ interface AgentSkillsResponseDto {
   skills?: SkillCatalogEntryDto[];
 }
 
+interface JobResponseDto {
+  job?: JobDto;
+}
+
+interface JobDto {
+  id?: string;
+  kind?: string;
+  status?: "queued" | "running" | "completed" | "failed" | "cancelled";
+  phase?: string;
+  summary?: string;
+  error?: string | null;
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -713,9 +727,18 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/add", { kind: input }, requestHeaders, {
-        timeoutMs: SKILL_INSTALL_REQUEST_TIMEOUT_MS,
-      });
+      const response = await postJson<JobResponseDto>(
+        fetchImpl,
+        baseUrl,
+        "/jobs",
+        { kind: "skill.install", params: { kind: input } },
+        requestHeaders,
+      );
+      const jobId = response.job?.id;
+      if (!jobId) {
+        throw new Error("Skill install job response did not include a job id.");
+      }
+      await waitForJob(fetchImpl, baseUrl, requestHeaders, jobId);
     },
     async removeSkillFromCatalog(name: string): Promise<void> {
       if (!baseUrl) {
@@ -1198,6 +1221,34 @@ async function postJson<T>(
 
   const text = await response.text();
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+async function waitForJob(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  requestHeaders: Record<string, string>,
+  jobId: string,
+): Promise<JobDto> {
+  const deadline = Date.now() + JOB_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const response = await getJson<JobResponseDto>(
+      fetchImpl,
+      baseUrl,
+      `/jobs/${encodeURIComponent(jobId)}`,
+      { headers: requestHeaders },
+    );
+    const job = response.job;
+    if (job?.status === "completed") return job;
+    if (job?.status === "failed" || job?.status === "cancelled") {
+      throw new Error(job.error || job.summary || `Job ${jobId} ${job.status}.`);
+    }
+    await sleep(JOB_POLL_INTERVAL_MS);
+  }
+  throw new Error(`Job ${jobId} did not complete within ${Math.round(JOB_WAIT_TIMEOUT_MS / 1000)} seconds.`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
 async function patchJson<T>(
