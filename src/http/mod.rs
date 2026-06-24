@@ -289,8 +289,8 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/briefs/{brief_id}", get(state::brief))
         .route("/agents/{agent_id}/state", get(state::agent_state))
         .route("/events/stream", get(events::global_events_stream))
-        .route("/jobs", post(jobs::create_job))
-        .route("/jobs/{job_id}", get(jobs::job_status))
+        .route("/api/jobs", post(jobs::create_job))
+        .route("/api/jobs/{job_id}", get(jobs::job_status))
         .route("/agents/{agent_id}/events", get(events::events))
         .route(
             "/agents/{agent_id}/events/stream",

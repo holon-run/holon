@@ -503,6 +503,22 @@
   },
   {
     "method": "get",
+    "path": "/api/jobs/{job_id}",
+    "handler": "job_status",
+    "operation_id": "jobStatus",
+    "tag": "jobs",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/skills/catalog",
     "handler": "skills_catalog",
     "operation_id": "skillsCatalog",
@@ -859,13 +875,29 @@
   },
   {
     "method": "post",
+    "path": "/api/jobs",
+    "handler": "create_job",
+    "operation_id": "createJob",
+    "tag": "jobs",
+    "parameters": [],
+    "request_schema": "CreateJobRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/skills/catalog/add",
     "handler": "add_skill_to_catalog",
     "operation_id": "addSkillToCatalog",
     "tag": "skills",
     "parameters": [],
     "request_schema": "AddSkillRequest",
-    "request_strict": false,
+    "request_strict": null,
     "response_content_types": [
       "application/json"
     ],
