@@ -99,6 +99,8 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
@@ -109,6 +111,8 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => anyhow::bail!("unexpected provider call {call}"),

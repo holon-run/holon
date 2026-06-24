@@ -1058,6 +1058,8 @@ impl TurnExecution<'_> {
                     "input_tokens": response.input_tokens,
                     "output_tokens": response.output_tokens,
                     "token_usage": token_usage,
+                    "provider_message_id": response.provider_message_id,
+                    "provider_request_id": response.provider_request_id,
                     "tool_call_count": tool_calls.len(),
                     "tool_names": tool_calls.iter().map(|call| call.name.clone()).collect::<Vec<_>>(),
                     "text_block_count": text_blocks.len(),

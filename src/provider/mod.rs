@@ -63,6 +63,8 @@ pub struct ProviderTurnResponse {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_usage: Option<ProviderCacheUsage>,
+    pub provider_message_id: Option<String>,
+    pub provider_request_id: Option<String>,
     pub request_diagnostics: Option<ProviderRequestDiagnostics>,
 }
 
@@ -494,6 +496,8 @@ impl AgentProvider for StubProvider {
             input_tokens: 0,
             output_tokens: 0,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }

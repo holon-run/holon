@@ -84,6 +84,8 @@ impl AgentProvider for TokenReportingProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: Some("msg-provider-123".into()),
+            provider_request_id: Some("req-provider-456".into()),
             request_diagnostics: None,
         })
     }
@@ -98,7 +100,7 @@ async fn run_once_surfaces_structured_token_usage_when_provider_reports_it() -> 
         Arc::new(TokenReportingProvider),
     )?;
 
-    let response = run_once_with_host(host, run_request("hello")).await?;
+    let response = run_once_with_host(host.clone(), run_request("hello")).await?;
 
     assert_eq!(response.token_usage.input_tokens, 100);
     assert_eq!(response.token_usage.output_tokens, 50);
@@ -106,6 +108,21 @@ async fn run_once_surfaces_structured_token_usage_when_provider_reports_it() -> 
     assert!(response
         .render_text()
         .contains("Token usage: input 100, output 50, total 150"));
+    let events = host
+        .agent_storage(&response.agent_id)?
+        .read_recent_events(50)?;
+    let provider_round = events
+        .iter()
+        .find(|event| event.kind == "provider_round_completed")
+        .expect("provider round completion should be audited");
+    assert_eq!(
+        provider_round.data["provider_message_id"].as_str(),
+        Some("msg-provider-123")
+    );
+    assert_eq!(
+        provider_round.data["provider_request_id"].as_str(),
+        Some("req-provider-456")
+    );
     Ok(())
 }
 
@@ -147,6 +164,8 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
                 input_tokens: 10,
                 output_tokens: 12,
                 cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
             });
         }
@@ -166,6 +185,8 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -189,6 +210,8 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -220,6 +243,8 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -376,6 +401,8 @@ impl AgentProvider for FileEditingProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -388,6 +415,8 @@ impl AgentProvider for FileEditingProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -458,6 +487,8 @@ impl AgentProvider for MultiMutatingToolsProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -470,6 +501,8 @@ impl AgentProvider for MultiMutatingToolsProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -556,6 +589,8 @@ impl AgentProvider for TerminalDeliveryProvider {
                 input_tokens: 100,
                 output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
@@ -575,6 +610,8 @@ impl AgentProvider for TerminalDeliveryProvider {
                 input_tokens: 100,
                 output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
             }),
             _ => panic!("unexpected extra provider round: {:?}", request.tools),
@@ -625,6 +662,8 @@ impl AgentProvider for SleepOnlyTerminalProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
@@ -639,6 +678,8 @@ impl AgentProvider for SleepOnlyTerminalProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => panic!("unexpected extra provider round: {:?}", request.tools),
@@ -675,6 +716,8 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
@@ -694,6 +737,8 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => panic!("unexpected extra provider round: {:?}", request.tools),
@@ -790,6 +835,8 @@ impl AgentProvider for SleepTaskProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -802,6 +849,8 @@ impl AgentProvider for SleepTaskProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -863,6 +912,8 @@ impl AgentProvider for CommandTaskProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -875,6 +926,8 @@ impl AgentProvider for CommandTaskProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -1065,6 +1118,8 @@ impl AgentProvider for DelegatedRunOnceProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -1085,6 +1140,8 @@ impl AgentProvider for DelegatedRunOnceProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
@@ -1095,6 +1152,8 @@ impl AgentProvider for DelegatedRunOnceProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             }),
         }
@@ -1126,6 +1185,8 @@ impl AgentProvider for TwoRoundProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -1137,6 +1198,8 @@ impl AgentProvider for TwoRoundProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -1265,6 +1328,8 @@ impl AgentProvider for WorktreeTaskProvider {
                 input_tokens: 50,
                 output_tokens: 20,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -1285,6 +1350,8 @@ impl AgentProvider for WorktreeTaskProvider {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             });
         }
@@ -1297,6 +1364,8 @@ impl AgentProvider for WorktreeTaskProvider {
             input_tokens: 100,
             output_tokens: 50,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }

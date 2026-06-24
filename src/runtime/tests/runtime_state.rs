@@ -205,6 +205,8 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
                 input_tokens: 10,
                 output_tokens: 10,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             })
         } else {
@@ -216,6 +218,8 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
                 input_tokens: 10,
                 output_tokens: 10,
                 cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
                 request_diagnostics: None,
             })
         }

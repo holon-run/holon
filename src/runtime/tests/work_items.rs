@@ -75,6 +75,8 @@ impl AgentProvider for CompleteWorkItemReportProvider {
             input_tokens: 10,
             output_tokens: 10,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -122,6 +124,8 @@ impl AgentProvider for CompleteThenExecProvider {
             input_tokens: 10,
             output_tokens: 10,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -169,6 +173,8 @@ impl AgentProvider for StaleTextThenCompleteProvider {
             input_tokens: 10,
             output_tokens: 10,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
@@ -213,6 +219,8 @@ impl AgentProvider for MultiCompleteWorkItemReportProvider {
             input_tokens: 10,
             output_tokens: 10,
             cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
             request_diagnostics: None,
         })
     }
