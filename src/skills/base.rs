@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
@@ -19,6 +20,7 @@ use crate::types::{
 
 const SKILL_ENTRYPOINT: &str = "SKILL.md";
 const INSTALL_METADATA_FILENAME: &str = ".holon-skill-install.json";
+pub const REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS: u64 = 120;
 pub(crate) const SKILL_ROOT_SUFFIXES: [&str; 4] = [
     "skills",
     ".agents/skills",
@@ -522,6 +524,24 @@ impl std::fmt::Display for RemoteSkillInstallFailed {
 
 impl std::error::Error for RemoteSkillInstallFailed {}
 
+#[derive(Debug, Clone)]
+pub struct RemoteSkillInstallTimedOut {
+    pub package: String,
+    pub timeout_seconds: u64,
+}
+
+impl std::fmt::Display for RemoteSkillInstallTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "remote skill install for '{}' timed out after {} seconds",
+            self.package, self.timeout_seconds
+        )
+    }
+}
+
+impl std::error::Error for RemoteSkillInstallTimedOut {}
+
 trait RemoteSkillInstaller {
     fn add_global(&self, user_home: &Path, package: &str, skill: Option<&str>) -> Result<String>;
 }
@@ -635,7 +655,8 @@ fn install_github_remote_skill(
     package: &str,
     source: &RemoteSkillSource,
 ) -> Result<()> {
-    const REMOTE_SKILL_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
+    const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
+        Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
 
     let skills_root = user_library_skills_root(user_home);
     fs::create_dir_all(&skills_root)
@@ -653,6 +674,7 @@ fn install_github_remote_skill(
     let client = reqwest::blocking::Client::builder()
         .timeout(REMOTE_SKILL_INSTALL_TIMEOUT)
         .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+        .default_headers(github_auth_headers())
         .build()
         .context("failed to create remote skill HTTP client")?;
 
@@ -689,6 +711,30 @@ struct GithubContentEntry {
     download_url: Option<String>,
 }
 
+fn github_auth_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(token) = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .filter(|token| !token.trim().is_empty())
+        .or_else(|| {
+            std::env::var("GH_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty())
+        })
+    {
+        let value = format!("Bearer {token}");
+        match HeaderValue::from_str(&value) {
+            Ok(value) => {
+                headers.insert(AUTHORIZATION, value);
+            }
+            Err(error) => {
+                warn!("ignoring invalid GitHub token header value: {error}");
+            }
+        }
+    }
+    headers
+}
+
 fn download_github_directory(
     client: &reqwest::blocking::Client,
     source: &RemoteSkillSource,
@@ -696,13 +742,13 @@ fn download_github_directory(
     destination: &Path,
 ) -> Result<()> {
     let url = github_contents_url(source, remote_path);
-    let response = client
-        .get(&url)
-        .send()
-        .with_context(|| format!("failed to fetch remote skill directory {url}"))?;
+    let package = format!("{}/{}", source.owner, source.repo);
+    let response = remote_skill_request(client.get(&url).send(), &package, || {
+        format!("failed to fetch remote skill directory {url}")
+    })?;
     if !response.status().is_success() {
         return Err(RemoteSkillInstallFailed {
-            package: format!("{}/{}", source.owner, source.repo),
+            package,
             status: Some(response.status().as_u16().into()),
             stdout: String::new(),
             stderr: response.text().unwrap_or_default(),
@@ -725,19 +771,52 @@ fn download_github_directory(
                 let download_url = entry.download_url.ok_or_else(|| {
                     anyhow::anyhow!("GitHub file {} has no download URL", entry.path)
                 })?;
-                let bytes = client
-                    .get(&download_url)
-                    .send()
-                    .with_context(|| format!("failed to download {download_url}"))?
-                    .error_for_status()
-                    .with_context(|| format!("GitHub file download failed for {download_url}"))?
-                    .bytes()
-                    .with_context(|| format!("failed to read {download_url}"))?;
+                validate_github_download_url(&download_url)?;
+                let response =
+                    remote_skill_request(client.get(&download_url).send(), &package, || {
+                        format!("failed to download {download_url}")
+                    })?;
+                let response = remote_skill_request(response.error_for_status(), &package, || {
+                    format!("GitHub file download failed for {download_url}")
+                })?;
+                let bytes = remote_skill_request(response.bytes(), &package, || {
+                    format!("failed to read {download_url}")
+                })?;
                 fs::write(&child, bytes)
                     .with_context(|| format!("failed to write {}", child.display()))?;
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn remote_skill_request<T, F>(
+    result: std::result::Result<T, reqwest::Error>,
+    package: &str,
+    context: F,
+) -> Result<T>
+where
+    F: FnOnce() -> String,
+{
+    result.map_err(|error| {
+        if error.is_timeout() {
+            RemoteSkillInstallTimedOut {
+                package: package.to_string(),
+                timeout_seconds: REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS,
+            }
+            .into()
+        } else {
+            anyhow::Error::new(error).context(context())
+        }
+    })
+}
+
+fn validate_github_download_url(download_url: &str) -> Result<()> {
+    let url = reqwest::Url::parse(download_url)
+        .with_context(|| format!("invalid GitHub download URL {download_url}"))?;
+    if url.scheme() != "https" || url.host_str() != Some("raw.githubusercontent.com") {
+        bail!("GitHub download URL uses unexpected host: {download_url}");
     }
     Ok(())
 }

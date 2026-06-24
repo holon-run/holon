@@ -936,7 +936,16 @@ pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode,
                     .extension("stdout", failed.stdout)
                     .extension("stderr", failed.stderr),
             ),
-            Err(error) => error_response(error),
+            Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallTimedOut>() {
+                Ok(timeout) => http_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    HttpErrorEnvelope::new(timeout.to_string())
+                        .code("remote_skill_install_timeout")
+                        .extension("package", timeout.package)
+                        .extension("timeout_seconds", timeout.timeout_seconds),
+                ),
+                Err(error) => error_response(error),
+            },
         },
     }
 }

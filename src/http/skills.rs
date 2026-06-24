@@ -43,9 +43,13 @@ pub async fn install_skill(
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
-    let skill_name =
-        crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &request.kind)
-            .map_err(skill_install_error_response)?;
+    let kind = request.kind.clone();
+    let skill_name = tokio::task::spawn_blocking(move || {
+        crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &kind)
+    })
+    .await
+    .map_err(|err| error_response(anyhow!("skill install worker failed: {err}")))?
+    .map_err(skill_install_error_response)?;
     runtime
         .append_audit_event(
             "skill_installed",
@@ -71,8 +75,12 @@ pub async fn add_skill_to_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
-    let skill_name = crate::skills::add_library_skill(&user_home, &request.kind)
-        .map_err(skill_install_error_response)?;
+    let skill_name = tokio::task::spawn_blocking(move || {
+        crate::skills::add_library_skill(&user_home, &request.kind)
+    })
+    .await
+    .map_err(|err| error_response(anyhow!("skill install worker failed: {err}")))?
+    .map_err(skill_install_error_response)?;
     Ok(Json(json!({
         "ok": true,
         "skill_name": skill_name,
