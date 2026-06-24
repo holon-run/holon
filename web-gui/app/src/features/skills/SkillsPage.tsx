@@ -373,11 +373,12 @@ function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
   return { user: collapseHome(skillRoot(userPath) ?? "~/.agents/skills") };
 }
 
-function skillRoot(path?: string) {
+export function skillRoot(path?: string) {
   if (!path) return undefined;
-  const marker = "/.agents/skills/";
-  const index = path.indexOf(marker);
-  if (index >= 0) return path.slice(0, index + marker.length - 1);
+  for (const marker of ["/skills/", "/.agents/skills/", "/.codex/skills/", "/.claude/skills/"]) {
+    const index = path.indexOf(marker);
+    if (index >= 0) return path.slice(0, index + marker.length - 1);
+  }
   return path.replace(/\/[^/]+$/, "");
 }
 
