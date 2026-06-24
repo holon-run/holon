@@ -78,12 +78,15 @@ pub(crate) fn build_candidate(
     let openai_compaction_policy = OpenAiCompactionPolicy {
         trigger_input_tokens: resolved_policy.compaction_trigger_estimated_tokens as u64,
     };
+    // Use the resolved (and already-clamped) max output tokens so wire requests
+    // never exceed the model's declared upper limit.
+    let max_output_tokens = resolved_policy.runtime_max_output_tokens;
     let provider: Arc<dyn AgentProvider> = match provider_config.transport {
         ProviderTransportKind::OpenAiCodexResponses => Arc::new(
             OpenAiCodexProvider::from_runtime_config_with_compaction_policy(
                 provider_config,
                 &model_ref.model,
-                config.runtime_max_output_tokens,
+                max_output_tokens,
                 &config.home_dir,
                 openai_compaction_policy,
                 resolved_policy.verbosity,
@@ -93,7 +96,7 @@ pub(crate) fn build_candidate(
             Arc::new(OpenAiProvider::from_runtime_config_with_compaction_policy(
                 provider_config,
                 &model_ref.model,
-                config.runtime_max_output_tokens,
+                max_output_tokens,
                 &config.home_dir,
                 openai_compaction_policy,
             )?)
@@ -102,7 +105,7 @@ pub(crate) fn build_candidate(
             Arc::new(AnthropicProvider::from_runtime_config(
                 provider_config,
                 &model_ref.model,
-                config.runtime_max_output_tokens,
+                max_output_tokens,
                 &config.home_dir,
             )?)
         }
@@ -110,7 +113,7 @@ pub(crate) fn build_candidate(
             Arc::new(OpenAiChatCompletionsProvider::from_runtime_config(
                 provider_config,
                 &model_ref.model,
-                config.runtime_max_output_tokens,
+                max_output_tokens,
                 &config.home_dir,
             )?)
         }
@@ -118,7 +121,7 @@ pub(crate) fn build_candidate(
             Arc::new(GeminiProvider::from_runtime_config(
                 provider_config,
                 &model_ref.model,
-                config.runtime_max_output_tokens,
+                max_output_tokens,
                 &config.home_dir,
             )?)
         }
