@@ -22,8 +22,11 @@ enum SlashCommand {
     Abort,
     Agent,
     Skills,
-    SkillInstall,
-    SkillUninstall,
+    SkillCatalog,
+    SkillAdd,
+    SkillRemove,
+    SkillEnable,
+    SkillDisable,
     Vim,
 }
 
@@ -37,6 +40,7 @@ enum ComposerSubmission {
 enum SlashArgRule {
     None,
     ExactlyOne,
+    AtLeastOne,
     Agent,
 }
 
@@ -92,7 +96,7 @@ pub(super) struct SlashCommandSpec {
 
 const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5"];
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 18] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 21] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -230,7 +234,7 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 18] = [
     },
     SlashCommandSpec {
         name: "/skills",
-        description: "show installed skills",
+        description: "show selected agent skills",
         usage: "/skills",
         arg_hint: SlashArgHint::None,
         category: SlashCommandCategory::Skills,
@@ -238,22 +242,49 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 18] = [
         command: SlashCommand::Skills,
     },
     SlashCommandSpec {
-        name: "/skill-install",
-        description: "install a builtin skill",
-        usage: "/skill-install <name>",
-        arg_hint: SlashArgHint::SkillName,
+        name: "/skill-catalog",
+        description: "show Skill Library catalog",
+        usage: "/skill-catalog",
+        arg_hint: SlashArgHint::None,
         category: SlashCommandCategory::Skills,
-        arg_rule: SlashArgRule::ExactlyOne,
-        command: SlashCommand::SkillInstall,
+        arg_rule: SlashArgRule::None,
+        command: SlashCommand::SkillCatalog,
     },
     SlashCommandSpec {
-        name: "/skill-uninstall",
-        description: "uninstall a skill",
-        usage: "/skill-uninstall <name>",
+        name: "/skill-add",
+        description: "add or import a skill into the Skill Library",
+        usage: "/skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]",
+        arg_hint: SlashArgHint::SkillName,
+        category: SlashCommandCategory::Skills,
+        arg_rule: SlashArgRule::AtLeastOne,
+        command: SlashCommand::SkillAdd,
+    },
+    SlashCommandSpec {
+        name: "/skill-remove",
+        description: "remove a skill from the Skill Library",
+        usage: "/skill-remove <name>",
         arg_hint: SlashArgHint::SkillName,
         category: SlashCommandCategory::Skills,
         arg_rule: SlashArgRule::ExactlyOne,
-        command: SlashCommand::SkillUninstall,
+        command: SlashCommand::SkillRemove,
+    },
+    SlashCommandSpec {
+        name: "/skill-enable",
+        description: "enable a known skill for the selected agent",
+        usage: "/skill-enable <name> [--copy]",
+        arg_hint: SlashArgHint::SkillName,
+        category: SlashCommandCategory::Skills,
+        arg_rule: SlashArgRule::AtLeastOne,
+        command: SlashCommand::SkillEnable,
+    },
+    SlashCommandSpec {
+        name: "/skill-disable",
+        description: "disable a skill for the selected agent",
+        usage: "/skill-disable <name>",
+        arg_hint: SlashArgHint::SkillName,
+        category: SlashCommandCategory::Skills,
+        arg_rule: SlashArgRule::ExactlyOne,
+        command: SlashCommand::SkillDisable,
     },
 ];
 
@@ -317,6 +348,13 @@ fn slash_command_argument_error(spec: SlashCommandSpec, args: usize) -> anyhow::
                 spec.usage
             )
         }
+        SlashArgRule::AtLeastOne => {
+            anyhow!(
+                "{0} expects at least one argument; usage: {1}",
+                spec.name,
+                spec.usage
+            )
+        }
         SlashArgRule::Agent => anyhow!(
             "{0} expects an agent id or lifecycle action; usage: {1}",
             spec.name,
@@ -376,6 +414,140 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
     }
 }
 
+fn parse_skill_add_kind(args: &[String]) -> Result<crate::types::SkillInstallKind> {
+    let source = args
+        .first()
+        .ok_or_else(|| anyhow!("/skill-add requires a source"))?;
+    if source.starts_with("--") {
+        return Err(anyhow!(
+            "/skill-add requires the source before flags; usage: /skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]"
+        ));
+    }
+
+    let mut builtin = false;
+    let mut remote = false;
+    let mut copy = false;
+    let mut skill = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--builtin" => builtin = true,
+            "--remote" => remote = true,
+            "--copy" => copy = true,
+            "--skill" => {
+                index += 1;
+                let Some(name) = args.get(index) else {
+                    return Err(anyhow!("--skill requires a skill name"));
+                };
+                skill = Some(name.clone());
+            }
+            other if other.starts_with("--") => {
+                return Err(anyhow!("unknown /skill-add flag '{other}'"));
+            }
+            other => {
+                return Err(anyhow!(
+                    "unexpected /skill-add argument '{other}'; usage: /skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]"
+                ));
+            }
+        }
+        index += 1;
+    }
+
+    if builtin {
+        if remote || skill.is_some() {
+            return Err(anyhow!(
+                "--builtin cannot be combined with --remote or --skill"
+            ));
+        }
+        return Ok(crate::types::SkillInstallKind::Builtin {
+            name: source.clone(),
+        });
+    }
+
+    let mode = if copy {
+        crate::types::SkillInstallMode::Copied
+    } else {
+        crate::types::SkillInstallMode::Linked
+    };
+    if remote {
+        return Ok(crate::types::SkillInstallKind::Remote {
+            package: source.clone(),
+            skill,
+            mode,
+        });
+    }
+    if skill.is_some() {
+        return Err(anyhow!("--skill requires --remote"));
+    }
+
+    let path = std::path::PathBuf::from(source);
+    if path.is_absolute() {
+        return Ok(crate::types::SkillInstallKind::Local { path, mode });
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|error| anyhow!("failed to resolve current directory: {error}"))?;
+    let resolved = cwd.join(&path);
+    if resolved.is_dir() {
+        Ok(crate::types::SkillInstallKind::Local {
+            path: resolved,
+            mode,
+        })
+    } else {
+        Ok(crate::types::SkillInstallKind::Named {
+            name: source.clone(),
+            mode,
+        })
+    }
+}
+
+fn parse_skill_enable_args(args: &[String]) -> Result<(String, crate::types::SkillInstallMode)> {
+    let name = args
+        .first()
+        .ok_or_else(|| anyhow!("/skill-enable requires a skill name"))?
+        .clone();
+    let mut copy = false;
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--copy" => copy = true,
+            other => return Err(anyhow!("unknown /skill-enable flag '{other}'")),
+        }
+    }
+    let mode = if copy {
+        crate::types::SkillInstallMode::Copied
+    } else {
+        crate::types::SkillInstallMode::Linked
+    };
+    Ok((name, mode))
+}
+
+fn json_array_names(value: &serde_json::Value, field: &str) -> Option<Vec<String>> {
+    value
+        .get(field)
+        .and_then(|items| items.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.get("name")
+                        .and_then(|name| name.as_str())
+                        .map(ToString::to_string)
+                })
+                .collect()
+        })
+}
+
+fn summarize_names(prefix: &str, names: &[String]) -> String {
+    if names.is_empty() {
+        format!("{prefix}: none")
+    } else {
+        let mut display = names.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
+        if names.len() > 6 {
+            display.push_str(&format!(", +{} more", names.len() - 6));
+        }
+        format!("{prefix}: {display}")
+    }
+}
+
 pub(super) fn slash_menu_specs(buffer: &str) -> Vec<SlashCommandSpec> {
     let trimmed = buffer.trim_start();
     if !trimmed.starts_with('/') || trimmed.starts_with("//") || buffer.contains('\n') {
@@ -425,10 +597,13 @@ fn parse_composer_submission(buffer: &str) -> Result<Option<ComposerSubmission>>
         SlashArgRule::ExactlyOne if args.len() != 1 => {
             return Err(slash_command_argument_error(slash_command_spec, args.len()));
         }
+        SlashArgRule::AtLeastOne if args.is_empty() => {
+            return Err(slash_command_argument_error(slash_command_spec, args.len()));
+        }
         SlashArgRule::Agent => {
             parse_agent_slash_action(&args)?;
         }
-        SlashArgRule::None | SlashArgRule::ExactlyOne => {}
+        SlashArgRule::None | SlashArgRule::ExactlyOne | SlashArgRule::AtLeastOne => {}
     }
 
     Ok(Some(ComposerSubmission::Slash(
@@ -819,60 +994,54 @@ impl TuiApp {
                     }
                 };
                 let response = self.client.list_skills(&agent_id).await?;
-                if let Some(skills) = response.get("skills").and_then(|s| s.as_array()) {
-                    if skills.is_empty() {
-                        self.status_line = "No skills installed".into();
-                    } else {
-                        let names: Vec<String> = skills
-                            .iter()
-                            .filter_map(|s| {
-                                s.get("name")
-                                    .and_then(|n| n.as_str())
-                                    .map(|n| n.to_string())
-                            })
-                            .collect();
-                        self.status_line = format!("Skills: {}", names.join(", "));
-                    }
+                if let Some(discoverable) = json_array_names(&response, "skills") {
+                    let active = self
+                        .selected_agent_summary()
+                        .map(|agent| {
+                            agent
+                                .skills
+                                .active_skills
+                                .iter()
+                                .map(|skill| skill.name.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    self.status_line = format!(
+                        "{}; {}",
+                        summarize_names("Discoverable skills", &discoverable),
+                        summarize_names("active", &active)
+                    );
                 } else {
                     self.status_line = "Failed to list skills".into();
                 }
             }
-            SlashCommand::SkillInstall => {
-                let skill_name = args
-                    .into_iter()
-                    .next()
-                    .expect("slash command /skill-install requires one argument");
-                let agent_id = match self.selected_agent_id() {
-                    Some(id) => id.to_string(),
-                    None => {
-                        self.status_line = "No agent selected".into();
-                        return Ok(());
-                    }
-                };
-                let kind = crate::types::SkillInstallKind::Named {
-                    name: skill_name.clone(),
-                    mode: crate::types::SkillInstallMode::Linked,
-                };
-                match self.client.install_skill(&agent_id, kind).await {
-                    Ok(_) => self.status_line = format!("Installed skill: {skill_name}"),
-                    Err(error) => {
-                        if error
-                            .downcast_ref::<crate::client::LocalHttpError>()
-                            .is_some_and(|error| error.has_code("skill_already_installed"))
-                        {
-                            self.status_line =
-                                format!("Skill already installed: {skill_name}; uninstall first");
-                        } else {
-                            return Err(error);
-                        }
-                    }
+            SlashCommand::SkillCatalog => {
+                let response = self.client.skills_catalog().await?;
+                if let Some(names) = json_array_names(&response, "catalog") {
+                    self.status_line = summarize_names("Skill catalog", &names);
+                } else {
+                    self.status_line = "Failed to list skill catalog".into();
                 }
             }
-            SlashCommand::SkillUninstall => {
+            SlashCommand::SkillAdd => {
+                let kind = parse_skill_add_kind(&args)?;
+                let response = self.client.add_skill(kind).await?;
+                let skill_name = response
+                    .get("skill_name")
+                    .and_then(|name| name.as_str())
+                    .unwrap_or("skill");
+                self.status_line = format!("Added skill to catalog: {skill_name}");
+            }
+            SlashCommand::SkillRemove => {
                 let skill_name = args
                     .into_iter()
                     .next()
-                    .expect("slash command /skill-uninstall requires one argument");
+                    .expect("slash command /skill-remove requires one argument");
+                self.client.remove_skill(&skill_name).await?;
+                self.status_line = format!("Removed skill from catalog: {skill_name}");
+            }
+            SlashCommand::SkillEnable => {
+                let (skill_name, mode) = parse_skill_enable_args(&args)?;
                 let agent_id = match self.selected_agent_id() {
                     Some(id) => id.to_string(),
                     None => {
@@ -880,8 +1049,29 @@ impl TuiApp {
                         return Ok(());
                     }
                 };
-                self.client.uninstall_skill(&agent_id, &skill_name).await?;
-                self.status_line = format!("Uninstalled skill: {skill_name}");
+                match self.client.enable_skill(&agent_id, &skill_name, mode).await {
+                    Ok(_) => {
+                        self.status_line = format!("Enabled skill for {agent_id}: {skill_name}");
+                        self.begin_bootstrap_selected_agent();
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            SlashCommand::SkillDisable => {
+                let skill_name = args
+                    .into_iter()
+                    .next()
+                    .expect("slash command /skill-disable requires one argument");
+                let agent_id = match self.selected_agent_id() {
+                    Some(id) => id.to_string(),
+                    None => {
+                        self.status_line = "No agent selected".into();
+                        return Ok(());
+                    }
+                };
+                self.client.disable_skill(&agent_id, &skill_name).await?;
+                self.status_line = format!("Disabled skill for {agent_id}: {skill_name}");
+                self.begin_bootstrap_selected_agent();
             }
         }
         Ok(())
@@ -2112,6 +2302,41 @@ mod tests {
                 vec!["4".into()]
             ))
         );
+        assert_eq!(
+            parse_composer_submission("/skill-catalog").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::SkillCatalog,
+                vec![]
+            ))
+        );
+        assert_eq!(
+            parse_composer_submission("/skill-add ghx --copy").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::SkillAdd,
+                vec!["ghx".into(), "--copy".into()]
+            ))
+        );
+        assert_eq!(
+            parse_composer_submission("/skill-enable ghx --copy").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::SkillEnable,
+                vec!["ghx".into(), "--copy".into()]
+            ))
+        );
+        assert_eq!(
+            parse_composer_submission("/skill-remove ghx").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::SkillRemove,
+                vec!["ghx".into()]
+            ))
+        );
+        assert_eq!(
+            parse_composer_submission("/skill-disable ghx").unwrap(),
+            Some(ComposerSubmission::Slash(
+                SlashCommand::SkillDisable,
+                vec!["ghx".into()]
+            ))
+        );
     }
 
     #[test]
@@ -2282,8 +2507,11 @@ mod tests {
             "/vim",
             "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
             "/skills",
-            "/skill-install <name>",
-            "/skill-uninstall <name>",
+            "/skill-catalog",
+            "/skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]",
+            "/skill-remove <name>",
+            "/skill-enable <name> [--copy]",
+            "/skill-disable <name>",
         ] {
             assert!(help.contains(command), "help missing {command}");
         }

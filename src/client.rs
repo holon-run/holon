@@ -697,22 +697,51 @@ impl LocalClient {
             .with_context(|| format!("failed to decode response body for GET {}", path))
     }
 
-    pub async fn install_skill(
-        &self,
-        agent_id: &str,
-        kind: crate::types::SkillInstallKind,
-    ) -> Result<Value> {
+    pub async fn skills_catalog(&self) -> Result<Value> {
+        let path = api_path("/api/skills/catalog");
+        let body = self.send(RequestSpec::get(&path), false).await?;
+        serde_json::from_slice(&body)
+            .with_context(|| format!("failed to decode response body for GET {}", path))
+    }
+
+    pub async fn add_skill(&self, kind: crate::types::SkillInstallKind) -> Result<Value> {
         self.post_control_json(
-            &format!("/control/agents/{agent_id}/skills/install"),
-            &crate::types::InstallSkillRequest { kind },
+            "/api/skills/catalog/add",
+            &crate::types::AddSkillRequest { kind },
         )
         .await
     }
 
-    pub async fn uninstall_skill(&self, agent_id: &str, name: &str) -> Result<Value> {
+    pub async fn remove_skill(&self, name: &str) -> Result<Value> {
         self.post_control_json(
-            &format!("/control/agents/{agent_id}/skills/uninstall"),
-            &crate::types::UninstallSkillRequest {
+            "/api/skills/catalog/remove",
+            &crate::types::RemoveSkillRequest {
+                name: name.to_string(),
+            },
+        )
+        .await
+    }
+
+    pub async fn enable_skill(
+        &self,
+        agent_id: &str,
+        name: &str,
+        mode: crate::types::SkillInstallMode,
+    ) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/skills/enable"),
+            &crate::types::EnableSkillRequest {
+                name: name.to_string(),
+                mode,
+            },
+        )
+        .await
+    }
+
+    pub async fn disable_skill(&self, agent_id: &str, name: &str) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/skills/disable"),
+            &crate::types::DisableSkillRequest {
                 name: name.to_string(),
             },
         )
