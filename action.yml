@@ -44,7 +44,7 @@ inputs:
   max_turns:
     description: Maximum foreground model turns.
     required: false
-    default: '12'
+    default: '35'
   anthropic_auth_token:
     description: Anthropic Auth Token.
     required: false
