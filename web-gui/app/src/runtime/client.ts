@@ -18,6 +18,7 @@ import type {
   RuntimeModelOption,
   RuntimeSearchOptions,
   SkillCatalogState,
+  SkillDetailState,
   SkillScope,
   SkillInstallMode,
   RuntimeTaskOutputResult,
@@ -525,6 +526,11 @@ interface SkillCatalogResponseDto {
   catalog?: SkillCatalogEntryDto[];
 }
 
+interface SkillDetailResponseDto {
+  skill?: SkillCatalogEntryDto;
+  content?: string;
+}
+
 interface AgentSkillsResponseDto {
   skills?: SkillCatalogEntryDto[];
 }
@@ -683,6 +689,22 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       const response = await getJson<SkillCatalogResponseDto>(fetchImpl, baseUrl, "/skills/catalog", { headers: requestHeaders });
       return projectSkillCatalog(response, agentId);
+    },
+    async getSkillDetail(skillId: string): Promise<SkillDetailState> {
+      if (!baseUrl) {
+        return { source: "fixture", error: "Holon API base URL is not configured." };
+      }
+      const response = await getJson<SkillDetailResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/skills/catalog/${encodeURIComponent(skillId)}`,
+        { headers: requestHeaders },
+      );
+      return {
+        source: "http",
+        skill: response.skill ? projectSkillCatalogEntry(response.skill) : undefined,
+        content: response.content ?? "",
+      };
     },
     async addSkillToCatalog(input: AddSkillInput): Promise<void> {
       if (!baseUrl) {
@@ -1112,13 +1134,17 @@ function projectSkillCatalog(response: SkillCatalogResponseDto, agentId?: string
     agentId,
     catalog: (response.catalog ?? [])
       .filter((entry) => Boolean(entry.name || entry.skill_id))
-      .map((entry) => ({
-        skillId: entry.skill_id ?? entry.name ?? "unknown",
-        name: entry.name ?? entry.skill_id ?? "unknown",
-        description: entry.description ?? "",
-        path: entry.path ?? "",
-        scope: entry.scope ?? "user",
-      })),
+      .map(projectSkillCatalogEntry),
+  };
+}
+
+function projectSkillCatalogEntry(entry: SkillCatalogEntryDto) {
+  return {
+    skillId: entry.skill_id ?? entry.name ?? "unknown",
+    name: entry.name ?? entry.skill_id ?? "unknown",
+    description: entry.description ?? "",
+    path: entry.path ?? "",
+    scope: entry.scope ?? "user",
   };
 }
 

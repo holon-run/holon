@@ -3,8 +3,9 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardHeader } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { StatusBadge } from "../../components/ui/StatusChip";
-import type { AddSkillInput, SkillCatalogEntry, SkillCatalogState, SkillInstallMode } from "../../runtime/types";
+import type { AddSkillInput, SkillCatalogEntry, SkillCatalogState, SkillDetailState, SkillInstallMode } from "../../runtime/types";
 
 interface SkillsPageProps {
   catalog: SkillCatalogState;
@@ -13,6 +14,7 @@ interface SkillsPageProps {
   onRefresh: () => void;
   onAddSkill: (input: AddSkillInput) => Promise<boolean>;
   onRemoveSkill: (name: string) => Promise<boolean>;
+  onOpenSkill: (skillId: string) => void;
 }
 
 type AddSourceType = Extract<AddSkillInput["kind"], "local" | "remote">;
@@ -24,6 +26,7 @@ export function SkillsPage({
   onRefresh,
   onAddSkill,
   onRemoveSkill,
+  onOpenSkill,
 }: SkillsPageProps) {
   const skills = catalog.catalog;
   const [query, setQuery] = useState("");
@@ -200,6 +203,7 @@ export function SkillsPage({
                   skill={skill}
                   loading={loading}
                   onRemove={removeSkill}
+                  onOpen={onOpenSkill}
                 />
               ))}
             </ul>
@@ -224,10 +228,12 @@ function SkillRow({
   skill,
   loading,
   onRemove,
+  onOpen,
 }: {
   skill: SkillCatalogEntry;
   loading: boolean;
   onRemove: (name: string) => void;
+  onOpen: (skillId: string) => void;
 }) {
   return (
     <li className="skills-row">
@@ -241,11 +247,87 @@ function SkillRow({
         <p>{skill.description || "No description provided."}</p>
       </div>
       <div className="skills-row-actions">
+        <Button type="button" size="sm" variant="outline" onClick={() => onOpen(skill.skillId)}>
+          Details
+        </Button>
         <Button type="button" size="sm" variant="outline" disabled={loading || skill.scope !== "user"} onClick={() => onRemove(skill.name)}>
           Remove
         </Button>
       </div>
     </li>
+  );
+}
+
+export function SkillDetailPage({
+  skillId,
+  detail,
+  loading,
+  error,
+  onBack,
+  onRefresh,
+}: {
+  skillId: string;
+  detail?: SkillDetailState;
+  loading: boolean;
+  error?: string;
+  onBack: () => void;
+  onRefresh: () => void;
+}) {
+  const skill = detail?.skill;
+  return (
+    <div className="skills-inner scroll-surface">
+      <section className="skills-hero context-card">
+        <div className="skills-hero-copy">
+          <span className="eyebrow">Skill detail</span>
+          <h1>{skill?.name ?? skillId}</h1>
+          <p>{skill?.description || "Read-only SKILL.md content resolved through the Global Skill Library catalog."}</p>
+        </div>
+        <div className="skills-actions" aria-label="Skill detail actions">
+          <Button type="button" variant="outline" onClick={onBack}>
+            Back to skills
+          </Button>
+          <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
+            {loading ? "Refreshing…" : "Refresh"}
+          </Button>
+        </div>
+      </section>
+
+      {error || detail?.error ? (
+        <div className="skills-error" role="alert">
+          <strong>Skill detail failed</strong>
+          <span>{error ?? detail?.error}</span>
+        </div>
+      ) : null}
+
+      {skill ? (
+        <Card className="skills-library-card">
+          <CardHeader className="skills-library-head">
+            <div>
+              <p>
+                <code>{skill.skillId}</code>
+              </p>
+              <p>{collapseHome(skill.path)}</p>
+            </div>
+            <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
+              {skillScopeLabel(skill.scope)}
+            </StatusBadge>
+          </CardHeader>
+          <CardContent>
+            <MarkdownContent text={detail?.content ?? ""} />
+          </CardContent>
+        </Card>
+      ) : (
+        <EmptyState
+          icon="◇"
+          title={loading ? "Loading skill…" : "Skill not found"}
+          description={
+            loading
+              ? "Resolving the skill through the catalog."
+              : "The requested skill id was not found in the Global Skill Library."
+          }
+        />
+      )}
+    </div>
   );
 }
 

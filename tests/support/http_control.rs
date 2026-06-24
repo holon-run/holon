@@ -745,6 +745,66 @@ pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
     Ok(())
 }
 
+pub async fn skill_detail_returns_catalog_skill_markdown() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let skill_name = format!("http-skill-detail-{}", std::process::id());
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
+        .iter()
+        .map(|suffix| user_home.join(suffix))
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| user_home.join(".agents").join("skills"));
+    let user_skill_dir = library_root.join(&skill_name);
+    std::fs::create_dir_all(&user_skill_dir)?;
+    std::fs::write(
+        user_skill_dir.join("SKILL.md"),
+        format!("---\nname: {skill_name}\ndescription: detail\n---\n\nDetail body"),
+    )?;
+
+    let client = Client::new();
+    let catalog: serde_json::Value = client
+        .get(format!("{base}/api/skills/catalog"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let skill_id = catalog["catalog"]
+        .as_array()
+        .and_then(|skills| {
+            skills
+                .iter()
+                .find(|skill| skill["name"] == skill_name)
+                .and_then(|skill| skill["skill_id"].as_str())
+        })
+        .ok_or_else(|| anyhow::anyhow!("test skill should appear in catalog"))?;
+
+    let payload: serde_json::Value = client
+        .get(format!("{base}/api/skills/catalog/{skill_id}"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(payload["library"], "user_global");
+    assert_eq!(payload["skill"]["name"], skill_name);
+    assert_eq!(payload["skill"]["scope"], "user_global");
+    assert!(payload["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Detail body"));
+
+    let missing = client
+        .get(format!("{base}/api/skills/catalog/not-a-real-skill"))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let _ = std::fs::remove_dir_all(&user_skill_dir);
+    server.abort();
+    Ok(())
+}
+
 pub async fn install_skill_existing_destination_returns_conflict() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = Client::new();

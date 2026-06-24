@@ -3,6 +3,7 @@ import type { RouteKey } from "../runtime/types";
 interface BrowserRoute {
   route: RouteKey;
   agentId?: string;
+  skillId?: string;
   eventSeq?: number;
 }
 
@@ -19,6 +20,13 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
   if (path === "/") return { route: "dashboard" };
   if (path === "/search") return { route: "search" };
   if (path === "/skills") return { route: "skills" };
+  const skillMatch = path.match(/^\/skills\/([^/]+)$/);
+  if (skillMatch) {
+    return {
+      route: "skillDetail",
+      skillId: safeDecodeURIComponent(skillMatch[1]),
+    };
+  }
   if (path === "/settings") return { route: "settings" };
 
   const agentMatch = path.match(/^\/agents\/([^/]+)(?:\/conversation)?$/);
@@ -37,6 +45,7 @@ export function pathForRoute(route: RouteKey, agentId?: string, query?: Record<s
   const queryString = query ? new URLSearchParams(Object.entries(query).flatMap(([key, value]) => (value == null ? [] : [[key, String(value)]]))).toString() : "";
   if (route === "search") return "/search";
   if (route === "skills") return "/skills";
+  if (route === "skillDetail" && agentId) return `/skills/${encodeURIComponent(agentId)}`;
   if (route === "settings") return "/settings";
   if (route === "agent" && agentId) return `/agents/${encodeURIComponent(agentId)}/conversation${queryString ? `?${queryString}` : ""}`;
   return "/";

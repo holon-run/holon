@@ -10,7 +10,7 @@ import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
-import { SkillsPage } from "../features/skills/SkillsPage";
+import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
@@ -32,6 +32,7 @@ export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const route = useRuntimeStore((state) => state.route);
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
+  const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
   const displayLevel = useRuntimeStore((state) =>
     state.displayLevelsByAgentId[selectedAgentId] ?? "info",
   );
@@ -40,6 +41,7 @@ export function App() {
   const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
+  const openSkill = useRuntimeStore((state) => state.openSkill);
   const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
@@ -70,6 +72,15 @@ export function App() {
   const skillCatalog = useRuntimeStore((state) => state.skillCatalog);
   const skillCatalogLoading = useRuntimeStore((state) => state.skillCatalogLoading);
   const skillCatalogError = useRuntimeStore((state) => state.skillCatalogError);
+  const skillDetail = useRuntimeStore((state) =>
+    selectedSkillId ? state.skillDetailById[selectedSkillId] : undefined,
+  );
+  const skillDetailLoading = useRuntimeStore((state) =>
+    selectedSkillId ? state.skillDetailLoadingById[selectedSkillId] ?? false : false,
+  );
+  const skillDetailError = useRuntimeStore((state) =>
+    selectedSkillId ? state.skillDetailErrorById[selectedSkillId] : undefined,
+  );
   const addSkillToCatalog = useRuntimeStore((state) => state.addSkillToCatalog);
   const removeSkillFromCatalog = useRuntimeStore((state) => state.removeSkillFromCatalog);
   const agentSkillCatalog = useRuntimeStore((state) =>
@@ -84,6 +95,7 @@ export function App() {
   const runSearch = useRuntimeStore((state) => state.runSearch);
   const loadSearchResultContent = useRuntimeStore((state) => state.loadSearchResultContent);
   const refreshSkillCatalog = useRuntimeStore((state) => state.refreshSkillCatalog);
+  const refreshSkillDetail = useRuntimeStore((state) => state.refreshSkillDetail);
   const refreshAgentSkillCatalog = useRuntimeStore((state) => state.refreshAgentSkillCatalog);
   const enableAgentSkill = useRuntimeStore((state) => state.enableAgentSkill);
   const disableAgentSkill = useRuntimeStore((state) => state.disableAgentSkill);
@@ -171,13 +183,17 @@ export function App() {
         openAgent(nextRoute.agentId, nextRoute.eventSeq);
         return;
       }
+      if (nextRoute.route === "skillDetail" && nextRoute.skillId) {
+        openSkill(nextRoute.skillId);
+        return;
+      }
       setRoute(nextRoute.route);
     };
 
     applyBrowserRoute();
     window.addEventListener("popstate", applyBrowserRoute);
     return () => window.removeEventListener("popstate", applyBrowserRoute);
-  }, [openAgent, setRoute]);
+  }, [openAgent, openSkill, setRoute]);
 
   useEffect(() => {
     if ((route !== "agent" && route !== "settings") || modelCatalogLoading || modelCatalog.options.length > 0) return;
@@ -195,6 +211,11 @@ export function App() {
   }, [refreshSkillCatalog, route, skillCatalog.catalog.length, skillCatalogLoading]);
 
   useEffect(() => {
+    if (route !== "skillDetail" || !selectedSkillId || skillDetailLoading || skillDetail) return;
+    void refreshSkillDetail(selectedSkillId);
+  }, [refreshSkillDetail, route, selectedSkillId, skillDetail, skillDetailLoading]);
+
+  useEffect(() => {
     if (route !== "agent" || !activeAgentId || agentSkillCatalogLoading || agentSkillCatalog) return;
     void refreshAgentSkillCatalog(activeAgentId);
   }, [activeAgentId, agentSkillCatalog, agentSkillCatalogLoading, refreshAgentSkillCatalog, route]);
@@ -206,6 +227,11 @@ export function App() {
   function navigateRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
     pushBrowserRoute(nextRoute, selectedAgentId);
+  }
+
+  function navigateSkill(skillId: string) {
+    openSkill(skillId);
+    pushBrowserRoute("skillDetail", skillId);
   }
 
   function navigateAgent(agentId: string, eventSeq?: number) {
@@ -442,6 +468,17 @@ export function App() {
             onRefresh={refreshSkillCatalog}
             onAddSkill={addSkillToCatalog}
             onRemoveSkill={removeSkillFromCatalog}
+            onOpenSkill={navigateSkill}
+          />
+        ) : null}
+        {route === "skillDetail" ? (
+          <SkillDetailPage
+            skillId={selectedSkillId}
+            detail={skillDetail}
+            loading={skillDetailLoading}
+            error={skillDetailError}
+            onBack={() => navigateRoute("skills")}
+            onRefresh={() => refreshSkillDetail(selectedSkillId)}
           />
         ) : null}
         {route === "settings" ? (
@@ -793,14 +830,14 @@ function agentStatusIcon(tone: string): string {
 
 function pageTitle(route: RouteKey): string {
   if (route === "search") return "Search";
-  if (route === "skills") return "Skills";
+  if (route === "skills" || route === "skillDetail") return "Skills";
   if (route === "settings") return "Settings";
   return "Dashboard";
 }
 
 function pageSubtitle(route: RouteKey, attentionCount: number, agentCount: number): string {
   if (route === "search") return "cross-agent lookup · messages · briefs · work evidence";
-  if (route === "skills") return "global library · catalog · daemon-managed skills";
+  if (route === "skills" || route === "skillDetail") return "global library · catalog · daemon-managed skills";
   if (route === "settings") return "local connection · providers · model defaults";
   return attentionCount > 0 ? `${agentCount} agents · ${attentionCount} need attention` : `${agentCount} agents · all clear`;
 }

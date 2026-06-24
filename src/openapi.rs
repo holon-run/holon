@@ -92,6 +92,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List agent skills", "Return skills enabled/effective for an agent.", None, AuthKind::RemoteAccess),
     route("get", "/api/skills/catalog", "skillsCatalog", "skills", "Skills catalog", "Return the global user Skill Library catalog. Query parameter: scope.", None, AuthKind::RemoteAccess),
+    route("get", "/api/skills/catalog/{skill_id}", "skillDetail", "skills", "Skill detail", "Return catalog metadata and SKILL.md content for a Global Skill Library skill.", None, AuthKind::RemoteAccess),
     route("post", "/api/skills/catalog/add", "addSkillToCatalog", "skills", "Add skill to library", "Add or import a skill into the local Skill Library.", Some("AddSkillRequest"), AuthKind::Control),
     route("post", "/api/skills/catalog/remove", "removeSkillFromCatalog", "skills", "Remove skill from library", "Remove a skill from the local Skill Library.", Some("RemoveSkillRequest"), AuthKind::Control),
     route("post", "/api/skills/catalog/update", "updateSkillCatalog", "skills", "Update skill library", "Refresh Skill Library lock state for one skill or all skills.", Some("UpdateSkillRequest"), AuthKind::Control),
@@ -403,6 +404,9 @@ fn path_parameters(path: &str) -> Vec<Value> {
     }
     if path.contains("{message_id}") {
         params.push(path_param("message_id", "Message id."));
+    }
+    if path.contains("{skill_id}") {
+        params.push(path_param("skill_id", "Root-qualified skill id."));
     }
     if path.contains("{callback_token}") {
         params.push(path_param(
