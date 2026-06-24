@@ -6047,6 +6047,64 @@
         ]
       }
     },
+    "/api/skills/catalog/reconcile": {
+      "post": {
+        "description": "Reconcile local Skill Library contents with .skill-lock.json, then check consistency. This does not fetch remote updates.",
+        "operationId": "reconcileSkillCatalog",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconcileSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Reconcile skill library lock",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
     "/api/skills/catalog/remove": {
       "post": {
         "description": "Remove a skill from the local Skill Library.",
@@ -6107,7 +6165,7 @@
     },
     "/api/skills/catalog/update": {
       "post": {
-        "description": "Refresh Skill Library lock state for one skill or all skills.",
+        "description": "Compatibility alias for reconciling local Skill Library contents with .skill-lock.json. This does not fetch remote updates.",
         "operationId": "updateSkillCatalog",
         "parameters": [],
         "requestBody": {
@@ -6157,7 +6215,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Update skill library",
+        "summary": "Update skill library (compatibility alias)",
         "tags": [
           "skills"
         ]

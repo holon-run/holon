@@ -467,6 +467,10 @@ pub fn router(state: AppState) -> Router {
             post(skills::remove_skill_from_catalog),
         )
         .route(
+            "/api/skills/catalog/reconcile",
+            post(skills::reconcile_skill_catalog),
+        )
+        .route(
             "/api/skills/catalog/update",
             post(skills::update_skill_catalog),
         )

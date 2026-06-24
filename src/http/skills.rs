@@ -95,6 +95,22 @@ pub async fn remove_skill_from_catalog(
     })))
 }
 
+pub async fn reconcile_skill_catalog(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::types::ReconcileSkillRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "library": USER_GLOBAL_LIBRARY_LABEL,
+        "result": result,
+    })))
+}
+
 pub async fn update_skill_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -102,7 +118,7 @@ pub async fn update_skill_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
-    let result = crate::skills::update_library_skills(&user_home, request.name.as_deref())
+    let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,

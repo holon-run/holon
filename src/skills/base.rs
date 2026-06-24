@@ -1156,7 +1156,7 @@ pub struct SkillLibraryCheckResult {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct SkillLibraryUpdateResult {
+pub struct SkillLibraryReconcileResult {
     pub skills_root: PathBuf,
     pub lock_path: PathBuf,
     pub added: Vec<String>,
@@ -1197,10 +1197,10 @@ pub fn check_library_skills(
     })
 }
 
-pub fn update_library_skills(
+pub fn reconcile_library_skills(
     user_home: &Path,
     name_filter: Option<&str>,
-) -> Result<SkillLibraryUpdateResult> {
+) -> Result<SkillLibraryReconcileResult> {
     if let Some(name) = name_filter {
         validate_skill_name(name)?;
     }
@@ -1228,13 +1228,20 @@ pub fn update_library_skills(
         write_skill_lock(user_home, &lock)?;
     }
     let checked = check_library_skills(user_home, name_filter)?;
-    Ok(SkillLibraryUpdateResult {
+    Ok(SkillLibraryReconcileResult {
         skills_root,
         lock_path,
         added,
         removed,
         checked,
     })
+}
+
+pub fn update_library_skills(
+    user_home: &Path,
+    name_filter: Option<&str>,
+) -> Result<SkillLibraryReconcileResult> {
+    reconcile_library_skills(user_home, name_filter)
 }
 
 fn sync_skill_lock_entry(user_home: &Path, name: &str) -> Result<()> {

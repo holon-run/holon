@@ -1240,6 +1240,19 @@
     "aliases": []
   },
   {
+    "path": "skills.reconcile",
+    "positionals": [
+      {
+        "name": "name",
+        "value_name": "NAME",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "skills.remove",
     "positionals": [
       {

@@ -629,7 +629,12 @@ pub enum SkillsCommands {
     },
     #[command(about = "Remove a skill from the local Skill Library")]
     Remove { name: String },
-    #[command(about = "Refresh Skill Library lock state for one skill or all skills")]
+    #[command(about = "Reconcile local Skill Library contents with .skill-lock.json")]
+    Reconcile { name: Option<String> },
+    #[command(
+        hide = true,
+        about = "Compatibility alias for reconciling Skill Library lock state"
+    )]
     Update { name: Option<String> },
     #[command(about = "Check Skill Library and lock-file consistency")]
     Check { name: Option<String> },
