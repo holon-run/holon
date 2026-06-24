@@ -23,10 +23,13 @@ export interface RuntimeConnectionProfile {
   hasToken: boolean;
 }
 
-export type SkillScope = "user" | "agent" | "workspace";
+export type SkillScope = "user" | "user_global" | "agent" | "workspace";
 
 export interface SkillCatalogEntry {
   skillId: string;
+  rootId: string;
+  skillDir: string;
+  legacyId?: string;
   name: string;
   description: string;
   path: string;

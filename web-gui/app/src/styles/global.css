@@ -3031,6 +3031,16 @@ code {
   line-height: 1.45;
 }
 
+.skills-row-id {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .skills-row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3039,6 +3049,44 @@ code {
   gap: 6px;
   align-self: flex-start;
   min-width: 190px;
+}
+
+.skills-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.skills-detail-meta div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.skills-detail-meta dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.skills-detail-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.skills-detail-meta code,
+.skills-row-id {
+  font-family: var(--mono);
 }
 
 .agent-skill-actions {

@@ -41,11 +41,11 @@ export function SkillsPage({
   const visibleSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return skills.filter((skill) => {
-      const matchesScope = scopeFilter === "all" || skill.scope === scopeFilter;
+      const matchesScope = scopeFilter === "all" || normalizedSkillScope(skill.scope) === scopeFilter;
       if (!matchesScope) return false;
       if (!normalizedQuery) return true;
-      return [skill.name, skill.description, skill.path]
-        .filter(Boolean)
+      return [skill.name, skill.description, skill.skillId, skill.rootId, skill.skillDir, skill.legacyId]
+        .filter((value): value is string => Boolean(value))
         .some((value) => value.toLowerCase().includes(normalizedQuery));
     });
   }, [query, scopeFilter, skills]);
@@ -175,7 +175,7 @@ export function SkillsPage({
                 name="skills-search"
                 type="search"
                 value={query}
-                placeholder="Name, description, or path"
+                placeholder="Name, description, or skill id"
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
@@ -199,7 +199,7 @@ export function SkillsPage({
             <ul className="skills-list">
               {visibleSkills.map((skill) => (
                 <SkillRow
-                  key={`${skill.scope}:${skill.skillId}:${skill.path}`}
+                  key={skill.skillId}
                   skill={skill}
                   loading={loading}
                   onRemove={removeSkill}
@@ -245,12 +245,13 @@ function SkillRow({
           </StatusBadge>
         </div>
         <p>{skill.description || "No description provided."}</p>
+        <code className="skills-row-id">{skill.skillId}</code>
       </div>
       <div className="skills-row-actions">
         <Button type="button" size="sm" variant="outline" onClick={() => onOpen(skill.skillId)}>
           Details
         </Button>
-        <Button type="button" size="sm" variant="outline" disabled={loading || skill.scope !== "user"} onClick={() => onRemove(skill.name)}>
+        <Button type="button" size="sm" variant="outline" disabled={loading || normalizedSkillScope(skill.scope) !== "user"} onClick={() => onRemove(skill.name)}>
           Remove
         </Button>
       </div>
@@ -306,13 +307,27 @@ export function SkillDetailPage({
               <p>
                 <code>{skill.skillId}</code>
               </p>
-              <p>{collapseHome(skill.path)}</p>
+              <p>{skill.rootId ? `Root ${skill.rootId}` : "Root metadata unavailable"}</p>
             </div>
             <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
               {skillScopeLabel(skill.scope)}
             </StatusBadge>
           </CardHeader>
           <CardContent>
+            <dl className="skills-detail-meta">
+              <div>
+                <dt>Skill directory</dt>
+                <dd>{skill.skillDir || "unknown"}</dd>
+              </div>
+              <div>
+                <dt>Legacy id</dt>
+                <dd>{skill.legacyId ?? "none"}</dd>
+              </div>
+              <div>
+                <dt>Path</dt>
+                <dd>{collapseHome(skill.path)}</dd>
+              </div>
+            </dl>
             <MarkdownContent text={detail?.content ?? ""} />
           </CardContent>
         </Card>
@@ -342,13 +357,17 @@ function sourcePlaceholder(type: AddSourceType) {
 }
 
 function skillScopeLabel(scope: SkillCatalogEntry["scope"]) {
-  if (scope === "user") return "Global";
+  if (normalizedSkillScope(scope) === "user") return "Global";
   if (scope === "workspace") return "Workspace";
   return "Agent";
 }
 
+function normalizedSkillScope(scope: SkillCatalogEntry["scope"]) {
+  return scope === "user_global" ? "user" : scope;
+}
+
 function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
-  const userPath = skills.find((skill) => skill.scope === "user")?.path;
+  const userPath = skills.find((skill) => normalizedSkillScope(skill.scope) === "user")?.path;
   return { user: collapseHome(skillRoot(userPath) ?? "~/.agents/skills") };
 }
 
@@ -366,7 +385,8 @@ function collapseHome(path: string) {
 
 function skillStats(skills: SkillCatalogEntry[]) {
   const byScope = skills.reduce<Record<string, number>>((counts, skill) => {
-    counts[skill.scope] = (counts[skill.scope] ?? 0) + 1;
+    const scope = normalizedSkillScope(skill.scope);
+    counts[scope] = (counts[scope] ?? 0) + 1;
     return counts;
   }, {});
   return [

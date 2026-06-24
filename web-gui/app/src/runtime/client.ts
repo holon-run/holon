@@ -516,10 +516,13 @@ interface AgentTranscriptEntriesBatchGetResponseDto {
 
 interface SkillCatalogEntryDto {
   skill_id?: string;
+  root_id?: string;
+  skill_dir?: string;
+  legacy_id?: string;
   name?: string;
   description?: string;
   path?: string;
-  scope?: "user" | "agent" | "workspace";
+  scope?: "user" | "user_global" | "agent" | "workspace";
 }
 
 interface SkillCatalogResponseDto {
@@ -1141,6 +1144,9 @@ function projectSkillCatalog(response: SkillCatalogResponseDto, agentId?: string
 function projectSkillCatalogEntry(entry: SkillCatalogEntryDto) {
   return {
     skillId: entry.skill_id ?? entry.name ?? "unknown",
+    rootId: entry.root_id ?? "",
+    skillDir: entry.skill_dir ?? entry.name ?? "",
+    legacyId: entry.legacy_id,
     name: entry.name ?? entry.skill_id ?? "unknown",
     description: entry.description ?? "",
     path: entry.path ?? "",
