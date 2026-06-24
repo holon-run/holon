@@ -1,6 +1,7 @@
 ---
 title: RFC: Agent Initialization and Template
 date: 2026-04-22
+updated: 2026-06-24
 status: accepted
 issue:
   - 367
@@ -21,6 +22,8 @@ The core model is:
 - agent creation should prefer a reusable template over passing large inline
   instruction blobs
 - a template initializes an agent, but does not remain the live source of truth
+- agent templates should be packaged, discovered, and managed with conventions
+  parallel to skills
 
 After initialization, the effective source of truth for the agent's role and
 long-lived behavioral guidance is the agent's own `agent_home/AGENTS.md`, which
@@ -59,6 +62,10 @@ This RFC defines:
 - how agent-local skills should be initialized
 - the role of templates in agent creation
 - how initialized guidance may evolve after agent creation
+- the target package shape for agent templates
+- the local and remote discovery layout for template libraries
+- the daemon API capabilities needed before a GUI management surface can be
+  built
 
 This RFC does not define:
 
@@ -66,6 +73,7 @@ This RFC does not define:
 - a full structured authorization system
 - the exact operator UX for editing templates or `AGENTS.md`
 - hierarchical `AGENTS.md` loading inside the workspace tree
+- a migration plan for earlier experimental template directories
 
 ## Core Model
 
@@ -149,50 +157,147 @@ The purpose of a template is to provide reusable bootstrap content such as:
 The template should be used to materialize the initial agent identity state in
 `agent_home`.
 
-### Phase-1 template format
+### Template package format
 
-The phase-1 template format should stay minimal and local-first.
+The template format should stay minimal, file-based, and friendly to human
+maintenance in Git.
 
-A template should be represented as a local directory. The directory name is the
-template id.
+A template should be represented as a directory. The directory name is the
+template id unless explicitly overridden by metadata.
 
-The minimal phase-1 shape is:
+The target package shape is:
+
+```text
+agent_templates/<template_id>/
+  template.toml
+  AGENTS.md
+  skills.toml
+```
 
 - `AGENTS.md`
   - required
   - used as the initial agent-scoped `AGENTS.md`
-- `skills.json`
+- `template.toml`
+  - required
+  - contains short metadata used for cataloging, search, compatibility checks,
+    and GUI display
+- `skills.toml`
   - optional
   - used to attach initial agent-local skill references
 
-Phase 1 should not require a separate `template.json` metadata file. If an
-operator needs a stable template identifier, the directory name should be used.
+Long role guidance belongs in `AGENTS.md`, not inside `template.toml`.
+Dependency-like skill references belong in `skills.toml`, not inside
+`template.toml`.
+
+This keeps the maintenance format aligned with the content:
+
+- Markdown for long prompt and role text
+- TOML for short hand-maintained metadata and dependency declarations
+- JSON for daemon/API responses and generated indexes
+
+YAML should not be the primary package format. It is more expressive than Holon
+needs for this contract and introduces avoidable parsing ambiguity.
+
+The minimal `template.toml` shape should be:
+
+```toml
+schema = "holon.agent_template.v1"
+id = "reviewer"
+name = "Reviewer"
+summary = "Review code changes and publish structured feedback."
+
+[compatibility]
+holon = ">=0.1.0"
+```
+
+Only `schema`, `id`, `name`, and `summary` are required initially.
+Compatibility metadata is optional but should be reserved in the v1 shape so
+remote catalogs can expose it without changing the package boundary.
 
 ### Template selector
 
-Phase 1 should use a single `template` selector rather than separate template id
-and template path fields.
+Template creation should use a single `template` selector rather than separate
+template id and template path fields.
 
-The selector should support exactly three forms:
+The selector should support these forms:
 
 - `template_id`
+- catalog-qualified selector such as `user:reviewer`, `agent:reviewer`, or
+  `github:owner/repo#reviewer`
 - absolute local path
 - GitHub URL
 
 Resolution should work like this:
 
 - if `template` is an absolute path, use that local template directory
-- if `template` is a GitHub URL, treat that URL as the template source
-- otherwise, treat it as `template_id` and resolve it from
-  `~/.agents/templates/<template_id>/`
+- if `template` is a GitHub URL, treat that URL as an explicit template source
+- if `template` is catalog-qualified, resolve it from the named catalog source
+- otherwise, treat it as `template_id` and resolve it from the default visible
+  catalog
 
-Phase 1 should not add multi-root template discovery.
+The default local user template root is:
+
+```text
+~/.agents/agent_templates/<template_id>/
+```
+
+Agent-local template libraries should use the matching agent-home root:
+
+```text
+<agent_home>/agent_templates/<template_id>/
+```
+
+The earlier experimental `~/.agents/templates` name is not part of the target
+specification. Because this mechanism has limited usage, this RFC does not
+require a migration or legacy compatibility path.
 
 `template_id` should be a simple stable name, not a path-like string.
 
+### Local and remote library layout
+
+Holon package repositories should use explicit top-level collection
+directories:
+
+```text
+skills/
+  <skill_id>/
+    SKILL.md
+
+agent_templates/
+  <template_id>/
+    template.toml
+    AGENTS.md
+    skills.toml
+```
+
+`agent_templates` is intentionally more explicit than `templates`. It avoids
+collisions with prompt templates, UI templates, workflow templates, and other
+future template-like assets.
+
+A repository may optionally include a small repository index:
+
+```text
+holon-index.toml
+```
+
+Example:
+
+```toml
+schema = "holon.repository.v1"
+
+[collections]
+skills = "skills"
+agent_templates = "agent_templates"
+```
+
+The index is an optimization and capability declaration, not the source of the
+template body. The source of truth remains the per-template directory.
+Implementations may scan the default `skills/` and `agent_templates/`
+directories when `holon-index.toml` is absent.
+
 ### GitHub URL format
 
-Phase 1 should keep GitHub template URLs explicit and narrow.
+Explicit GitHub template URLs should stay narrow.
 
 The accepted GitHub URL form should be:
 
@@ -206,60 +311,63 @@ or a higher-level folder.
 The target directory should contain:
 
 - `AGENTS.md`
-- optional `skills.json`
+- `template.toml`
+- optional `skills.toml`
 
-Phase 1 should not require support for:
+Explicit URL application should not require support for:
 
 - repository root URLs
-- URLs that rely on implicit default template locations inside a repository
 - raw-content URLs
 - multiple GitHub URL variants with different semantics
 
 If the URL does not resolve to a readable directory with the expected template
 shape, template application should fail.
 
+Repository-level discovery is a separate catalog operation from explicit
+template URL application. A daemon may discover a GitHub repository by reading
+`holon-index.toml` or by scanning the default collection directories, then
+expose the discovered package catalog through API responses.
+
 ### Builtin templates
 
 Holon should ship a small builtin template set for common roles.
 
-Phase 1 should seed builtin templates into `~/.agents/templates/` at startup so
-they become normal user-visible templates.
+Builtin templates should be exposed through the same catalog model as other
+templates.
 
-This seeding should be idempotent:
+If builtin templates are materialized into the user-visible local root, that
+materialization should be idempotent:
 
 - builtin templates are installed only when the target template directory does
   not already exist
 - startup should not overwrite or silently rewrite an existing user template
-- after seeding, normal `template_id` resolution uses the user template
-  directory
+- after materialization, normal `template_id` resolution uses the standard
+  `agent_templates` directory
 
-This keeps builtin templates simple and inspectable without introducing a
-separate builtin template discovery layer.
+Builtin templates should not be special caller-provided inline prompts. They
+may still be materialized locally for inspectability, but their target
+user-visible root should follow the same `agent_templates` convention as
+user-authored templates.
 
-### `skills.json` format
+### `skills.toml` format
 
-The phase-1 `skills.json` format should stay minimal.
+The `skills.toml` format should stay minimal.
 
-It should be a JSON object with one field:
+It should contain an array of typed skill references:
 
-```json
-{
-  "skill_refs": [
-    {
-      "kind": "local",
-      "path": "/absolute/path/to/local-skill"
-    },
-    {
-      "kind": "github",
-      "package": "vercel-labs/agent-skills@react-best-practices"
-    }
-  ]
-}
+```toml
+[[skills]]
+kind = "local"
+path = "/absolute/path/to/local-skill"
+
+[[skills]]
+kind = "github"
+package = "vercel-labs/agent-skills@react-best-practices"
 ```
 
 The rules are:
 
-- `skill_refs` is an array of typed skill references
+- `skills` is an array of typed skill references
 - local references use:
   - `kind = "local"`
   - `path = "/absolute/path/to/skill"`
@@ -277,26 +385,30 @@ The rules are:
   application to fail rather than silently produce a partially initialized
   agent
 
-Phase 1 does not require additional per-skill metadata in the manifest. The
-runtime may derive name and description from the referenced skill itself.
+The template package does not require additional per-skill metadata in the
+manifest. The runtime may derive name and description from the referenced skill
+itself.
+
+Earlier experimental implementations used `skills.json`. The target package
+format should use `skills.toml` for human-maintained template packages.
 
 ### Materializing agent-local skills
 
-Phase 1 should materialize template-attached skills into normal agent-scoped
-skill roots under `agent_home`.
+Template application should materialize template-attached skills into normal
+agent-scoped skill roots under `agent_home`.
 
 The goal is for runtime skill discovery to continue working against ordinary
 agent-local skill directories.
 
-The intended phase-1 behavior is:
+The intended behavior is:
 
 - local skill refs may be materialized as symlinks into the agent skill root
 - GitHub skill refs may be materialized as installed skill directories in the
   agent skill root
 - failed skill resolution or installation should fail template application
 
-Phase 1 should not require a separate runtime skill manifest format for already
-initialized agents.
+Template application should not require a separate runtime skill manifest format
+for already initialized agents.
 
 ### Templates are not the live source of truth
 
@@ -311,6 +423,39 @@ Instead:
 
 If an operator wants to realign an existing agent with a template, that should
 be an explicit action, not an automatic background update.
+
+## Daemon API Requirements
+
+A GUI management surface should not read template directories directly. The
+daemon should expose templates as first-class catalog and lifecycle resources.
+
+The API surface should be able to:
+
+- list visible template catalog entries across builtin, user, agent-local, and
+  configured remote sources
+- return template details, including metadata, source, package path, rendered
+  `AGENTS.md` preview, and declared skill references
+- validate a local or remote template package without applying it
+- install or update a template package from a configured repository source into
+  the local user template root
+- create an agent from a selected template selector
+- report template provenance for an initialized agent
+
+The API response format should be JSON even though the source package format is
+TOML and Markdown.
+
+Catalog entries should preserve enough source information for a GUI to explain
+where a template came from without making local path conventions part of the UI
+contract.
+
+The daemon should keep template catalog operations distinct from agent
+initialization:
+
+- catalog operations discover, inspect, validate, install, or remove templates
+- initialization operations apply one selected template to create an agent home
+
+This split mirrors skill discovery versus skill activation and keeps GUI
+management from becoming coupled to one creation flow.
 
 ## Evolving `AGENTS.md`
 
@@ -384,22 +529,26 @@ first place.
 
 ## Initial Direction
 
-The intended phase-1 direction is:
+The intended direction is:
 
 1. new agents can be initialized from a template
 2. template selection uses one `template` selector that accepts `template_id`,
-   absolute path, or GitHub URL
-3. `template_id` resolution uses `~/.agents/templates/<template_id>/`
-4. Holon seeds a small builtin template set into `~/.agents/templates/` on
-   startup without overwriting existing user templates
-5. templates materialize an initial `agent_home/AGENTS.md`
-6. templates may attach agent-local skill references
-7. phase-1 templates are local directories and do not require a separate
-   metadata file
+   catalog-qualified selector, absolute path, or GitHub URL
+3. user-authored template packages live under
+   `~/.agents/agent_templates/<template_id>/`
+4. package repositories use top-level `skills/` and `agent_templates/`
+   collections, with optional `holon-index.toml`
+5. each template package uses `template.toml`, `AGENTS.md`, and optional
+   `skills.toml`
+6. templates materialize an initial `agent_home/AGENTS.md`
+7. templates may attach agent-local skill references
 8. initialized agent-local skills are materialized into normal agent-scoped
    skill directories under `agent_home`
-9. the runtime records template provenance, but not a persistent parallel copy
-   of the expanded instruction text as the live identity source
-10. phase 1 does not provide a dedicated refresh-from-template action
-11. later edits to `agent_home/AGENTS.md` are allowed and become effective on the
-   next turn
+9. the daemon exposes list/detail/validate/install/create/provenance API
+   operations before the GUI manages templates directly
+10. the runtime records template provenance, but not a persistent parallel copy
+    of the expanded instruction text as the live identity source
+11. automatic refresh-from-template is not part of initialization; explicit
+    update or realign actions can be added later
+12. later edits to `agent_home/AGENTS.md` are allowed and become effective on the
+    next turn
