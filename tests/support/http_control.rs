@@ -992,7 +992,7 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
     Ok(())
 }
 
-pub async fn skill_library_update_and_check_reconcile_lock_file() -> Result<()> {
+pub async fn skill_library_reconcile_and_check_lock_file() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = Client::new();
     let skill_name = format!("http-lock-skill-{}", std::process::id());
@@ -1027,15 +1027,15 @@ pub async fn skill_library_update_and_check_reconcile_lock_file() -> Result<()> 
             .unwrap_or_default()
             .contains("missing from .skill-lock.json")));
 
-    let update = client
-        .post(format!("{base}/api/skills/catalog/update"))
+    let reconcile = client
+        .post(format!("{base}/api/skills/catalog/reconcile"))
         .json(&serde_json::json!({ "name": skill_name }))
         .send()
         .await?;
-    assert!(update.status().is_success());
-    let update_body: serde_json::Value = update.json().await?;
-    assert_eq!(update_body["result"]["added"][0], skill_name);
-    assert!(update_body["result"]["checked"]["warnings"]
+    assert!(reconcile.status().is_success());
+    let reconcile_body: serde_json::Value = reconcile.json().await?;
+    assert_eq!(reconcile_body["result"]["added"][0], skill_name);
+    assert!(reconcile_body["result"]["checked"]["warnings"]
         .as_array()
         .unwrap_or(&Vec::new())
         .is_empty());

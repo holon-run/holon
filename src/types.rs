@@ -954,10 +954,12 @@ pub struct RemoveSkillRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UpdateSkillRequest {
+pub struct ReconcileSkillRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
+
+pub type UpdateSkillRequest = ReconcileSkillRequest;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CheckSkillRequest {
