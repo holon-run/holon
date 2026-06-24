@@ -49,74 +49,172 @@ This keeps skills explicit and avoids loading irrelevant guidance.
 
 ## Managing skills with the CLI
 
-Holon provides CLI commands for installing, listing, and removing skills:
+Holon separates skill management into two layers:
 
-### List installed skills
+- **Skill Library** — A global catalog of known skills managed with
+  `holon skills add/remove/check/reconcile/catalog`. Think of it as your
+  local skill registry.
+- **Agent Skills** — Per-agent enablement managed with
+  `holon skills enable/disable/list`. A skill must exist in the library
+  before it can be enabled for an agent.
+
+### Skill Library (global)
+
+The Skill Library is your local catalog of skills. Manage it with:
+
+#### List the library catalog
 
 ```bash
-holon skills list
+holon skills catalog
 ```
 
-Shows all discoverable skills for the current agent, including their name,
+Shows all skills registered in the local Skill Library.
+
+#### Add a skill to the library
+
+```bash
+# Add from a local directory or SKILL.md file
+holon skills add /path/to/skill-dir
+
+# Add from a remote source
+holon skills add https://github.com/user/repo/tree/main/skills/my-skill --remote
+
+# Add a built-in skill by name
+holon skills add my-skill --builtin
+
+# Copy the skill into the user directory instead of referencing it
+holon skills add /path/to/skill --copy
+```
+
+#### Remove a skill from the library
+
+```bash
+holon skills remove my-skill
+```
+
+#### Check library consistency
+
+```bash
+# Check all library entries against .skill-lock.json
+holon skills check
+
+# Check a specific skill
+holon skills check my-skill
+```
+
+#### Reconcile library with lock file
+
+```bash
+# Reconcile all library entries
+holon skills reconcile
+
+# Reconcile a specific skill
+holon skills reconcile my-skill
+```
+
+### Agent Skills (per-agent)
+
+Once a skill is in the library, enable it for a specific agent:
+
+#### List enabled skills for an agent
+
+```bash
+# List for the default agent
+holon skills list
+
+# List for a specific agent
+holon skills list --agent reviewer
+```
+
+Shows all skills currently enabled for the agent, including their name,
 scope (agent, workspace, or user), and source.
 
-### Install a skill
+#### Enable a skill for an agent
 
 ```bash
-# Install from a local directory or SKILL.md file
-holon skills install /path/to/skill-dir
+# Enable for the default agent
+holon skills enable my-skill
 
-# Install from a remote source
-holon skills install https://github.com/user/repo/tree/main/skills/my-skill --remote
+# Enable for a specific agent
+holon skills enable my-skill --agent reviewer
 
-# Install a built-in skill by name
-holon skills install my-skill --builtin
-
-# Copy the skill into the agent instead of referencing it
-holon skills install /path/to/skill --copy
+# Enable and copy into the agent home
+holon skills enable my-skill --copy
 ```
 
-Install a skill for a specific agent:
+#### Disable a skill for an agent
 
 ```bash
-holon skills install my-skill --builtin --agent reviewer
+# Disable for the default agent
+holon skills disable my-skill
+
+# Disable for a specific agent
+holon skills disable my-skill --agent reviewer
 ```
 
-### Uninstall a skill
-
-```bash
-holon skills uninstall my-skill
-```
-
-For a specific agent:
-
-```bash
-holon skills uninstall my-skill --agent reviewer
-```
+> **Compatibility aliases:** `holon skills install` and
+> `holon skills uninstall` are still accepted but map to the new
+> add/enable and remove/disable model. Prefer the new commands for
+> clarity.
 
 ### Skill source types
 
 | Source | Flag | Example |
 |--------|------|---------|
-| Local path | (default) | `holon skills install ./skills/my-skill` |
-| Remote URL | `--remote` | `holon skills install https://... --remote` |
-| Built-in | `--builtin` | `holon skills install ghx --builtin` |
+| Local path | (default) | `holon skills add ./skills/my-skill` |
+| Remote URL | `--remote` | `holon skills add https://... --remote` |
+| Built-in | `--builtin` | `holon skills add ghx --builtin` |
+
+### Command summary
+
+| Layer | Command | Purpose |
+|-------|---------|---------|
+| Library | `holon skills catalog` | List library catalog |
+| Library | `holon skills add <source>` | Add a skill to the library |
+| Library | `holon skills remove <name>` | Remove from the library |
+| Library | `holon skills check [name]` | Check lock-file consistency |
+| Library | `holon skills reconcile [name]` | Reconcile with lock file |
+| Agent | `holon skills list [--agent]` | List enabled skills |
+| Agent | `holon skills enable <name>` | Enable for an agent |
+| Agent | `holon skills disable <name>` | Disable for an agent |
 
 ## Managing skills via HTTP
 
-The HTTP control plane exposes the same operations as API endpoints:
+The HTTP control plane separates library and agent operations:
 
-- `GET /agents/:agent_id/skills` — List installed or available skills
-- `POST /control/agents/:agent_id/skills/install` — Install a skill
-- `POST /control/agents/:agent_id/skills/uninstall` — Remove a skill
+### Library endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/skills/catalog` | List library catalog |
+| `GET` | `/api/skills/catalog/{skill_id}` | Get skill detail |
+| `POST` | `/api/skills/catalog/add` | Add a skill to the library |
+| `POST` | `/api/skills/catalog/remove` | Remove from the library |
+| `POST` | `/api/skills/catalog/reconcile` | Reconcile with lock file |
+| `POST` | `/api/skills/catalog/check` | Check consistency |
+
+### Agent endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/agents/:agent_id/skills` | List agent skills |
+| `POST` | `/control/agents/:agent_id/skills/enable` | Enable for agent |
+| `POST` | `/control/agents/:agent_id/skills/disable` | Disable for agent |
+
+> **Deprecated:** `POST /control/agents/:agent_id/skills/install` and
+> `POST /control/agents/:agent_id/skills/uninstall` remain for
+> compatibility but are superseded by enable/disable and
+> add/remove.
 
 ## TUI integration
 
 The Terminal UI provides skill management alongside the CLI:
 
-- **Slash commands** — Type `/skills` to view installed skills,
-  `/skill-install <source>` to install, and `/skill-uninstall <name>` to
-  remove skills directly from the chat input.
+- **Slash commands** — Type `/skills` to view agent skills,
+  `/skill-catalog` to browse the library, `/skill-add <source>` to add
+  to the library, `/skill-remove <name>` to remove, and
+  `/skill-enable <name>` / `/skill-disable <name>` to manage agent
+  enablement directly from the chat input.
 - **Skill name completion** — The TUI auto-completes skill names when
   using slash commands.
 - **Agent status sidebar** — The agent detail view under "Skills" shows
@@ -169,5 +267,7 @@ These are different layers:
 - [Multi-Agent Collaboration](/guides/multi-agent.md) — Delegating work to
   child agents
 - [Work Items Guide](/guides/work-items.md) — Tracking durable objectives
+- [Web GUI](/guides/web-gui.md) — Skill management in the browser
+- [TUI Guide](/guides/tui.md) — Skill management in the terminal
 - [Runtime Model](/concepts/runtime-model.md) — How skills fit into the agent
   operating loop

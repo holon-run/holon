@@ -67,7 +67,12 @@ Access modes: `local`, `tunnel`, `lan`, `tailnet`.
 | `POST` | `/control/agents/:agent_id/workspace/attach` | Attach a workspace |
 | `POST` | `/control/agents/:agent_id/workspace/detach` | Detach workspace |
 | `GET` | `/agents/:agent_id/skills` | List agent skills |
-| `POST` | `/control/agents/:agent_id/skills/install` | Install a skill |
+| `POST` | `/control/agents/:agent_id/skills/enable` | Enable a skill for an agent |
+| `POST` | `/control/agents/:agent_id/skills/disable` | Disable a skill for an agent |
+| `GET` | `/api/skills/catalog` | List Skill Library catalog |
+| `POST` | `/api/skills/catalog/add` | Add a skill to the library |
+| `POST` | `/api/skills/catalog/remove` | Remove a skill from the library |
+| `POST` | `/api/skills/catalog/reconcile` | Reconcile library with lock file |
 
 ### Callbacks & Webhooks
 

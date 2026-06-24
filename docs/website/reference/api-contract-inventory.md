@@ -316,10 +316,21 @@ contains `binding_id?`, `transport`, `operator_actor_id`, `target_agent_id?`,
 
 ### Skills
 
+Skill management separates library operations from agent enablement:
+
 | Method | Path | Request body | Success response | Stability | Notes |
 |--------|------|--------------|------------------|-----------|-------|
-| `POST` | `/control/agents/:agent_id/skills/install` | `{ kind }` where `kind` is a `SkillInstallKind` tagged union. | `{ ok, agent_id, skill_name }` | Experimental | Install errors can map to conflict, failed dependency, bad gateway, or gateway timeout. |
-| `POST` | `/control/agents/:agent_id/skills/uninstall` | `{ name }` | `{ ok, agent_id, skill_name }` | Experimental | Removes a skill by name from the agent home. |
+| `GET` | `/api/skills/catalog` | none | `{ catalog: [...] }` | Experimental | Lists all skills in the Skill Library. |
+| `GET` | `/api/skills/catalog/:skill_id` | none | skill detail object | Experimental | Returns metadata for a single library skill. |
+| `POST` | `/api/skills/catalog/add` | `{ kind }` where `kind` is a `SkillInstallKind` tagged union. | `{ skill_name }` | Experimental | Adds a skill to the library. Errors map to conflict, not found, or timeout. |
+| `POST` | `/api/skills/catalog/remove` | `{ name }` | `{ skill_name }` | Experimental | Removes a skill from the library. |
+| `POST` | `/api/skills/catalog/reconcile` | `{ name? }` | `{ ... }` | Experimental | Reconciles library with `.skill-lock.json`. |
+| `POST` | `/api/skills/catalog/check` | `{ name? }` | `{ ... }` | Experimental | Checks library consistency. |
+| `GET` | `/agents/:agent_id/skills` | none | `{ skills: [...] }` | Experimental | Lists skills enabled for an agent. |
+| `POST` | `/control/agents/:agent_id/skills/enable` | `{ name, copy? }` | `{ ok, agent_id, skill_name }` | Experimental | Enables a library skill for an agent. |
+| `POST` | `/control/agents/:agent_id/skills/disable` | `{ name }` | `{ ok, agent_id, skill_name }` | Experimental | Disables a skill for an agent. |
+| `POST` | `/control/agents/:agent_id/skills/install` | `{ kind }` | `{ ok, agent_id, skill_name }` | Deprecated | Compatibility alias for add/enable. |
+| `POST` | `/control/agents/:agent_id/skills/uninstall` | `{ name }` | `{ ok, agent_id, skill_name }` | Deprecated | Compatibility alias for remove/disable. |
 
 ### Callback capability ingress
 
