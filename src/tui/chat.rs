@@ -6,6 +6,14 @@ use crate::tui::projection::{
 use crossterm::event::KeyCode;
 use unicode_width::UnicodeWidthChar;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LocalCommandOutput {
+    pub(super) created_at: DateTime<chrono::Utc>,
+    pub(super) title: String,
+    pub(super) body: String,
+    pub(super) is_error: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ChatScrollState {
     follow_tail: bool,
@@ -226,6 +234,26 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
                 }
             }
         }
+    }
+
+    for output in &app.local_command_outputs {
+        cells.push(ConversationCell::SystemNotice {
+            created_at: output.created_at,
+            event_seq: 0,
+            speaker: if output.is_error {
+                "command error".into()
+            } else {
+                "command".into()
+            },
+            body: output.body.clone(),
+            display_kind: ConversationDisplayKind::Narrative,
+            group_id: Some(format!(
+                "local-command:{}:{}",
+                output.created_at.timestamp_nanos_opt().unwrap_or_default(),
+                output.title
+            )),
+            header_hint: Some(output.title.clone()),
+        });
     }
 
     for message in &app.optimistic_operator_messages {

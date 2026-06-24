@@ -1,4 +1,4 @@
-use super::chat::CachedChatText;
+use super::chat::{CachedChatText, LocalCommandOutput};
 use super::state::{tui_state_path, TuiClientState};
 use super::*;
 use std::path::PathBuf;
@@ -18,6 +18,7 @@ pub(super) struct TuiApp {
     pub(super) client: LocalClient,
     pub(super) agents: Vec<AgentSummary>,
     pub(super) model_availability: Vec<ResolvedModelAvailability>,
+    pub(super) local_command_outputs: Vec<LocalCommandOutput>,
     pub(super) optimistic_operator_messages: Vec<OperatorMessageRecord>,
     pub(super) tasks: Vec<TaskRecord>,
     pub(super) projection: Option<TuiProjection>,
@@ -79,6 +80,7 @@ impl TuiApp {
             client,
             agents: Vec::new(),
             model_availability: Vec::new(),
+            local_command_outputs: Vec::new(),
             optimistic_operator_messages: Vec::new(),
             tasks: Vec::new(),
             projection: None,

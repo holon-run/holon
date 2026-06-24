@@ -162,7 +162,7 @@ fn overlay_hint(app: &TuiApp, slash_visible: bool) -> Option<&'static str> {
         | OverlayState::AgentState { .. }
         | OverlayState::DebugPromptView { .. }
         | OverlayState::HelpView { .. } => KeyContext::ScrollOverlay,
-        OverlayState::Tasks { .. } => KeyContext::TasksOverlay,
+        OverlayState::Tasks { .. } | OverlayState::SkillCatalog { .. } => KeyContext::TasksOverlay,
         OverlayState::ModelPicker { .. } => KeyContext::ModelPicker,
         OverlayState::ModelEffortPicker { .. } => KeyContext::ModelEffortPicker,
         OverlayState::DebugPromptInput { .. } => KeyContext::DebugPromptInput,
