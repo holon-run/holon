@@ -23,7 +23,7 @@ hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 libc = "0.2"
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
-reqwest = { version = "0.12", features = ["gzip", "json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls"], default-features = false }
 rpassword = "7.3"
 rust-embed = "8.5"
 rusqlite = { version = "0.31", features = ["bundled"] }

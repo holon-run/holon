@@ -921,36 +921,30 @@ pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode,
                 .code("skill_already_installed")
                 .hint("uninstall the existing skill first or choose a different skill name")
                 .extension("skill_name", conflict.skill_name)
-                .extension("destination", conflict.destination.to_string_lossy().to_string()),
-        ),
-        Err(error) => match error.downcast::<crate::skills::SkillManagerUnavailable>() {
-            Ok(unavailable) => http_error(
-                StatusCode::FAILED_DEPENDENCY,
-                HttpErrorEnvelope::new(unavailable.to_string())
-                    .code("skill_manager_unavailable")
-                    .hint("Install Node.js/npm so `npx skills` is available, or install the skill manually into ~/.agents/skills and link it by name.")
-                    .extension("manager", unavailable.manager),
-            ),
-            Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallFailed>() {
-                Ok(failed) => http_error(
-                    StatusCode::BAD_GATEWAY,
-                    HttpErrorEnvelope::new(failed.to_string())
-                        .code("remote_skill_install_failed")
-                        .extension("package", failed.package)
-                        .extension("exit_status", failed.status)
-                        .extension("stdout", failed.stdout)
-                        .extension("stderr", failed.stderr),
+                .extension(
+                    "destination",
+                    conflict.destination.to_string_lossy().to_string(),
                 ),
-                Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallTimedOut>() {
-                    Ok(timeout) => http_error(
-                        StatusCode::GATEWAY_TIMEOUT,
-                        HttpErrorEnvelope::new(timeout.to_string())
-                            .code("remote_skill_install_timeout")
-                            .extension("package", timeout.package)
-                            .extension("timeout_seconds", timeout.timeout.as_secs()),
-                    ),
-                    Err(error) => error_response(error),
-                },
+        ),
+        Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallFailed>() {
+            Ok(failed) => http_error(
+                StatusCode::BAD_GATEWAY,
+                HttpErrorEnvelope::new(failed.to_string())
+                    .code("remote_skill_install_failed")
+                    .extension("package", failed.package)
+                    .extension("exit_status", failed.status)
+                    .extension("stdout", failed.stdout)
+                    .extension("stderr", failed.stderr),
+            ),
+            Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallTimedOut>() {
+                Ok(timeout) => http_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    HttpErrorEnvelope::new(timeout.to_string())
+                        .code("remote_skill_install_timeout")
+                        .extension("package", timeout.package)
+                        .extension("timeout_seconds", timeout.timeout_seconds),
+                ),
+                Err(error) => error_response(error),
             },
         },
     }
