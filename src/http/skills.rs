@@ -126,7 +126,7 @@ pub async fn update_skill_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
-    let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
+    let result = crate::skills::update_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
