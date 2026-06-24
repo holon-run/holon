@@ -6469,7 +6469,7 @@
     },
     "/api/skills/catalog/update": {
       "post": {
-        "description": "Compatibility alias for reconciling local Skill Library contents with .skill-lock.json. This does not fetch remote updates.",
+        "description": "Fetch supported remote Skill Library entries described by .skill-lock.json and update changed skills. Returns per-skill status.",
         "operationId": "updateSkillCatalog",
         "parameters": [],
         "requestBody": {
@@ -6519,7 +6519,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Update skill library (compatibility alias)",
+        "summary": "Update skill library",
         "tags": [
           "skills"
         ]

@@ -2861,8 +2861,8 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Update { name } => {
             post_control_json(
                 config,
-                "/api/skills/catalog/reconcile",
-                &holon::types::ReconcileSkillRequest { name },
+                "/api/skills/catalog/update",
+                &holon::types::UpdateSkillRequest { name },
             )
             .await
         }

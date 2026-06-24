@@ -1548,6 +1548,34 @@ pub struct SkillLibraryReconcileResult {
     pub checked: SkillLibraryCheckResult,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillLibraryUpdateResult {
+    pub skills_root: PathBuf,
+    pub lock_path: PathBuf,
+    pub statuses: Vec<SkillLibraryUpdateStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillLibraryUpdateStatus {
+    pub name: String,
+    pub status: SkillLibraryUpdateState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillLibraryUpdateState {
+    Updated,
+    Unchanged,
+    Skipped,
+    Failed,
+}
+
 pub fn check_library_skills(
     user_home: &Path,
     name_filter: Option<&str>,
@@ -1624,8 +1652,373 @@ pub fn reconcile_library_skills(
 pub fn update_library_skills(
     user_home: &Path,
     name_filter: Option<&str>,
-) -> Result<SkillLibraryReconcileResult> {
-    reconcile_library_skills(user_home, name_filter)
+) -> Result<SkillLibraryUpdateResult> {
+    update_library_skills_with_remote_updater(user_home, name_filter, &GithubSkillRemoteUpdater)
+}
+
+trait SkillRemoteUpdater {
+    fn latest_hash(&self, source: &LockedRemoteSkillSource) -> Result<String>;
+    fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()>;
+}
+
+struct GithubSkillRemoteUpdater;
+
+impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
+    fn latest_hash(&self, source: &LockedRemoteSkillSource) -> Result<String> {
+        let tmp = temp_skill_update_dir("hash");
+        if tmp.exists() {
+            fs::remove_dir_all(&tmp)
+                .with_context(|| format!("failed to clear {}", tmp.display()))?;
+        }
+        fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
+        let result = self
+            .install(source, &tmp)
+            .and_then(|()| hash_skill_folder(&tmp));
+        let _ = fs::remove_dir_all(&tmp);
+        result
+    }
+
+    fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
+        const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
+            Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(REMOTE_SKILL_INSTALL_TIMEOUT)
+            .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+            .default_headers(github_auth_headers())
+            .build()
+            .context("failed to create remote skill HTTP client")?;
+        download_github_directory(
+            &client,
+            &RemoteSkillSource {
+                owner: source.owner.clone(),
+                repo: source.repo.clone(),
+                reference: source.reference.clone(),
+                path: source.skill_path.clone(),
+                skill_name: source.skill_name.clone(),
+            },
+            &source.skill_path,
+            destination,
+        )
+    }
+}
+
+fn update_library_skills_with_remote_updater(
+    user_home: &Path,
+    name_filter: Option<&str>,
+    updater: &dyn SkillRemoteUpdater,
+) -> Result<SkillLibraryUpdateResult> {
+    if let Some(name) = name_filter {
+        validate_skill_name(name)?;
+    }
+    let skills_root = user_library_skills_root(user_home);
+    let lock_path = skill_lock_path(user_home);
+    let mut lock = read_skill_lock(user_home)?;
+    let Some(skills) = lock_skills(&lock) else {
+        return Ok(SkillLibraryUpdateResult {
+            skills_root,
+            lock_path,
+            statuses: Vec::new(),
+        });
+    };
+    let entries = skills
+        .iter()
+        .filter(|(name, _)| name_filter.is_none_or(|filter| name.as_str() == filter))
+        .map(|(name, entry)| (name.clone(), entry.clone()))
+        .collect::<Vec<_>>();
+
+    let mut statuses = Vec::new();
+    let mut lock_changed = false;
+    for (name, entry) in entries {
+        let Some(source) = LockedRemoteSkillSource::from_lock_entry(&name, &entry) else {
+            statuses.push(SkillLibraryUpdateStatus {
+                name,
+                status: SkillLibraryUpdateState::Skipped,
+                previous_hash: None,
+                latest_hash: None,
+                reason: Some("lock entry is not a supported remote GitHub v3 skill source".into()),
+            });
+            continue;
+        };
+        let previous_hash = source.skill_folder_hash.clone();
+        let latest_hash = match updater.latest_hash(&source) {
+            Ok(hash) => hash,
+            Err(error) => {
+                statuses.push(SkillLibraryUpdateStatus {
+                    name,
+                    status: SkillLibraryUpdateState::Failed,
+                    previous_hash: Some(previous_hash),
+                    latest_hash: None,
+                    reason: Some(error.to_string()),
+                });
+                continue;
+            }
+        };
+        if latest_hash == previous_hash {
+            statuses.push(SkillLibraryUpdateStatus {
+                name,
+                status: SkillLibraryUpdateState::Unchanged,
+                previous_hash: Some(previous_hash),
+                latest_hash: Some(latest_hash),
+                reason: None,
+            });
+            continue;
+        }
+        let destination = skills_root.join(&source.skill_name);
+        let install_result = update_skill_destination(updater, &source, &destination);
+        match install_result {
+            Ok(()) => {
+                refresh_updated_lock_entry(&mut lock, &source.skill_name, &latest_hash)?;
+                lock_changed = true;
+                statuses.push(SkillLibraryUpdateStatus {
+                    name,
+                    status: SkillLibraryUpdateState::Updated,
+                    previous_hash: Some(previous_hash),
+                    latest_hash: Some(latest_hash),
+                    reason: None,
+                });
+            }
+            Err(error) => {
+                statuses.push(SkillLibraryUpdateStatus {
+                    name,
+                    status: SkillLibraryUpdateState::Failed,
+                    previous_hash: Some(previous_hash),
+                    latest_hash: Some(latest_hash),
+                    reason: Some(error.to_string()),
+                });
+            }
+        }
+    }
+    if lock_changed {
+        write_skill_lock(user_home, &lock)?;
+    }
+    Ok(SkillLibraryUpdateResult {
+        skills_root,
+        lock_path,
+        statuses,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct LockedRemoteSkillSource {
+    skill_name: String,
+    owner: String,
+    repo: String,
+    reference: String,
+    skill_path: String,
+    skill_folder_hash: String,
+}
+
+impl LockedRemoteSkillSource {
+    fn from_lock_entry(name: &str, entry: &serde_json::Value) -> Option<Self> {
+        let object = entry.as_object()?;
+        let source_type = object
+            .get("sourceType")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if !source_type.eq_ignore_ascii_case("github") {
+            return None;
+        }
+        let skill_path = object
+            .get("skillPath")
+            .and_then(|value| value.as_str())
+            .filter(|path| !path.is_empty())?
+            .to_string();
+        let skill_folder_hash = object
+            .get("skillFolderHash")
+            .and_then(|value| value.as_str())
+            .filter(|hash| !hash.is_empty())?
+            .to_string();
+        let reference = object
+            .get("ref")
+            .and_then(|value| value.as_str())
+            .filter(|reference| !reference.is_empty())
+            .unwrap_or("main")
+            .to_string();
+        let (owner, repo) = object
+            .get("sourceUrl")
+            .and_then(|value| value.as_str())
+            .and_then(github_owner_repo_from_url)
+            .or_else(|| {
+                object
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    .and_then(github_owner_repo_from_ref)
+            })?;
+        Some(Self {
+            skill_name: name.to_string(),
+            owner,
+            repo,
+            reference,
+            skill_path,
+            skill_folder_hash,
+        })
+    }
+}
+
+fn github_owner_repo_from_url(url: &str) -> Option<(String, String)> {
+    let url = reqwest::Url::parse(url).ok()?;
+    match url.host_str()? {
+        "github.com" | "www.github.com" => {}
+        _ => return None,
+    }
+    let mut segments = url.path_segments()?;
+    let owner = segments.next()?.to_string();
+    let repo = segments.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() {
+        None
+    } else {
+        Some((owner, repo))
+    }
+}
+
+fn github_owner_repo_from_ref(source: &str) -> Option<(String, String)> {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return github_owner_repo_from_url(source);
+    }
+    let mut parts = source.trim_end_matches('/').split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        None
+    } else {
+        Some((owner, repo))
+    }
+}
+
+fn update_skill_destination(
+    updater: &dyn SkillRemoteUpdater,
+    source: &LockedRemoteSkillSource,
+    destination: &Path,
+) -> Result<()> {
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow::anyhow!("skill destination {} has no parent", destination.display())
+    })?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let tmp = temp_skill_update_dir(&source.skill_name);
+    let backup = temp_skill_update_dir(&format!("backup-{}", source.skill_name));
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp).with_context(|| format!("failed to clear {}", tmp.display()))?;
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup)
+            .with_context(|| format!("failed to clear {}", backup.display()))?;
+    }
+    fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
+    let result = updater.install(source, &tmp).and_then(|()| {
+        if !tmp.join(SKILL_ENTRYPOINT).is_file() {
+            bail!(
+                "updated remote skill '{}' did not contain {} at {}",
+                source.skill_name,
+                SKILL_ENTRYPOINT,
+                source.skill_path
+            );
+        }
+        record_install_metadata(&tmp, "remote")?;
+        if destination.exists() {
+            fs::rename(destination, &backup).with_context(|| {
+                format!(
+                    "failed to move current skill {} -> {}",
+                    destination.display(),
+                    backup.display()
+                )
+            })?;
+        }
+        if let Err(error) = fs::rename(&tmp, destination).with_context(|| {
+            format!(
+                "failed to install updated skill {} -> {}",
+                tmp.display(),
+                destination.display()
+            )
+        }) {
+            if backup.exists() {
+                let _ = fs::rename(&backup, destination);
+            }
+            return Err(error);
+        }
+        if backup.exists() {
+            fs::remove_dir_all(&backup)
+                .with_context(|| format!("failed to remove {}", backup.display()))?;
+        }
+        Ok(())
+    });
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::remove_dir_all(&backup);
+    }
+    result
+}
+
+fn temp_skill_update_dir(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "holon-skill-update-{}-{}-{}",
+        std::process::id(),
+        label,
+        uuid::Uuid::new_v4()
+    ))
+}
+
+fn refresh_updated_lock_entry(
+    lock: &mut serde_json::Value,
+    name: &str,
+    latest_hash: &str,
+) -> Result<()> {
+    let skills = lock_skills_mut(lock)?;
+    let Some(entry) = skills.get_mut(name).and_then(|value| value.as_object_mut()) else {
+        bail!("skill lock entry '{name}' disappeared during update");
+    };
+    entry.insert(
+        "skillFolderHash".into(),
+        serde_json::Value::String(latest_hash.into()),
+    );
+    entry.insert(
+        "updatedAt".into(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    Ok(())
+}
+
+fn hash_skill_folder(skill_dir: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    collect_skill_files(skill_dir, skill_dir, &mut files)?;
+    let mut hasher = Sha256::new();
+    for (relative_path, path) in files {
+        hasher.update(relative_path.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher
+            .update(fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?);
+        hasher.update([0]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_skill_files(root, &path, files)?;
+        } else if file_type.is_file() {
+            let relative_path = path
+                .strip_prefix(root)
+                .with_context(|| {
+                    format!(
+                        "failed to compute relative path for {} under {}",
+                        path.display(),
+                        root.display()
+                    )
+                })?
+                .to_path_buf();
+            if relative_path == Path::new(INSTALL_METADATA_FILENAME) {
+                continue;
+            }
+            files.push((relative_path, path));
+        }
+    }
+    Ok(())
 }
 
 fn sync_skill_lock_entry(user_home: &Path, name: &str) -> Result<()> {
@@ -1952,10 +2345,70 @@ fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use tempfile::tempdir;
 
     use super::*;
     use crate::types::{SkillActivationSource, SkillActivationState};
+
+    struct FakeSkillRemoteUpdater {
+        contents: HashMap<String, String>,
+        latest_hashes: HashMap<String, String>,
+    }
+
+    impl SkillRemoteUpdater for FakeSkillRemoteUpdater {
+        fn latest_hash(&self, source: &LockedRemoteSkillSource) -> Result<String> {
+            self.latest_hashes
+                .get(&source.skill_name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing fake hash for {}", source.skill_name))
+        }
+
+        fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
+            fs::create_dir_all(destination)
+                .with_context(|| format!("failed to create {}", destination.display()))?;
+            fs::write(
+                destination.join(SKILL_ENTRYPOINT),
+                self.contents
+                    .get(&source.skill_name)
+                    .cloned()
+                    .unwrap_or_else(|| format!("# {}", source.skill_name)),
+            )?;
+            Ok(())
+        }
+    }
+
+    fn write_v3_lock_entry(user_home: &Path, name: &str, hash: &str, extra: serde_json::Value) {
+        fs::create_dir_all(user_home.join(".agents")).unwrap();
+        let mut entry = serde_json::json!({
+            "name": name,
+            "source": "vercel-labs/agent-skills",
+            "sourceType": "github",
+            "sourceUrl": "https://github.com/vercel-labs/agent-skills",
+            "skillPath": format!("skills/{name}"),
+            "skillFolderHash": hash,
+            "ref": "main",
+            "installedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+        });
+        if let (Some(entry), Some(extra)) = (entry.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra {
+                entry.insert(key.clone(), value.clone());
+            }
+        }
+        fs::write(
+            user_home.join(SKILL_LOCK_FILENAME),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 3,
+                "skills": {
+                    name: entry,
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn agent_skill_discovery_merges_compatible_roots() {
@@ -2753,6 +3206,211 @@ mod tests {
         assert_eq!(
             fs::read_link(agent_home.join("skills/demo")).unwrap(),
             user_home.join(".agents/skills/demo")
+        );
+    }
+
+    #[test]
+    fn update_library_skills_reports_unchanged_remote_skill() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        write_v3_lock_entry(
+            &user_home,
+            "demo",
+            "same-hash",
+            serde_json::json!({"xUnknown": "preserved"}),
+        );
+        fs::create_dir_all(user_home.join(".agents/skills/demo")).unwrap();
+        fs::write(
+            user_home.join(".agents/skills/demo").join(SKILL_ENTRYPOINT),
+            "# old",
+        )
+        .unwrap();
+        let updater = FakeSkillRemoteUpdater {
+            latest_hashes: HashMap::from([("demo".into(), "same-hash".into())]),
+            contents: HashMap::new(),
+        };
+
+        let result = update_library_skills_with_remote_updater(&user_home, None, &updater).unwrap();
+
+        assert_eq!(result.statuses.len(), 1);
+        assert_eq!(result.statuses[0].name, "demo");
+        assert_eq!(
+            result.statuses[0].status,
+            SkillLibraryUpdateState::Unchanged
+        );
+        assert_eq!(
+            fs::read_to_string(user_home.join(".agents/skills/demo").join(SKILL_ENTRYPOINT))
+                .unwrap(),
+            "# old"
+        );
+        let lock = read_skill_lock(&user_home).unwrap();
+        let entry = lock
+            .get("skills")
+            .and_then(|skills| skills.get("demo"))
+            .unwrap();
+        assert_eq!(
+            entry.get("xUnknown").and_then(|value| value.as_str()),
+            Some("preserved")
+        );
+        assert_eq!(
+            entry.get("source").and_then(|value| value.as_str()),
+            Some("vercel-labs/agent-skills")
+        );
+    }
+
+    #[test]
+    fn skill_folder_hash_ignores_holon_install_metadata() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join(SKILL_ENTRYPOINT), "# demo").unwrap();
+        let before = hash_skill_folder(&skill_dir).unwrap();
+
+        record_install_metadata(&skill_dir, "remote").unwrap();
+
+        assert_eq!(hash_skill_folder(&skill_dir).unwrap(), before);
+    }
+
+    #[test]
+    fn update_library_skills_updates_changed_remote_skill_and_preserves_lock_fields() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        write_v3_lock_entry(
+            &user_home,
+            "demo",
+            "old-hash",
+            serde_json::json!({"custom": {"nested": true}}),
+        );
+        fs::create_dir_all(user_home.join(".agents/skills/demo")).unwrap();
+        fs::write(
+            user_home.join(".agents/skills/demo").join(SKILL_ENTRYPOINT),
+            "# old",
+        )
+        .unwrap();
+        let updater = FakeSkillRemoteUpdater {
+            latest_hashes: HashMap::from([("demo".into(), "new-hash".into())]),
+            contents: HashMap::from([("demo".into(), "# new".into())]),
+        };
+
+        let result =
+            update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater).unwrap();
+
+        assert_eq!(result.statuses.len(), 1);
+        assert_eq!(result.statuses[0].status, SkillLibraryUpdateState::Updated);
+        assert_eq!(
+            fs::read_to_string(user_home.join(".agents/skills/demo").join(SKILL_ENTRYPOINT))
+                .unwrap(),
+            "# new"
+        );
+        let lock = read_skill_lock(&user_home).unwrap();
+        let entry = lock
+            .get("skills")
+            .and_then(|skills| skills.get("demo"))
+            .unwrap();
+        assert_eq!(
+            entry
+                .get("skillFolderHash")
+                .and_then(|value| value.as_str()),
+            Some("new-hash")
+        );
+        assert_eq!(
+            entry
+                .get("custom")
+                .and_then(|value| value.get("nested"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            entry.get("sourceType").and_then(|value| value.as_str()),
+            Some("github")
+        );
+    }
+
+    #[test]
+    fn update_library_skills_skips_unsupported_and_legacy_lock_entries() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        fs::create_dir_all(user_home.join(".agents")).unwrap();
+        fs::write(
+            user_home.join(SKILL_LOCK_FILENAME),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 3,
+                "skills": {
+                    "local": {
+                        "name": "local",
+                        "sourceType": "local",
+                        "path": "/tmp/local"
+                    },
+                    "legacy": {
+                        "name": "legacy",
+                        "source": "local"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let updater = FakeSkillRemoteUpdater {
+            latest_hashes: HashMap::new(),
+            contents: HashMap::new(),
+        };
+
+        let result = update_library_skills_with_remote_updater(&user_home, None, &updater).unwrap();
+
+        assert_eq!(result.statuses.len(), 2);
+        assert!(result
+            .statuses
+            .iter()
+            .all(|status| status.status == SkillLibraryUpdateState::Skipped));
+    }
+
+    #[test]
+    fn reconcile_remains_local_only_and_update_preserves_remote_source_semantics() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        let skill_dir = user_home.join(".agents/skills/demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join(SKILL_ENTRYPOINT), "# demo").unwrap();
+        write_v3_lock_entry(&user_home, "demo", "old-hash", serde_json::json!({}));
+
+        let reconcile = reconcile_library_skills(&user_home, Some("demo")).unwrap();
+        assert!(reconcile.added.is_empty());
+        assert!(reconcile.removed.is_empty());
+        let lock = read_skill_lock(&user_home).unwrap();
+        let entry = lock
+            .get("skills")
+            .and_then(|skills| skills.get("demo"))
+            .unwrap();
+        assert_eq!(
+            entry.get("source").and_then(|value| value.as_str()),
+            Some("vercel-labs/agent-skills")
+        );
+        assert_eq!(
+            entry
+                .get("skillFolderHash")
+                .and_then(|value| value.as_str()),
+            Some("old-hash")
+        );
+
+        let updater = FakeSkillRemoteUpdater {
+            latest_hashes: HashMap::from([("demo".into(), "new-hash".into())]),
+            contents: HashMap::from([("demo".into(), "# updated".into())]),
+        };
+        update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater).unwrap();
+        let lock = read_skill_lock(&user_home).unwrap();
+        let entry = lock
+            .get("skills")
+            .and_then(|skills| skills.get("demo"))
+            .unwrap();
+        assert_eq!(
+            entry.get("source").and_then(|value| value.as_str()),
+            Some("vercel-labs/agent-skills")
+        );
+        assert_eq!(
+            entry
+                .get("skillFolderHash")
+                .and_then(|value| value.as_str()),
+            Some("new-hash")
         );
     }
 }
