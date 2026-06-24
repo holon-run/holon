@@ -368,9 +368,9 @@ function normalizedSkillScope(scope: SkillCatalogEntry["scope"]) {
   return scope === "user_global" ? "user" : scope;
 }
 
-function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
-  const userPath = skills.find((skill) => normalizedSkillScope(skill.scope) === "user")?.path;
-  return { user: collapseHome(skillRoot(userPath) ?? "~/.agents/skills") };
+export function summarizeLibraryRoots(skills: SkillCatalogEntry[]) {
+  void skills;
+  return { user: "~/.agents/skills" };
 }
 
 export function skillRoot(path?: string) {

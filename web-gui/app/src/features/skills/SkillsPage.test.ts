@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import { skillRoot } from "./SkillsPage";
+import { skillRoot, summarizeLibraryRoots } from "./SkillsPage";
+
+describe("summarizeLibraryRoots", () => {
+  it("uses the canonical global skill library root instead of compatible catalog paths", () => {
+    expect(
+      summarizeLibraryRoots([
+        {
+          skillId: "user:ace-step",
+          rootId: "user:/Users/jolestar/.claude/skills",
+          skillDir: "/Users/jolestar/.claude/skills/ace-step",
+          name: "ace-step",
+          description: "",
+          path: "/Users/jolestar/.claude/skills/ace-step/SKILL.md",
+          scope: "user_global",
+        },
+      ]),
+    ).toEqual({ user: "~/.agents/skills" });
+  });
+});
 
 describe("skillRoot", () => {
   it("returns the library root for compatible skill directories", () => {
