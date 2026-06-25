@@ -846,15 +846,31 @@ pub(crate) fn wait_decision_for_projection(
     }
     projection.waiting_work_item.as_ref().and_then(|item| {
         match projection.waiting_work_item_scheduling_state {
-            Some(WorkItemSchedulingState::WaitingOperator) => Some(
-                SchedulerDecision::new(
-                    SchedulerDecisionKind::WaitForOperator,
-                    "work_item_needs_input",
+            Some(WorkItemSchedulingState::WaitingOperator) => {
+                // If recheck_at has expired and not been consumed, do not block on
+                // WaitForOperator — let the agent wake up to re-evaluate. This
+                // prevents permanent stalls when wake=operator_input is used with
+                // a recheck_after_ms fallback. (#1989)
+                if item
+                    .recheck_at
+                    .is_some_and(|recheck_at| recheck_at <= Utc::now())
+                    && item
+                        .recheck_consumed_at
+                        .zip(item.recheck_at)
+                        .is_none_or(|(consumed, recheck_at)| consumed < recheck_at)
+                {
+                    return None;
+                }
+                Some(
+                    SchedulerDecision::new(
+                        SchedulerDecisionKind::WaitForOperator,
+                        "work_item_needs_input",
+                    )
+                    .liveness_only(true)
+                    .work_item_id(item.id.clone())
+                    .evidence("work_item_scheduling_state=WaitingOperator"),
                 )
-                .liveness_only(true)
-                .work_item_id(item.id.clone())
-                .evidence("work_item_scheduling_state=WaitingOperator"),
-            ),
+            }
             Some(WorkItemSchedulingState::WaitingTask) => Some(
                 SchedulerDecision::new(SchedulerDecisionKind::WaitForTask, "work_item_task_wait")
                     .liveness_only(true)
