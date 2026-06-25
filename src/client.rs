@@ -810,14 +810,14 @@ impl LocalClient {
         .await
     }
 
-    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let path = api_path(path);
         let body = self.send(RequestSpec::get(&path), false).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
     }
 
-    async fn post_json<B: Serialize, T: DeserializeOwned>(
+    pub async fn post_json<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
         payload: &B,
@@ -830,14 +830,14 @@ impl LocalClient {
             .with_context(|| format!("failed to decode response body for POST {}", path))
     }
 
-    async fn get_control_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    pub async fn get_control_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let path = api_path(path);
         let body = self.send(RequestSpec::get(&path), true).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
     }
 
-    async fn post_control_json<B: Serialize, T: DeserializeOwned>(
+    pub async fn post_control_json<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
         payload: &B,
