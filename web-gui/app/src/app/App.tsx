@@ -47,6 +47,7 @@ export function App() {
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
   const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
   const showWorkItemDetail = useRuntimeStore((state) => state.showWorkItemDetail);
+  const showTaskDetail = useRuntimeStore((state) => state.showTaskDetail);
   const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
@@ -113,6 +114,7 @@ export function App() {
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
   const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
+  const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
@@ -513,12 +515,17 @@ export function App() {
           availableSkillCatalogLoading={skillCatalogLoading}
           skillCatalogError={agentSkillCatalogError}
           workItemDetailsById={selectedAgentSession?.workItemDetailsById ?? {}}
+          taskDetailsById={selectedAgentSession?.taskDetailsById ?? {}}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
           open={rightPanelOpen}
           onLoadWorkItemDetail={(workItemId) => loadAgentWorkItemDetail(selectedAgent.id, workItemId)}
           onOpenWorkItemDetail={(workItem) => {
             showWorkItemDetail(selectedAgent.id, workItem);
             loadAgentWorkItemDetail(selectedAgent.id, workItem.id);
+          }}
+          onOpenTask={(task) => {
+            showTaskDetail(selectedAgent.id, task);
+            loadAgentTaskDetail(selectedAgent.id, task.id);
           }}
           onRefreshAgentSkills={() => refreshAgentSkillCatalog(selectedAgent.id)}
           onRefreshAvailableSkills={() => {

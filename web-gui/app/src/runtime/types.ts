@@ -384,6 +384,12 @@ export interface WorkItemDetailState {
   workItem?: WorkItemSummary;
 }
 
+export interface TaskDetailState {
+  loading?: boolean;
+  error?: string;
+  output?: RuntimeTaskOutputResult;
+}
+
 export type RightPanelView =
   | {
       kind: "agent_overview";
@@ -399,6 +405,12 @@ export type RightPanelView =
       agentId: string;
       activity: AgentTimelineActivity;
       detailState?: InspectorActivityDetailState;
+    }
+  | {
+      kind: "task_detail";
+      agentId: string;
+      task: TaskSummary;
+      detailState?: TaskDetailState;
     };
 
 export interface AgentTimelineItem {

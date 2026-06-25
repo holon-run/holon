@@ -28,6 +28,7 @@ import type {
   RouteKey,
   RuntimeBootstrap,
   RuntimeConnectionConfig,
+  TaskSummary,
   RuntimeConnectionProfile,
   RuntimeConfigState,
   CredentialProfileStatus,
@@ -45,8 +46,8 @@ import type {
   SearchResponse,
 } from "./types";
 
-export type { AgentLiveStatus, AgentSessionState } from "./runtime-store-helpers";
-import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState } from "./runtime-store-helpers";
+import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState, TaskDetailState } from "./runtime-store-helpers";
+export type { AgentLiveStatus, AgentSessionState };
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
@@ -67,8 +68,12 @@ function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummar
     ...httpAgent,
     currentWork: cachedAgent.currentWork ?? httpAgent.currentWork,
     workItems: cachedAgent.workItems?.length ? cachedAgent.workItems : httpAgent.workItems,
-    tasks: cachedAgent.tasks?.length ? cachedAgent.tasks : httpAgent.tasks,
-    activeTaskCount: Math.max(httpAgent.activeTaskCount, cachedAgent.activeTaskCount),
+    // Tasks come from the live /state endpoint, not the /agents/list bootstrap.
+    // When httpAgent.tasks is empty it may mean "no tasks" (from /state) or
+    // "tasks not included" (from /agents/list). Only overwrite cached tasks
+    // when the HTTP source actually carries task data.
+    tasks: httpAgent.tasks?.length ? httpAgent.tasks : (cachedAgent.tasks ?? []),
+    activeTaskCount: httpAgent.tasks?.length ? httpAgent.activeTaskCount : Math.max(cachedAgent.activeTaskCount ?? 0, httpAgent.activeTaskCount ?? 0),
     waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
     pending: Math.max(httpAgent.pending, cachedAgent.pending),
     workspaceSummary: cachedAgent.workspaceSummary ?? httpAgent.workspaceSummary,
@@ -194,6 +199,7 @@ export interface RuntimeStoreState {
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
+  showTaskDetail: (agentId: string, task: TaskSummary) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
@@ -220,6 +226,7 @@ export interface RuntimeStoreState {
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
+  loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
@@ -257,6 +264,7 @@ const briefHydrationInFlight = new Map<string, Set<string>>();
 const inspectorDetailInFlight = new Set<string>();
 const workItemRefreshInFlight = new Set<string>();
 const workItemDetailInFlight = new Set<string>();
+const taskDetailInFlight = new Set<string>();
 const agentStateRefreshInFlight = new Set<string>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
@@ -682,6 +690,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({
       rightPanelOpen: true,
       rightPanelView: { kind: "work_item_detail", agentId, workItem },
+    }),
+  showTaskDetail: (agentId, task) =>
+    set({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "task_detail", agentId, task },
     }),
   inspectActivity: (agentId, activity) => {
     set({
@@ -1345,6 +1358,33 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  loadAgentTaskDetail: async (agentId, taskId) => {
+    if (!agentId || !taskId) return;
+    const key = `${agentId}:${taskId}`;
+    const cached = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
+    if (cached?.output || cached?.loading || taskDetailInFlight.has(key)) return;
+    taskDetailInFlight.add(key);
+    setTaskDetailState(set, agentId, taskId, { loading: true, error: undefined });
+    try {
+      const output = await runtimeClient.getTaskOutput(agentId, taskId);
+      setTaskDetailState(set, agentId, taskId, { loading: false, output });
+    } catch (error) {
+      setTaskDetailState(set, agentId, taskId, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      taskDetailInFlight.delete(key);
+      const selection = get().rightPanelView;
+      if (selection?.kind === "task_detail" && selection.agentId === agentId && selection.task.id === taskId) {
+        const detail = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
+        if (detail) {
+          set({ rightPanelView: { ...selection, detailState: detail } });
+        }
+      }
+    }
+  },
+
   loadOlderAgentEvents: async (agentId, displayLevel) => {
     if (!agentId) return;
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -1587,6 +1627,7 @@ function emptyAgentSession(): AgentSessionState {
     briefRecordsById: {},
     missingBriefIds: {},
     workItemDetailsById: {},
+    taskDetailsById: {},
   };
 }
 
@@ -1897,6 +1938,33 @@ function setWorkItemDetailState(
   });
 }
 
+function setTaskDetailState(
+  set: StoreSet,
+  agentId: string,
+  taskId: string,
+  detailState: TaskDetailState,
+): void {
+  set((state) => {
+    const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const previous = session.taskDetailsById[taskId] ?? {};
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...session,
+          taskDetailsById: {
+            ...session.taskDetailsById,
+            [taskId]: {
+              ...previous,
+              ...detailState,
+            },
+          },
+        },
+      },
+    };
+  });
+}
+
 function inspectorDetailRefs(activity: AgentTimelineActivity): { toolExecutionId?: string; taskId?: string } {
   const rawEvent = asRecord(activity.rawEvent);
   const payload = asRecord(rawEvent?.payload) ?? asRecord(activity.rawEvent);
@@ -2105,15 +2173,18 @@ function patchAgentWorkItems(agent: AgentSummary, workItems: WorkItemSummary[]):
 
 function mergeAgentStateIntoState(state: RuntimeStoreState, agentId: string, freshAgent: AgentSummary): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  // Preserve cached work items and tasks from existing detail — those are managed by
-  // refreshAgentWorkItems and don't come from the lightweight state endpoint.
+  // Preserve cached work items from existing detail — those are managed by
+  // refreshAgentWorkItems. Tasks come from the state endpoint and are always trusted.
   const cachedDetail = session.detail;
   const mergedAgent: AgentSummary = cachedDetail
     ? {
         ...freshAgent,
+        // Tasks come from the live state endpoint, so always trust fresh data
+        // to ensure cancelled/completed tasks are removed promptly.
+        tasks: freshAgent.tasks,
+        // Work items are managed by a separate endpoint, preserve cached data.
         workItems: cachedDetail.agent.workItems?.length ? cachedDetail.agent.workItems : freshAgent.workItems,
         currentWork: cachedDetail.agent.currentWork ?? freshAgent.currentWork,
-        tasks: cachedDetail.agent.tasks?.length ? cachedDetail.agent.tasks : freshAgent.tasks,
         lastBrief: cachedDetail.agent.lastBrief || freshAgent.lastBrief,
       }
     : freshAgent;
@@ -2526,7 +2597,14 @@ function isWorkItemCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolea
 }
 
 function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
-  return event.type === "agent_state_changed" || event.type === "state_changed" || event.type === "work_item_written";
+  return (
+    event.type === "agent_state_changed" ||
+    event.type === "state_changed" ||
+    event.type === "work_item_written" ||
+    event.type === "task_created" ||
+    event.type === "task_status_updated" ||
+    event.type === "task_result_received"
+  );
 }
 
 function scheduleMessageHydration(

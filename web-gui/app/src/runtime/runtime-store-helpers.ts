@@ -10,9 +10,10 @@ import type {
   RuntimeMessageEnvelope,
   RuntimeTranscriptEntry,
   WorkItemDetailState,
+  TaskDetailState,
 } from "./types";
 
-export type { WorkItemDetailState };
+export type { WorkItemDetailState, TaskDetailState };
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 
@@ -41,4 +42,5 @@ export interface AgentSessionState {
   promptError?: string;
   modelError?: string;
   workItemDetailsById: Record<string, WorkItemDetailState>;
+  taskDetailsById: Record<string, TaskDetailState>;
 }
