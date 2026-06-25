@@ -16,7 +16,7 @@ use crate::tool::helpers::{
     invalid_tool_input, normalize_optional_non_empty, parse_tool_args, validate_non_empty,
 };
 
-pub(crate) const NAME: &str = "UseWorkspace";
+pub(crate) const NAME: &str = crate::tool::names::USE_WORKSPACE;
 
 #[derive(Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

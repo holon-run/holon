@@ -13,7 +13,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::{invalid_tool_input, normalize_optional_non_empty, parse_tool_args};
 
-pub(crate) const NAME: &str = "SpawnAgent";
+pub(crate) const NAME: &str = crate::tool::names::SPAWN_AGENT;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

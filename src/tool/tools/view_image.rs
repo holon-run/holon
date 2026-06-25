@@ -25,7 +25,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
-pub(crate) const NAME: &str = "ViewImage";
+pub(crate) const NAME: &str = crate::tool::names::VIEW_IMAGE;
 const VISUAL_OBSERVATION_SCHEMA: &str = "visual_observation.v1";
 const VIEW_IMAGE_OBSERVATION_GENERATION_POLICY: &str = "openai-compatible-image-input.v1";
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;

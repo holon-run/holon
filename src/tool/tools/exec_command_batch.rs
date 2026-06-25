@@ -20,7 +20,7 @@ use crate::{
 
 use super::{serialize_success, BuiltinToolDefinition};
 
-pub(crate) const NAME: &str = "ExecCommandBatch";
+pub(crate) const NAME: &str = crate::tool::names::EXEC_COMMAND_BATCH;
 const MAX_ITEMS: usize = 12;
 const DEFAULT_BATCH_YIELD_TIME_MS: u64 = 30_000;
 

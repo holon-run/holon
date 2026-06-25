@@ -13,7 +13,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::parse_tool_args;
 
-pub(crate) const NAME: &str = "MemoryGet";
+pub(crate) const NAME: &str = crate::tool::names::MEMORY_GET;
 const MAX_CHARS_MAX: usize = 50_000;
 
 #[derive(Serialize, Deserialize, JsonSchema)]

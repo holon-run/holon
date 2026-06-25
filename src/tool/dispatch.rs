@@ -236,7 +236,7 @@ fn tool_invocation_surface(call: &ToolCall) -> Option<String> {
 }
 
 fn is_model_facing_tool(name: &str) -> bool {
-    name != "Sleep" && name != "TaskList"
+    !super::names::HIDDEN_FROM_MODEL_TOOLS.contains(&name)
 }
 
 fn tool_result_summary(result: &ToolResult) -> String {

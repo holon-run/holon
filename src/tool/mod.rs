@@ -6,16 +6,18 @@
 //! - `helpers`: Shared utility functions
 //! - `tools`: Builtin tool modules, one per tool
 
+use crate::tool::names as tn;
+use anyhow::Result;
+use serde_json::{json, Value};
+
 pub(crate) mod apply_patch;
 pub mod dispatch;
 pub mod error;
 pub(crate) mod helpers;
+pub mod names;
 pub(crate) mod schema_support;
 pub mod spec;
 pub(crate) mod tools;
-
-use anyhow::Result;
-use serde_json::{json, Value};
 
 pub(crate) use schema_support as schema;
 
@@ -79,71 +81,77 @@ pub fn model_tool_schema_inventory() -> Result<Value> {
 
 fn tool_stability_level(name: &str) -> &'static str {
     match name {
-        "CreateExternalTrigger" | "CancelExternalTrigger" => "deprecated",
-        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "Sleep" | "WaitFor" | "ListTasks"
-        | "TaskStatus" | "TaskInput" | "TaskOutput" | "TaskStop" | "CreateWorkItem"
-        | "PickWorkItem" | "GetWorkItem" | "ListWorkItems" | "UpdateWorkItem"
-        | "CompleteWorkItem" | "UseWorkspace" | "AgentGet" | "Enqueue" | "SpawnAgent"
-        | "ListModelProviders" | "ListProviderModels" | "MemorySearch" | "MemoryGet" => "stable",
+        n if tn::DEPRECATED_TOOL_NAMES.contains(&n) => "deprecated",
+        n if tn::STABLE_TOOL_NAMES.contains(&n) => "stable",
         _ => "experimental",
     }
 }
 
 fn tool_success_result_contract(name: &str) -> &'static str {
     match name {
-        "AgentGet" => "AgentGetResult",
-        "ApplyPatch" => "ApplyPatchResult",
-        "CompleteWorkItem" | "CreateWorkItem" | "UpdateWorkItem" => "WorkItemMutationResult",
-        "Enqueue" => "EnqueueResult",
-        "ExecCommand" => "ExecCommandResult",
-        "ExecCommandBatch" => "ExecCommandBatchResult",
-        "GetWorkItem" => "GetWorkItemResult",
-        "ListModelProviders" => "ListModelProvidersResult",
-        "ListProviderModels" => "ListProviderModelsResult",
-        "ListWorkItems" => "ListWorkItemsResult",
-        "MemoryGet" => "MemoryGetResponse",
-        "MemorySearch" => "MemorySearchResponse",
-        "PickWorkItem" => "PickWorkItemResult",
-        "Sleep" => "SleepResult",
-        "WaitFor" => "WaitForResult",
-        "SpawnAgent" => "SpawnAgentResult",
-        "TaskInput" => "TaskInputResult",
-        "ListTasks" => "ListTasksResult",
-        "TaskOutput" => "TaskOutputResult",
-        "TaskStatus" => "TaskStatusResult",
-        "TaskStop" => "TaskStopResult",
-        "UseWorkspace" => "UseWorkspaceResult",
-        "WebFetch" => "WebFetchResult",
-        "WebSearch" => "WebSearchResult",
+        tn::AGENT_GET => "AgentGetResult",
+        tn::APPLY_PATCH => "ApplyPatchResult",
+        tn::COMPLETE_WORK_ITEM | tn::CREATE_WORK_ITEM | tn::UPDATE_WORK_ITEM => {
+            "WorkItemMutationResult"
+        }
+        tn::ENQUEUE => "EnqueueResult",
+        tn::EXEC_COMMAND => "ExecCommandResult",
+        tn::EXEC_COMMAND_BATCH => "ExecCommandBatchResult",
+        tn::GET_WORK_ITEM => "GetWorkItemResult",
+        tn::LIST_MODEL_PROVIDERS => "ListModelProvidersResult",
+        tn::LIST_PROVIDER_MODELS => "ListProviderModelsResult",
+        tn::LIST_WORK_ITEMS => "ListWorkItemsResult",
+        tn::MEMORY_GET => "MemoryGetResponse",
+        tn::MEMORY_SEARCH => "MemorySearchResponse",
+        tn::PICK_WORK_ITEM => "PickWorkItemResult",
+        tn::SLEEP => "SleepResult",
+        tn::WAIT_FOR => "WaitForResult",
+        tn::SPAWN_AGENT => "SpawnAgentResult",
+        tn::TASK_INPUT => "TaskInputResult",
+        tn::LIST_TASKS => "ListTasksResult",
+        tn::TASK_OUTPUT => "TaskOutputResult",
+        tn::TASK_STATUS => "TaskStatusResult",
+        tn::TASK_STOP => "TaskStopResult",
+        tn::USE_WORKSPACE => "UseWorkspaceResult",
+        tn::WEB_FETCH => "WebFetchResult",
+        tn::WEB_SEARCH => "WebSearchResult",
         _ => "tool-specific JSON payload",
     }
 }
 
 fn tool_model_rendering_contract(name: &str) -> &'static str {
-    match name {
-        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "TaskOutput" | "ViewImage" => {
-            "custom_text_receipt"
-        }
-        _ => "canonical_json_envelope",
+    if tn::CUSTOM_TEXT_RECEIPT_TOOLS.contains(&name) {
+        "custom_text_receipt"
+    } else {
+        "canonical_json_envelope"
     }
 }
 
 fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
     match name {
-        "ExecCommand" | "ExecCommandBatch" | "TaskInput" | "ListTasks" | "TaskOutput"
-        | "TaskStatus" | "TaskStop" => {
+        tn::EXEC_COMMAND
+        | tn::EXEC_COMMAND_BATCH
+        | tn::TASK_INPUT
+        | tn::LIST_TASKS
+        | tn::TASK_OUTPUT
+        | tn::TASK_STATUS
+        | tn::TASK_STOP => {
             vec!["CLI task/process wrappers", "HTTP control-plane task APIs"]
         }
-        "CreateWorkItem" | "PickWorkItem" | "GetWorkItem" | "ListWorkItems" | "UpdateWorkItem"
-        | "CompleteWorkItem" => {
+        tn::CREATE_WORK_ITEM
+        | tn::PICK_WORK_ITEM
+        | tn::GET_WORK_ITEM
+        | tn::LIST_WORK_ITEMS
+        | tn::UPDATE_WORK_ITEM
+        | tn::COMPLETE_WORK_ITEM => {
             vec!["CLI work-item wrappers", "HTTP control-plane WorkItem APIs"]
         }
-        "Sleep" | "WaitFor" | "Enqueue" | "AgentGet" | "SpawnAgent" => {
+        tn::SLEEP | tn::WAIT_FOR | tn::ENQUEUE | tn::AGENT_GET | tn::SPAWN_AGENT => {
             vec!["runtime agent lifecycle APIs"]
         }
-        "ApplyPatch" | "UseWorkspace" => vec!["workspace/runtime file APIs"],
-        "WebFetch" | "WebSearch" => vec!["web adapter APIs"],
-        "MemorySearch" | "MemoryGet" => vec!["memory/runtime APIs"],
+        tn::APPLY_PATCH | tn::USE_WORKSPACE => vec!["workspace/runtime file APIs"],
+        tn::WEB_FETCH | tn::WEB_SEARCH => vec!["web adapter APIs"],
+        tn::MEMORY_SEARCH | tn::MEMORY_GET => vec!["memory/runtime APIs"],
         _ => Vec::new(),
     }
 }

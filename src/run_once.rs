@@ -818,7 +818,8 @@ async fn build_response(
         .iter()
         .rev()
         .find(|tool| {
-            tool.tool_name == "Sleep" && matches!(tool.status, ToolExecutionStatus::Success)
+            tool.tool_name == crate::tool::names::SLEEP
+                && matches!(tool.status, ToolExecutionStatus::Success)
         })
         .and_then(|tool| {
             tool.output

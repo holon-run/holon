@@ -13,7 +13,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::parse_tool_args;
 
-pub(crate) const NAME: &str = "ListModelProviders";
+pub(crate) const NAME: &str = crate::tool::names::LIST_MODEL_PROVIDERS;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

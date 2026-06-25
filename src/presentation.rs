@@ -1570,25 +1570,27 @@ fn strip_preview_ellipsis(text: &str) -> String {
 }
 
 fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
-    event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
+    event.payload.get("tool_name").and_then(Value::as_str) == Some(crate::tool::names::SLEEP)
 }
 
 fn is_exec_command_tool_event(event: &ProjectionEventRecord) -> bool {
     matches!(
         event.payload.get("tool_name").and_then(Value::as_str),
-        Some("ExecCommand" | "ExecCommandBatch")
+        Some(name) if name == crate::tool::names::EXEC_COMMAND || name == crate::tool::names::EXEC_COMMAND_BATCH
     )
 }
 
 fn is_apply_patch_tool_event(event: &ProjectionEventRecord) -> bool {
-    event.payload.get("tool_name").and_then(Value::as_str) == Some("ApplyPatch")
+    event.payload.get("tool_name").and_then(Value::as_str) == Some(crate::tool::names::APPLY_PATCH)
 }
 
 fn list_work_items_snapshot_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
     if event.kind != "tool_executed" {
         return None;
     }
-    if event.payload.get("tool_name").and_then(Value::as_str) != Some("ListWorkItems") {
+    if event.payload.get("tool_name").and_then(Value::as_str)
+        != Some(crate::tool::names::LIST_WORK_ITEMS)
+    {
         return None;
     }
     if event.payload.get("status").and_then(Value::as_str) != Some("success") {
@@ -1736,7 +1738,11 @@ fn is_successful_work_item_tool_event(event: &ProjectionEventRecord) -> bool {
     }
     matches!(
         event.payload.get("tool_name").and_then(Value::as_str),
-        Some("CreateWorkItem" | "UpdateWorkItem" | "PickWorkItem" | "CompleteWorkItem")
+        Some(name)
+            if name == crate::tool::names::CREATE_WORK_ITEM
+            || name == crate::tool::names::UPDATE_WORK_ITEM
+            || name == crate::tool::names::PICK_WORK_ITEM
+            || name == crate::tool::names::COMPLETE_WORK_ITEM
     )
 }
 

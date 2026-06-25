@@ -747,9 +747,9 @@ impl TaskOverlayAction {
 
     pub(super) fn tool_name(self) -> &'static str {
         match self {
-            Self::FullOutput | Self::FollowOutput => "TaskOutput",
-            Self::Stop => "TaskStop",
-            Self::Input => "TaskInput",
+            Self::FullOutput | Self::FollowOutput => crate::tool::names::TASK_OUTPUT,
+            Self::Stop => crate::tool::names::TASK_STOP,
+            Self::Input => crate::tool::names::TASK_INPUT,
         }
     }
 }

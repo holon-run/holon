@@ -15,7 +15,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
-pub(crate) const NAME: &str = "Enqueue";
+pub(crate) const NAME: &str = crate::tool::names::ENQUEUE;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

@@ -1137,7 +1137,7 @@ pub(super) fn conversation_event_body(
 
 #[cfg(test)]
 fn is_sleep_tool_event(event: &crate::tui::projection::ProjectionEventRecord) -> bool {
-    event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
+    event.payload.get("tool_name").and_then(Value::as_str) == Some(crate::tool::names::SLEEP)
 }
 
 #[cfg(test)]

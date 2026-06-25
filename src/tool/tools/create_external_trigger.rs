@@ -12,7 +12,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::parse_tool_args;
 
-pub(crate) const NAME: &str = "CreateExternalTrigger";
+pub(crate) const NAME: &str = crate::tool::names::CREATE_EXTERNAL_TRIGGER;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

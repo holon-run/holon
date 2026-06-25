@@ -4,6 +4,7 @@
 //! Each tool section is emitted only when that tool is available.
 
 use super::{section, PromptSection, PromptStability};
+use crate::tool::names as tn;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -46,37 +47,38 @@ pub fn tool_sections_with_context(
         .collect::<Vec<_>>();
     let apply_patch_tool = available_tools
         .iter()
-        .find(|tool| tool.name == "ApplyPatch");
+        .find(|tool| tool.name == tn::APPLY_PATCH);
 
-    if names.contains(&"WaitFor") {
+    if names.contains(&tn::WAIT_FOR) {
         sections.push(section(
             "tool_wait_for",
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_wait_for.md")),
         ));
     }
-    if names.contains(&"SpawnAgent") {
+    if names.contains(&tn::SPAWN_AGENT) {
         sections.push(section(
             "tool_spawn_agent",
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_spawn_agent.md")),
         ));
     }
-    if names.contains(&"AgentGet") {
+    if names.contains(&tn::AGENT_GET) {
         sections.push(section(
             "tool_agent_get",
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_agent_get.md")),
         ));
     }
-    if names.contains(&"Enqueue") {
+    if names.contains(&tn::ENQUEUE) {
         sections.push(section(
             "tool_enqueue",
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_enqueue.md")),
         ));
     }
-    if names.contains(&"CreateExternalTrigger") || names.contains(&"CancelExternalTrigger") {
+    if names.contains(&tn::CREATE_EXTERNAL_TRIGGER) || names.contains(&tn::CANCEL_EXTERNAL_TRIGGER)
+    {
         sections.push(section(
             "tool_external_trigger",
             PromptStability::Stable,
@@ -84,11 +86,11 @@ pub fn tool_sections_with_context(
         ));
     }
     if names.contains(&"CreateWorkItem")
-        || names.contains(&"PickWorkItem")
-        || names.contains(&"UpdateWorkItem")
-        || names.contains(&"CompleteWorkItem")
-        || names.contains(&"GetWorkItem")
-        || names.contains(&"ListWorkItems")
+        || names.contains(&tn::PICK_WORK_ITEM)
+        || names.contains(&tn::UPDATE_WORK_ITEM)
+        || names.contains(&tn::COMPLETE_WORK_ITEM)
+        || names.contains(&tn::GET_WORK_ITEM)
+        || names.contains(&tn::LIST_WORK_ITEMS)
     {
         sections.push(section(
             "tool_work_item_scheduling",
@@ -96,10 +98,10 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_work_item_scheduling.md")),
         ));
     }
-    if names.contains(&"CreateWorkItem")
-        || names.contains(&"PickWorkItem")
-        || names.contains(&"UpdateWorkItem")
-        || names.contains(&"CompleteWorkItem")
+    if names.contains(&tn::CREATE_WORK_ITEM)
+        || names.contains(&tn::PICK_WORK_ITEM)
+        || names.contains(&tn::UPDATE_WORK_ITEM)
+        || names.contains(&tn::COMPLETE_WORK_ITEM)
     {
         sections.push(section(
             "tool_work_item_write",
@@ -107,19 +109,19 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_work_item_write.md")),
         ));
     }
-    if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
+    if names.contains(&tn::GET_WORK_ITEM) || names.contains(&tn::LIST_WORK_ITEMS) {
         sections.push(section(
             "tool_work_item_read",
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_work_item_read.md")),
         ));
     }
-    if names.contains(&"ListTasks")
-        || names.contains(&"TaskList")
-        || names.contains(&"TaskStatus")
-        || names.contains(&"TaskInput")
-        || names.contains(&"TaskOutput")
-        || names.contains(&"TaskStop")
+    if names.contains(&tn::LIST_TASKS)
+        || names.contains(&tn::TASK_LIST)
+        || names.contains(&tn::TASK_STATUS)
+        || names.contains(&tn::TASK_INPUT)
+        || names.contains(&tn::TASK_OUTPUT)
+        || names.contains(&tn::TASK_STOP)
     {
         sections.push(section(
             "tool_task_control",
@@ -127,14 +129,14 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_task_control.md")),
         ));
     }
-    if names.contains(&"ExecCommand") {
+    if names.contains(&tn::EXEC_COMMAND) {
         sections.push(section(
             "tool_exec_command",
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_exec_command.md")),
         ));
     }
-    if names.contains(&"ExecCommandBatch") {
+    if names.contains(&tn::EXEC_COMMAND_BATCH) {
         sections.push(section(
             "tool_exec_command_batch",
             PromptStability::Stable,
@@ -174,7 +176,7 @@ pub fn tool_sections_with_context(
             ),
         ));
     }
-    if names.contains(&"ApplyPatch") {
+    if names.contains(&tn::APPLY_PATCH) {
         let apply_patch_surface = context.apply_patch_surface.unwrap_or_else(|| {
             if apply_patch_tool
                 .and_then(|tool| tool.freeform_grammar.as_ref())
@@ -200,7 +202,7 @@ pub fn tool_sections_with_context(
             ),
         ));
     }
-    if names.contains(&"UseWorkspace") {
+    if names.contains(&tn::USE_WORKSPACE) {
         sections.push(section(
             "tool_workspace",
             PromptStability::Stable,

@@ -16,7 +16,7 @@ use super::{
 };
 use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
-pub(crate) const NAME: &str = "GetWorkItem";
+pub(crate) const NAME: &str = crate::tool::names::GET_WORK_ITEM;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

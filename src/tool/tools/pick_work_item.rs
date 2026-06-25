@@ -14,7 +14,7 @@ use crate::{
 
 use super::{serialize_success, BuiltinToolDefinition};
 
-pub(crate) const NAME: &str = "PickWorkItem";
+pub(crate) const NAME: &str = crate::tool::names::PICK_WORK_ITEM;
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

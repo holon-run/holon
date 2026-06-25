@@ -12,7 +12,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::parse_tool_args;
 
-pub(crate) const NAME: &str = "AgentGet";
+pub(crate) const NAME: &str = crate::tool::names::AGENT_GET;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

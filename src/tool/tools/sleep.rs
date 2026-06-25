@@ -13,7 +13,7 @@ use crate::{
 use super::BuiltinToolDefinition;
 use crate::tool::helpers::{invalid_tool_input, parse_tool_args};
 
-pub(crate) const NAME: &str = "Sleep";
+pub(crate) const NAME: &str = crate::tool::names::SLEEP;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

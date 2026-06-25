@@ -208,7 +208,8 @@ impl RuntimeHandle {
         duplicate_policy: ExecCommandDuplicatePolicy,
         authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
-        self.ensure_process_execution_exposed("ExecCommand").await?;
+        self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND)
+            .await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
@@ -354,7 +355,7 @@ impl RuntimeHandle {
         mut spec: CommandTaskSpec,
         _authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
-        self.ensure_process_execution_exposed("ExecCommandBatch")
+        self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND_BATCH)
             .await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);

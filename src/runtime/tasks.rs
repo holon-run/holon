@@ -368,7 +368,7 @@ impl RuntimeHandle {
                     "SpawnAgent is not available in this runtime",
                 )
                 .with_details(serde_json::json!({
-                    "tool_name": "SpawnAgent",
+                    "tool_name": crate::tool::names::SPAWN_AGENT,
                     "required_capability": "child_agent_spawning",
                 }))
                 .with_recovery_hint(
