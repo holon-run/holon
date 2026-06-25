@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 
-import type { AgentSummary, RightPanelView, SkillCatalogState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, RightPanelView, SkillCatalogState, TaskDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
-import { AgentOverviewPanel, AgentSkillManagerPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
+import { AgentOverviewPanel, AgentSkillManagerPanel, TaskDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -12,10 +13,12 @@ interface RightSidePanelProps {
   availableSkillCatalogLoading?: boolean;
   skillCatalogError?: string;
   workItemDetailsById?: Record<string, WorkItemDetailState>;
+  taskDetailsById?: Record<string, TaskDetailState>;
   view?: RightPanelView;
   open: boolean;
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
+  onOpenTask: (task: TaskSummary) => void;
   onRefreshAgentSkills: () => void;
   onRefreshAvailableSkills: () => void;
   onEnableAgentSkill: (name: string) => void;
@@ -33,10 +36,12 @@ export function RightSidePanel({
   availableSkillCatalogLoading,
   skillCatalogError,
   workItemDetailsById = {},
+  taskDetailsById = {},
   view,
   open,
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
+  onOpenTask,
   onRefreshAgentSkills,
   onRefreshAvailableSkills,
   onEnableAgentSkill,
@@ -55,9 +60,12 @@ export function RightSidePanel({
       ? activityInspectorTitle(activeView.activity)
       : activeView.kind === "work_item_detail"
         ? "Work item detail"
-        : "Agent overview";
+        : activeView.kind === "task_detail"
+          ? "Task detail"
+          : "Agent overview";
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail" ? detailState?.workItem ?? activeView.workItem : undefined;
+  const taskDetailState = activeView.kind === "task_detail" ? activeView.detailState ?? taskDetailsById[activeView.task.id] : undefined;
 
   useEffect(() => {
     setShowSkillManager(false);
@@ -111,6 +119,10 @@ export function RightSidePanel({
           <div className="inspector-stack">
             <WorkItemDetailPanel workItem={detailWorkItem} detailState={detailState} />
           </div>
+        ) : activeView.kind === "task_detail" ? (
+          <div className="inspector-stack">
+            <TaskDetailPanel task={activeView.task} detailState={taskDetailState} />
+          </div>
         ) : (
           <AgentOverviewPanel
             agent={agent}
@@ -120,6 +132,7 @@ export function RightSidePanel({
             skillCatalogError={skillCatalogError}
             onLoadWorkItemDetail={onLoadWorkItemDetail}
             onOpenWorkItemDetail={onOpenWorkItemDetail}
+            onOpenTask={onOpenTask}
             onRefreshAgentSkills={onRefreshAgentSkills}
             onDisableAgentSkill={onDisableAgentSkill}
             onOpenSkill={onOpenSkill}

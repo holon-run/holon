@@ -3,7 +3,7 @@ import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
-import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
@@ -13,6 +13,7 @@ interface AgentOverviewPanelProps {
   skillCatalogError?: string;
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
+  onOpenTask: (task: TaskSummary) => void;
   onRefreshAgentSkills: () => void;
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
@@ -97,6 +98,7 @@ export function AgentOverviewPanel({
   skillCatalogError,
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
+  onOpenTask,
   onRefreshAgentSkills,
   onDisableAgentSkill,
   onOpenSkill,
@@ -252,12 +254,13 @@ export function AgentOverviewPanel({
             <ul className="inspector-list">
               {agent.tasks.map((task) => (
                 <li key={task.id}>
-                  <div className="inspector-list-head">
+                  <button type="button" className="inspector-list-item task-button" onClick={() => onOpenTask(task)}>
+                    <div className="inspector-list-head">
                     <strong>{task.summary}</strong>
                     <StatusBadge className="state-chip" kind="connection" value={task.status} />
-                  </div>
-                  <small>{compactMeta([task.kind, task.command, task.workdir])}</small>
-                  <code>{task.id}</code>
+                    </div>
+                    <small>{compactMeta([task.kind, task.command, task.workdir])}</small>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -528,6 +531,66 @@ export function WorkItemDetailPanel({ workItem, detailState }: { workItem: WorkI
             ))}
           </ul>
         </details>
+      ) : null}
+    </article>
+  );
+}
+
+export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; detailState?: TaskDetailState }) {
+  const loading = detailState?.loading && !detailState?.output;
+  const output = detailState?.output;
+  const taskRecord = output?.task;
+  const status = taskRecord?.status ?? output?.status ?? task.status;
+  const summary = taskRecord?.summary ?? output?.summary ?? task.summary;
+  const exitStatus = taskRecord?.exit_status;
+  const outputText =
+    taskRecord?.output_preview ??
+    output?.output ??
+    output?.stdout ??
+    "";
+  const stderrText = output?.stderr ?? "";
+  const truncated = taskRecord?.output_truncated ?? output?.truncated;
+
+  return (
+    <article className="task-detail inspector-list-item featured">
+      <div className="inspector-list-head">
+        <strong>{summary}</strong>
+        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}
+      </div>
+      {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
+      <dl className="inspector-facts">
+        <div>
+          <dt>Status</dt>
+          <dd>{compactMeta([status, exitStatus != null ? `exit ${exitStatus}` : undefined])}</dd>
+        </div>
+        <div>
+          <dt>Kind</dt>
+          <dd>{task.kind}</dd>
+        </div>
+        {task.command ? (
+          <div>
+            <dt>Command</dt>
+            <dd><code>{task.command}</code></dd>
+          </div>
+        ) : null}
+        {task.workdir ? (
+          <div>
+            <dt>Workdir</dt>
+            <dd><code>{task.workdir}</code></dd>
+          </div>
+        ) : null}
+      </dl>
+      {outputText ? (
+        <section className="work-item-detail-section">
+          <h3>Output{truncated ? " (truncated)" : ""}</h3>
+          <pre>{outputText}</pre>
+        </section>
+      ) : null}
+      {stderrText ? (
+        <section className="work-item-detail-section">
+          <h3>Stderr</h3>
+          <pre>{stderrText}</pre>
+        </section>
       ) : null}
     </article>
   );

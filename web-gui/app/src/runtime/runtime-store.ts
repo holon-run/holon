@@ -28,6 +28,7 @@ import type {
   RouteKey,
   RuntimeBootstrap,
   RuntimeConnectionConfig,
+  TaskSummary,
   RuntimeConnectionProfile,
   RuntimeConfigState,
   CredentialProfileStatus,
@@ -45,8 +46,8 @@ import type {
   SearchResponse,
 } from "./types";
 
-export type { AgentLiveStatus, AgentSessionState } from "./runtime-store-helpers";
-import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState } from "./runtime-store-helpers";
+import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState, TaskDetailState } from "./runtime-store-helpers";
+export type { AgentLiveStatus, AgentSessionState };
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
@@ -194,6 +195,7 @@ export interface RuntimeStoreState {
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
+  showTaskDetail: (agentId: string, task: TaskSummary) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
@@ -220,6 +222,7 @@ export interface RuntimeStoreState {
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
+  loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
@@ -257,6 +260,7 @@ const briefHydrationInFlight = new Map<string, Set<string>>();
 const inspectorDetailInFlight = new Set<string>();
 const workItemRefreshInFlight = new Set<string>();
 const workItemDetailInFlight = new Set<string>();
+const taskDetailInFlight = new Set<string>();
 const agentStateRefreshInFlight = new Set<string>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
@@ -682,6 +686,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({
       rightPanelOpen: true,
       rightPanelView: { kind: "work_item_detail", agentId, workItem },
+    }),
+  showTaskDetail: (agentId, task) =>
+    set({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "task_detail", agentId, task },
     }),
   inspectActivity: (agentId, activity) => {
     set({
@@ -1345,6 +1354,33 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  loadAgentTaskDetail: async (agentId, taskId) => {
+    if (!agentId || !taskId) return;
+    const key = `${agentId}:${taskId}`;
+    const cached = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
+    if (cached?.output || cached?.loading || taskDetailInFlight.has(key)) return;
+    taskDetailInFlight.add(key);
+    setTaskDetailState(set, agentId, taskId, { loading: true, error: undefined });
+    try {
+      const output = await runtimeClient.getTaskOutput(agentId, taskId);
+      setTaskDetailState(set, agentId, taskId, { loading: false, output });
+    } catch (error) {
+      setTaskDetailState(set, agentId, taskId, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      taskDetailInFlight.delete(key);
+      const selection = get().rightPanelView;
+      if (selection?.kind === "task_detail" && selection.agentId === agentId && selection.task.id === taskId) {
+        const detail = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
+        if (detail) {
+          set({ rightPanelView: { ...selection, detailState: detail } });
+        }
+      }
+    }
+  },
+
   loadOlderAgentEvents: async (agentId, displayLevel) => {
     if (!agentId) return;
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -1587,6 +1623,7 @@ function emptyAgentSession(): AgentSessionState {
     briefRecordsById: {},
     missingBriefIds: {},
     workItemDetailsById: {},
+    taskDetailsById: {},
   };
 }
 
@@ -1887,6 +1924,33 @@ function setWorkItemDetailState(
           workItemDetailsById: {
             ...session.workItemDetailsById,
             [workItemId]: {
+              ...previous,
+              ...detailState,
+            },
+          },
+        },
+      },
+    };
+  });
+}
+
+function setTaskDetailState(
+  set: StoreSet,
+  agentId: string,
+  taskId: string,
+  detailState: TaskDetailState,
+): void {
+  set((state) => {
+    const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const previous = session.taskDetailsById[taskId] ?? {};
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...session,
+          taskDetailsById: {
+            ...session.taskDetailsById,
+            [taskId]: {
               ...previous,
               ...detailState,
             },
