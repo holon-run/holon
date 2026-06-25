@@ -191,12 +191,10 @@ pub(crate) fn load_catalog_for_root(
         let description = parsed
             .description
             .unwrap_or_else(|| first_body_paragraph(&content));
-        let legacy_id = format!("{}:{skill_name}", scope_label(scope));
         entries.push(SkillCatalogEntry {
             skill_id: format!("{root_id}:{skill_name}"),
             root_id: root_id.clone(),
             skill_dir: skill_name,
-            legacy_id: Some(legacy_id),
             name,
             description,
             path: skill_path,
@@ -319,7 +317,7 @@ pub(crate) fn skill_root_id(registration: &SkillRootRegistration) -> String {
     }
 }
 
-fn skill_root_id_for_scope(scope: SkillScope, root: &Path) -> String {
+pub(crate) fn skill_root_id_for_scope(scope: SkillScope, root: &Path) -> String {
     let source = match scope {
         SkillScope::UserGlobal => "user_global",
         SkillScope::Agent => "agent_home",
@@ -357,13 +355,7 @@ fn retain_active_skills_for_catalog(
         .filter_map(|record| {
             catalog
                 .iter()
-                .find(|entry| {
-                    entry.skill_id == record.skill_id
-                        || entry
-                            .legacy_id
-                            .as_deref()
-                            .is_some_and(|legacy_id| legacy_id == record.skill_id)
-                })
+                .find(|entry| entry.skill_id == record.skill_id)
                 .map(|entry| {
                     let mut record = record.clone();
                     record.skill_id = entry.skill_id.clone();
@@ -444,17 +436,6 @@ fn first_body_paragraph(content: &str) -> String {
         .find(|paragraph| !paragraph.is_empty())
         .unwrap_or_default()
         .replace('\n', " ")
-}
-
-fn scope_label(scope: SkillScope) -> &'static str {
-    // Preserve the legacy label for backward-compatible `legacy_id` values.
-    // `UserGlobal` was previously `User` with label "user"; `legacy_id` must
-    // match old active-skill records that use the "user:" prefix.
-    match scope {
-        SkillScope::UserGlobal => "user",
-        SkillScope::Agent => "agent",
-        SkillScope::Workspace => "workspace",
-    }
 }
 
 const SKILL_ROOT_SUFFIX_AGENT: &str = "skills";
@@ -2203,7 +2184,6 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
             }
             let skill_name = child.file_name().to_string_lossy().to_string();
             let skill_path = child.path().join(SKILL_ENTRYPOINT);
-            let legacy_id = format!("agent:{skill_name}");
             let catalog = if skill_path.is_file() {
                 let content = fs::read_to_string(&skill_path).with_context(|| {
                     format!("failed to read installed skill {}", skill_path.display())
@@ -2213,7 +2193,6 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
                     skill_id: format!("{root_id}:{skill_name}"),
                     root_id: root_id.clone(),
                     skill_dir: skill_name.clone(),
-                    legacy_id: Some(legacy_id.clone()),
                     name: parsed.name.unwrap_or_else(|| skill_name.clone()),
                     description: parsed
                         .description
@@ -2226,7 +2205,6 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
                     skill_id: format!("{root_id}:{skill_name}"),
                     root_id: root_id.clone(),
                     skill_dir: skill_name.clone(),
-                    legacy_id: Some(legacy_id),
                     name: skill_name.clone(),
                     description: String::new(),
                     path: skill_path,
@@ -2516,6 +2494,17 @@ mod tests {
             .unwrap();
         }
 
+        let agent_skill_root = agent_home.join("skills");
+        let agent_ghx_skill_id = format!(
+            "{}:ghx",
+            skill_root_id_for_scope(SkillScope::Agent, &agent_skill_root)
+        );
+        let workspace_skill_root = workspace.join(".agents/skills");
+        let workspace_ghx_skill_id = format!(
+            "{}:ghx",
+            skill_root_id_for_scope(SkillScope::Workspace, &workspace_skill_root)
+        );
+
         let view = load_skills_runtime_view(
             SkillVisibility::DefaultAgent,
             Some(&user_home),
@@ -2523,7 +2512,7 @@ mod tests {
             Some(&workspace),
             &[
                 ActiveSkillRecord {
-                    skill_id: "workspace:ghx".into(),
+                    skill_id: workspace_ghx_skill_id,
                     name: "ghx".into(),
                     path: workspace_skill.join(SKILL_ENTRYPOINT),
                     scope: SkillScope::Workspace,
@@ -2533,7 +2522,7 @@ mod tests {
                     activated_at_turn: 1,
                 },
                 ActiveSkillRecord {
-                    skill_id: "agent:ghx".into(),
+                    skill_id: agent_ghx_skill_id,
                     name: "ghx".into(),
                     path: agent_skill.join(SKILL_ENTRYPOINT),
                     scope: SkillScope::Agent,
@@ -2551,10 +2540,6 @@ mod tests {
             .skill_id
             .starts_with("agent_home:"));
         assert!(view.discoverable_skills[0].skill_id.ends_with(":ghx"));
-        assert_eq!(
-            view.discoverable_skills[0].legacy_id.as_deref(),
-            Some("agent:ghx")
-        );
         assert_eq!(view.discoverable_skills[0].description, "agent skill");
         assert_eq!(view.active_skills.len(), 1);
         assert_eq!(
@@ -2576,7 +2561,6 @@ mod tests {
                 skill_id: "agent:z-skill".into(),
                 root_id: "agent_home:z-root".into(),
                 skill_dir: "z-skill".into(),
-                legacy_id: Some("agent:z-skill".into()),
                 name: "shared".into(),
                 description: "later id".into(),
                 path: later_id_path,
@@ -2586,7 +2570,6 @@ mod tests {
                 skill_id: "agent:a-skill".into(),
                 root_id: "agent_home:a-root".into(),
                 skill_dir: "a-skill".into(),
-                legacy_id: Some("agent:a-skill".into()),
                 name: "shared".into(),
                 description: "earlier id".into(),
                 path: earlier_id_path,
@@ -2596,7 +2579,6 @@ mod tests {
                 skill_id: "workspace:skill".into(),
                 root_id: "workspace:z-root".into(),
                 skill_dir: "skill".into(),
-                legacy_id: None,
                 name: "same-id".into(),
                 description: "later path".into(),
                 path: same_id_later_path,
@@ -2606,7 +2588,6 @@ mod tests {
                 skill_id: "workspace:skill".into(),
                 root_id: "workspace:a-root".into(),
                 skill_dir: "skill".into(),
-                legacy_id: None,
                 name: "same-id".into(),
                 description: "earlier path".into(),
                 path: same_id_earlier_path,
@@ -2661,13 +2642,19 @@ mod tests {
         )
         .unwrap();
 
+        let agent_skill_root = dir.path().join("skills");
+        let agent_demo_skill_id = format!(
+            "{}:demo",
+            skill_root_id_for_scope(SkillScope::Agent, &agent_skill_root)
+        );
+
         let view = load_skills_runtime_view(
             SkillVisibility::NonDefaultAgent,
             None,
             dir.path(),
             None,
             &[ActiveSkillRecord {
-                skill_id: "agent:demo".into(),
+                skill_id: agent_demo_skill_id,
                 name: "demo".into(),
                 path: skill_path,
                 scope: SkillScope::Agent,
@@ -2690,7 +2677,6 @@ mod tests {
                 skill_id: "agent_home:test-root:demo".into(),
                 root_id: "agent_home:test-root".into(),
                 skill_dir: "demo".into(),
-                legacy_id: Some("agent:demo".into()),
                 name: "demo".into(),
                 description: "visible".into(),
                 path: visible_path.clone(),
@@ -2703,7 +2689,7 @@ mod tests {
             )],
             &[
                 ActiveSkillRecord {
-                    skill_id: "agent:demo".into(),
+                    skill_id: "agent_home:test-root:demo".into(),
                     name: "demo".into(),
                     path: visible_path,
                     scope: SkillScope::Agent,

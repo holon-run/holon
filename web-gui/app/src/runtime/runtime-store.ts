@@ -928,6 +928,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: undefined },
     }));
     try {
+      // The backend resolves scope from the skill_id prefix automatically.
       const detail = await runtimeClient.getSkillDetail(skillId);
       set((state) => ({
         skillDetailById: { ...state.skillDetailById, [skillId]: detail },

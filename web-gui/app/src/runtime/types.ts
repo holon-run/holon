@@ -29,7 +29,6 @@ export interface SkillCatalogEntry {
   skillId: string;
   rootId: string;
   skillDir: string;
-  legacyId?: string;
   name: string;
   description: string;
   path: string;

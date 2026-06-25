@@ -330,8 +330,15 @@ pub async fn skill_detail(
     Path(skill_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+
+    // Parse skill_id to determine the search scope. Agent-scoped skill_ids
+    // have the form `agent_home:{owner}:{hash}:{skill_name}`. Everything else
+    // falls through to the user-global catalog.
+    if let Some(agent_id) = parse_agent_owner_from_skill_id(&skill_id) {
+        return agent_scoped_skill_detail(&agent_id, &skill_id, &state).await;
+    }
 
     let user_home = crate::agent_template::user_home_dir().ok();
     let roots = crate::skills::existing_skill_roots(
@@ -355,13 +362,7 @@ pub async fn skill_detail(
     let Some(skill) = registry
         .catalog_for_roots(&roots, Some(crate::types::SkillScope::UserGlobal))
         .into_iter()
-        .find(|entry| {
-            entry.skill_id == skill_id
-                || entry
-                    .legacy_id
-                    .as_deref()
-                    .is_some_and(|legacy_id| legacy_id == skill_id)
-        })
+        .find(|entry| entry.skill_id == skill_id)
     else {
         return Err(not_found(format!("skill {skill_id} not found")));
     };
@@ -372,6 +373,63 @@ pub async fn skill_detail(
     Ok(Json(json!({
         "ok": true,
         "library": USER_GLOBAL_LIBRARY_LABEL,
+        "skill": skill,
+        "content": content,
+    })))
+}
+
+/// If `skill_id` starts with `agent_home:{owner}:`, return the owner agent_id.
+fn parse_agent_owner_from_skill_id(skill_id: &str) -> Option<String> {
+    let rest = skill_id.strip_prefix("agent_home:")?;
+    let owner = rest.split(':').next()?;
+    if owner.is_empty() {
+        None
+    } else {
+        Some(owner.to_string())
+    }
+}
+
+async fn agent_scoped_skill_detail(
+    agent_id: &str,
+    skill_id: &str,
+    state: &AppState,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let runtime = state
+        .host
+        .get_public_agent(agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let agent_home = runtime.agent_home();
+
+    let roots =
+        crate::skills::existing_skill_roots(Some(&agent_home), &crate::skills::SKILL_ROOT_SUFFIXES)
+            .into_iter()
+            .map(|root| {
+                crate::skills::skill_root_registration(
+                    crate::types::SkillRootSourceKind::AgentHome,
+                    Some(agent_id.to_string()),
+                    root,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut registry = state.skills_registry.write().await;
+    registry
+        .sync_effective_roots(roots.clone())
+        .map_err(error_response)?;
+    let Some(skill) = registry
+        .catalog_for_roots(&roots, Some(crate::types::SkillScope::Agent))
+        .into_iter()
+        .find(|entry| entry.skill_id == skill_id)
+    else {
+        return Err(not_found(format!("skill {skill_id} not found")));
+    };
+    let content = tokio::fs::read_to_string(&skill.path)
+        .await
+        .map_err(|error| error_response(error.into()))?;
+
+    Ok(Json(json!({
+        "ok": true,
         "skill": skill,
         "content": content,
     })))

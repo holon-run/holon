@@ -44,7 +44,7 @@ export function SkillsPage({
       const matchesScope = scopeFilter === "all" || normalizedSkillScope(skill.scope) === scopeFilter;
       if (!matchesScope) return false;
       if (!normalizedQuery) return true;
-      return [skill.name, skill.description, skill.skillId, skill.rootId, skill.skillDir, skill.legacyId]
+      return [skill.name, skill.description, skill.skillId, skill.rootId, skill.skillDir]
         .filter((value): value is string => Boolean(value))
         .some((value) => value.toLowerCase().includes(normalizedQuery));
     });

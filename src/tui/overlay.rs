@@ -380,9 +380,6 @@ fn render_skill_catalog_detail(skill: &SkillCatalogEntry) -> String {
         format!("Scope: {}", skill_scope_label(skill.scope)),
         format!("Skill id: {}", skill.skill_id),
     ];
-    if let Some(legacy_id) = skill.legacy_id.as_deref() {
-        lines.push(format!("Legacy id: {legacy_id}"));
-    }
     lines.extend([
         format!("Root: {}", skill.root_id),
         format!("Directory: {}", skill.skill_dir),
