@@ -273,6 +273,7 @@ button {
 .agent-switcher {
   flex: 1;
   min-height: 0;
+  align-content: start;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
