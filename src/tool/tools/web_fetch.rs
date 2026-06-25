@@ -13,7 +13,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
-pub(crate) const NAME: &str = "WebFetch";
+pub(crate) const NAME: &str = crate::tool::names::WEB_FETCH;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

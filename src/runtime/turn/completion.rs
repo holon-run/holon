@@ -1,5 +1,6 @@
 //! Work-item completion report promotion during turns.
 
+use crate::tool::names as tn;
 use anyhow::Result;
 use serde_json::Value;
 
@@ -229,21 +230,21 @@ pub(super) fn update_tool_result_block_content(
 }
 
 pub(super) fn command_preview_field(call: &ToolCall) -> Option<String> {
-    (call.name == "ExecCommand")
+    (call.name == tn::EXEC_COMMAND)
         .then(|| call.input.get("cmd").and_then(Value::as_str))
         .flatten()
         .map(command_preview)
 }
 
 pub(super) fn command_display_field(call: &ToolCall) -> Option<String> {
-    (call.name == "ExecCommand")
+    (call.name == tn::EXEC_COMMAND)
         .then(|| call.input.get("cmd").and_then(Value::as_str))
         .flatten()
         .map(command_display)
 }
 
 pub(super) fn command_batch_preview_field(call: &ToolCall) -> Option<Value> {
-    if call.name != "ExecCommandBatch" {
+    if call.name != tn::EXEC_COMMAND_BATCH {
         return None;
     }
     let items = call.input.get("items").and_then(Value::as_array)?;
@@ -273,7 +274,7 @@ pub(super) fn exec_command_disposition_field(
     call: &ToolCall,
     envelope: &ToolResultEnvelope,
 ) -> Option<String> {
-    matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
+    matches!(call.name.as_str(), name if name == tn::EXEC_COMMAND || name == tn::EXEC_COMMAND_BATCH)
         .then(|| envelope.result.as_ref())
         .flatten()
         .and_then(|result| result.get("disposition"))
@@ -285,7 +286,7 @@ pub(super) fn exec_command_exit_status_field(
     call: &ToolCall,
     envelope: &ToolResultEnvelope,
 ) -> Option<i32> {
-    matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
+    matches!(call.name.as_str(), name if name == tn::EXEC_COMMAND || name == tn::EXEC_COMMAND_BATCH)
         .then(|| envelope.result.as_ref())
         .flatten()
         .and_then(|result| result.get("exit_status"))
@@ -297,7 +298,7 @@ pub(super) fn exec_command_task_handle_field(
     call: &ToolCall,
     envelope: &ToolResultEnvelope,
 ) -> Option<Value> {
-    matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
+    matches!(call.name.as_str(), name if name == tn::EXEC_COMMAND || name == tn::EXEC_COMMAND_BATCH)
         .then(|| envelope.result.as_ref())
         .flatten()
         .and_then(|result| result.get("task_handle"))
@@ -309,7 +310,7 @@ pub(super) fn command_cost_field(
     default_tool_output_tokens: u64,
     max_tool_output_tokens: u64,
 ) -> Option<serde_json::Value> {
-    if call.name != "ExecCommand" {
+    if call.name != tn::EXEC_COMMAND {
         return None;
     }
     let cmd = call.input.get("cmd").and_then(Value::as_str)?;
@@ -333,12 +334,16 @@ pub(super) fn command_cost_field(
 pub(super) fn rejects_truncated_mutation_tool_call(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "ApplyPatch" | "CreateWorkItem" | "PickWorkItem" | "UpdateWorkItem" | "CompleteWorkItem"
+        tn::APPLY_PATCH
+            | tn::CREATE_WORK_ITEM
+            | tn::PICK_WORK_ITEM
+            | tn::UPDATE_WORK_ITEM
+            | tn::COMPLETE_WORK_ITEM
     )
 }
 
 pub(super) fn truncated_mutation_recovery_hint(tool_name: &str) -> &'static str {
-    if tool_name == "ApplyPatch" {
+    if tool_name == tn::APPLY_PATCH {
         "the previous ApplyPatch mutation was not executed because the provider stopped at the output limit; do not resend the same huge patch unchanged. Retry as a complete smaller patch, a sequence of smaller patches, or a bounded ExecCommand/scripted rewrite when cheaper to verify. Inspect only the necessary context, not broad surrounding files"
     } else {
         "the previous mutation was not executed because the provider stopped at the output limit; do not resend the same oversized tool call unchanged. Retry with a complete smaller tool call, or split the state update into a short sequence of complete tool calls after inspecting only the necessary context"

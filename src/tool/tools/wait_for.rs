@@ -19,7 +19,7 @@ use super::{
     BuiltinToolDefinition,
 };
 
-pub(crate) const NAME: &str = "WaitFor";
+pub(crate) const NAME: &str = crate::tool::names::WAIT_FOR;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

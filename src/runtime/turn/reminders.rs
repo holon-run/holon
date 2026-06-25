@@ -1,5 +1,6 @@
 //! Work-item stale reminders and runtime reminder injection.
 
+use crate::tool::names as tn;
 use std::env;
 
 use crate::provider::{ConversationMessage, ProviderPromptFrame};
@@ -25,11 +26,11 @@ pub(super) fn tool_result_invalidates_checkpoint_anchor(envelope: &ToolResultEnv
     envelope.status == ToolResultStatus::Success
         && matches!(
             envelope.tool_name.as_str(),
-            "CreateWorkItem"
-                | "PickWorkItem"
-                | "UpdateWorkItem"
-                | "CompleteWorkItem"
-                | "ApplyPatch"
+            tn::CREATE_WORK_ITEM
+                | tn::PICK_WORK_ITEM
+                | tn::UPDATE_WORK_ITEM
+                | tn::COMPLETE_WORK_ITEM
+                | tn::APPLY_PATCH
         )
 }
 
@@ -45,7 +46,10 @@ pub(super) fn round_updated_work_item(round: &TurnRoundRecord) -> bool {
         envelope.status == ToolResultStatus::Success
             && matches!(
                 envelope.tool_name.as_str(),
-                "CreateWorkItem" | "PickWorkItem" | "UpdateWorkItem" | "CompleteWorkItem"
+                tn::CREATE_WORK_ITEM
+                    | tn::PICK_WORK_ITEM
+                    | tn::UPDATE_WORK_ITEM
+                    | tn::COMPLETE_WORK_ITEM
             )
     })
 }

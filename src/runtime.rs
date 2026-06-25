@@ -1254,12 +1254,12 @@ impl RuntimeHandle {
                         .await?;
                 }
             }
-            "ExecCommand" => {
+            crate::tool::names::EXEC_COMMAND => {
                 if let Some(command) = input.get("cmd").and_then(|value| value.as_str()) {
                     self.record_skill_command_activation(command).await?;
                 }
             }
-            "ExecCommandBatch" => {
+            crate::tool::names::EXEC_COMMAND_BATCH => {
                 if let Some(batch) = result
                     .envelope
                     .result

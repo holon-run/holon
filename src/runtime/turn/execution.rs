@@ -1002,8 +1002,10 @@ impl TurnExecution<'_> {
             crate::diagnostics::record_turn_provider_round(provider_round_started.elapsed());
             crate::diagnostics::record_provider_round_total(provider_round_started.elapsed());
             let completed_round_assistant_blocks = assistant_blocks.clone();
-            let only_legacy_sleep_tool_calls =
-                !tool_calls.is_empty() && tool_calls.iter().all(|call| call.name == "Sleep");
+            let only_legacy_sleep_tool_calls = !tool_calls.is_empty()
+                && tool_calls
+                    .iter()
+                    .all(|call| call.name == crate::tool::names::SLEEP);
             let legacy_sleep_duration_ms = if only_legacy_sleep_tool_calls {
                 tool_calls
                     .iter()
@@ -1368,7 +1370,9 @@ impl TurnExecution<'_> {
                 }
                 let tool_call_id = call.id.clone();
                 let tool_name = call.name.clone();
-                if !allowed_tool_names.contains(&call.name) && call.name != "Sleep" {
+                if !allowed_tool_names.contains(&call.name)
+                    && call.name != crate::tool::names::SLEEP
+                {
                     let error = ToolError::new(
                         "tool_not_exposed_for_round",
                         format!("tool {tool_name} was not exposed in this round"),

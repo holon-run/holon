@@ -130,7 +130,7 @@ pub fn extract_tool_refs(tool: &ToolExecutionRecord) -> Vec<WorkItemRef> {
                 }
             }
         }
-        "ExecCommand" => {
+        crate::tool::names::EXEC_COMMAND => {
             if let Some(cmd) = tool.input.get("cmd").and_then(Value::as_str) {
                 let cmd_ref = command_receipt_source_ref(&tool.id, None);
                 refs.push(work_ref(
@@ -154,7 +154,7 @@ pub fn extract_tool_refs(tool: &ToolExecutionRecord) -> Vec<WorkItemRef> {
                 ));
             }
         }
-        "ExecCommandBatch" => {
+        crate::tool::names::EXEC_COMMAND_BATCH => {
             if let Some(items) = tool.input.get("items").and_then(Value::as_array) {
                 for (offset, item) in items.iter().enumerate() {
                     if let Some(cmd) = item.get("cmd").and_then(Value::as_str) {
@@ -183,7 +183,7 @@ pub fn extract_tool_refs(tool: &ToolExecutionRecord) -> Vec<WorkItemRef> {
                 }
             }
         }
-        "MemoryGet" | "MemorySearch" => {
+        crate::tool::names::MEMORY_GET | crate::tool::names::MEMORY_SEARCH => {
             if let Some(source_ref) = tool.input.get("source_ref").and_then(Value::as_str) {
                 if let Some(work_ref) = work_ref_from_source_ref(source_ref, "runtime memory used")
                 {

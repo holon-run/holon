@@ -1,5 +1,6 @@
 //! Tool result summarization and round recap generation.
 
+use crate::tool::names as tn;
 use serde_json::Value;
 
 use crate::tool::{
@@ -185,10 +186,10 @@ pub(super) fn summarize_tool_result_envelope(envelope: &ToolResultEnvelope) -> S
                 .result
                 .as_ref()
                 .and_then(|result| match envelope.tool_name.as_str() {
-                    "ExecCommand" => Some(summarize_exec_command_result(result)),
-                    "TaskOutput" => Some(summarize_task_output_result(result)),
-                    "SpawnAgent" => summarize_spawn_agent_result(result),
-                    "ViewImage" => summarize_view_image_result(result),
+                    tn::EXEC_COMMAND => Some(summarize_exec_command_result(result)),
+                    tn::TASK_OUTPUT => Some(summarize_task_output_result(result)),
+                    tn::SPAWN_AGENT => summarize_spawn_agent_result(result),
+                    tn::VIEW_IMAGE => summarize_view_image_result(result),
                     _ => None,
                 })
                 .or_else(|| envelope.summary_text.clone())
@@ -260,7 +261,7 @@ pub(super) fn build_round_recap_line(round: &TurnRoundRecord) -> String {
 
 pub(super) fn command_recap_receipt(call: &ToolCall) -> Option<String> {
     match call.name.as_str() {
-        "ExecCommand" => {
+        tn::EXEC_COMMAND => {
             let cmd = call.input.get("cmd").and_then(Value::as_str)?;
             Some(format!(
                 "ExecCommand tool_call_id={} cmd_digest={}",
@@ -268,7 +269,7 @@ pub(super) fn command_recap_receipt(call: &ToolCall) -> Option<String> {
                 command_digest(cmd)
             ))
         }
-        "ExecCommandBatch" => {
+        tn::EXEC_COMMAND_BATCH => {
             let items = call.input.get("items").and_then(Value::as_array)?;
             let refs = items
                 .iter()

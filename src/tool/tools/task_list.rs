@@ -12,8 +12,8 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::parse_tool_args;
 
-pub(crate) const NAME: &str = "ListTasks";
-pub(crate) const LEGACY_NAME: &str = "TaskList";
+pub(crate) const NAME: &str = crate::tool::names::LIST_TASKS;
+pub(crate) const LEGACY_NAME: &str = crate::tool::names::TASK_LIST;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
 

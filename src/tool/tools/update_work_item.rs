@@ -20,7 +20,7 @@ use super::{
     BuiltinToolDefinition,
 };
 
-pub(crate) const NAME: &str = "UpdateWorkItem";
+pub(crate) const NAME: &str = crate::tool::names::UPDATE_WORK_ITEM;
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

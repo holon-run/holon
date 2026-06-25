@@ -96,5 +96,5 @@ pub(super) fn estimate_context_management_eligible_tool_results(
 }
 
 pub(super) fn is_context_management_excluded_tool(tool_name: Option<&str>) -> bool {
-    matches!(tool_name, Some("ApplyPatch"))
+    matches!(tool_name, Some(crate::tool::names::APPLY_PATCH))
 }

@@ -1055,7 +1055,7 @@ impl AppStorage {
     ) -> Result<Vec<RuntimeIndexChange>> {
         let mut changes = Vec::new();
         match record.tool_name.as_str() {
-            "ExecCommand" => {
+            crate::tool::names::EXEC_COMMAND => {
                 if record.input.get("cmd").and_then(Value::as_str).is_some() {
                     let source_ref = command_receipt_source_ref(&record.id, None);
                     changes.push(self.runtime_index_upsert(
@@ -1068,7 +1068,7 @@ impl AppStorage {
                     )?);
                 }
             }
-            "ExecCommandBatch" => {
+            crate::tool::names::EXEC_COMMAND_BATCH => {
                 if let Some(items) = record.input.get("items").and_then(Value::as_array) {
                     for (offset, item) in items.iter().enumerate() {
                         if item.get("cmd").and_then(Value::as_str).is_some() {
@@ -1195,7 +1195,7 @@ impl AppStorage {
 
     fn enqueue_memory_index_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
         match record.tool_name.as_str() {
-            "ExecCommand" => {
+            crate::tool::names::EXEC_COMMAND => {
                 if record.input.get("cmd").and_then(Value::as_str).is_some() {
                     let source_ref = command_receipt_source_ref(&record.id, None);
                     self.enqueue_memory_index_source(
@@ -1205,7 +1205,7 @@ impl AppStorage {
                     )?;
                 }
             }
-            "ExecCommandBatch" => {
+            crate::tool::names::EXEC_COMMAND_BATCH => {
                 if let Some(items) = record.input.get("items").and_then(Value::as_array) {
                     for (offset, item) in items.iter().enumerate() {
                         if item.get("cmd").and_then(Value::as_str).is_some() {

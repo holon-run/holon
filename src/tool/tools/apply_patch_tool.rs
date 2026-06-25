@@ -21,7 +21,7 @@ use crate::{
 use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::{helpers::parse_tool_args, schema::tool_input_schema};
 
-pub(crate) const NAME: &str = "ApplyPatch";
+pub(crate) const NAME: &str = crate::tool::names::APPLY_PATCH;
 // Grammar matches OpenAI Codex's ApplyPatch DSL surface; Holon still applies
 // parsed edits through its own workspace guards and atomic apply path.
 const CODEX_DSL_LARK_GRAMMAR: &str = include_str!("apply_patch_tool_codex.lark");

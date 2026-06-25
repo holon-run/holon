@@ -23,7 +23,7 @@ use super::{
 };
 use crate::tool::helpers::parse_tool_args;
 
-pub(crate) const NAME: &str = "ListWorkItems";
+pub(crate) const NAME: &str = crate::tool::names::LIST_WORK_ITEMS;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
 

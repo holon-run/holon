@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use crate::tool::names as tn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -2031,67 +2032,57 @@ fn tool_payload_detail(payload: &Value) -> Option<String> {
 }
 
 fn tool_friendly_label(tool_name: &str, failed: bool) -> &'static str {
-    match (tool_name, failed) {
-        ("ApplyPatch", false) => "Applied patch",
-        ("ApplyPatch", true) => "Patch failed",
-        ("ExecCommand", false) => "Command finished",
-        ("ExecCommand", true) => "Command failed",
-        ("ExecCommandBatch", false) => "Command batch finished",
-        ("ExecCommandBatch", true) => "Command batch failed",
-        ("ListWorkItems", false) => "Listed work items",
-        ("ListWorkItems", true) => "List work items failed",
-        ("CreateWorkItem", false) => "Created work item",
-        ("CreateWorkItem", true) => "Create work item failed",
-        ("UpdateWorkItem", false) => "Updated work item",
-        ("UpdateWorkItem", true) => "Update work item failed",
-        ("CompleteWorkItem", false) => "Completed work item",
-        ("CompleteWorkItem", true) => "Complete work item failed",
-        ("ListTasks", false) => "Listed tasks",
-        ("ListTasks", true) => "List tasks failed",
-        ("TaskList", false) => "Listed tasks",
-        ("TaskList", true) => "List tasks failed",
-        ("TaskOutput", false) => "Read task output",
-        ("TaskOutput", true) => "Read task output failed",
-        ("SpawnAgent", false) => "Started child agent",
-        ("SpawnAgent", true) => "Start child agent failed",
-        ("UseWorkspace", false) => "Workspace selected",
-        ("UseWorkspace", true) => "Workspace selection failed",
-        ("Sleep", false) => "Slept",
-        ("Sleep", true) => "Sleep failed",
-        ("WaitFor", false) => "Waiting",
-        ("WaitFor", true) => "Wait failed",
-        ("ReadSkill", false) => "Read skill",
-        ("ReadSkill", true) => "Read skill failed",
-        ("WebFetch", false) => "Fetched web page",
-        ("WebFetch", true) => "Fetch web page failed",
-        ("WebSearch", false) => "Searched web",
-        ("WebSearch", true) => "Search web failed",
-        (_, false) => "Tool finished",
-        (_, true) => "Tool failed",
+    // Order doesn't matter: each tool name maps to a unique pair of labels.
+    let (success, fail) = match tool_name {
+        tn::APPLY_PATCH => ("Applied patch", "Patch failed"),
+        tn::EXEC_COMMAND => ("Command finished", "Command failed"),
+        tn::EXEC_COMMAND_BATCH => ("Command batch finished", "Command batch failed"),
+        tn::LIST_WORK_ITEMS => ("Listed work items", "List work items failed"),
+        tn::CREATE_WORK_ITEM => ("Created work item", "Create work item failed"),
+        tn::UPDATE_WORK_ITEM => ("Updated work item", "Update work item failed"),
+        tn::COMPLETE_WORK_ITEM => ("Completed work item", "Complete work item failed"),
+        tn::LIST_TASKS => ("Listed tasks", "List tasks failed"),
+        tn::TASK_LIST => ("Listed tasks", "List tasks failed"),
+        tn::TASK_OUTPUT => ("Read task output", "Read task output failed"),
+        tn::SPAWN_AGENT => ("Started child agent", "Start child agent failed"),
+        tn::USE_WORKSPACE => ("Workspace selected", "Workspace selection failed"),
+        tn::SLEEP => ("Slept", "Sleep failed"),
+        tn::WAIT_FOR => ("Waiting", "Wait failed"),
+        "ReadSkill" => ("Read skill", "Read skill failed"),
+        tn::WEB_FETCH => ("Fetched web page", "Fetch web page failed"),
+        tn::WEB_SEARCH => ("Searched web", "Search web failed"),
+        _ => ("Tool finished", "Tool failed"),
+    };
+    if failed {
+        fail
+    } else {
+        success
     }
 }
 
 fn tool_friendly_label_is_generic(tool_name: &str) -> bool {
-    !matches!(
-        tool_name,
-        "ApplyPatch"
-            | "ExecCommand"
-            | "ExecCommandBatch"
-            | "ListWorkItems"
-            | "CreateWorkItem"
-            | "UpdateWorkItem"
-            | "CompleteWorkItem"
-            | "ListTasks"
-            | "TaskList"
-            | "TaskOutput"
-            | "SpawnAgent"
-            | "UseWorkspace"
-            | "Sleep"
-            | "WaitFor"
-            | "ReadSkill"
-            | "WebFetch"
-            | "WebSearch"
-    )
+    // `ReadSkill` is not a builtin tool name constant — it is a dynamic
+    // skill-read action.  Keep it as a literal here.
+    const KNOWN_LABEL_TOOLS: &[&str] = &[
+        tn::APPLY_PATCH,
+        tn::EXEC_COMMAND,
+        tn::EXEC_COMMAND_BATCH,
+        tn::LIST_WORK_ITEMS,
+        tn::CREATE_WORK_ITEM,
+        tn::UPDATE_WORK_ITEM,
+        tn::COMPLETE_WORK_ITEM,
+        tn::LIST_TASKS,
+        tn::TASK_LIST,
+        tn::TASK_OUTPUT,
+        tn::SPAWN_AGENT,
+        tn::USE_WORKSPACE,
+        tn::SLEEP,
+        tn::WAIT_FOR,
+        "ReadSkill",
+        tn::WEB_FETCH,
+        tn::WEB_SEARCH,
+    ];
+    !KNOWN_LABEL_TOOLS.contains(&tool_name)
 }
 
 fn category_title(category: OperatorEventCategory, kind: &str) -> String {
