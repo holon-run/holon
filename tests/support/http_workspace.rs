@@ -315,3 +315,56 @@ pub async fn workspace_files_unknown_workspace_404() -> Result<()> {
     server.abort();
     Ok(())
 }
+
+pub async fn workspace_files_symlink_escape_rejected() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    // Find the default workspace root so we can plant a symlink inside it.
+    let workspace_id = "agent_home:default";
+    let entries = host.workspace_entries()?;
+    let workspace = entries
+        .iter()
+        .find(|e| e.workspace_id == workspace_id)
+        .expect("default workspace should exist");
+
+    // Create a symlink that points outside the workspace root.
+    let link_path = workspace.workspace_anchor.join("escape_link");
+    let _ = std::fs::remove_file(&link_path);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/etc/passwd", &link_path)?;
+
+    let response = client
+        .get(format!(
+            "{base}/workspaces/{workspace_id}/files/escape_link"
+        ))
+        .send()
+        .await?;
+    // Must not return 200 — symlink escape should be blocked.
+    assert_ne!(response.status(), 200, "symlink escape must not return 200");
+
+    let _ = std::fs::remove_file(&link_path);
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_execution_root_id_rejected() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let workspace_id = "agent_home:default";
+    let response = client
+        .get(format!(
+            "{base}/workspaces/{workspace_id}/files?execution_root_id=git_worktree_root:ws-1"
+        ))
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        400,
+        "execution_root_id should return 400 until supported"
+    );
+
+    server.abort();
+    Ok(())
+}

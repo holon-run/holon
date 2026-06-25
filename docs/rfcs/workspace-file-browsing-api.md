@@ -65,14 +65,17 @@ and query parameters:
 ### 4. Execution root selection
 
 A workspace may have multiple execution roots (canonical root and isolated git
-worktrees). The optional `execution_root_id` query parameter selects which
-root to browse:
+worktrees). The optional `execution_root_id` query parameter is reserved for
+selecting which root to browse:
 
 ```
 GET /workspaces/{workspace_id}/files/{path}?execution_root_id=<id>
 ```
 
-When omitted, the workspace's canonical anchor path is used.
+When omitted, the workspace's canonical anchor path is used. Passing
+`execution_root_id` currently returns a 400 error; resolving isolated execution
+roots to filesystem paths requires wiring up lookup from agent-scoped
+`ActiveWorkspaceEntry` data and is planned as follow-up work.
 
 ### 5. No dotfile hiding
 

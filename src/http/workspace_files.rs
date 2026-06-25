@@ -67,15 +67,14 @@ fn resolve_workspace_root(
         .find(|entry| entry.workspace_id == workspace_id)
         .ok_or_else(|| not_found(format!("workspace '{workspace_id}' not found")))?;
 
-    // When no execution_root_id is specified, use the canonical workspace anchor.
+    // When execution_root_id is specified, reject it — we cannot resolve the
+    // filesystem path from occupancy records alone (they carry only the opaque
+    // id, not the path). Isolated-root browsing requires wiring up path
+    // resolution from agent-scoped ActiveWorkspaceEntry data, which is future work.
     let root = if let Some(root_id) = execution_root_id {
-        let occupancies = state.host.workspace_occupancies().map_err(error_response)?;
-        occupancies
-            .into_iter()
-            .filter(|occ| occ.workspace_id == workspace_id && occ.execution_root_id == root_id)
-            .map(|occ| PathBuf::from(&occ.execution_root_id))
-            .next()
-            .unwrap_or_else(|| workspace.workspace_anchor.clone())
+        return Err(bad_request(format!(
+            "execution_root_id resolution is not yet supported; cannot browse isolated root '{root_id}'"
+        )));
     } else {
         workspace.workspace_anchor.clone()
     };
@@ -102,6 +101,19 @@ fn resolve_and_validate_path(
     if !normalized.starts_with(&normalized_root) {
         return Err(forbidden("path escapes workspace root"));
     }
+
+    // Canonicalize to resolve symlinks, then re-check containment.
+    // This prevents symlink-based escapes that pass the lexical check above
+    // but resolve outside the workspace root on disk.
+    if let (Ok(canonical), Ok(canonical_root)) = (
+        std::fs::canonicalize(&normalized),
+        std::fs::canonicalize(&normalized_root),
+    ) {
+        if !canonical.starts_with(&canonical_root) {
+            return Err(forbidden("path escapes workspace root (symlink)"));
+        }
+    }
+
     Ok(normalized)
 }
 
@@ -257,8 +269,7 @@ async fn workspace_files_inner(
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
         let mut response = Response::builder()
             .status(StatusCode::OK)
-            .header(CONTENT_TYPE, content_type)
-            .header("content-length", bytes.len());
+            .header(CONTENT_TYPE, content_type);
         if want_download {
             let filename = full_path
                 .file_name()
@@ -286,7 +297,26 @@ async fn workspace_files_inner(
     } else {
         &bytes
     };
-    let content = String::from_utf8_lossy(read_bytes).to_string();
+    // Find the largest valid UTF-8 boundary at or before READ_LIMIT_BYTES
+    // to avoid splitting multi-byte characters.
+    let content = if truncated {
+        // Find the largest valid UTF-8 boundary at or before READ_LIMIT_BYTES
+        // to avoid splitting multi-byte characters. A valid boundary is at
+        // a byte that is not a UTF-8 continuation byte (0x80–0xBF).
+        let mut end = READ_LIMIT_BYTES;
+        while end > 0 {
+            let prev = read_bytes[end - 1];
+            // Continuation bytes are 0x80..=0xBF; backing up past one means
+            // we're inside a multi-byte sequence.
+            if !(0x80..=0xBF).contains(&prev) {
+                break;
+            }
+            end -= 1;
+        }
+        String::from_utf8_lossy(&read_bytes[..end]).to_string()
+    } else {
+        String::from_utf8_lossy(read_bytes).to_string()
+    };
 
     if accept_json {
         let file_content = FileContent {
@@ -309,8 +339,7 @@ async fn workspace_files_inner(
     } else {
         let mut response = Response::builder()
             .status(StatusCode::OK)
-            .header(CONTENT_TYPE, mime_type.as_str())
-            .header("content-length", content.len());
+            .header(CONTENT_TYPE, mime_type.as_str());
         if truncated {
             response = response.header("X-Content-Truncated", "true");
         }
