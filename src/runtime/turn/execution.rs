@@ -980,6 +980,7 @@ impl TurnExecution<'_> {
             let assistant_blocks = response.blocks.clone();
             let mut tool_calls = Vec::new();
             let mut text_blocks = Vec::new();
+            let mut thinking_block_count = 0usize;
 
             for block in &assistant_blocks {
                 match block {
@@ -995,7 +996,9 @@ impl TurnExecution<'_> {
                             input: input.clone(),
                         });
                     }
-                    ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
+                    ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {
+                        thinking_block_count += 1;
+                    }
                 }
             }
 
@@ -1187,6 +1190,8 @@ impl TurnExecution<'_> {
                     "tool_names": tool_calls.iter().map(|call| call.name.clone()).collect::<Vec<_>>(),
                     "has_text": !combined_text.is_empty(),
                     "has_tool_calls": !tool_calls.is_empty(),
+                    "thinking_block_count": thinking_block_count,
+                    "has_thinking": thinking_block_count > 0,
                 }),
             ))?;
 

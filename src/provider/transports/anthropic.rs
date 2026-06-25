@@ -44,6 +44,7 @@ pub struct AnthropicProvider {
     auth_token: String,
     model: String,
     max_output_tokens: u32,
+    reasoning_effort: Option<String>,
     context_management: AnthropicContextManagementConfig,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     trace_home_dir: PathBuf,
@@ -55,6 +56,8 @@ pub struct AnthropicProvider {
 struct MessagesRequest<'a> {
     model: &'a str,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingRequest>,
     stream: bool,
     system: Value,
     messages: Vec<ApiMessage>,
@@ -69,6 +72,13 @@ struct MessagesRequest<'a> {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_management: Option<ContextManagementRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThinkingRequest {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    budget_tokens: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,6 +186,7 @@ impl AnthropicProvider {
             auth_token,
             model: model.to_string(),
             max_output_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
             context_management: provider_config.context_management.clone(),
             builtin_web_search: provider_config.builtin_web_search.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
@@ -191,6 +202,38 @@ impl AnthropicProvider {
     }
 }
 
+/// Map an OpenAI-style `reasoning_effort` level to an Anthropic
+/// `thinking.budget_tokens` value.
+///
+/// Returns `None` when thinking is not requested (`reasoning_effort` is absent).
+/// The budget is computed as a percentage of `max_output_tokens`, clamped to
+/// the Anthropic minimum of 1024 and capped at `max_output_tokens - 1`.
+fn reasoning_effort_to_thinking(
+    reasoning_effort: &Option<String>,
+    max_output_tokens: u32,
+) -> Option<ThinkingRequest> {
+    let effort = reasoning_effort.as_ref()?;
+    let ratio: f64 = match effort.to_ascii_lowercase().as_str() {
+        "low" => 0.10,
+        "medium" => 0.25,
+        "high" => 0.50,
+        "xhigh" | "max" => 0.80,
+        // Unknown values: default to medium.
+        _ => 0.25,
+    };
+    let budget = (max_output_tokens as f64 * ratio).round() as u32;
+    // Anthropic requires budget_tokens >= 1024 and <= max_tokens - 1.
+    let budget = budget.max(1024).min(max_output_tokens.saturating_sub(1));
+    // If max_output_tokens is too small for thinking, skip it.
+    if budget < 1024 {
+        return None;
+    }
+    Some(ThinkingRequest {
+        kind: "enabled",
+        budget_tokens: budget,
+    })
+}
+
 #[async_trait]
 impl AgentProvider for AnthropicProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
@@ -203,6 +246,7 @@ impl AgentProvider for AnthropicProvider {
         let request_body = MessagesRequest {
             model: &self.model,
             max_tokens: self.max_output_tokens,
+            thinking: reasoning_effort_to_thinking(&self.reasoning_effort, self.max_output_tokens),
             stream: true,
             system: build_anthropic_system(&request, cache_strategy),
             messages,
@@ -2647,6 +2691,7 @@ mod tests {
         let body = MessagesRequest {
             model: "claude-sonnet-4-6",
             max_tokens: 4096,
+            thinking: None,
             stream: true,
             system: if request.prompt_frame.has_structured_system_blocks() {
                 Value::Array(
@@ -3084,5 +3129,63 @@ mod tests {
             ModelBlock::Text { text } => assert_eq!(text, r#"{"answer":"ok"}"#),
             other => panic!("unexpected block: {other:?}"),
         }
+    }
+
+    #[test]
+    fn reasoning_effort_to_thinking_none_when_absent() {
+        assert!(reasoning_effort_to_thinking(&None, 16384).is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_to_thinking_maps_levels() {
+        // low = 10% of 16384 = ~1638, clamped to min 1024
+        let low = reasoning_effort_to_thinking(&Some("low".into()), 16384).unwrap();
+        assert_eq!(low.kind, "enabled");
+        assert_eq!(low.budget_tokens, 1638);
+
+        // medium = 25% of 16384 = ~4096
+        let medium = reasoning_effort_to_thinking(&Some("medium".into()), 16384).unwrap();
+        assert_eq!(medium.budget_tokens, 4096);
+
+        // high = 50% of 16384 = ~8192
+        let high = reasoning_effort_to_thinking(&Some("high".into()), 16384).unwrap();
+        assert_eq!(high.budget_tokens, 8192);
+
+        // xhigh = 80% of 16384 = ~13107
+        let xhigh = reasoning_effort_to_thinking(&Some("xhigh".into()), 16384).unwrap();
+        assert_eq!(xhigh.budget_tokens, 13107);
+    }
+
+    #[test]
+    fn reasoning_effort_to_thinking_case_insensitive() {
+        let result = reasoning_effort_to_thinking(&Some("HIGH".into()), 16384).unwrap();
+        assert_eq!(result.budget_tokens, 8192);
+    }
+
+    #[test]
+    fn reasoning_effort_to_thinking_unknown_defaults_medium() {
+        let result = reasoning_effort_to_thinking(&Some("bogus".into()), 16384).unwrap();
+        assert_eq!(result.budget_tokens, 4096); // 25% = medium
+    }
+
+    #[test]
+    fn reasoning_effort_to_thinking_clamps_to_min_1024() {
+        // 10% of 4096 = ~410, should be clamped to 1024
+        let result = reasoning_effort_to_thinking(&Some("low".into()), 4096).unwrap();
+        assert_eq!(result.budget_tokens, 1024);
+    }
+
+    #[test]
+    fn reasoning_effort_to_thinking_capped_below_max_tokens() {
+        // budget must be <= max_output_tokens - 1
+        let result = reasoning_effort_to_thinking(&Some("xhigh".into()), 2048).unwrap();
+        assert!(result.budget_tokens <= 2047);
+        assert_eq!(result.budget_tokens, 1638); // 80% of 2048
+    }
+
+    #[test]
+    fn reasoning_effort_to_thinking_skips_when_too_small() {
+        // max_output_tokens = 1024 → max_tokens - 1 = 1023 < 1024 min → skip
+        assert!(reasoning_effort_to_thinking(&Some("high".into()), 1024).is_none());
     }
 }
