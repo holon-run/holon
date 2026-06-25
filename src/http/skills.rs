@@ -140,6 +140,9 @@ pub async fn refresh_skill_catalog(
     .collect::<Vec<_>>();
 
     let mut registry = state.skills_registry.write().await;
+    registry
+        .sync_effective_roots(roots.clone())
+        .map_err(error_response)?;
     registry.rescan();
     let catalog = registry.catalog_for_roots(&roots, None);
     Ok(Json(json!({

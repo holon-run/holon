@@ -1253,6 +1253,12 @@
     "aliases": []
   },
   {
+    "path": "skills.refresh",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "skills.remove",
     "positionals": [
       {
