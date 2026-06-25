@@ -98,6 +98,7 @@ mod state;
 mod tasks;
 mod types;
 mod web;
+mod workspace_files;
 
 // Re-export shared helpers used across submodules.
 pub(crate) use state::{
@@ -517,6 +518,16 @@ pub fn router(state: AppState) -> Router {
         .route("/state", get(state::state_default))
         .route("/transcript", get(state::transcript_default))
         .route("/worktree-summary", get(state::worktree_summary_default));
+
+    let api_routes = api_routes
+        .route(
+            "/workspaces/{workspace_id}/files",
+            get(workspace_files::workspace_files_root),
+        )
+        .route(
+            "/workspaces/{workspace_id}/files/{path:path}",
+            get(workspace_files::workspace_files),
+        );
     let root_routes = api_routes.clone().route(
         "/search",
         get(web::web_or_not_found_handler).post(agents::search),
