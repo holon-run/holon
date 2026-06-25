@@ -5,6 +5,7 @@ use crate::types::{
     WaitConditionRecord, WaitConditionStatus, WaitingIntentScope, WakeSource, WorkItemPlanStatus,
     WorkItemSchedulingState, WorkReactivationMode,
 };
+use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -1344,4 +1345,146 @@ fn operator_interjection_classifier_requires_trusted_operator_interjection_promp
     assert!(!scheduler::is_operator_interjection_message(
         &webhook_interjection
     ));
+}
+
+// --- WaitingOperator recheck tests (#1989) ---
+//
+// When an agent uses WaitFor(wake=operator_input, recheck_after_ms=...), the
+// work item enters WaitingOperator with a recheck_at deadline. If recheck_at
+// expires and has not been consumed, the scheduler must NOT block on
+// WaitForOperator — it should return None so the agent wakes up to
+// re-evaluate. If recheck_at was already consumed, or has not yet expired,
+// the scheduler returns WaitForOperator as usual.
+
+fn setup_waiting_operator_work_item(
+    storage: &AppStorage,
+    agent_id: &str,
+    work_item_id: &str,
+    recheck_at: Option<DateTime<Utc>>,
+    recheck_consumed_at: Option<DateTime<Utc>>,
+) {
+    let mut work_item = WorkItemRecord::new(
+        agent_id,
+        "operator-input wait with recheck",
+        WorkItemState::Open,
+    );
+    work_item.id = work_item_id.into();
+    work_item.recheck_at = recheck_at;
+    work_item.recheck_consumed_at = recheck_consumed_at;
+    storage.append_work_item(&work_item).unwrap();
+
+    // Attach an active Operator wait condition so the scheduler classifies
+    // the work item scheduling_state as WaitingOperator.
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: format!("wait-{work_item_id}"),
+            agent_id: agent_id.into(),
+            work_item_id: Some(work_item_id.into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: None,
+            subject_ref: None,
+            waiting_for: "operator input".into(),
+            wake_sources: vec![],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn waiting_operator_with_expired_unconsumed_recheck_lets_agent_wake() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-recheck-expired".into());
+    storage.write_agent(&agent).unwrap();
+
+    setup_waiting_operator_work_item(
+        &storage,
+        "default",
+        "work-recheck-expired",
+        // recheck_at in the past → expired
+        Some(Utc::now() - chrono::Duration::seconds(30)),
+        // not consumed
+        None,
+    );
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    // Sanity: the work item is indeed WaitingOperator
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingOperator)
+    );
+
+    // The fix: expired + unconsumed recheck means the scheduler should NOT
+    // block — it returns None so the agent wakes up.
+    assert!(scheduler::wait_decision_for_projection(&projection).is_none());
+}
+
+#[test]
+fn waiting_operator_with_expired_but_consumed_recheck_still_waits() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-recheck-consumed".into());
+    storage.write_agent(&agent).unwrap();
+
+    let recheck_at = Utc::now() - chrono::Duration::seconds(30);
+    setup_waiting_operator_work_item(
+        &storage,
+        "default",
+        "work-recheck-consumed",
+        Some(recheck_at),
+        // consumed after recheck_at → no re-pending
+        Some(recheck_at + chrono::Duration::seconds(5)),
+    );
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingOperator)
+    );
+
+    let decision = scheduler::wait_decision_for_projection(&projection);
+    assert_eq!(
+        decision.unwrap().kind,
+        scheduler::SchedulerDecisionKind::WaitForOperator
+    );
+}
+
+#[test]
+fn waiting_operator_with_future_recheck_still_waits() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-recheck-future".into());
+    storage.write_agent(&agent).unwrap();
+
+    setup_waiting_operator_work_item(
+        &storage,
+        "default",
+        "work-recheck-future",
+        // recheck_at in the future → not yet expired
+        Some(Utc::now() + chrono::Duration::hours(1)),
+        None,
+    );
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingOperator)
+    );
+
+    let decision = scheduler::wait_decision_for_projection(&projection);
+    assert_eq!(
+        decision.unwrap().kind,
+        scheduler::SchedulerDecisionKind::WaitForOperator
+    );
 }
