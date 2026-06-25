@@ -191,6 +191,7 @@ export interface RuntimeStoreState {
   searchResultContentErrorBySourceRef: Record<string, string | undefined>;
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   sessionsByAgentId: Record<string, AgentSessionState>;
+  skillInstallJobs: SkillInstallJob[];
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string, targetEventSeq?: number) => void;
@@ -247,6 +248,37 @@ const ROSTER_ACTIVITY_STORAGE_KEY = "holon.webGui.rosterActivityByRemote.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
+export interface SkillInstallJob {
+  jobId: string;
+  source: string;
+  status: "queued" | "running" | "completed" | "failed";
+  error?: string;
+}
+
+const SKILL_INSTALL_JOBS_STORAGE_KEY = "holon.webGui.skillInstallJobs.v1";
+
+function loadSkillInstallJobs(): SkillInstallJob[] {
+  try {
+    const raw = localStorage.getItem(SKILL_INSTALL_JOBS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as SkillInstallJob[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSkillInstallJobs(jobs: SkillInstallJob[]): void {
+  try {
+    const active = jobs.filter((j) => j.status === "queued" || j.status === "running");
+    if (active.length) {
+      localStorage.setItem(SKILL_INSTALL_JOBS_STORAGE_KEY, JSON.stringify(active));
+    } else {
+      localStorage.removeItem(SKILL_INSTALL_JOBS_STORAGE_KEY);
+    }
+  } catch {
+    // localStorage unavailable; state is in-memory only
+  }
+}
+
 const pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
 const streamFlushTimers = new Map<string, number>();
 const reconnectTimers = new Map<string, number>();
@@ -636,6 +668,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   credentialStoreError: undefined,
   rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
   sessionsByAgentId: {},
+  skillInstallJobs: loadSkillInstallJobs(),
 
   setRoute: (route) => set({ route }),
   openSkill: (skillId) => set({ route: "skillDetail", selectedSkillId: skillId }),
@@ -949,19 +982,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   addSkillToCatalog: async (input) => {
-    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    set({ skillCatalogError: undefined });
     try {
-      await runtimeClient.addSkillToCatalog(input);
-      const skillCatalog = await runtimeClient.getSkillCatalog();
-      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      const jobId = await runtimeClient.addSkillToCatalog(input);
+      const source = "package" in input ? input.package : "path" in input ? input.path : "name" in input ? input.name : "unknown";
+      const job: SkillInstallJob = { jobId, source, status: "queued" };
+      set((state) => {
+        const jobs = [...state.skillInstallJobs, job];
+        saveSkillInstallJobs(jobs);
+        return { skillInstallJobs: jobs };
+      });
+      void pollSkillInstallJob(set, get, jobId);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      set((state) => ({
-        skillCatalog: { ...state.skillCatalog, error: message },
-        skillCatalogLoading: false,
-        skillCatalogError: message,
-      }));
+      set({ skillCatalogError: message });
       return false;
     }
   },
@@ -1612,6 +1647,15 @@ if (typeof window !== "undefined") {
   initSessionCacheForRemote((partial) => useRuntimeStore.setState(partial));
 }
 
+// Resume polling for any skill install jobs persisted from a previous session.
+if (typeof window !== "undefined") {
+  for (const job of useRuntimeStore.getState().skillInstallJobs) {
+    if (job.status === "queued" || job.status === "running") {
+      void pollSkillInstallJob(useRuntimeStore.setState, useRuntimeStore.getState, job.jobId);
+    }
+  }
+}
+
 function emptyAgentSession(): AgentSessionState {
   return {
     loading: false,
@@ -2116,6 +2160,58 @@ function scheduleBootstrapRefresh(get: () => RuntimeStoreState, delayMs = 1_000)
     bootstrapRefreshTimer = undefined;
     void get().refreshBootstrap({ background: true });
   }, delayMs);
+}
+
+const SKILL_JOB_POLL_INTERVAL_MS = 1_000;
+const SKILL_JOB_POLL_TIMEOUT_MS = 180_000;
+
+async function pollSkillInstallJob(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  jobId: string,
+): Promise<void> {
+  const deadline = Date.now() + SKILL_JOB_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, SKILL_JOB_POLL_INTERVAL_MS));
+      const job = await runtimeClient.getJob(jobId);
+      if (job.status === "completed") {
+        removeSkillInstallJob(set, get, jobId);
+        await get().refreshSkillCatalog();
+        return;
+      }
+      if (job.status === "failed") {
+        updateSkillInstallJob(set, jobId, "failed", job.error || job.summary);
+        removeSkillInstallJobAfterDelay(set, get, jobId, 10_000);
+        return;
+      }
+      updateSkillInstallJob(set, jobId, job.status === "running" ? "running" : "queued");
+    } catch {
+      // Network error — keep retrying until deadline
+    }
+  }
+  updateSkillInstallJob(set, jobId, "failed", "Timed out waiting for skill install.");
+  removeSkillInstallJobAfterDelay(set, get, jobId, 10_000);
+}
+
+function updateSkillInstallJob(set: StoreSet, jobId: string, status: SkillInstallJob["status"], error?: string): void {
+  set((state) => {
+    const jobs = state.skillInstallJobs.map((j) => j.jobId === jobId ? { ...j, status, error } : j);
+    saveSkillInstallJobs(jobs);
+    return { skillInstallJobs: jobs };
+  });
+}
+
+function removeSkillInstallJob(set: StoreSet, get: () => RuntimeStoreState, jobId: string): void {
+  set((state) => {
+    const jobs = state.skillInstallJobs.filter((j) => j.jobId !== jobId);
+    saveSkillInstallJobs(jobs);
+    return { skillInstallJobs: jobs };
+  });
+}
+
+function removeSkillInstallJobAfterDelay(set: StoreSet, get: () => RuntimeStoreState, jobId: string, delayMs: number): void {
+  window.setTimeout(() => removeSkillInstallJob(set, get, jobId), delayMs);
 }
 
 function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: AgentSummary): RuntimeBootstrap {

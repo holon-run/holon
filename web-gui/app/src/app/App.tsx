@@ -85,6 +85,7 @@ export function App() {
   );
   const addSkillToCatalog = useRuntimeStore((state) => state.addSkillToCatalog);
   const removeSkillFromCatalog = useRuntimeStore((state) => state.removeSkillFromCatalog);
+  const skillInstallJobs = useRuntimeStore((state) => state.skillInstallJobs);
   const agentSkillCatalog = useRuntimeStore((state) =>
     sidePanelAgentId ? state.agentSkillCatalogByAgentId[sidePanelAgentId] : undefined,
   );
@@ -468,6 +469,7 @@ export function App() {
             catalog={skillCatalog}
             loading={skillCatalogLoading}
             error={skillCatalogError}
+            installJobs={skillInstallJobs}
             onRefresh={refreshSkillCatalog}
             onAddSkill={addSkillToCatalog}
             onRemoveSkill={removeSkillFromCatalog}

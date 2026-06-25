@@ -5,12 +5,14 @@ import { Card, CardContent, CardHeader } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { StatusBadge } from "../../components/ui/StatusChip";
+import type { SkillInstallJob } from "../../runtime/runtime-store";
 import type { AddSkillInput, SkillCatalogEntry, SkillCatalogState, SkillDetailState, SkillInstallMode } from "../../runtime/types";
 
 interface SkillsPageProps {
   catalog: SkillCatalogState;
   loading: boolean;
   error?: string;
+  installJobs: SkillInstallJob[];
   onRefresh: () => void;
   onAddSkill: (input: AddSkillInput) => Promise<boolean>;
   onRemoveSkill: (name: string) => Promise<boolean>;
@@ -23,6 +25,7 @@ export function SkillsPage({
   catalog,
   loading,
   error,
+  installJobs,
   onRefresh,
   onAddSkill,
   onRemoveSkill,
@@ -59,7 +62,7 @@ export function SkillsPage({
     if (ok) {
       setAddSource("");
       setAddSkillName("");
-      setMessage(`Installed ${source} to the Global Skill Library.`);
+      setMessage(`Installing ${source}…`);
     }
   }
 
@@ -104,6 +107,22 @@ export function SkillsPage({
       {message && !error ? (
         <div className="skills-message" role="status">
           {message}
+        </div>
+      ) : null}
+
+      {installJobs.length > 0 ? (
+        <div className="skills-install-jobs" role="status" aria-label="Skill install jobs">
+          {installJobs.map((job) => (
+            <div key={job.jobId} className="skills-install-job">
+              {(job.status === "queued" || job.status === "running") ? (
+                <span className="spinner" aria-hidden="true" />
+              ) : null}
+              <span className="skills-install-job-source">{job.source}</span>
+              <span className={`skills-install-job-status status-${job.status}`}>
+                {job.status === "failed" ? `failed: ${job.error ?? "unknown error"}` : job.status}
+              </span>
+            </div>
+          ))}
         </div>
       ) : null}
 
