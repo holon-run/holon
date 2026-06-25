@@ -2590,7 +2590,14 @@ function isWorkItemCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolea
 }
 
 function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
-  return event.type === "agent_state_changed" || event.type === "state_changed" || event.type === "work_item_written";
+  return (
+    event.type === "agent_state_changed" ||
+    event.type === "state_changed" ||
+    event.type === "work_item_written" ||
+    event.type === "task_created" ||
+    event.type === "task_status_updated" ||
+    event.type === "task_result_received"
+  );
 }
 
 function scheduleMessageHydration(
