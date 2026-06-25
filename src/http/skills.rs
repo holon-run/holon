@@ -115,7 +115,37 @@ pub async fn reconcile_skill_catalog(
     Ok(Json(json!({
         "ok": true,
         "library": USER_GLOBAL_LIBRARY_LABEL,
-        "result": result,
+        "result": result
+    })))
+}
+
+pub async fn refresh_skill_catalog(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let roots = crate::skills::existing_skill_roots(
+        Some(&user_home),
+        &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
+    )
+    .into_iter()
+    .map(|root| {
+        crate::skills::skill_root_registration(
+            crate::types::SkillRootSourceKind::UserGlobal,
+            None,
+            root,
+        )
+    })
+    .collect::<Vec<_>>();
+
+    let mut registry = state.skills_registry.write().await;
+    registry.rescan();
+    let catalog = registry.catalog_for_roots(&roots, None);
+    Ok(Json(json!({
+        "ok": true,
+        "library": USER_GLOBAL_LIBRARY_LABEL,
+        "catalog": catalog,
     })))
 }
 

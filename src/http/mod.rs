@@ -485,6 +485,10 @@ pub fn router(state: AppState) -> Router {
             post(skills::reconcile_skill_catalog),
         )
         .route(
+            "/api/skills/catalog/refresh",
+            post(skills::refresh_skill_catalog),
+        )
+        .route(
             "/api/skills/catalog/update",
             post(skills::update_skill_catalog),
         )

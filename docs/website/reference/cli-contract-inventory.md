@@ -144,6 +144,7 @@ Skill management is split into library operations and agent enablement:
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
 | `holon skills catalog` | none | none | JSON catalog response | `experimental` | Lists all skills in the local Skill Library. |
+| `holon skills refresh` | none | none | JSON catalog response | `experimental` | Refresh runtime catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates. |
 | `holon skills add` | `<SOURCE>` | `--builtin`; `--remote`; `--skill <SKILL>`; `--copy` | pretty JSON control-plane response | `experimental` | Adds a skill to the local Skill Library. Local paths resolved relative to cwd when directories. |
 | `holon skills remove` | `<NAME>` | none | pretty JSON control-plane response | `experimental` | Removes a skill from the local Skill Library. |
 | `holon skills check` | `[NAME]` | none | pretty JSON control-plane response | `experimental` | Checks Skill Library consistency against `.skill-lock.json`. |

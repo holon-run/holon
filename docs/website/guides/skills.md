@@ -170,6 +170,7 @@ holon skills disable my-skill --agent reviewer
 | Layer | Command | Purpose |
 |-------|---------|---------|
 | Library | `holon skills catalog` | List library catalog |
+| Library | `holon skills refresh` | Refresh runtime catalog by rescanning local roots |
 | Library | `holon skills add <source>` | Add a skill to the library |
 | Library | `holon skills remove <name>` | Remove from the library |
 | Library | `holon skills check [name]` | Check lock-file consistency |
@@ -189,6 +190,7 @@ The HTTP control plane separates library and agent operations:
 | `GET` | `/api/skills/catalog` | List library catalog |
 | `GET` | `/api/skills/catalog/{skill_id}` | Get skill detail |
 | `POST` | `/api/skills/catalog/add` | Add a skill to the library |
+| `POST` | `/api/skills/catalog/refresh` | Refresh runtime catalog |
 | `POST` | `/api/skills/catalog/remove` | Remove from the library |
 | `POST` | `/api/skills/catalog/reconcile` | Reconcile with lock file |
 | `POST` | `/api/skills/catalog/check` | Check consistency |

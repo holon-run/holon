@@ -959,6 +959,9 @@ pub struct ReconcileSkillRequest {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RefreshCatalogRequest {}
+
 pub type UpdateSkillRequest = ReconcileSkillRequest;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
