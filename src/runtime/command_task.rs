@@ -493,6 +493,22 @@ impl RuntimeHandle {
             .transpose()?
             .unwrap_or_else(|| view.cwd().to_path_buf());
 
+        // Fail early with a clear error if the workdir does not exist.
+        // Without this check, the error surfaces later as a generic
+        // "command_spawn_failed" with a misleading shell-related recovery hint.
+        if !workdir.exists() {
+            return Err(ToolError::new(
+                "workdir_not_found",
+                format!("workdir does not exist: {}", workdir.display()),
+            )
+            .with_details(json!({ "workdir": workdir.display().to_string() }))
+            .with_recovery_hint(
+                "use an existing directory for `workdir`, or omit it to use the workspace cwd",
+            )
+            .with_retryable(false)
+            .into());
+        }
+
         let agent_id = self.agent_id().await?;
         let mut env = vec![
             ("HOLON_RUNTIME".to_string(), "1".to_string()),
@@ -1099,7 +1115,7 @@ impl RuntimeHandle {
                         "error": format!("{error:#}"),
                     }))
                     .with_recovery_hint(
-                        "use a valid shell binary, or omit `shell` to use the default shell",
+                        "ensure the `shell` binary exists and the `workdir` directory is valid, or omit `shell`/`workdir` to use defaults",
                     )
                     .with_retryable(false)
             })?;
@@ -1805,6 +1821,31 @@ mod tests {
                 .and_then(|command| command.output_path.as_ref())
                 .map(String::as_str),
             Some(resolved.output_path.to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_command_task_rejects_nonexistent_workdir() {
+        let (_home, workspace, runtime) = test_runtime();
+        let nonexistent = workspace.path().join("does").join("not").join("exist");
+
+        let mut spec = command_spec(false, false);
+        spec.workdir = Some(nonexistent.to_string_lossy().into_owned());
+
+        let result = runtime.resolve_command_task(&spec).await;
+        assert!(
+            result.is_err(),
+            "resolving a command task with a nonexistent workdir should fail"
+        );
+        let err = result.unwrap_err();
+        let tool_error = crate::tool::ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "workdir_not_found");
+        assert!(
+            tool_error
+                .recovery_hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("existing directory")),
+            "recovery hint should mention using an existing directory: {tool_error:?}"
         );
     }
 
