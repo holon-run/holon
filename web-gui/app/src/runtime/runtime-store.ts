@@ -914,7 +914,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
-        skillCatalog: { ...state.skillCatalog, error: message },
+        skillCatalog: { ...state.skillCatalog, source: "http", error: message },
         skillCatalogLoading: false,
         skillCatalogError: message,
       }));
