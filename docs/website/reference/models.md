@@ -6,7 +6,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **39 providers** and **218 models**.
+Holon includes built-in configuration for **39 providers** and **233 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -87,13 +87,14 @@ and capabilities.
 | `bigmodel` | `glm-4.7` | `bigmodel/glm-4.7` | 204800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-4.7-flash` | `bigmodel/glm-4.7-flash` | 200000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-4.7-flashx` | `bigmodel/glm-4.7-flashx` | 200000 | 128000 | ✅ | — |
-| `bigmodel` | `glm-5` | `bigmodel/glm-5` | 202800 | 131100 | ✅ | — |
-| `bigmodel` | `glm-5-turbo` | `bigmodel/glm-5-turbo` | 202800 | 131100 | ✅ | — |
-| `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `bigmodel` | `glm-5` | `bigmodel/glm-5` | 202800 | 131072 | ✅ | — |
+| `bigmodel` | `glm-5-turbo` | `bigmodel/glm-5-turbo` | 202800 | 131072 | ✅ | — |
+| `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
-| `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
+| `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
 | `byteplus` | `moonshotai/kimi-k2.5` | `byteplus/moonshotai/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
 | `byteplus` | `seed-1-8-251228` | `byteplus/seed-1-8-251228` | 256000 | 4096 | — | ✅ |
+| `byteplus` | `seed-2-0-pro-260215` | `byteplus/seed-2-0-pro-260215` | 256000 | 4096 | — | ✅ |
 | `byteplus` | `zai-org/glm-4.7` | `byteplus/zai-org/glm-4.7` | 204800 | 131072 | ✅ | — |
 | `byteplus-coding` | `ark-code-latest` | `byteplus-coding/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | `chutes/deepseek-ai/DeepSeek-V3.2-TEE` | 131072 | 65536 | ✅ | — |
@@ -186,7 +187,7 @@ and capabilities.
 | `nearai` | `Qwen/Qwen3.5-122B-A10B` | `nearai/Qwen/Qwen3.5-122B-A10B` | 131072 | 65536 | ✅ | — |
 | `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262144 | 65536 | ✅ | — |
 | `nearai` | `google/gemma-4-31B-it` | `nearai/google/gemma-4-31B-it` | 262144 | 32768 | — | — |
-| `nearai` | `zai-org/GLM-5.1-FP8` | `nearai/zai-org/GLM-5.1-FP8` | 202752 | 131100 | ✅ | — |
+| `nearai` | `zai-org/GLM-5.1-FP8` | `nearai/zai-org/GLM-5.1-FP8` | 202752 | 131072 | ✅ | — |
 | `nvidia` | `minimaxai/minimax-m2.5` | `nvidia/minimaxai/minimax-m2.5` | 196608 | 8192 | — | — |
 | `nvidia` | `moonshotai/kimi-k2.5` | `nvidia/moonshotai/kimi-k2.5` | 262144 | 8192 | — | — |
 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | `nvidia/nvidia/nemotron-3-super-120b-a12b` | 262144 | 8192 | — | — |
@@ -252,9 +253,23 @@ and capabilities.
 | `vllm` | `meta-llama/Meta-Llama-3-8B-Instruct` | `vllm/meta-llama/Meta-Llama-3-8B-Instruct` | 131072 | 8192 | — | — |
 | `volcengine` | `deepseek-v3-2-251201` | `volcengine/deepseek-v3-2-251201` | 128000 | 4096 | — | ✅ |
 | `volcengine` | `doubao-seed-1-8-251228` | `volcengine/doubao-seed-1-8-251228` | 256000 | 4096 | — | ✅ |
+| `volcengine` | `doubao-seed-2-0-code-preview-260215` | `volcengine/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | ✅ |
+| `volcengine` | `doubao-seed-2-0-lite-260215` | `volcengine/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
+| `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | ✅ |
 | `volcengine` | `doubao-seed-code-preview-251028` | `volcengine/doubao-seed-code-preview-251028` | 256000 | 4096 | — | ✅ |
+| `volcengine` | `glm-4-7-251222` | `volcengine/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
 | `volcengine-coding` | `ark-code-latest` | `volcengine-coding/ark-code-latest` | 256000 | 65536 | ✅ | — |
+| `volcengine-coding` | `deepseek-v3-2-251201` | `volcengine-coding/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
+| `volcengine-coding` | `deepseek-v4-flash` | `volcengine-coding/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
+| `volcengine-coding` | `deepseek-v4-pro` | `volcengine-coding/deepseek-v4-pro` | 1000000 | 8192 | ✅ | — |
+| `volcengine-coding` | `doubao-seed-2-0-code-preview-260215` | `volcengine-coding/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | — |
+| `volcengine-coding` | `doubao-seed-2-0-lite-260215` | `volcengine-coding/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
+| `volcengine-coding` | `doubao-seed-2-0-pro-260215` | `volcengine-coding/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | — |
 | `volcengine-coding` | `doubao-seed-code-preview-251028` | `volcengine-coding/doubao-seed-code-preview-251028` | 256000 | 4096 | — | — |
+| `volcengine-coding` | `glm-4-7-251222` | `volcengine-coding/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
+| `volcengine-coding` | `glm-5.2` | `volcengine-coding/glm-5.2` | 204800 | 131072 | ✅ | — |
+| `volcengine-coding` | `kimi-k2.6` | `volcengine-coding/kimi-k2.6` | 262144 | 32768 | ✅ | — |
+| `volcengine-coding` | `kimi-k2.7-code` | `volcengine-coding/kimi-k2.7-code` | 262144 | 65536 | ✅ | — |
 | `xai` | `grok-3` | `xai/grok-3` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-fast` | `xai/grok-3-fast` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-mini` | `xai/grok-3-mini` | 131072 | 8192 | ✅ | — |
@@ -282,8 +297,8 @@ and capabilities.
 | `zai` | `glm-4.7` | `zai/glm-4.7` | 204800 | 131072 | ✅ | — |
 | `zai` | `glm-4.7-flash` | `zai/glm-4.7-flash` | 200000 | 131072 | ✅ | — |
 | `zai` | `glm-4.7-flashx` | `zai/glm-4.7-flashx` | 200000 | 128000 | ✅ | — |
-| `zai` | `glm-5` | `zai/glm-5` | 202800 | 131100 | ✅ | — |
-| `zai` | `glm-5-turbo` | `zai/glm-5-turbo` | 202800 | 131100 | ✅ | — |
-| `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `zai` | `glm-5` | `zai/glm-5` | 202800 | 131072 | ✅ | — |
+| `zai` | `glm-5-turbo` | `zai/glm-5-turbo` | 202800 | 131072 | ✅ | — |
+| `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
-| `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
+| `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
