@@ -105,18 +105,20 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release introduces web GUI skill management, a skill detail API, refreshed TUI skill commands, DashScope plan providers and new models, and a SkillsRegistry refresh mechanism, alongside fixes for skill lifecycle, provider parameter clamping, and runtime continuation edge cases.
+          This release adds the latest Volcengine models, implements real skills update compatible with npx skills v3 lock, makes skills CLI refresh and catalog refresh APIs explicit, and raises the default max_turns from 12 to 35, alongside fixes for orphaned wait conditions and operator_input recheck recovery, internal refactors to split storage and runtime_db into module trees, and web GUI skill panel and agent sidebar fixes.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Move Holon trigger orchestration into the GitHub Action so issue and PR automation can run with clearer event handling ([#1902](https://github.com/holon-run/holon/pull/1902)).
-          - Improve memory search excerpts and expandable source handling for clearer retrieval evidence ([#1907](https://github.com/holon-run/holon/pull/1907)).
-          - Index memory asynchronously and route rebuild/backfill work through the indexer for a more consistent memory maintenance path ([#1905](https://github.com/holon-run/holon/pull/1905), [#1915](https://github.com/holon-run/holon/pull/1915)).
-          - Refresh model discovery caches automatically and raise the unknown fallback prompt budget to reduce stale or undersized model-selection context ([#1909](https://github.com/holon-run/holon/pull/1909), [#1910](https://github.com/holon-run/holon/pull/1910)).
-          - Harden Holon Action behavior for cross-repo pull requests, active model reporting, and GitHub CLI installation ([#1918](https://github.com/holon-run/holon/pull/1918), [#1919](https://github.com/holon-run/holon/pull/1919), [#1920](https://github.com/holon-run/holon/pull/1920)).
-          - Fix runtime continuation and resume edge cases around stale work-item waits, legacy null message sequence values, conversation event sequence links, and completed \`run_once\` final status precedence ([#1898](https://github.com/holon-run/holon/pull/1898), [#1899](https://github.com/holon-run/holon/pull/1899), [#1921](https://github.com/holon-run/holon/pull/1921), [#1924](https://github.com/holon-run/holon/pull/1924)).
+          - Add latest Volcengine models including Seed 2.0, DeepSeek V4, GLM-5.2, and Kimi K2.6/K2.7 ([#1995](https://github.com/holon-run/holon/pull/1995)).
+          - Implement real skills update compatible with npx skills v3 lock and add a generic job API for skill installs ([#1987](https://github.com/holon-run/holon/pull/1987), [#1978](https://github.com/holon-run/holon/pull/1978)).
+          - Make skills CLI refresh and catalog refresh API explicit and improve TUI skill command feedback ([#1990](https://github.com/holon-run/holon/pull/1990), [#1977](https://github.com/holon-run/holon/pull/1977)).
+          - Raise default max_turns from 12 to 35 and audit provider response identifiers ([3913a92](https://github.com/holon-run/holon/commit/3913a92f), [#1975](https://github.com/holon-run/holon/pull/1975)).
+          - Fix orphaned wait conditions where cancel fails when the work item is already Completed ([#1991](https://github.com/holon-run/holon/pull/1991)).
+          - Fix operator_input wait with expired recheck that never recovers because the scheduler ignores the recheck deadline ([#1992](https://github.com/holon-run/holon/pull/1992)).
+          - Fix web GUI skill panel, agent sidebar, and agent template rendering ([#1999](https://github.com/holon-run/holon/pull/1999)).
+          - Refactor storage.rs, runtime_db.rs, and tool name constants into module trees for clearer storage responsibility boundaries ([#1996](https://github.com/holon-run/holon/pull/1996), [#1997](https://github.com/holon-run/holon/pull/1997), [#1998](https://github.com/holon-run/holon/pull/1998)).
 
           ## Install
 
