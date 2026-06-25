@@ -3029,70 +3029,14 @@ async fn post_control_json<T: serde::Serialize>(
     path: &str,
     payload: &T,
 ) -> Result<()> {
-    post_json_with_auth(config, path, payload, true).await
-}
-
-fn api_path(path: &str) -> String {
-    if path == "/" {
-        "/api/".to_string()
-    } else if path.starts_with("/api/") {
-        path.to_string()
-    } else {
-        format!("/api{path}")
-    }
+    let client = LocalClient::new(config.clone())?;
+    let value: serde_json::Value = client.post_control_json(path, payload).await?;
+    print_json(&value)
 }
 
 async fn get_json(config: &AppConfig, path: &str) -> Result<serde_json::Value> {
-    let path = api_path(path);
-    let request = reqwest::Client::new().get(format!("http://{}{}", config.http_addr, path));
-    let response = request.send().await.context("HTTP request failed")?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("GET {} returned {}: {}", path, status, body);
-    }
-    let body = response
-        .text()
-        .await
-        .context("failed to read response body")?;
-    serde_json::from_str(&body).context("failed to parse JSON response")
-}
-
-async fn post_json_with_auth<T: serde::Serialize>(
-    config: &AppConfig,
-    path: &str,
-    payload: &T,
-    include_control_auth: bool,
-) -> Result<()> {
-    let path = api_path(path);
-    let mut request = reqwest::Client::new()
-        .post(format!("http://{}{}", config.http_addr, path))
-        .json(payload);
-    if include_control_auth {
-        if let Some(token) = &config.control_token {
-            request = request.bearer_auth(token);
-        }
-    }
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("failed to post {}", path))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .with_context(|| format!("failed to read response body from POST {path}"))?;
-    if !status.is_success() {
-        anyhow::bail!("POST {path} returned {status}: {body}");
-    }
-    let value = parse_json_response_body("POST", &path, &body)?;
-    print_json(&value)?;
-    Ok(())
-}
-
-fn parse_json_response_body(method: &str, path: &str, body: &str) -> Result<serde_json::Value> {
-    serde_json::from_str(body)
-        .with_context(|| format!("failed to parse JSON response body from {method} {path}"))
+    let client = LocalClient::new(config.clone())?;
+    client.get_json(path).await
 }
 
 async fn handle_config_command(command: ConfigCommands) -> Result<()> {
