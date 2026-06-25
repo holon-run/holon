@@ -328,7 +328,7 @@ export function AgentSkillManagerPanel({
   const availableAgentSkills = useMemo(() => {
     const query = skillQuery.trim().toLowerCase();
     return (availableSkillCatalog?.catalog ?? [])
-      .filter((skill) => skill.scope === "user" && !effectiveSkillNames.has(skill.name))
+      .filter((skill) => (skill.scope === "user" || skill.scope === "user_global") && !effectiveSkillNames.has(skill.name))
       .filter((skill) => {
         if (!query) return true;
         return [skill.name, skill.description, skill.skillId].some((value) => value.toLowerCase().includes(query));

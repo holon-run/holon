@@ -207,9 +207,9 @@ export function App() {
   }, [refreshRuntimeConfig, route, runtimeConfig.surface, runtimeConfigLoading]);
 
   useEffect(() => {
-    if (route !== "skills" || skillCatalogLoading || skillCatalog.catalog.length > 0) return;
+    if (route !== "skills" || skillCatalogLoading || skillCatalog.source !== "fixture") return;
     void refreshSkillCatalog();
-  }, [refreshSkillCatalog, route, skillCatalog.catalog.length, skillCatalogLoading]);
+  }, [refreshSkillCatalog, route, skillCatalog.source, skillCatalogLoading]);
 
   useEffect(() => {
     if (route !== "skillDetail" || !selectedSkillId || skillDetailLoading || skillDetail) return;
