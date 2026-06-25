@@ -928,7 +928,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: undefined },
     }));
     try {
-      const detail = await runtimeClient.getSkillDetail(skillId);
+      let detail: SkillDetailState;
+      // Agent-scoped skills use a composite key: "agent:{agentId}:{skillDir}"
+      const agentMatch = skillId.match(/^agent:([^:]+):(.+)$/);
+      if (agentMatch) {
+        const [, agentId, skillName] = agentMatch;
+        detail = await runtimeClient.getAgentSkillDetail(agentId, skillName);
+      } else {
+        detail = await runtimeClient.getSkillDetail(skillId);
+      }
       set((state) => ({
         skillDetailById: { ...state.skillDetailById, [skillId]: detail },
         skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: false },

@@ -355,13 +355,7 @@ pub async fn skill_detail(
     let Some(skill) = registry
         .catalog_for_roots(&roots, Some(crate::types::SkillScope::UserGlobal))
         .into_iter()
-        .find(|entry| {
-            entry.skill_id == skill_id
-                || entry
-                    .legacy_id
-                    .as_deref()
-                    .is_some_and(|legacy_id| legacy_id == skill_id)
-        })
+        .find(|entry| entry.skill_id == skill_id)
     else {
         return Err(not_found(format!("skill {skill_id} not found")));
     };
@@ -372,6 +366,56 @@ pub async fn skill_detail(
     Ok(Json(json!({
         "ok": true,
         "library": USER_GLOBAL_LIBRARY_LABEL,
+        "skill": skill,
+        "content": content,
+    })))
+}
+
+pub async fn agent_skill_detail(
+    Path((agent_id, skill_name)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let agent_home = runtime.agent_home();
+
+    let roots =
+        crate::skills::existing_skill_roots(Some(&agent_home), &crate::skills::SKILL_ROOT_SUFFIXES)
+            .into_iter()
+            .map(|root| {
+                crate::skills::skill_root_registration(
+                    crate::types::SkillRootSourceKind::AgentHome,
+                    Some(agent_id.clone()),
+                    root,
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let mut registry = state.skills_registry.write().await;
+    registry
+        .sync_effective_roots(roots.clone())
+        .map_err(error_response)?;
+    let Some(skill) = registry
+        .catalog_for_roots(&roots, Some(crate::types::SkillScope::Agent))
+        .into_iter()
+        .find(|entry| entry.skill_dir == skill_name || entry.name == skill_name)
+    else {
+        return Err(not_found(format!(
+            "skill {skill_name} not found for agent {agent_id}"
+        )));
+    };
+    let content = tokio::fs::read_to_string(&skill.path)
+        .await
+        .map_err(|error| error_response(error.into()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
         "skill": skill,
         "content": content,
     })))

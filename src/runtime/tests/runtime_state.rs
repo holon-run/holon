@@ -2767,11 +2767,16 @@ async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapsho
         context_config(),
     )
     .unwrap();
+    let ws_skill_root = workspace.path().join(".agents/skills");
+    let ws_demo_skill_id = format!(
+        "{}:demo",
+        crate::skills::skill_root_id_for_scope(SkillScope::Workspace, &ws_skill_root)
+    );
     runtime
         .update_agent_state(|state| {
             state.active_skills = vec![
                 ActiveSkillRecord {
-                    skill_id: "workspace:demo".into(),
+                    skill_id: ws_demo_skill_id.clone(),
                     name: "demo".into(),
                     path: skill_path.clone(),
                     scope: SkillScope::Workspace,
@@ -2806,7 +2811,6 @@ async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapsho
         .unwrap();
     assert!(discoverable.skill_id.starts_with("workspace:"));
     assert!(discoverable.skill_id.ends_with(":demo"));
-    assert_eq!(discoverable.legacy_id.as_deref(), Some("workspace:demo"));
     assert_eq!(skills.active_skills.len(), 1);
     assert_eq!(skills.active_skills[0].skill_id, discoverable.skill_id);
 }

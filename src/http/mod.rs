@@ -474,6 +474,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/skills/catalog", get(skills::skills_catalog))
         .route("/api/skills/catalog/{skill_id}", get(skills::skill_detail))
         .route(
+            "/api/agents/{agent_id}/skills/{skill_name}",
+            get(skills::agent_skill_detail),
+        )
+        .route(
             "/api/skills/catalog/add",
             post(skills::add_skill_to_catalog),
         )

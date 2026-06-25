@@ -45,7 +45,6 @@ describe("SkillDetailPage", () => {
             skillId: "user:ace-step",
             rootId: "user:/Users/jolestar/.agents/skills",
             skillDir: "/Users/jolestar/.agents/skills/ace-step",
-            legacyId: "legacy-only-id",
             name: "ace-step",
             description: "Structured reasoning steps",
             path: "/Users/jolestar/.agents/skills/ace-step/SKILL.md",

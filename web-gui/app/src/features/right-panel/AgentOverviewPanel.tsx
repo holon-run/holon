@@ -22,19 +22,21 @@ interface AgentOverviewPanelProps {
 
 function AgentSkillItem({
   skill,
-  availableSkillCatalog,
+  agentId,
   disabled,
   onDisable,
   onOpen,
 }: {
   skill: SkillCatalogEntry;
-  availableSkillCatalog?: SkillCatalogState;
+  agentId: string;
   disabled?: boolean;
   onDisable: (name: string) => void;
   onOpen: (skillId: string) => void;
 }) {
   const canDisable = skill.scope === "agent";
-  const detailSkillId = skillDetailLookupId(skill, availableSkillCatalog);
+  // For agent-scoped skills, use the agent-scoped detail endpoint.
+  // For user-global/workspace skills, use the catalog detail endpoint directly.
+  const detailSkillId = skill.scope === "agent" ? `agent:${agentId}:${skill.skillDir}` : skill.skillId;
   return (
     <li>
       <button type="button" className="agent-skill-open" onClick={() => onOpen(detailSkillId)}>
@@ -78,16 +80,6 @@ function ManageAgentSkillItem({
       </div>
     </li>
   );
-}
-
-export function skillDetailLookupId(skill: SkillCatalogEntry, availableSkillCatalog?: SkillCatalogState) {
-  if (skill.scope !== "agent") return skill.skillId;
-  const match = (availableSkillCatalog?.catalog ?? []).find(
-    (entry) => entry.skillDir === skill.skillDir || entry.name === skill.name || entry.legacyId === `user:${skill.skillDir}`,
-  );
-  if (match) return match.skillId;
-  if (skill.legacyId && !skill.legacyId.startsWith("agent:")) return skill.legacyId;
-  return `user:${skill.skillDir || skill.name}`;
 }
 
 export function AgentOverviewPanel({
@@ -223,7 +215,7 @@ export function AgentOverviewPanel({
               <AgentSkillItem
                 key={`${skill.scope}:${skill.skillId}:${skill.path}`}
                 skill={skill}
-                availableSkillCatalog={availableSkillCatalog}
+                agentId={agent.id}
                 disabled={skillCatalogLoading}
                 onDisable={onDisableAgentSkill}
                 onOpen={onOpenSkill}

@@ -4990,7 +4990,6 @@ mod tests {
                     skill_id: "agent:demo".into(),
                     root_id: "agent_home:test-root".into(),
                     skill_dir: "demo".into(),
-                    legacy_id: Some("agent:demo".into()),
                     name: "demo".into(),
                     description: "agent demo skill summary".into(),
                     path: PathBuf::from("/tmp/agent/skills/demo/SKILL.md"),
@@ -5000,7 +4999,6 @@ mod tests {
                     skill_id: "workspace:other".into(),
                     root_id: "workspace:test-root".into(),
                     skill_dir: "other".into(),
-                    legacy_id: None,
                     name: "other".into(),
                     description: "other skill summary".into(),
                     path: PathBuf::from("/tmp/workspace/.agents/skills/other/SKILL.md"),
@@ -7578,7 +7576,6 @@ mod tests {
                 skill_id: "skill/large-catalog-entry".into(),
                 root_id: "workspace:test-root".into(),
                 skill_dir: "large-catalog-entry".into(),
-                legacy_id: None,
                 name: "Large Catalog Entry".into(),
                 description:
                     "catalog description repeats to consume prompt budget aggressively ".repeat(12),

@@ -519,7 +519,6 @@ interface SkillCatalogEntryDto {
   skill_id?: string;
   root_id?: string;
   skill_dir?: string;
-  legacy_id?: string;
   name?: string;
   description?: string;
   path?: string;
@@ -715,6 +714,22 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/skills/catalog/${encodeURIComponent(skillId)}`,
+        { headers: requestHeaders },
+      );
+      return {
+        source: "http",
+        skill: response.skill ? projectSkillCatalogEntry(response.skill) : undefined,
+        content: response.content ?? "",
+      };
+    },
+    async getAgentSkillDetail(agentId: string, skillName: string): Promise<SkillDetailState> {
+      if (!baseUrl) {
+        return { source: "fixture", error: "Holon API base URL is not configured." };
+      }
+      const response = await getJson<SkillDetailResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}`,
         { headers: requestHeaders },
       );
       return {
@@ -1169,7 +1184,6 @@ function projectSkillCatalogEntry(entry: SkillCatalogEntryDto) {
     skillId: entry.skill_id ?? entry.name ?? "unknown",
     rootId: entry.root_id ?? "",
     skillDir: entry.skill_dir ?? entry.name ?? "",
-    legacyId: entry.legacy_id,
     name: entry.name ?? entry.skill_id ?? "unknown",
     description: entry.description ?? "",
     path: entry.path ?? "",

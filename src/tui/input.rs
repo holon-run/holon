@@ -2330,7 +2330,6 @@ mod tests {
             "catalog": [{
                 "name": "ghx",
                 "skill_id": "agent:ghx",
-                "legacy_id": null,
                 "description": "GitHub CLI workflows",
                 "scope": "agent",
                 "root_id": "agent_home:holon-dev",
