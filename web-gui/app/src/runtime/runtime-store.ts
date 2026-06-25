@@ -68,8 +68,12 @@ function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummar
     ...httpAgent,
     currentWork: cachedAgent.currentWork ?? httpAgent.currentWork,
     workItems: cachedAgent.workItems?.length ? cachedAgent.workItems : httpAgent.workItems,
-    tasks: cachedAgent.tasks?.length ? cachedAgent.tasks : httpAgent.tasks,
-    activeTaskCount: Math.max(httpAgent.activeTaskCount, cachedAgent.activeTaskCount),
+    // Tasks come from the live /state endpoint, not the /agents/list bootstrap.
+    // When httpAgent.tasks is empty it may mean "no tasks" (from /state) or
+    // "tasks not included" (from /agents/list). Only overwrite cached tasks
+    // when the HTTP source actually carries task data.
+    tasks: httpAgent.tasks?.length ? httpAgent.tasks : (cachedAgent.tasks ?? []),
+    activeTaskCount: httpAgent.tasks?.length ? httpAgent.activeTaskCount : Math.max(cachedAgent.activeTaskCount ?? 0, httpAgent.activeTaskCount ?? 0),
     waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
     pending: Math.max(httpAgent.pending, cachedAgent.pending),
     workspaceSummary: cachedAgent.workspaceSummary ?? httpAgent.workspaceSummary,
@@ -2169,15 +2173,18 @@ function patchAgentWorkItems(agent: AgentSummary, workItems: WorkItemSummary[]):
 
 function mergeAgentStateIntoState(state: RuntimeStoreState, agentId: string, freshAgent: AgentSummary): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  // Preserve cached work items and tasks from existing detail — those are managed by
-  // refreshAgentWorkItems and don't come from the lightweight state endpoint.
+  // Preserve cached work items from existing detail — those are managed by
+  // refreshAgentWorkItems. Tasks come from the state endpoint and are always trusted.
   const cachedDetail = session.detail;
   const mergedAgent: AgentSummary = cachedDetail
     ? {
         ...freshAgent,
+        // Tasks come from the live state endpoint, so always trust fresh data
+        // to ensure cancelled/completed tasks are removed promptly.
+        tasks: freshAgent.tasks,
+        // Work items are managed by a separate endpoint, preserve cached data.
         workItems: cachedDetail.agent.workItems?.length ? cachedDetail.agent.workItems : freshAgent.workItems,
         currentWork: cachedDetail.agent.currentWork ?? freshAgent.currentWork,
-        tasks: cachedDetail.agent.tasks?.length ? cachedDetail.agent.tasks : freshAgent.tasks,
         lastBrief: cachedDetail.agent.lastBrief || freshAgent.lastBrief,
       }
     : freshAgent;

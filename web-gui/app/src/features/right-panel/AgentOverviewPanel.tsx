@@ -211,7 +211,6 @@ export function AgentOverviewPanel({
         title="Skills"
         summary={`${skillCatalog?.catalog.length ?? 0} effective`}
         defaultOpen={false}
-        badge={<StatusBadge className="state-chip" kind="connection" value={skillCatalogLoading ? "loading" : `${skillCatalog?.catalog.length ?? 0} active`} />}
       >
         <p className="inspector-muted">
           Agent skills are the effective set from user library, workspace skills, and agent-local overrides. Use Manage skills to
@@ -248,7 +247,6 @@ export function AgentOverviewPanel({
         <CollapsibleInspectorCard
           title="Tasks"
           summary={`${agent.activeTaskCount} active`}
-          badge={<StatusBadge className="state-chip" kind="connection" value="active" />}
         >
           {agent.tasks?.length ? (
             <ul className="inspector-list">
@@ -273,7 +271,6 @@ export function AgentOverviewPanel({
           title="Work items"
           summary={`${openWorkItems.length + currentWorkItems.length} open`}
           className="current-work"
-          badge={<StatusBadge className="state-chip" kind="work" value={`${openWorkItems.length + currentWorkItems.length} open`} />}
         >
           {currentWorkItems.map((workItem) => (
             <WorkItemCard key={workItem.id} workItem={workItem} featured onSelect={selectWorkItem} />
