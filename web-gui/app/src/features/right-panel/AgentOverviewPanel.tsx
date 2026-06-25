@@ -22,24 +22,19 @@ interface AgentOverviewPanelProps {
 
 function AgentSkillItem({
   skill,
-  agentId,
   disabled,
   onDisable,
   onOpen,
 }: {
   skill: SkillCatalogEntry;
-  agentId: string;
   disabled?: boolean;
   onDisable: (name: string) => void;
   onOpen: (skillId: string) => void;
 }) {
   const canDisable = skill.scope === "agent";
-  // For agent-scoped skills, use the agent-scoped detail endpoint.
-  // For user-global/workspace skills, use the catalog detail endpoint directly.
-  const detailSkillId = skill.scope === "agent" ? `agent:${agentId}:${skill.skillDir}` : skill.skillId;
   return (
     <li>
-      <button type="button" className="agent-skill-open" onClick={() => onOpen(detailSkillId)}>
+      <button type="button" className="agent-skill-open" onClick={() => onOpen(skill.skillId)}>
         <div className="inspector-list-head">
           <strong>{skill.name}</strong>
           <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
@@ -215,7 +210,6 @@ export function AgentOverviewPanel({
               <AgentSkillItem
                 key={`${skill.scope}:${skill.skillId}:${skill.path}`}
                 skill={skill}
-                agentId={agent.id}
                 disabled={skillCatalogLoading}
                 onDisable={onDisableAgentSkill}
                 onOpen={onOpenSkill}

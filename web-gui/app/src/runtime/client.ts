@@ -722,22 +722,6 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         content: response.content ?? "",
       };
     },
-    async getAgentSkillDetail(agentId: string, skillName: string): Promise<SkillDetailState> {
-      if (!baseUrl) {
-        return { source: "fixture", error: "Holon API base URL is not configured." };
-      }
-      const response = await getJson<SkillDetailResponseDto>(
-        fetchImpl,
-        baseUrl,
-        `/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}`,
-        { headers: requestHeaders },
-      );
-      return {
-        source: "http",
-        skill: response.skill ? projectSkillCatalogEntry(response.skill) : undefined,
-        content: response.content ?? "",
-      };
-    },
     async addSkillToCatalog(input: AddSkillInput): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
