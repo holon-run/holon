@@ -939,6 +939,22 @@
   },
   {
     "method": "post",
+    "path": "/api/skills/catalog/refresh",
+    "handler": "refresh_skill_catalog",
+    "operation_id": "refreshSkillCatalog",
+    "tag": "skills",
+    "parameters": [],
+    "request_schema": "RefreshCatalogRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/skills/catalog/remove",
     "handler": "remove_skill_from_catalog",
     "operation_id": "removeSkillFromCatalog",

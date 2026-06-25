@@ -53,6 +53,7 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
             "/api/skills/catalog/add",
         ),
         (&["skills", "remove", "ghx"], "/api/skills/catalog/remove"),
+        (&["skills", "refresh"], "/api/skills/catalog/refresh"),
         (&["skills", "reconcile"], "/api/skills/catalog/reconcile"),
         (&["skills", "update"], "/api/skills/catalog/update"),
         (&["skills", "check"], "/api/skills/catalog/check"),

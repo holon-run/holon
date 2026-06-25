@@ -2858,6 +2858,14 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             )
             .await
         }
+        SkillsCommands::Refresh => {
+            post_control_json(
+                config,
+                "/api/skills/catalog/refresh",
+                &holon::types::RefreshCatalogRequest {},
+            )
+            .await
+        }
         SkillsCommands::Update { name } => {
             post_control_json(
                 config,

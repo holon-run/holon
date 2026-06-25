@@ -631,6 +631,8 @@ pub enum SkillsCommands {
     Remove { name: String },
     #[command(about = "Reconcile local Skill Library contents with .skill-lock.json")]
     Reconcile { name: Option<String> },
+    #[command(about = "Refresh runtime catalog by rescanning local skill roots")]
+    Refresh,
     #[command(about = "Update remote Skill Library entries using .skill-lock.json metadata")]
     Update { name: Option<String> },
     #[command(about = "Check Skill Library and lock-file consistency")]

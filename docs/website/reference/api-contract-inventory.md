@@ -325,6 +325,7 @@ Skill management separates library operations from agent enablement:
 | `POST` | `/api/skills/catalog/add` | `{ kind }` where `kind` is a `SkillInstallKind` tagged union. | `{ skill_name }` | Experimental | Adds a skill to the library. Errors map to conflict, not found, or timeout. |
 | `POST` | `/api/skills/catalog/remove` | `{ name }` | `{ skill_name }` | Experimental | Removes a skill from the library. |
 | `POST` | `/api/skills/catalog/reconcile` | `{ name? }` | `{ ... }` | Experimental | Reconciles library with `.skill-lock.json`. |
+| `POST` | `/api/skills/catalog/refresh` | `{ }` | `{ ok, catalog }` | Experimental | Refreshes runtime catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates. |
 | `POST` | `/api/skills/catalog/check` | `{ name? }` | `{ ... }` | Experimental | Checks library consistency. |
 | `GET` | `/agents/:agent_id/skills` | none | `{ skills: [...] }` | Experimental | Lists skills enabled for an agent. |
 | `POST` | `/control/agents/:agent_id/skills/enable` | `{ name, copy? }` | `{ ok, agent_id, skill_name }` | Experimental | Enables a library skill for an agent. |
