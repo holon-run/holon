@@ -1,15 +1,13 @@
 use std::{
-    collections::VecDeque,
-    fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::UNIX_EPOCH,
 };
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
@@ -20,14 +18,14 @@ use crate::{
     types::{
         AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
         AgentStatus, AuditEvent, BriefKind, BriefRecord, ContextEpisodeRecord,
-        DeliverySummaryRecord, ExternalTriggerRecord, ExternalWaitRecoverability, MessageEnvelope,
-        OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding,
-        QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus, TimerRecord, TodoItem,
-        TodoItemState, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionKind,
-        WaitConditionRecord, WaitConditionStatus, WaitingIntentRecord, WaitingIntentScope,
-        WaitingIntentStatus, WakeSource, WorkItemContinuationFrame, WorkItemContinuationState,
-        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
-        WorkItemSchedulingState, WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
+        DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope, OperatorDeliveryRecord,
+        OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
+        TaskRecord, TaskStatus, TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord,
+        WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitingIntentRecord,
+        WaitingIntentScope, WaitingIntentStatus, WorkItemContinuationFrame,
+        WorkItemContinuationState, WorkItemDelegationRecord, WorkItemDelegationState,
+        WorkItemRecord, WorkItemSchedulingState, WorkItemState, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -37,181 +35,35 @@ const RUNTIME_LEDGER_DIR: &str = "ledger";
 const RUNTIME_INDEXES_DIR: &str = "indexes";
 const RUNTIME_CACHE_DIR: &str = "cache";
 
-#[derive(Debug, Clone, Default)]
-pub struct WorkQueuePromptProjection {
-    pub current: Option<WorkItemRecord>,
-    pub queued_blocked: Vec<WorkItemRecord>,
-    pub readiness: Vec<WorkItemReadinessProjection>,
-    pub current_runnable: Option<WorkItemReadinessProjection>,
-    pub triggered_blocked: Vec<WorkItemReadinessProjection>,
-    pub queued_runnable: Vec<WorkItemReadinessProjection>,
-    pub yielded: Vec<WorkItemReadinessProjection>,
-    pub waiting_for_operator: Vec<WorkItemReadinessProjection>,
-    pub blocked: Vec<WorkItemReadinessProjection>,
-    pub completed_recent: Vec<WorkItemReadinessProjection>,
-}
+mod activity;
+mod events;
+mod legacy_jsonl;
+mod memory;
+mod recovery;
+mod work_queue;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EventLogPageOrder {
-    Asc,
-    Desc,
-}
+pub use activity::{FileActivityMarker, PollActivityMarker};
+pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
+pub use recovery::RecoverySnapshot;
+pub use work_queue::{
+    WorkItemCandidateClass, WorkItemReadinessProjection, WorkQueuePromptProjection,
+};
 
-#[derive(Debug, Clone)]
-pub(crate) struct EventLogPage {
-    pub(crate) events: Vec<AuditEvent>,
-    pub(crate) has_older: bool,
-    pub(crate) has_newer: bool,
-}
+// Re-import submodule functions so existing impl AppStorage method bodies compile unchanged.
+use activity::file_activity_marker;
+use legacy_jsonl::{
+    append_jsonl_bytes, jsonl_bytes, max_jsonl_u64_field, migrate_events_ledger, read_jsonl_from,
+    read_latest_jsonl_matching, read_recent_jsonl, read_tail_event_seq, scan_jsonl_reverse,
+    take_recent,
+};
+use memory::memory_index_agent_key;
+use recovery::external_wait_recoverability_event;
+use work_queue::{
+    compare_queue_display_order, compare_readiness_projection_order, current_todo,
+    readiness_for_scheduling_state,
+};
 
-#[derive(Debug, Clone)]
-pub(crate) struct PublishedAuditEvent {
-    pub(crate) agent_id: Option<String>,
-    pub(crate) event: AuditEvent,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct EventBus {
-    tx: broadcast::Sender<PublishedAuditEvent>,
-}
-
-impl EventBus {
-    pub(crate) fn new(capacity: usize) -> Self {
-        let (tx, _rx) = broadcast::channel(capacity);
-        Self { tx }
-    }
-
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<PublishedAuditEvent> {
-        self.tx.subscribe()
-    }
-
-    fn publish(&self, event: PublishedAuditEvent) {
-        let _ = self.tx.send(event);
-    }
-}
-
-impl WorkQueuePromptProjection {
-    pub fn has_non_current_candidates(&self) -> bool {
-        self.triggered_blocked.iter().any(|item| !item.is_current)
-            || self.queued_runnable.iter().any(|item| !item.is_current)
-            || self.yielded.iter().any(|item| !item.is_current)
-            || self
-                .waiting_for_operator
-                .iter()
-                .any(|item| !item.is_current)
-            || self.blocked.iter().any(|item| !item.is_current)
-            || self.completed_recent.iter().any(|item| !item.is_current)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkItemReadinessProjection {
-    pub work_item: WorkItemRecord,
-    pub scheduling_state: WorkItemSchedulingState,
-    pub readiness: WorkItemReadiness,
-    pub candidate_class: WorkItemCandidateClass,
-    pub is_current: bool,
-    pub has_active_waits: bool,
-    pub has_active_task_waits: bool,
-    pub has_triggered_waits: bool,
-    pub last_triggered_at: Option<DateTime<Utc>>,
-    pub current_todo: Option<TodoItem>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkItemCandidateClass {
-    CurrentRunnable,
-    TriggeredBlocked,
-    QueuedRunnable,
-    WaitingForOperator,
-    Yielded,
-    Blocked,
-    CompletedRecent,
-}
-
-#[derive(Debug, Default)]
-struct ActiveWaitConditionStates {
-    task: bool,
-    external: bool,
-    operator: bool,
-    timer: bool,
-    system: bool,
-    last_triggered_at: Option<DateTime<Utc>>,
-}
-
-impl ActiveWaitConditionStates {
-    fn record(
-        &mut self,
-        condition: &WaitConditionRecord,
-        trigger_delivery_by_id: &std::collections::BTreeMap<String, DateTime<Utc>>,
-    ) {
-        match condition.kind {
-            WaitConditionKind::Task => self.task = true,
-            WaitConditionKind::External => self.external = true,
-            WaitConditionKind::Operator => self.operator = true,
-            WaitConditionKind::Timer => self.timer = true,
-            WaitConditionKind::System => self.system = true,
-        }
-        for wake_source in &condition.wake_sources {
-            let WakeSource::ExternalIngress {
-                external_trigger_id: Some(external_trigger_id),
-            } = wake_source
-            else {
-                continue;
-            };
-            if let Some(delivered_at) = trigger_delivery_by_id.get(external_trigger_id) {
-                self.last_triggered_at = Some(
-                    self.last_triggered_at
-                        .map_or(*delivered_at, |current| current.max(*delivered_at)),
-                );
-            }
-        }
-    }
-
-    fn scheduling_state(&self) -> Option<WorkItemSchedulingState> {
-        if self.task {
-            Some(WorkItemSchedulingState::WaitingTask)
-        } else if self.operator {
-            Some(WorkItemSchedulingState::WaitingOperator)
-        } else if self.timer {
-            Some(WorkItemSchedulingState::WaitingTimer)
-        } else if self.external {
-            Some(WorkItemSchedulingState::WaitingExternal)
-        } else if self.system {
-            Some(WorkItemSchedulingState::WaitingSystem)
-        } else {
-            None
-        }
-    }
-}
-
-impl WorkItemReadinessProjection {
-    pub fn record(&self) -> &WorkItemRecord {
-        &self.work_item
-    }
-
-    fn posture_reason(&self) -> String {
-        let label = if self.is_current {
-            "current WorkItem"
-        } else {
-            "queued WorkItem"
-        };
-        format!(
-            "{label} {} is {:?}",
-            self.work_item.id, self.scheduling_state
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RecoverySnapshot {
-    pub agent: Option<AgentState>,
-    pub replay_messages: Vec<MessageEnvelope>,
-    pub active_tasks: Vec<TaskRecord>,
-    pub active_timers: Vec<TimerRecord>,
-    pub work_items: Vec<WorkItemRecord>,
-    pub work_item_delegations: Vec<WorkItemDelegationRecord>,
-}
+use work_queue::ActiveWaitConditionStates;
 
 #[derive(Debug, Clone)]
 pub struct AppStorage {
@@ -261,22 +113,6 @@ struct AuditEventIndexSink {
 enum StorageOpenMode {
     ReadWrite,
     ReadOnly,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileActivityMarker {
-    pub exists: bool,
-    pub len: u64,
-    pub modified_unix_ms: u128,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PollActivityMarker {
-    pub briefs: FileActivityMarker,
-    pub tasks: FileActivityMarker,
-    pub tools: FileActivityMarker,
-    pub events: FileActivityMarker,
-    pub transcript: FileActivityMarker,
 }
 
 impl AppStorage {
@@ -3006,19 +2842,6 @@ impl AppStorage {
     }
 }
 
-fn memory_index_agent_key(agent_id: &str) -> String {
-    agent_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 fn infer_agent_id_from_data_dir(data_dir: &Path) -> Option<String> {
     let parent_is_agents_dir = data_dir
         .parent()
@@ -3035,462 +2858,11 @@ fn infer_agent_id_from_data_dir(data_dir: &Path) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn migrate_events_ledger(path: &Path) -> Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    if let Some(seq) = read_tail_event_seq(path)? {
-        return Ok(seq);
-    }
-
-    let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f");
-    let tmp_path = path.with_file_name(format!(".events.jsonl.{timestamp}.tmp"));
-    let file =
-        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut tmp = fs::File::create(&tmp_path)
-        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-    let mut max_seq = 0;
-    let mut changed = false;
-
-    for line in BufReader::new(file).lines() {
-        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut value: Value = serde_json::from_str(&line)?;
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("event ledger line is not a JSON object"))?;
-        match object.get("event_seq").and_then(Value::as_u64) {
-            Some(seq) if seq > max_seq => {
-                max_seq = seq;
-            }
-            Some(seq) => {
-                anyhow::bail!(
-                    "event ledger sequence must be strictly increasing; found {seq} after {max_seq}"
-                );
-            }
-            None => {
-                max_seq += 1;
-                object.insert("event_seq".to_string(), Value::from(max_seq));
-                changed = true;
-            }
-        }
-        writeln!(tmp, "{}", serde_json::to_string(&value)?)?;
-    }
-
-    if !changed {
-        let _ = fs::remove_file(&tmp_path);
-        return Ok(max_seq);
-    }
-
-    let backup_path = path.with_file_name(format!("events.jsonl.bak.{timestamp}"));
-    fs::copy(path, &backup_path).with_context(|| {
-        format!(
-            "failed to back up {} to {}",
-            path.display(),
-            backup_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to replace {} with {}",
-            path.display(),
-            tmp_path.display()
-        )
-    })?;
-    Ok(max_seq)
-}
-
-fn read_tail_event_seq(path: &Path) -> Result<Option<u64>> {
-    let Some(value) = read_latest_jsonl_matching::<Value, _>(path, |_| true)? else {
-        return Ok(Some(0));
-    };
-    Ok(value.get("event_seq").and_then(Value::as_u64))
-}
-
-fn max_jsonl_u64_field(path: &Path, field: &str) -> Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    let mut max_value = None;
-    scan_jsonl_reverse::<Value, _>(path, |value| {
-        if let Some(sequence) = value.get(field).and_then(Value::as_u64) {
-            max_value = Some(sequence);
-            return false;
-        }
-        true
-    })?;
-    Ok(max_value.unwrap_or(0))
-}
-
-fn jsonl_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    let line = serde_json::to_string(value)?;
-    let mut bytes = Vec::with_capacity(line.len() + 1);
-    bytes.extend_from_slice(line.as_bytes());
-    bytes.push(b'\n');
-    Ok(bytes)
-}
-
-fn append_jsonl_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    file.write_all(bytes)?;
-    Ok(())
-}
-
 pub(crate) fn is_active_task_status(status: &TaskStatus) -> bool {
     matches!(
         status,
         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
     )
-}
-
-fn read_recent_jsonl<T: DeserializeOwned>(path: &Path, limit: usize) -> Result<Vec<T>> {
-    if !path.exists() || limit == 0 {
-        return Ok(Vec::new());
-    }
-
-    let file =
-        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut recent = VecDeque::with_capacity(limit.min(1024));
-    for line in BufReader::new(file).lines() {
-        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if recent.len() == limit {
-            recent.pop_front();
-        }
-        recent.push_back(line);
-    }
-    recent
-        .into_iter()
-        .map(|line| serde_json::from_str::<T>(&line).map_err(Into::into))
-        .collect()
-}
-
-fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    if records_desc.len() > limit {
-        records_desc.truncate(limit);
-    }
-    records_desc.reverse();
-    records_desc
-}
-
-fn read_jsonl_from<T: DeserializeOwned>(
-    path: &Path,
-    offset: usize,
-    limit: usize,
-) -> Result<Vec<T>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut lines = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .skip(offset)
-        .map(|line| serde_json::from_str::<T>(line))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if lines.len() > limit {
-        lines.drain(0..(lines.len() - limit));
-    }
-    Ok(lines)
-}
-
-fn read_latest_jsonl_matching<T, F>(path: &Path, mut matches: F) -> Result<Option<T>>
-where
-    T: DeserializeOwned,
-    F: FnMut(&T) -> bool,
-{
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    const CHUNK_SIZE: u64 = 8192;
-    let mut file =
-        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut cursor = file.seek(SeekFrom::End(0))?;
-    let mut prefix = Vec::new();
-
-    while cursor > 0 {
-        let read_len = cursor.min(CHUNK_SIZE);
-        cursor -= read_len;
-        file.seek(SeekFrom::Start(cursor))?;
-
-        let mut chunk = vec![0; read_len as usize];
-        file.read_exact(&mut chunk)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        chunk.extend_from_slice(&prefix);
-
-        let mut line_end = chunk.len();
-        for idx in (0..chunk.len()).rev() {
-            if chunk[idx] != b'\n' {
-                continue;
-            }
-            if let Some(record) =
-                parse_jsonl_match(&chunk[(idx + 1)..line_end], path, &mut matches)?
-            {
-                return Ok(Some(record));
-            }
-            line_end = idx;
-        }
-        prefix = chunk[..line_end].to_vec();
-    }
-
-    parse_jsonl_match(&prefix, path, &mut matches)
-}
-
-fn external_wait_recoverability_event(record: &WaitConditionRecord) -> Option<AuditEvent> {
-    match record.external_recoverability()? {
-        ExternalWaitRecoverability::Weak => Some(AuditEvent::new(
-            "external_wait_without_recovery",
-            serde_json::json!({
-                "wait_condition_id": record.id,
-                "work_item_id": record.work_item_id,
-                "source": record.source,
-                "subject_ref": record.subject_ref,
-                "waiting_for": record.waiting_for,
-                "external_recoverability": "weak",
-                "wake_sources": record.wake_sources,
-            }),
-        )),
-        ExternalWaitRecoverability::ExplicitNoFallback => Some(AuditEvent::new(
-            "external_wait_without_recovery",
-            serde_json::json!({
-                "wait_condition_id": record.id,
-                "work_item_id": record.work_item_id,
-                "source": record.source,
-                "subject_ref": record.subject_ref,
-                "waiting_for": record.waiting_for,
-                "external_recoverability": "explicit_no_fallback",
-                "no_fallback_reason": record.no_fallback_reason(),
-                "wake_sources": record.wake_sources,
-            }),
-        )),
-        ExternalWaitRecoverability::Recoverable => None,
-    }
-}
-
-fn scan_jsonl_reverse<T, F>(path: &Path, mut visit: F) -> Result<()>
-where
-    T: DeserializeOwned,
-    F: FnMut(T) -> bool,
-{
-    if !path.exists() {
-        return Ok(());
-    }
-
-    const CHUNK_SIZE: u64 = 8192;
-    let mut file =
-        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut cursor = file.seek(SeekFrom::End(0))?;
-    let mut prefix = Vec::new();
-
-    while cursor > 0 {
-        let read_len = cursor.min(CHUNK_SIZE);
-        cursor -= read_len;
-        file.seek(SeekFrom::Start(cursor))?;
-
-        let mut chunk = vec![0; read_len as usize];
-        file.read_exact(&mut chunk)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        chunk.extend_from_slice(&prefix);
-
-        let mut line_end = chunk.len();
-        for idx in (0..chunk.len()).rev() {
-            if chunk[idx] != b'\n' {
-                continue;
-            }
-            if !parse_jsonl_visit(&chunk[(idx + 1)..line_end], path, &mut visit)? {
-                return Ok(());
-            }
-            line_end = idx;
-        }
-        prefix = chunk[..line_end].to_vec();
-    }
-
-    let _ = parse_jsonl_visit(&prefix, path, &mut visit)?;
-    Ok(())
-}
-
-fn parse_jsonl_visit<T, F>(line: &[u8], path: &Path, visit: &mut F) -> Result<bool>
-where
-    T: DeserializeOwned,
-    F: FnMut(T) -> bool,
-{
-    let line = std::str::from_utf8(line)
-        .with_context(|| format!("failed to decode UTF-8 from {}", path.display()))?;
-    if line.trim().is_empty() {
-        return Ok(true);
-    }
-    let record: T = serde_json::from_str(line)
-        .with_context(|| format!("failed to decode line from {}", path.display()))?;
-    Ok(visit(record))
-}
-
-fn parse_jsonl_match<T, F>(line: &[u8], path: &Path, matches: &mut F) -> Result<Option<T>>
-where
-    T: DeserializeOwned,
-    F: FnMut(&T) -> bool,
-{
-    let line = std::str::from_utf8(line)
-        .with_context(|| format!("failed to decode UTF-8 from {}", path.display()))?;
-    if line.trim().is_empty() {
-        return Ok(None);
-    }
-    let record: T = serde_json::from_str(line)
-        .with_context(|| format!("failed to decode line from {}", path.display()))?;
-    if matches(&record) {
-        Ok(Some(record))
-    } else {
-        Ok(None)
-    }
-}
-
-fn compare_readiness_projection_order(
-    left: &WorkItemReadinessProjection,
-    right: &WorkItemReadinessProjection,
-) -> std::cmp::Ordering {
-    candidate_class_rank(left.candidate_class)
-        .cmp(&candidate_class_rank(right.candidate_class))
-        .then_with(|| match left.candidate_class {
-            WorkItemCandidateClass::TriggeredBlocked => {
-                compare_timestamp_desc_option(left.last_triggered_at, right.last_triggered_at)
-                    .then_with(|| {
-                        compare_timestamp_desc(
-                            left.work_item.updated_at,
-                            right.work_item.updated_at,
-                        )
-                    })
-            }
-            WorkItemCandidateClass::QueuedRunnable => {
-                compare_timestamp_asc(left.work_item.updated_at, right.work_item.updated_at)
-                    .then_with(|| {
-                        compare_timestamp_asc(left.work_item.created_at, right.work_item.created_at)
-                    })
-            }
-            WorkItemCandidateClass::Yielded => {
-                compare_timestamp_desc(left.work_item.updated_at, right.work_item.updated_at)
-            }
-            WorkItemCandidateClass::WaitingForOperator
-            | WorkItemCandidateClass::Blocked
-            | WorkItemCandidateClass::CompletedRecent => {
-                compare_timestamp_desc(left.work_item.updated_at, right.work_item.updated_at)
-            }
-            WorkItemCandidateClass::CurrentRunnable => std::cmp::Ordering::Equal,
-        })
-        .then_with(|| left.work_item.id.cmp(&right.work_item.id))
-}
-
-fn compare_queue_display_order(
-    left: &WorkItemRecord,
-    right: &WorkItemRecord,
-) -> std::cmp::Ordering {
-    blocked_rank(left)
-        .cmp(&blocked_rank(right))
-        .then_with(|| compare_timestamp_asc(left.created_at, right.created_at))
-        .then_with(|| compare_timestamp_asc(left.updated_at, right.updated_at))
-        .then_with(|| left.id.cmp(&right.id))
-}
-
-fn blocked_rank(record: &WorkItemRecord) -> u8 {
-    u8::from(record.blocked_by.is_some())
-}
-
-fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkItemReadiness {
-    match state {
-        WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
-        WorkItemSchedulingState::YieldedToWorkItem => WorkItemReadiness::Yielded,
-        WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
-        WorkItemSchedulingState::WaitingTask
-        | WorkItemSchedulingState::WaitingExternal
-        | WorkItemSchedulingState::WaitingTimer
-        | WorkItemSchedulingState::WaitingSystem
-        | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
-        WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
-    }
-}
-
-fn candidate_class_rank(class: WorkItemCandidateClass) -> u8 {
-    match class {
-        WorkItemCandidateClass::CurrentRunnable => 0,
-        WorkItemCandidateClass::TriggeredBlocked => 1,
-        WorkItemCandidateClass::QueuedRunnable => 2,
-        WorkItemCandidateClass::Yielded => 3,
-        WorkItemCandidateClass::WaitingForOperator => 4,
-        WorkItemCandidateClass::Blocked => 5,
-        WorkItemCandidateClass::CompletedRecent => 6,
-    }
-}
-
-fn compare_timestamp_asc(left: DateTime<Utc>, right: DateTime<Utc>) -> std::cmp::Ordering {
-    left.cmp(&right)
-}
-
-fn compare_timestamp_desc(left: DateTime<Utc>, right: DateTime<Utc>) -> std::cmp::Ordering {
-    right.cmp(&left)
-}
-
-fn compare_timestamp_desc_option(
-    left: Option<DateTime<Utc>>,
-    right: Option<DateTime<Utc>>,
-) -> std::cmp::Ordering {
-    right.cmp(&left)
-}
-
-fn current_todo(record: &WorkItemRecord) -> Option<TodoItem> {
-    record
-        .todo_list
-        .iter()
-        .find(|item| item.state == TodoItemState::InProgress)
-        .or_else(|| {
-            record
-                .todo_list
-                .iter()
-                .find(|item| item.state == TodoItemState::Pending)
-        })
-        .cloned()
-}
-
-fn file_activity_marker(path: &Path) -> Result<FileActivityMarker> {
-    if !path.exists() {
-        return Ok(FileActivityMarker {
-            exists: false,
-            len: 0,
-            modified_unix_ms: 0,
-        });
-    }
-
-    let metadata =
-        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
-    let modified_unix_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-
-    Ok(FileActivityMarker {
-        exists: true,
-        len: metadata.len(),
-        modified_unix_ms,
-    })
 }
 
 pub fn to_json_value<T: Serialize>(value: &T) -> Value {
@@ -3510,11 +2882,11 @@ mod tests {
 
     use crate::types::{
         AgentState, AgentStatus, AuthorityClass, BriefKind, CallbackDeliveryMode,
-        EpisodeBoundaryReason, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
-        MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
-        TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem, TodoItemState,
-        ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, WakeSource, WorkItemPlanStatus,
-        WorkItemState,
+        EpisodeBoundaryReason, ExternalTriggerScope, ExternalTriggerStatus,
+        ExternalWaitRecoverability, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
+        Priority, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec,
+        TaskStatus, TodoItem, TodoItemState, ToolExecutionStatus, TranscriptEntry,
+        TranscriptEntryKind, WakeSource, WorkItemPlanStatus, WorkItemState,
     };
 
     use super::*;
