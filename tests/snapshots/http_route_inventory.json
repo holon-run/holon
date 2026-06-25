@@ -750,6 +750,38 @@
   },
   {
     "method": "get",
+    "path": "/workspaces/{workspace_id}/files",
+    "handler": "workspace_files_root",
+    "operation_id": "workspaceFilesRoot",
+    "tag": "workspaces",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/workspaces/{workspace_id}/files/{path}",
+    "handler": "workspace_files",
+    "operation_id": "workspaceFiles",
+    "tag": "workspaces",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/worktree-summary",
     "handler": "worktree_summary_default",
     "operation_id": "defaultWorktreeSummary",

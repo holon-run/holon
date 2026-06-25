@@ -169,3 +169,149 @@ pub async fn worktree_summary_route_returns_reviewable_candidate_summary() -> Re
     server.abort();
     Ok(())
 }
+
+pub async fn workspace_files_lists_directory() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let workspace_id = "agent_home:default";
+    let response = client
+        .get(format!("{base}/workspaces/{workspace_id}/files"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["type"], "directory");
+    let entries = body["entries"].as_array().expect("entries array");
+    assert!(!entries.is_empty(), "root listing should not be empty");
+    for entry in entries {
+        assert!(entry["name"].is_string(), "entry has name");
+        assert!(entry["type"].is_string(), "entry has type");
+    }
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_reads_text_file() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let workspace_id = "agent_home:default";
+    let listing: serde_json::Value = client
+        .get(format!("{base}/workspaces/{workspace_id}/files"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let entries = listing["entries"].as_array().unwrap();
+    let target = entries
+        .iter()
+        .find(|e| e["type"] == "file")
+        .expect("should have at least one file in workspace root");
+    let filename = target["name"].as_str().unwrap();
+
+    let response = client
+        .get(format!("{base}/workspaces/{workspace_id}/files/{filename}"))
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["type"], "file");
+    assert!(body["content"].is_string(), "content field present");
+    assert!(body["mime_type"].is_string(), "mime_type field present");
+    assert_eq!(body["truncated"], false);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_path_traversal_rejected() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let workspace_id = "agent_home:default";
+    let response = client
+        .get(format!(
+            "{base}/workspaces/{workspace_id}/files/../../../etc/passwd"
+        ))
+        .send()
+        .await?;
+    assert_ne!(response.status(), 200, "path traversal must not return 200");
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_returns_404_for_missing_file() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let workspace_id = "agent_home:default";
+    let response = client
+        .get(format!(
+            "{base}/workspaces/{workspace_id}/files/nonexistent_file_12345.txt"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 404);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_metadata_only() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let workspace_id = "agent_home:default";
+    let listing: serde_json::Value = client
+        .get(format!("{base}/workspaces/{workspace_id}/files"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let entries = listing["entries"].as_array().unwrap();
+    let target = entries
+        .iter()
+        .find(|e| e["type"] == "file")
+        .expect("should have at least one file");
+    let filename = target["name"].as_str().unwrap();
+
+    let response = client
+        .get(format!(
+            "{base}/workspaces/{workspace_id}/files/{filename}?meta=true"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["type"], "file");
+    assert!(body["size"].is_number(), "size present");
+    assert!(body["mime_type"].is_string(), "mime_type present");
+    assert!(
+        body.get("content").is_none(),
+        "content must be absent in meta mode"
+    );
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn workspace_files_unknown_workspace_404() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("{base}/workspaces/ws_nonexistent_12345/files"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 404);
+
+    server.abort();
+    Ok(())
+}
