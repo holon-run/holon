@@ -2789,6 +2789,26 @@ impl AppStorage {
             .collect())
     }
 
+    /// Returns active wait conditions for an agent without the live-scope filter.
+    /// Cancel logic needs the true set of active waits regardless of whether the
+    /// associated WorkItem is still Open, because WorkItem completion writes the
+    /// Completed state before calling cancel.
+    pub fn raw_active_wait_conditions_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.wait_conditions().active_for_agent(agent_id)?
+        } else {
+            self.read_recent_wait_conditions(usize::MAX)?
+                .into_iter()
+                .filter(|record| record.agent_id == agent_id)
+                .filter(|record| record.status == WaitConditionStatus::Active)
+                .collect()
+        };
+        Ok(records)
+    }
+
     pub fn latest_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             return runtime_db.wait_conditions().latest_all();
@@ -5749,6 +5769,61 @@ mod tests {
         );
         assert!(!completed.has_active_waits);
         assert!(!completed.has_active_task_waits);
+    }
+
+    #[test]
+    fn raw_active_wait_conditions_returns_waits_for_completed_work_item() {
+        // Regression test for #1988: cancel must find active waits even after
+        // the WorkItem is already marked Completed.
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let mut work = WorkItemRecord::new("default", "task with wait", WorkItemState::Open);
+        work.blocked_by = Some("task".into());
+        storage.append_work_item(&work).unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "wait-1".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(work.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some("task-1".into()),
+                waiting_for: "task result".into(),
+                wake_sources: vec![WakeSource::TaskResult {
+                    task_id: "task-1".into(),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+            })
+            .unwrap();
+
+        // Mark the work item as Completed (as complete_work_item does before cancel).
+        work.state = WorkItemState::Completed;
+        work.blocked_by = None;
+        work.revision += 1;
+        storage.append_work_item(&work).unwrap();
+
+        // The filtered path hides the wait, but the raw path must still find it.
+        assert!(storage
+            .active_wait_conditions_for_work_item("default", &work.id)
+            .unwrap()
+            .is_empty());
+        let raw = storage
+            .raw_active_wait_conditions_for_agent("default")
+            .unwrap();
+        let raw_for_work: Vec<_> = raw
+            .into_iter()
+            .filter(|r| r.work_item_id.as_deref() == Some(work.id.as_str()))
+            .collect();
+        assert_eq!(raw_for_work.len(), 1);
+        assert_eq!(raw_for_work[0].id, "wait-1");
     }
 
     #[test]

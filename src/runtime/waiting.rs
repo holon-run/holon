@@ -177,10 +177,17 @@ impl RuntimeHandle {
         reason: &str,
     ) -> Result<Vec<String>> {
         let now = Utc::now();
+        // Use raw (unfiltered) active waits: filter_active_wait_conditions_for_live_scope
+        // hides waits whose WorkItem is Completed, but this cancel path is called
+        // AFTER the WorkItem is already marked Completed during completion. Using
+        // the filtered path would find nothing to cancel, leaving orphaned waits.
         let active = self
             .inner
             .storage
-            .active_wait_conditions_for_work_item(agent_id, work_item_id)?;
+            .raw_active_wait_conditions_for_agent(agent_id)?
+            .into_iter()
+            .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
+            .collect::<Vec<_>>();
         let mut cancelled = Vec::new();
         for condition in active {
             let mut cancelled_condition = condition.clone();
