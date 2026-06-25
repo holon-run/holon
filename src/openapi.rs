@@ -91,6 +91,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List agent skills", "Return skills enabled/effective for an agent.", None, AuthKind::RemoteAccess),
+    route("get", "/api/agents/{agent_id}/skills/{skill_name}", "agentSkillDetail", "skills", "Agent skill detail", "Return catalog metadata and SKILL.md content for an agent-scoped skill.", None, AuthKind::RemoteAccess),
     route("get", "/api/skills/catalog", "skillsCatalog", "skills", "Skills catalog", "Return the global user Skill Library catalog. Query parameter: scope.", None, AuthKind::RemoteAccess),
     route("get", "/api/skills/catalog/{skill_id}", "skillDetail", "skills", "Skill detail", "Return catalog metadata and SKILL.md content for a Global Skill Library skill.", None, AuthKind::RemoteAccess),
     route("get", "/workspaces/{workspace_id}/files", "workspaceFilesRoot", "workspaces", "Browse workspace root", "List directory entries at the workspace root. Query parameters: execution_root_id.", None, AuthKind::RemoteAccess),
@@ -414,6 +415,9 @@ fn path_parameters(path: &str) -> Vec<Value> {
     }
     if path.contains("{skill_id}") {
         params.push(path_param("skill_id", "Root-qualified skill id."));
+    }
+    if path.contains("{skill_name}") {
+        params.push(path_param("skill_name", "Skill directory name."));
     }
     if path.contains("{callback_token}") {
         params.push(path_param(
