@@ -4,6 +4,7 @@ import type { AgentSummary, RightPanelView, SkillCatalogState, TaskDetailState, 
 import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, TaskDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
+import { FileBrowserPanel } from "./FileBrowserPanel";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -25,6 +26,7 @@ interface RightSidePanelProps {
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
   onShowAgentOverview: () => void;
+  onBrowseFiles: () => void;
   onClose: () => void;
 }
 
@@ -48,6 +50,7 @@ export function RightSidePanel({
   onDisableAgentSkill,
   onOpenSkill,
   onShowAgentOverview,
+  onBrowseFiles,
   onClose,
 }: RightSidePanelProps) {
   const [showSkillManager, setShowSkillManager] = useState(false);
@@ -62,6 +65,8 @@ export function RightSidePanel({
         ? "Work item detail"
         : activeView.kind === "task_detail"
           ? "Task detail"
+          : activeView.kind === "file_browser"
+            ? "File browser"
           : "Agent overview";
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail" ? detailState?.workItem ?? activeView.workItem : undefined;
@@ -123,6 +128,8 @@ export function RightSidePanel({
           <div className="inspector-stack">
             <TaskDetailPanel task={activeView.task} detailState={taskDetailState} />
           </div>
+        ) : activeView.kind === "file_browser" ? (
+          <FileBrowserPanel workspaceId={activeView.workspaceId} initialPath={activeView.initialPath} />
         ) : (
           <AgentOverviewPanel
             agent={agent}
@@ -137,6 +144,7 @@ export function RightSidePanel({
             onDisableAgentSkill={onDisableAgentSkill}
             onOpenSkill={onOpenSkill}
             onOpenSkillManager={openSkillManager}
+            onBrowseFiles={onBrowseFiles}
           />
         )}
       </div>

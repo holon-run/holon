@@ -48,6 +48,7 @@ export function App() {
   const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
   const showWorkItemDetail = useRuntimeStore((state) => state.showWorkItemDetail);
   const showTaskDetail = useRuntimeStore((state) => state.showTaskDetail);
+  const showFileBrowser = useRuntimeStore((state) => state.showFileBrowser);
   const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
@@ -541,6 +542,10 @@ export function App() {
           }}
           onOpenSkill={navigateSkill}
           onShowAgentOverview={showAgentOverview}
+          onBrowseFiles={() => {
+            const wsId = selectedAgent.workspaceSummary?.id;
+            if (wsId) showFileBrowser(selectedAgent.id, wsId);
+          }}
           onClose={() => setRightPanelOpen(false)}
         />
       ) : null}
