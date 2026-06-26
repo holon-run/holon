@@ -594,12 +594,41 @@ pub(crate) fn built_in_provider_registry_with_settings(
         &["VOLCENGINE_API_KEY", "ARK_API_KEY"],
         settings_env,
     )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "volcengine-anthropic",
+        "https://ark.cn-beijing.volces.com/api/compatible",
+        &["VOLCENGINE_API_KEY", "ARK_API_KEY"],
+        settings_env,
+    )?;
     insert_openai_compatible_provider(
         &mut registry,
         "volcengine-coding",
         "https://ark.cn-beijing.volces.com/api/coding/v3",
         &[
             "VOLCENGINE_CODING_API_KEY",
+            "VOLCENGINE_API_KEY",
+            "ARK_API_KEY",
+        ],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "volcengine-coding-anthropic",
+        "https://ark.cn-beijing.volces.com/api/coding",
+        &[
+            "VOLCENGINE_CODING_API_KEY",
+            "VOLCENGINE_API_KEY",
+            "ARK_API_KEY",
+        ],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
+        "volcengine-agent",
+        "https://ark.cn-beijing.volces.com/api/plan",
+        &[
+            "VOLCENGINE_AGENT_API_KEY",
             "VOLCENGINE_API_KEY",
             "ARK_API_KEY",
         ],
