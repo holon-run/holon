@@ -2881,6 +2881,43 @@ code {
   font-size: 13px;
 }
 
+.skills-install-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.skills-install-job {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  font-size: 13px;
+}
+
+.skills-install-job .spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+.skills-install-job-status.status-failed {
+  color: var(--danger, var(--attention));
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .skills-add-form {
   display: grid;
   grid-template-columns: minmax(130px, 170px) minmax(220px, 1fr) minmax(120px, 160px) minmax(110px, 130px) auto;
