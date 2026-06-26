@@ -59,7 +59,7 @@ struct FileContent {
 }
 
 /// Resolve a workspace by id and determine the execution root to browse.
-fn resolve_workspace_root(
+async fn resolve_workspace_root(
     state: &AppState,
     workspace_id: &str,
     execution_root_id: Option<&str>,
@@ -70,16 +70,43 @@ fn resolve_workspace_root(
         .find(|entry| entry.workspace_id == workspace_id)
         .ok_or_else(|| not_found(format!("workspace '{workspace_id}' not found")))?;
 
-    // When execution_root_id is specified, reject it — we cannot resolve the
-    // filesystem path from occupancy records alone (they carry only the opaque
-    // id, not the path). Isolated-root browsing requires wiring up path
-    // resolution from agent-scoped ActiveWorkspaceEntry data, which is future work.
-    let root = if let Some(root_id) = execution_root_id {
-        return Err(bad_request(format!(
-            "execution_root_id resolution is not yet supported; cannot browse isolated root '{root_id}'"
-        )));
-    } else {
-        workspace.workspace_anchor.clone()
+    // Resolve the filesystem root from server-side state, never from the
+    // client-provided execution_root_id string. The execution_root_id is
+    // treated as an opaque server-issued token.
+    let root = match execution_root_id {
+        // No execution_root_id: use the workspace anchor from the registry.
+        None => workspace.workspace_anchor.clone(),
+        // canonical_root:{workspace_id} also resolves to the anchor. The
+        // path comes from the server-side registry, not the client string.
+        Some(id) if id.starts_with("canonical_root:") => workspace.workspace_anchor.clone(),
+        // For git_worktree_root and any other format, look up the
+        // execution_root_id in active workspace entries stored in agent
+        // state. The embedded path in the ID is never trusted or parsed.
+        Some(id) => {
+            let agents = state.host.list_agents().await.map_err(error_response)?;
+            let matched = agents.iter().find_map(|agent| {
+                agent
+                    .agent
+                    .active_workspace_entry
+                    .as_ref()
+                    .filter(|entry| entry.execution_root_id == id)
+            });
+            match matched {
+                Some(entry) => {
+                    if entry.workspace_id != workspace_id {
+                        return Err(forbidden(format!(
+                            "execution_root_id does not belong to workspace '{workspace_id}'"
+                        )));
+                    }
+                    entry.execution_root.clone()
+                }
+                None => {
+                    return Err(bad_request(format!(
+                        "execution_root_id not found in active workspace state: '{id}'"
+                    )));
+                }
+            }
+        }
     };
 
     if !root.exists() {
@@ -199,6 +226,8 @@ pub(crate) async fn workspace_files(
     Path((workspace_id, path)): Path<(String, String)>,
     Query(params): Query<FileQueryParams>,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    // {*path} in axum 0.8 captures the rest of the URL including the leading '/'.
+    let path = path.trim_start_matches('/').to_string();
     workspace_files_inner(state, headers, workspace_id, path, params).await
 }
 
@@ -211,7 +240,8 @@ async fn workspace_files_inner(
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
-    let root = resolve_workspace_root(&state, &workspace_id, params.execution_root_id.as_deref())?;
+    let root =
+        resolve_workspace_root(&state, &workspace_id, params.execution_root_id.as_deref()).await?;
     let full_path = resolve_and_validate_path(&root, &path)?;
 
     let relative = path.trim_start_matches('/');

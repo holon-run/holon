@@ -902,7 +902,7 @@ impl RuntimeHandle {
             return Ok(existing);
         }
         let workspace = WorkspaceEntry::new(
-            crate::ids::workspace_id(),
+            crate::ids::deterministic_workspace_id(&normalized_anchor),
             normalized_anchor.clone(),
             normalized_anchor
                 .file_name()

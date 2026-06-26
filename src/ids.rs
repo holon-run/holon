@@ -1,3 +1,5 @@
+use sha2::{Digest, Sha256};
+use std::path::Path;
 use uuid::Uuid;
 
 const SHORT_RANDOM_HEX_LEN: usize = 15; // 15 random hex nibbles ~= 60 bits
@@ -40,6 +42,16 @@ pub fn tool_execution_id() -> String {
 
 pub fn workspace_id() -> String {
     runtime_id("ws")
+}
+
+/// Derive a workspace ID deterministically from a (normalized) anchor path.
+/// Same path always produces the same ID, preventing stale-ID accumulation.
+pub fn deterministic_workspace_id(anchor: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(anchor.to_string_lossy().as_bytes());
+    let result = hasher.finalize();
+    let hex: String = result.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("ws_{}", &hex[..SHORT_RANDOM_HEX_LEN])
 }
 
 pub fn work_item_id() -> String {

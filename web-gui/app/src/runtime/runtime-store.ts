@@ -79,6 +79,12 @@ function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummar
     waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
     pending: Math.max(httpAgent.pending, cachedAgent.pending),
     workspaceSummary: cachedAgent.workspaceSummary ?? httpAgent.workspaceSummary,
+    // attachedWorkspaces come from the /state endpoint, not /agents/list bootstrap.
+    // Bootstrap only includes the active workspace as fallback; preserve cached
+    // entries when the HTTP source carries fewer workspaces than the cache.
+    attachedWorkspaces: (httpAgent.attachedWorkspaces?.length ?? 0) >= (cachedAgent.attachedWorkspaces?.length ?? 0)
+      ? httpAgent.attachedWorkspaces
+      : cachedAgent.attachedWorkspaces,
   };
 
   if (!isLiveRunningAgent(cachedAgent)) return merged;
@@ -204,10 +210,10 @@ export interface RuntimeStoreState {
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
-  showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string) => void;
-  browseWorkspaceDir: (workspaceId: string, path?: string) => Promise<WorkspaceDirectoryListing>;
-  readWorkspaceFile: (workspaceId: string, path: string) => Promise<WorkspaceFileContent>;
-  workspaceFileUrl: (workspaceId: string, path: string, download?: boolean) => string;
+  showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string) => void;
+  browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
+  readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
+  workspaceFileUrl: (workspaceId: string, path: string, download?: boolean, executionRootId?: string) => string;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
@@ -735,14 +741,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rightPanelOpen: true,
       rightPanelView: { kind: "task_detail", agentId, task },
     }),
-  showFileBrowser: (agentId, workspaceId, initialPath) =>
+  showFileBrowser: (agentId, workspaceId, initialPath, executionRootId) =>
     set({
       rightPanelOpen: true,
-      rightPanelView: { kind: "file_browser", agentId, workspaceId, initialPath },
+      rightPanelView: { kind: "file_browser", agentId, workspaceId, initialPath, executionRootId },
     }),
-  browseWorkspaceDir: (workspaceId, path) => runtimeClient.browseWorkspaceDir(workspaceId, path),
-  readWorkspaceFile: (workspaceId, path) => runtimeClient.readWorkspaceFile(workspaceId, path),
-  workspaceFileUrl: (workspaceId, path, download) => runtimeClient.workspaceFileUrl(workspaceId, path, download),
+  browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
+  readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
+  workspaceFileUrl: (workspaceId, path, download, executionRootId) => runtimeClient.workspaceFileUrl(workspaceId, path, download, executionRootId),
   inspectActivity: (agentId, activity) => {
     set({
       rightPanelOpen: true,

@@ -114,7 +114,7 @@ button {
 }
 
 .app-shell[data-panel="open"] {
-  grid-template-columns: 306px minmax(760px, 1fr) minmax(340px, 420px);
+  grid-template-columns: 306px minmax(0, 1fr) var(--panel-w, 420px);
 }
 
 .app-shell[data-nav-collapsed="true"] {
@@ -122,7 +122,7 @@ button {
 }
 
 .app-shell[data-nav-collapsed="true"][data-panel="open"] {
-  grid-template-columns: 72px minmax(760px, 1fr) minmax(340px, 420px);
+  grid-template-columns: 72px minmax(0, 1fr) var(--panel-w, 420px);
 }
 
 .sidebar {
@@ -274,6 +274,7 @@ button {
   flex: 1;
   min-height: 0;
   align-content: start;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
@@ -3197,6 +3198,75 @@ code {
   cursor: pointer;
 }
 
+.workspace-active-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.workspace-active-section .inspector-facts {
+  margin-top: 0;
+}
+
+.workspace-browse-link {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.8rem;
+  cursor: pointer;
+  width: fit-content;
+}
+
+.workspace-browse-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.workspace-path-link {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+.workspace-path-link:hover {
+  text-decoration: underline;
+}
+
+.workspace-other-list {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.workspace-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+}
+
+.workspace-list-item-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.workspace-list-item-name {
+  font-size: 0.85rem;
+}
+
+.workspace-list-item-anchor {
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-skill-list li:hover {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
@@ -3263,6 +3333,19 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+.panel-body:has(> .file-browser) {
+  overflow: hidden;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.file-browser:has(> .file-browser-viewer) > :not(.file-browser-viewer) {
+  display: none;
 }
 
 .file-browser-toolbar {
@@ -3333,6 +3416,9 @@ code {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .file-browser-list li {
@@ -3383,12 +3469,13 @@ code {
 }
 
 .file-browser-viewer {
-  border-top: 1px solid var(--border, #ddd);
-  margin-top: 4px;
-  padding-top: 8px;
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
 .file-browser-viewer-head {
@@ -3404,7 +3491,8 @@ code {
   font-family: var(--mono-font, "SF Mono", "Fira Code", monospace);
   font-size: 0.75rem;
   line-height: 1.5;
-  max-height: 400px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 10px;
   margin: 0;
@@ -3414,6 +3502,46 @@ code {
 
 .file-browser-text code {
   font-family: inherit;
+}
+
+.file-browser-code {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-radius: 6px;
+  font-family: var(--mono-font, "SF Mono", "Fira Code", monospace);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+/* Shiki output: override its inline background to match panel theme */
+.file-browser-code > .shiki {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--code-bg, #f6f8fa) !important;
+}
+
+.file-browser-code > .shiki code {
+  font-family: inherit;
+  counter-reset: line;
+}
+
+.file-browser-code > .shiki .line {
+  counter-increment: line;
+}
+
+.file-browser-code > .shiki .line::before {
+  content: counter(line);
+  display: inline-block;
+  width: 2.5rem;
+  margin-right: 1rem;
+  text-align: right;
+  color: var(--text-muted, #999);
+  user-select: none;
 }
 
 .file-browser-image {
@@ -3745,6 +3873,7 @@ code {
 
 .side-panel {
   display: flex;
+  position: relative;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
@@ -3752,6 +3881,23 @@ code {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.56), transparent 180px),
     var(--surface);
+}
+
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 20;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.panel-resizer:hover,
+.panel-resizer[data-dragging="true"] {
+  background: var(--accent, #4a9eff);
 }
 
 .side-panel[hidden] {

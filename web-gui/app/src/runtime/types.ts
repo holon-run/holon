@@ -102,6 +102,7 @@ export interface WorkspaceSummary {
   id: string;
   name: string;
   anchor: string;
+  executionRootId?: string;
   projectionKind?: string;
   accessMode?: string;
   executionRoot?: string;
@@ -112,6 +113,14 @@ export interface WorkspaceSummary {
     originalBranch?: string;
     originalCwd?: string;
   };
+}
+
+export interface AttachedWorkspaceEntry {
+  workspaceId: string;
+  name: string;
+  anchor: string;
+  executionRootId?: string;
+  repoName?: string;
 }
 
 export interface TaskSummary {
@@ -154,6 +163,7 @@ export interface AgentSummary {
   currentRunId?: string | null;
   currentWork?: WorkItemSummary;
   workspaceSummary?: WorkspaceSummary;
+  attachedWorkspaces?: AttachedWorkspaceEntry[];
   tasks?: TaskSummary[];
   workItems?: WorkItemSummary[];
 }
@@ -440,6 +450,7 @@ export type RightPanelView =
       kind: "file_browser";
       agentId: string;
       workspaceId: string;
+      executionRootId?: string;
       initialPath?: string;
     };
 

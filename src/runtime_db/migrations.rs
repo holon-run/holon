@@ -788,6 +788,17 @@ CREATE INDEX IF NOT EXISTS idx_runtime_index_outbox_source
 DROP TABLE IF EXISTS message_search_index;
 "#,
     },
+    Migration {
+        version: 21,
+        name: "workspace_id_aliases",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS workspace_id_aliases (
+  old_workspace_id TEXT PRIMARY KEY,
+  new_workspace_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -722,8 +722,12 @@ fn prepare_runtime_storage(
     let initial_workspace_entry = match &initial_workspace {
         InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),
         InitialWorkspaceBinding::Anchor(anchor) => Some(crate::types::WorkspaceEntry::new(
-            crate::ids::workspace_id(),
-            anchor.clone(),
+            {
+                let normalized = crate::system::workspace::normalize_path(anchor)
+                    .unwrap_or_else(|_| anchor.clone());
+                crate::ids::deterministic_workspace_id(&normalized)
+            },
+            crate::system::workspace::normalize_path(anchor).unwrap_or_else(|_| anchor.clone()),
             anchor
                 .file_name()
                 .and_then(|name| name.to_str())

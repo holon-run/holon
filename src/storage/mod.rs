@@ -2715,6 +2715,31 @@ impl AppStorage {
         Ok(latest.into_values().collect())
     }
 
+    /// Migrate a workspace entry's ID from old (random) to new (deterministic).
+    /// No-ops when the runtime DB is not available (legacy storage).
+    pub fn migrate_workspace_id(&self, old_id: &str, new_id: &str) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db
+                .workspace_entries()
+                .migrate_workspace_id(old_id, new_id)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve old workspace IDs to current deterministic IDs via the alias table.
+    /// Returns an empty map when the runtime DB is not available.
+    pub fn resolve_workspace_aliases(
+        &self,
+        workspace_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .workspace_entries()
+                .resolve_aliases_batch(workspace_ids);
+        }
+        Ok(std::collections::HashMap::new())
+    }
+
     pub fn latest_workspace_occupancies(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             return runtime_db.workspace_occupancies().latest_all();

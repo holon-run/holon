@@ -193,6 +193,7 @@ interface AgentListEntryDto {
   active_workspace_entry?: {
     workspace_id?: string;
     workspace_alias?: string | null;
+    execution_root_id?: string;
     workspace_anchor?: string;
     execution_root?: string;
     cwd?: string;
@@ -279,6 +280,12 @@ interface WorkItemDto {
 
 interface AgentWorkspaceDto {
     active_workspace_entry?: AgentListEntryDto["active_workspace_entry"];
+    workspace_entries?: Array<{
+      workspace_id: string;
+      workspace_anchor: string;
+      workspace_alias?: string | null;
+      repo_name?: string | null;
+    }>;
     worktree_session?: {
       original_branch?: string;
       original_cwd?: string;
@@ -926,7 +933,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       );
       return response.model;
     },
-    async browseWorkspaceDir(workspaceId: string, path?: string): Promise<WorkspaceDirectoryListing> {
+    async browseWorkspaceDir(workspaceId: string, path?: string, executionRootId?: string): Promise<WorkspaceDirectoryListing> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -934,7 +941,8 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const urlPath = encodedPath
         ? `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`
         : `/workspaces/${encodeURIComponent(workspaceId)}/files`;
-      const response = await getJson<WorkspaceDirectoryListingDto>(fetchImpl, baseUrl, urlPath, { headers: requestHeaders });
+      const query = executionRootId ? `?execution_root_id=${encodeURIComponent(executionRootId)}` : "";
+      const response = await getJson<WorkspaceDirectoryListingDto>(fetchImpl, baseUrl, `${urlPath}${query}`, { headers: requestHeaders });
       return {
         type: "directory",
         path: response.path,
@@ -947,15 +955,16 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         })),
       };
     },
-    async readWorkspaceFile(workspaceId: string, path: string): Promise<WorkspaceFileContent> {
+    async readWorkspaceFile(workspaceId: string, path: string, executionRootId?: string): Promise<WorkspaceFileContent> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
       const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+      const query = executionRootId ? `?execution_root_id=${encodeURIComponent(executionRootId)}` : "";
       const response = await getJson<WorkspaceFileContentDto>(
         fetchImpl,
         baseUrl,
-        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`,
+        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query}`,
         { headers: requestHeaders },
       );
       return {
@@ -969,10 +978,13 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         content: response.content,
       };
     },
-    workspaceFileUrl(workspaceId: string, path: string, download?: boolean): string {
+    workspaceFileUrl(workspaceId: string, path: string, download?: boolean, executionRootId?: string): string {
       const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-      const query = download ? "?download=true" : "";
-      return `${baseUrl}/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query}`;
+      const params = new URLSearchParams();
+      if (download) params.set("download", "true");
+      if (executionRootId) params.set("execution_root_id", executionRootId);
+      const query = params.toString();
+      return `${baseUrl}/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query ? `?${query}` : ""}`;
     },
   };
 }
@@ -1488,6 +1500,24 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const workspaceEntry = state?.workspace?.active_workspace_entry ?? entry.active_workspace_entry;
   const workspace = workspaceEntry?.workspace_alias ?? workspaceEntry?.workspace_id ?? state?.workspace?.worktree_session?.worktree_branch ?? "not bound";
   const workspaceSummary = projectWorkspace(workspaceEntry, state?.workspace?.worktree_session);
+  const workspaceEntries = [...(state?.workspace?.workspace_entries ?? [])];
+  if (
+    workspaceEntry?.workspace_id &&
+    !workspaceEntries.some((e) => e.workspace_id === workspaceEntry.workspace_id)
+  ) {
+    workspaceEntries.push({
+      workspace_id: workspaceEntry.workspace_id,
+      workspace_anchor: workspaceEntry.workspace_anchor ?? workspaceEntry.execution_root ?? workspaceEntry.cwd ?? workspaceEntry.workspace_id,
+      workspace_alias: workspaceEntry.workspace_alias,
+    });
+  }
+  const attachedWorkspaces = workspaceEntries.map((e) => ({
+    workspaceId: e.workspace_id,
+    name: e.workspace_alias ?? basename(e.workspace_anchor) ?? e.workspace_id,
+    anchor: e.workspace_anchor,
+    executionRootId: workspaceEntry?.workspace_id === e.workspace_id ? workspaceEntry?.execution_root_id : undefined,
+    repoName: e.repo_name ?? undefined,
+  }));
   const currentWork = selectCurrentWork(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const tasks = projectTasks(state?.tasks ?? []);
@@ -1527,6 +1557,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     currentRunId,
     currentWork,
     workspaceSummary,
+    attachedWorkspaces,
     tasks,
     workItems,
   };
@@ -1546,6 +1577,7 @@ function projectWorkspace(
     id: workspaceEntry?.workspace_id ?? "not bound",
     name,
     anchor,
+    executionRootId: workspaceEntry?.execution_root_id,
     projectionKind: workspaceEntry?.projection_kind,
     accessMode: workspaceEntry?.access_mode,
     executionRoot: workspaceEntry?.execution_root,

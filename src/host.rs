@@ -640,6 +640,13 @@ impl RuntimeHost {
         self.inner.registry.workspace_entries()
     }
 
+    pub fn resolve_workspace_aliases(
+        &self,
+        workspace_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        self.inner.registry.resolve_workspace_aliases(workspace_ids)
+    }
+
     pub fn workspace_occupancies(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
         self.inner.registry.workspace_occupancies()
     }
