@@ -3751,6 +3751,7 @@ code {
 
 .side-panel {
   display: flex;
+  position: relative;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;

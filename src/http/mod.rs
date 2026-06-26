@@ -530,7 +530,7 @@ pub fn router(state: AppState) -> Router {
             get(workspace_files::workspace_files_root),
         )
         .route(
-            "/workspaces/{workspace_id}/files/{path:path}",
+            "/workspaces/{workspace_id}/files/{*path}",
             get(workspace_files::workspace_files),
         );
     let root_routes = api_routes.clone().route(

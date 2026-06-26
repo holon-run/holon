@@ -199,6 +199,8 @@ pub(crate) async fn workspace_files(
     Path((workspace_id, path)): Path<(String, String)>,
     Query(params): Query<FileQueryParams>,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    // {*path} in axum 0.8 captures the rest of the URL including the leading '/'.
+    let path = path.trim_start_matches('/').to_string();
     workspace_files_inner(state, headers, workspace_id, path, params).await
 }
 
