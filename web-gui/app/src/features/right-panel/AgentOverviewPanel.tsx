@@ -192,7 +192,7 @@ export function AgentOverviewPanel({
                   ) : null}
                 </dl>
                 <details className="inspector-details-list workspace-technical-details">
-                  <summary>Detail</summary>
+                  <summary>Details</summary>
                   <dl className="inspector-facts">
                     <div>
                       <dt>Mode</dt>
