@@ -203,7 +203,7 @@ export function AgentOverviewPanel({
         ) : null}
       </CollapsibleInspectorCard>
 
-      {agent.attachedWorkspaces && agent.attachedWorkspaces.length > 1 ? (
+      {agent.attachedWorkspaces && agent.attachedWorkspaces.length > 0 ? (
         <CollapsibleInspectorCard
           title="Attached Workspaces"
           summary={`${agent.attachedWorkspaces.length} workspaces`}
@@ -211,7 +211,9 @@ export function AgentOverviewPanel({
         >
           <div className="inspector-stack">
             {agent.attachedWorkspaces.map((ws) => {
-              const isActive = ws.workspaceId === workspace?.id;
+              const isActive = ws.executionRootId
+                ? ws.executionRootId === workspace?.executionRootId
+                : ws.workspaceId === workspace?.id;
               return (
                 <div
                   key={ws.workspaceId}
