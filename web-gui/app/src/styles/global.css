@@ -3221,6 +3221,17 @@ code {
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 
+.workspace-path-link {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+.workspace-path-link:hover {
+  text-decoration: underline;
+}
+
 .workspace-other-list {
   margin-top: 0.5rem;
   padding-top: 0.5rem;

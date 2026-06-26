@@ -135,33 +135,43 @@ export function AgentOverviewPanel({
 
       {(() => {
         const wsCount = agent.attachedWorkspaces?.length ?? (workspace ? 1 : 0);
+        const activeTitle = workspace?.worktree?.branch
+          ? `${workspaceName} · ${workspace.worktree.branch}`
+          : workspaceName;
+        const activePath = workspace?.worktree?.path ?? workspace?.executionRoot ?? workspace?.anchor;
         return (
           <CollapsibleInspectorCard
             title="Workspaces"
-            summary={compactMeta([
-              `${wsCount} workspace${wsCount !== 1 ? "s" : ""}`,
-              workspace?.worktree?.path ? "worktree" : undefined,
-            ])}
-            badge={<StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />}
+            summary={`${wsCount} workspace${wsCount !== 1 ? "s" : ""}`}
             defaultOpen={true}
           >
             {workspace ? (
               <div className="workspace-active-section">
                 <div className="inspector-list-head">
-                  <strong>{workspaceName}</strong>
-                  <span className="state-chip active">active</span>
+                  <strong>{activeTitle}</strong>
                 </div>
                 <dl className="inspector-facts">
+                  {activePath ? (
+                    <div>
+                      <dt>Path</dt>
+                      <dd>
+                        <a
+                          href="#"
+                          className="workspace-path-link"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (workspace.id) onBrowseFiles(workspace.id, workspace.executionRootId);
+                          }}
+                        >
+                          {activePath}
+                        </a>
+                      </dd>
+                    </div>
+                  ) : null}
                   <div>
                     <dt>Origin</dt>
                     <dd>{workspace.anchor ?? "—"}</dd>
                   </div>
-                  {workspace.worktree?.path ? (
-                    <div>
-                      <dt>Worktree</dt>
-                      <dd>{workspace.worktree.path}</dd>
-                    </div>
-                  ) : null}
                   <div>
                     <dt>Mode</dt>
                     <dd>{compactMeta([modeLabel, workspace.accessMode])}</dd>
@@ -206,18 +216,6 @@ export function AgentOverviewPanel({
                     ) : null}
                   </dl>
                 </details>
-                {workspace.id ? (
-                  <a
-                    href="#"
-                    className="workspace-browse-link"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      onBrowseFiles(workspace.id, workspace.executionRootId);
-                    }}
-                  >
-                    Browse files
-                  </a>
-                ) : null}
               </div>
             ) : (
               <p className="inspector-muted">No workspace bound.</p>
@@ -236,18 +234,17 @@ export function AgentOverviewPanel({
                     <div key={ws.executionRootId ?? ws.workspaceId} className="workspace-list-item">
                       <div className="workspace-list-item-info">
                         <div className="workspace-list-item-name">{ws.name}</div>
-                        <div className="inspector-muted workspace-list-item-anchor">{ws.anchor}</div>
+                        <a
+                          href="#"
+                          className="workspace-path-link workspace-list-item-anchor"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            onBrowseFiles(ws.workspaceId, ws.executionRootId);
+                          }}
+                        >
+                          {ws.anchor}
+                        </a>
                       </div>
-                      <a
-                        href="#"
-                        className="workspace-browse-link"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          onBrowseFiles(ws.workspaceId, ws.executionRootId);
-                        }}
-                      >
-                        Browse
-                      </a>
                     </div>
                   ))}
               </div>
