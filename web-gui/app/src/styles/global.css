@@ -3333,6 +3333,18 @@ code {
   flex-direction: column;
   gap: 8px;
   position: relative;
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+.panel-body:has(> .file-browser) {
+  overflow: hidden;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.file-browser:has(> .file-browser-viewer) > :not(.file-browser-viewer) {
+  display: none;
 }
 
 .file-browser-toolbar {
@@ -3403,6 +3415,9 @@ code {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .file-browser-list li {
@@ -3453,16 +3468,13 @@ code {
 }
 
 .file-browser-viewer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
   background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
 .file-browser-viewer-head {
