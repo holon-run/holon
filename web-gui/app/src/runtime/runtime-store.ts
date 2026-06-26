@@ -79,6 +79,12 @@ function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummar
     waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
     pending: Math.max(httpAgent.pending, cachedAgent.pending),
     workspaceSummary: cachedAgent.workspaceSummary ?? httpAgent.workspaceSummary,
+    // attachedWorkspaces come from the /state endpoint, not /agents/list bootstrap.
+    // Bootstrap only includes the active workspace as fallback; preserve cached
+    // entries when the HTTP source carries fewer workspaces than the cache.
+    attachedWorkspaces: (httpAgent.attachedWorkspaces?.length ?? 0) >= (cachedAgent.attachedWorkspaces?.length ?? 0)
+      ? httpAgent.attachedWorkspaces
+      : cachedAgent.attachedWorkspaces,
   };
 
   if (!isLiveRunningAgent(cachedAgent)) return merged;
