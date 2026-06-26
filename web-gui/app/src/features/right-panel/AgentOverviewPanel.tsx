@@ -139,6 +139,11 @@ export function AgentOverviewPanel({
           ? `${workspaceName} · ${workspace.worktree.branch}`
           : workspaceName;
         const activePath = workspace?.worktree?.path ?? workspace?.executionRoot ?? workspace?.anchor;
+        const hasWorktree = Boolean(workspace?.worktree);
+        // Find the origin workspace for browsing
+        const originWs = agent.attachedWorkspaces?.find((ws) => ws.anchor === workspace?.anchor);
+        const originBrowseId = originWs?.workspaceId;
+        const originBrowseRoot = originWs?.executionRootId;
         return (
           <CollapsibleInspectorCard
             title="Workspaces"
@@ -153,14 +158,14 @@ export function AgentOverviewPanel({
                 <dl className="inspector-facts">
                   {activePath ? (
                     <div>
-                      <dt>Path</dt>
+                      <dt>{hasWorktree ? "Worktree" : "Path"}</dt>
                       <dd>
                         <a
                           href="#"
                           className="workspace-path-link"
                           onClick={(e) => {
                             e.preventDefault();
-                            if (workspace.id) onBrowseFiles(workspace.id, workspace.executionRootId);
+                            if (workspace.id) onBrowseFiles(workspace.id, workspace.executionRootId ?? undefined);
                           }}
                         >
                           {activePath}
@@ -168,18 +173,35 @@ export function AgentOverviewPanel({
                       </dd>
                     </div>
                   ) : null}
-                  <div>
-                    <dt>Origin</dt>
-                    <dd>{workspace.anchor ?? "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Mode</dt>
-                    <dd>{compactMeta([modeLabel, workspace.accessMode])}</dd>
-                  </div>
+                  {hasWorktree ? (
+                    <div>
+                      <dt>Origin</dt>
+                      <dd>
+                        {originBrowseId ? (
+                          <a
+                            href="#"
+                            className="workspace-path-link"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              onBrowseFiles(originBrowseId, originBrowseRoot ?? undefined);
+                            }}
+                          >
+                            {workspace.anchor ?? "—"}
+                          </a>
+                        ) : (
+                          workspace.anchor ?? "—"
+                        )}
+                      </dd>
+                    </div>
+                  ) : null}
                 </dl>
                 <details className="inspector-details-list workspace-technical-details">
-                  <summary>Technical details</summary>
+                  <summary>Detail</summary>
                   <dl className="inspector-facts">
+                    <div>
+                      <dt>Mode</dt>
+                      <dd>{compactMeta([modeLabel, workspace.accessMode])}</dd>
+                    </div>
                     <div>
                       <dt>Name</dt>
                       <dd>{workspace.name}</dd>
