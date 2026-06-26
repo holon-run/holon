@@ -114,6 +114,13 @@ export interface WorkspaceSummary {
   };
 }
 
+export interface AttachedWorkspaceEntry {
+  workspaceId: string;
+  name: string;
+  anchor: string;
+  repoName?: string;
+}
+
 export interface TaskSummary {
   id: string;
   kind: string;
@@ -154,6 +161,7 @@ export interface AgentSummary {
   currentRunId?: string | null;
   currentWork?: WorkItemSummary;
   workspaceSummary?: WorkspaceSummary;
+  attachedWorkspaces?: AttachedWorkspaceEntry[];
   tasks?: TaskSummary[];
   workItems?: WorkItemSummary[];
 }

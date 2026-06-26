@@ -18,7 +18,7 @@ interface AgentOverviewPanelProps {
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
   onOpenSkillManager: () => void;
-  onBrowseFiles: () => void;
+  onBrowseFiles: (workspaceId: string) => void;
 }
 
 function AgentSkillItem({
@@ -141,13 +141,15 @@ export function AgentOverviewPanel({
         <h2>{workspaceName}</h2>
         <dl className="inspector-facts">
           <div>
-            <dt>Working directory</dt>
-            <dd>{workspaceRoot ?? (agent.workspace === "not bound" ? "No active workspace" : "—")}</dd>
-          </div>
-          <div>
-            <dt>Anchor</dt>
+            <dt>Origin</dt>
             <dd>{workspace?.anchor ?? "—"}</dd>
           </div>
+          {workspace?.worktree?.path ? (
+            <div>
+              <dt>Worktree</dt>
+              <dd>{workspace.worktree.path}</dd>
+            </div>
+          ) : null}
           <div>
             <dt>Mode</dt>
             <dd>{compactMeta([modeLabel, workspace?.accessMode])}</dd>
@@ -195,11 +197,57 @@ export function AgentOverviewPanel({
           </details>
         ) : null}
         {workspace?.id ? (
-          <button type="button" className="agent-skill-open" onClick={onBrowseFiles} style={{ marginTop: "0.5rem" }}>
+          <button type="button" className="agent-skill-open" onClick={() => onBrowseFiles(workspace.id)} style={{ marginTop: "0.5rem" }}>
             Browse Files
           </button>
         ) : null}
       </CollapsibleInspectorCard>
+
+      {agent.attachedWorkspaces && agent.attachedWorkspaces.length > 1 ? (
+        <CollapsibleInspectorCard
+          title="Attached Workspaces"
+          summary={`${agent.attachedWorkspaces.length} workspaces`}
+          defaultOpen={false}
+        >
+          <div className="inspector-stack">
+            {agent.attachedWorkspaces.map((ws) => {
+              const isActive = ws.workspaceId === workspace?.id;
+              return (
+                <div
+                  key={ws.workspaceId}
+                  className="workspace-list-item"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "0.5rem",
+                    padding: "0.4rem 0",
+                    opacity: isActive ? 1 : 0.7,
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontWeight: isActive ? 600 : 400, fontSize: "0.85rem" }}>
+                      {ws.name}
+                      {isActive ? <span className="state-chip active" style={{ marginLeft: "0.4rem" }}>active</span> : null}
+                    </div>
+                    <div className="inspector-muted" style={{ fontSize: "0.75rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {ws.anchor}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="agent-skill-open"
+                    onClick={() => onBrowseFiles(ws.workspaceId)}
+                    style={{ flexShrink: 0 }}
+                  >
+                    Browse
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </CollapsibleInspectorCard>
+      ) : null}
 
       <CollapsibleInspectorCard
         title="Skills"

@@ -26,7 +26,7 @@ interface RightSidePanelProps {
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
   onShowAgentOverview: () => void;
-  onBrowseFiles: () => void;
+  onBrowseFiles: (workspaceId: string) => void;
   onClose: () => void;
 }
 

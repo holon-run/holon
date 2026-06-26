@@ -542,9 +542,8 @@ export function App() {
           }}
           onOpenSkill={navigateSkill}
           onShowAgentOverview={showAgentOverview}
-          onBrowseFiles={() => {
-            const wsId = selectedAgent.workspaceSummary?.id;
-            if (wsId) showFileBrowser(selectedAgent.id, wsId);
+          onBrowseFiles={(workspaceId: string) => {
+            showFileBrowser(selectedAgent.id, workspaceId);
           }}
           onClose={() => setRightPanelOpen(false)}
         />

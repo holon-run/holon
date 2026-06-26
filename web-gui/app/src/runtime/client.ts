@@ -279,6 +279,12 @@ interface WorkItemDto {
 
 interface AgentWorkspaceDto {
     active_workspace_entry?: AgentListEntryDto["active_workspace_entry"];
+    workspace_entries?: Array<{
+      workspace_id: string;
+      workspace_anchor: string;
+      workspace_alias?: string | null;
+      repo_name?: string | null;
+    }>;
     worktree_session?: {
       original_branch?: string;
       original_cwd?: string;
@@ -1488,6 +1494,12 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const workspaceEntry = state?.workspace?.active_workspace_entry ?? entry.active_workspace_entry;
   const workspace = workspaceEntry?.workspace_alias ?? workspaceEntry?.workspace_id ?? state?.workspace?.worktree_session?.worktree_branch ?? "not bound";
   const workspaceSummary = projectWorkspace(workspaceEntry, state?.workspace?.worktree_session);
+  const attachedWorkspaces = (state?.workspace?.workspace_entries ?? []).map((e) => ({
+    workspaceId: e.workspace_id,
+    name: e.workspace_alias ?? basename(e.workspace_anchor) ?? e.workspace_id,
+    anchor: e.workspace_anchor,
+    repoName: e.repo_name ?? undefined,
+  }));
   const currentWork = selectCurrentWork(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const tasks = projectTasks(state?.tasks ?? []);
@@ -1527,6 +1539,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     currentRunId,
     currentWork,
     workspaceSummary,
+    attachedWorkspaces,
     tasks,
     workItems,
   };

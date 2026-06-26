@@ -256,7 +256,7 @@ pub async fn agent_state(
         .map(ExternalTriggerStateSnapshot::from)
         .collect();
     crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
-    let workspace = state_workspace_snapshot(&agent);
+    let workspace = state_workspace_snapshot(&agent, &state);
     slim_state_agent_summary(&mut agent);
     let session = StateSessionSnapshot {
         current_run_id: agent.agent.current_run_id.clone(),
@@ -446,9 +446,22 @@ fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
     }
 }
 
-fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
+fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWorkspaceSnapshot {
+    let all_entries = state.host.workspace_entries().unwrap_or_default();
+    let workspace_entries: Vec<WorkspaceEntrySummary> = agent
+        .agent
+        .attached_workspaces
+        .iter()
+        .filter_map(|ws_id| {
+            all_entries
+                .iter()
+                .find(|e| &e.workspace_id == ws_id)
+                .map(WorkspaceEntrySummary::from_entry)
+        })
+        .collect();
     StateWorkspaceSnapshot {
         attached_workspaces: agent.agent.attached_workspaces.clone(),
+        workspace_entries,
         active_workspace_entry: agent.agent.active_workspace_entry.clone(),
         active_workspace_occupancy: agent.active_workspace_occupancy.clone(),
         worktree_session: agent.agent.worktree_session.clone(),
