@@ -72,12 +72,12 @@ fn render_live_inventory() -> String {
     let source = std::fs::read_to_string(HTTP_SOURCE_PATH)
         .unwrap_or_else(|err| panic!("failed to read {HTTP_SOURCE_PATH}: {err}"));
     let routes = parse_axum_routes(&source);
-    // Normalize axum path parameter suffixes (e.g. `{path:path}`) to the
+    // Normalize axum catch-all `{*param}` and legacy `{*:param}` to the
     // OpenAPI form (`{path}`).
     let routes: Vec<HttpRoute> = routes
         .into_iter()
         .map(|mut route| {
-            route.path = route.path.replace(":path}", "}");
+            route.path = route.path.replace("{*", "{").replace(":path}", "}");
             route
         })
         .collect();
