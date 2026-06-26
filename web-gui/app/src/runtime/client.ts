@@ -1500,7 +1500,18 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const workspaceEntry = state?.workspace?.active_workspace_entry ?? entry.active_workspace_entry;
   const workspace = workspaceEntry?.workspace_alias ?? workspaceEntry?.workspace_id ?? state?.workspace?.worktree_session?.worktree_branch ?? "not bound";
   const workspaceSummary = projectWorkspace(workspaceEntry, state?.workspace?.worktree_session);
-  const attachedWorkspaces = (state?.workspace?.workspace_entries ?? []).map((e) => ({
+  const workspaceEntries = [...(state?.workspace?.workspace_entries ?? [])];
+  if (
+    workspaceEntry?.workspace_id &&
+    !workspaceEntries.some((e) => e.workspace_id === workspaceEntry.workspace_id)
+  ) {
+    workspaceEntries.push({
+      workspace_id: workspaceEntry.workspace_id,
+      workspace_anchor: workspaceEntry.workspace_anchor ?? workspaceEntry.execution_root ?? workspaceEntry.cwd ?? workspaceEntry.workspace_id,
+      workspace_alias: workspaceEntry.workspace_alias,
+    });
+  }
+  const attachedWorkspaces = workspaceEntries.map((e) => ({
     workspaceId: e.workspace_id,
     name: e.workspace_alias ?? basename(e.workspace_anchor) ?? e.workspace_id,
     anchor: e.workspace_anchor,

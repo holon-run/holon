@@ -448,7 +448,7 @@ fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
 
 fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWorkspaceSnapshot {
     let all_entries = state.host.workspace_entries().unwrap_or_default();
-    let workspace_entries: Vec<WorkspaceEntrySummary> = agent
+    let mut workspace_entries: Vec<WorkspaceEntrySummary> = agent
         .agent
         .attached_workspaces
         .iter()
@@ -459,6 +459,21 @@ fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWork
                 .map(WorkspaceEntrySummary::from_entry)
         })
         .collect();
+    if let Some(active_entry) = agent.agent.active_workspace_entry.as_ref() {
+        if !workspace_entries
+            .iter()
+            .any(|entry| entry.workspace_id == active_entry.workspace_id)
+        {
+            if let Some(entry) = all_entries
+                .iter()
+                .find(|entry| entry.workspace_id == active_entry.workspace_id)
+            {
+                workspace_entries.push(WorkspaceEntrySummary::from_entry(entry));
+            } else {
+                workspace_entries.push(WorkspaceEntrySummary::from_active_entry(active_entry));
+            }
+        }
+    }
     StateWorkspaceSnapshot {
         attached_workspaces: agent.agent.attached_workspaces.clone(),
         workspace_entries,

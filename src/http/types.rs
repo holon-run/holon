@@ -298,6 +298,15 @@ impl WorkspaceEntrySummary {
             repo_name: entry.repo_name.clone(),
         }
     }
+
+    pub(crate) fn from_active_entry(entry: &ActiveWorkspaceEntry) -> Self {
+        Self {
+            workspace_id: entry.workspace_id.clone(),
+            workspace_anchor: entry.workspace_anchor.display().to_string(),
+            workspace_alias: None,
+            repo_name: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

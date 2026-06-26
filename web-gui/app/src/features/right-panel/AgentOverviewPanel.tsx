@@ -216,7 +216,7 @@ export function AgentOverviewPanel({
                 : ws.workspaceId === workspace?.id;
               return (
                 <div
-                  key={ws.workspaceId}
+                  key={ws.executionRootId ?? ws.workspaceId}
                   className="workspace-list-item"
                   style={{
                     display: "flex",
