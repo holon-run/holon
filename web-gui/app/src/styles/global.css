@@ -3203,6 +3203,10 @@ code {
   gap: 0.5rem;
 }
 
+.workspace-active-section .inspector-facts {
+  margin-top: 0;
+}
+
 .workspace-browse-link {
   display: inline-block;
   padding: 0.2rem 0.6rem;

@@ -203,16 +203,10 @@ export function AgentOverviewPanel({
                       </div>
                     ) : null}
                     {workspace.worktree ? (
-                      <>
-                        <div>
-                          <dt>Worktree</dt>
-                          <dd>{workspace.worktree.path ?? "—"}</dd>
-                        </div>
-                        <div>
-                          <dt>Original branch</dt>
-                          <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
-                        </div>
-                      </>
+                      <div>
+                        <dt>Original branch</dt>
+                        <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
+                      </div>
                     ) : null}
                   </dl>
                 </details>
