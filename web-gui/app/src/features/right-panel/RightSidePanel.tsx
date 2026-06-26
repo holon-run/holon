@@ -26,7 +26,7 @@ interface RightSidePanelProps {
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
   onShowAgentOverview: () => void;
-  onBrowseFiles: (workspaceId: string) => void;
+  onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
   onClose: () => void;
 }
 
@@ -176,7 +176,7 @@ export function RightSidePanel({
             <TaskDetailPanel task={activeView.task} detailState={taskDetailState} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel workspaceId={activeView.workspaceId} initialPath={activeView.initialPath} />
+          <FileBrowserPanel workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} />
         ) : (
           <AgentOverviewPanel
             agent={agent}

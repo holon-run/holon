@@ -102,6 +102,7 @@ export interface WorkspaceSummary {
   id: string;
   name: string;
   anchor: string;
+  executionRootId?: string;
   projectionKind?: string;
   accessMode?: string;
   executionRoot?: string;
@@ -118,6 +119,7 @@ export interface AttachedWorkspaceEntry {
   workspaceId: string;
   name: string;
   anchor: string;
+  executionRootId?: string;
   repoName?: string;
 }
 
@@ -448,6 +450,7 @@ export type RightPanelView =
       kind: "file_browser";
       agentId: string;
       workspaceId: string;
+      executionRootId?: string;
       initialPath?: string;
     };
 

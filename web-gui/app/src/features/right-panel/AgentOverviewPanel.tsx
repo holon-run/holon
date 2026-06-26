@@ -18,7 +18,7 @@ interface AgentOverviewPanelProps {
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
   onOpenSkillManager: () => void;
-  onBrowseFiles: (workspaceId: string) => void;
+  onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
 }
 
 function AgentSkillItem({
@@ -197,7 +197,7 @@ export function AgentOverviewPanel({
           </details>
         ) : null}
         {workspace?.id ? (
-          <button type="button" className="agent-skill-open" onClick={() => onBrowseFiles(workspace.id)} style={{ marginTop: "0.5rem" }}>
+          <button type="button" className="agent-skill-open" onClick={() => onBrowseFiles(workspace.id, workspace.executionRootId)} style={{ marginTop: "0.5rem" }}>
             Browse Files
           </button>
         ) : null}
@@ -207,7 +207,7 @@ export function AgentOverviewPanel({
         <CollapsibleInspectorCard
           title="Attached Workspaces"
           summary={`${agent.attachedWorkspaces.length} workspaces`}
-          defaultOpen={false}
+          defaultOpen={true}
         >
           <div className="inspector-stack">
             {agent.attachedWorkspaces.map((ws) => {
@@ -237,7 +237,7 @@ export function AgentOverviewPanel({
                   <button
                     type="button"
                     className="agent-skill-open"
-                    onClick={() => onBrowseFiles(ws.workspaceId)}
+                    onClick={() => onBrowseFiles(ws.workspaceId, ws.executionRootId)}
                     style={{ flexShrink: 0 }}
                   >
                     Browse

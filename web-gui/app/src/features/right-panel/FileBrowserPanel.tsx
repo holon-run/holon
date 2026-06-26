@@ -5,6 +5,7 @@ import { useRuntimeStore } from "../../runtime/runtime-store";
 
 interface FileBrowserPanelProps {
   workspaceId: string;
+  executionRootId?: string;
   initialPath?: string;
 }
 
@@ -63,7 +64,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function FileBrowserPanel({ workspaceId, initialPath }: FileBrowserPanelProps) {
+export function FileBrowserPanel({ workspaceId, executionRootId, initialPath }: FileBrowserPanelProps) {
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
   const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
@@ -81,7 +82,7 @@ export function FileBrowserPanel({ workspaceId, initialPath }: FileBrowserPanelP
       setError(undefined);
       setSelectedFile(null);
       try {
-        const result = await browseWorkspaceDir(workspaceId, path || undefined);
+        const result = await browseWorkspaceDir(workspaceId, path || undefined, executionRootId);
         setListing(result);
         setCurrentPath(path);
       } catch (err) {
@@ -90,7 +91,7 @@ export function FileBrowserPanel({ workspaceId, initialPath }: FileBrowserPanelP
         setLoading(false);
       }
     },
-    [workspaceId, browseWorkspaceDir],
+    [workspaceId, executionRootId, browseWorkspaceDir],
   );
 
   useEffect(() => {
@@ -125,7 +126,7 @@ export function FileBrowserPanel({ workspaceId, initialPath }: FileBrowserPanelP
 
     setSelectedFile({ path: filePath, loading: true });
     try {
-      const content = await readWorkspaceFile(workspaceId, filePath);
+      const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
       setSelectedFile({
         path: filePath,
         content: content.content,
@@ -239,7 +240,7 @@ export function FileBrowserPanel({ workspaceId, initialPath }: FileBrowserPanelP
           ) : isImageFile(selectedFile.mimeType) ? (
             <img
               className="file-browser-image"
-              src={workspaceFileUrl(workspaceId, selectedFile.path)}
+              src={workspaceFileUrl(workspaceId, selectedFile.path, undefined, executionRootId)}
               alt={selectedFile.path}
             />
           ) : selectedFile.content != null ? (
@@ -259,7 +260,7 @@ export function FileBrowserPanel({ workspaceId, initialPath }: FileBrowserPanelP
               Binary file ({selectedFile.mimeType ?? "unknown type"}).
               {" "}
               <a
-                href={workspaceFileUrl(workspaceId, selectedFile.path, true)}
+                href={workspaceFileUrl(workspaceId, selectedFile.path, true, executionRootId)}
                 download
               >
                 Download

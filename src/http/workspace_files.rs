@@ -70,16 +70,29 @@ fn resolve_workspace_root(
         .find(|entry| entry.workspace_id == workspace_id)
         .ok_or_else(|| not_found(format!("workspace '{workspace_id}' not found")))?;
 
-    // When execution_root_id is specified, reject it — we cannot resolve the
-    // filesystem path from occupancy records alone (they carry only the opaque
-    // id, not the path). Isolated-root browsing requires wiring up path
-    // resolution from agent-scoped ActiveWorkspaceEntry data, which is future work.
-    let root = if let Some(root_id) = execution_root_id {
-        return Err(bad_request(format!(
-            "execution_root_id resolution is not yet supported; cannot browse isolated root '{root_id}'"
-        )));
-    } else {
-        workspace.workspace_anchor.clone()
+    // The execution_root_id encodes the projection type and filesystem path:
+    //   canonical_root:{workspace_id}           -> anchor path
+    //   git_worktree_root:{workspace_id}:{path} -> embedded worktree path
+    let root = match execution_root_id {
+        Some(id) if id.starts_with("canonical_root:") => workspace.workspace_anchor.clone(),
+        Some(id) if id.starts_with("git_worktree_root:") => {
+            let rest = &id["git_worktree_root:".len()..];
+            // rest = "{workspace_id}:{normalized_path}"
+            match rest.find(':') {
+                Some(colon) => PathBuf::from(&rest[colon + 1..]),
+                None => {
+                    return Err(bad_request(format!(
+                        "malformed git_worktree_root execution_root_id: '{id}'"
+                    )));
+                }
+            }
+        }
+        Some(id) => {
+            return Err(bad_request(format!(
+                "unsupported execution_root_id format: '{id}'"
+            )));
+        }
+        None => workspace.workspace_anchor.clone(),
     };
 
     if !root.exists() {
