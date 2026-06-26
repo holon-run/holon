@@ -235,7 +235,7 @@ describe("createRuntimeClient", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    await expect(client.addSkillToCatalog({ kind: "remote", package: "owner/repo" })).resolves.toBeUndefined();
+    await expect(client.addSkillToCatalog({ kind: "remote", package: "owner/repo" })).resolves.toBe("job_123");
     expect(seen).toEqual([
       {
         url: "http://example.test:7878/api/jobs",
@@ -244,7 +244,6 @@ describe("createRuntimeClient", () => {
           params: { kind: { kind: "remote", package: "owner/repo" } },
         },
       },
-      { url: "http://example.test:7878/api/jobs/job_123", body: undefined },
     ]);
   });
 
