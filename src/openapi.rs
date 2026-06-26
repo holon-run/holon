@@ -134,6 +134,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/control/runtime/credentials", "runtimeCredentials", "runtime", "Runtime credential profiles", "List credential profiles stored in the runtime credential store.", None, AuthKind::Control),
     route("put", "/control/runtime/credentials/{profile}", "setRuntimeCredential", "runtime", "Set runtime credential", "Set an API key credential profile in the runtime credential store.", Some("SetCredentialRequest"), AuthKind::Control),
     route("delete", "/control/runtime/credentials/{profile}", "deleteRuntimeCredential", "runtime", "Delete runtime credential", "Remove a credential profile from the runtime credential store.", None, AuthKind::Control),
+    route("post", "/auth/codex/device/start", "startCodexDeviceLogin", "auth", "Start Codex device login", "Request an OpenAI Codex device code and start a background job that persists the OAuth credential profile after user authorization.", None, AuthKind::Control),
     route("post", "/control/runtime/shutdown", "runtimeShutdown", "runtime", "Runtime shutdown", "Request graceful runtime shutdown.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/debug-prompt", "debugPrompt", "control", "Debug prompt", "Render a diagnostic prompt preview.", Some("DebugPromptRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/wake", "controlWake", "control", "Wake agent", "Submit a trusted wake hint.", Some("ControlWakeRequest"), AuthKind::Control),

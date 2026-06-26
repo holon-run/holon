@@ -6641,6 +6641,54 @@
         ]
       }
     },
+    "/auth/codex/device/start": {
+      "post": {
+        "description": "Request an OpenAI Codex device code and start a background job that persists the OAuth credential profile after user authorization.",
+        "operationId": "startCodexDeviceLogin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Start Codex device login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/briefs": {
       "get": {
         "description": "Compatibility alias for the default agent briefs route. Query parameter: limit.",
