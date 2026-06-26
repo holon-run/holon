@@ -114,7 +114,7 @@ button {
 }
 
 .app-shell[data-panel="open"] {
-  grid-template-columns: 306px minmax(760px, 1fr) var(--panel-w, 420px);
+  grid-template-columns: 306px minmax(0, 1fr) var(--panel-w, 420px);
 }
 
 .app-shell[data-nav-collapsed="true"] {
@@ -122,7 +122,7 @@ button {
 }
 
 .app-shell[data-nav-collapsed="true"][data-panel="open"] {
-  grid-template-columns: 72px minmax(760px, 1fr) var(--panel-w, 420px);
+  grid-template-columns: 72px minmax(0, 1fr) var(--panel-w, 420px);
 }
 
 .sidebar {
