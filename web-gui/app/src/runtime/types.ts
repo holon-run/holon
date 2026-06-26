@@ -389,6 +389,31 @@ export interface TaskDetailState {
   output?: RuntimeTaskOutputResult;
 }
 
+export interface WorkspaceFileEntry {
+  name: string;
+  type: "directory" | "file" | "symlink";
+  size: number;
+  mimeType?: string;
+}
+
+export interface WorkspaceDirectoryListing {
+  type: "directory";
+  path: string;
+  workspaceId: string;
+  entries: WorkspaceFileEntry[];
+}
+
+export interface WorkspaceFileContent {
+  type: "file";
+  path: string;
+  workspaceId: string;
+  size: number;
+  mimeType: string;
+  truncated: boolean;
+  totalSize?: number;
+  content?: string;
+}
+
 export type RightPanelView =
   | {
       kind: "agent_overview";
@@ -410,6 +435,12 @@ export type RightPanelView =
       agentId: string;
       task: TaskSummary;
       detailState?: TaskDetailState;
+    }
+  | {
+      kind: "file_browser";
+      agentId: string;
+      workspaceId: string;
+      initialPath?: string;
     };
 
 export interface AgentTimelineItem {

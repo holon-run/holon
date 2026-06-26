@@ -29,6 +29,9 @@ import type {
   WorkItemSummary,
   WorkspaceSummary,
   DisplayLevel,
+  WorkspaceDirectoryListing,
+  WorkspaceFileContent,
+  WorkspaceFileEntry,
 } from "./types";
 
 export interface RuntimeClientOptions {
@@ -549,6 +552,31 @@ interface JobDto {
   error?: string | null;
 }
 
+interface WorkspaceDirectoryEntryDto {
+  name: string;
+  type: string;
+  size: number;
+  mime_type?: string;
+}
+
+interface WorkspaceDirectoryListingDto {
+  type: string;
+  path: string;
+  workspace_id: string;
+  entries: WorkspaceDirectoryEntryDto[];
+}
+
+interface WorkspaceFileContentDto {
+  type: string;
+  path: string;
+  workspace_id: string;
+  size: number;
+  mime_type: string;
+  truncated: boolean;
+  total_size?: number;
+  content?: string;
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -897,6 +925,54 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         requestHeaders,
       );
       return response.model;
+    },
+    async browseWorkspaceDir(workspaceId: string, path?: string): Promise<WorkspaceDirectoryListing> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const encodedPath = path ? path.split("/").map(encodeURIComponent).join("/") : "";
+      const urlPath = encodedPath
+        ? `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`
+        : `/workspaces/${encodeURIComponent(workspaceId)}/files`;
+      const response = await getJson<WorkspaceDirectoryListingDto>(fetchImpl, baseUrl, urlPath, { headers: requestHeaders });
+      return {
+        type: "directory",
+        path: response.path,
+        workspaceId: response.workspace_id,
+        entries: (response.entries ?? []).map((e) => ({
+          name: e.name,
+          type: e.type as WorkspaceFileEntry["type"],
+          size: e.size,
+          mimeType: e.mime_type,
+        })),
+      };
+    },
+    async readWorkspaceFile(workspaceId: string, path: string): Promise<WorkspaceFileContent> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+      const response = await getJson<WorkspaceFileContentDto>(
+        fetchImpl,
+        baseUrl,
+        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`,
+        { headers: requestHeaders },
+      );
+      return {
+        type: "file",
+        path: response.path,
+        workspaceId: response.workspace_id,
+        size: response.size,
+        mimeType: response.mime_type,
+        truncated: response.truncated,
+        totalSize: response.total_size,
+        content: response.content,
+      };
+    },
+    workspaceFileUrl(workspaceId: string, path: string, download?: boolean): string {
+      const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+      const query = download ? "?download=true" : "";
+      return `${baseUrl}/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query}`;
     },
   };
 }

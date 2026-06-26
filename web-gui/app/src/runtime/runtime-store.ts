@@ -44,6 +44,8 @@ import type {
   RuntimeToolExecutionRecord,
   WorkItemSummary,
   SearchResponse,
+  WorkspaceDirectoryListing,
+  WorkspaceFileContent,
 } from "./types";
 
 import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState, TaskDetailState } from "./runtime-store-helpers";
@@ -202,6 +204,10 @@ export interface RuntimeStoreState {
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
+  showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string) => void;
+  browseWorkspaceDir: (workspaceId: string, path?: string) => Promise<WorkspaceDirectoryListing>;
+  readWorkspaceFile: (workspaceId: string, path: string) => Promise<WorkspaceFileContent>;
+  workspaceFileUrl: (workspaceId: string, path: string, download?: boolean) => string;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
@@ -729,6 +735,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rightPanelOpen: true,
       rightPanelView: { kind: "task_detail", agentId, task },
     }),
+  showFileBrowser: (agentId, workspaceId, initialPath) =>
+    set({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "file_browser", agentId, workspaceId, initialPath },
+    }),
+  browseWorkspaceDir: (workspaceId, path) => runtimeClient.browseWorkspaceDir(workspaceId, path),
+  readWorkspaceFile: (workspaceId, path) => runtimeClient.readWorkspaceFile(workspaceId, path),
+  workspaceFileUrl: (workspaceId, path, download) => runtimeClient.workspaceFileUrl(workspaceId, path, download),
   inspectActivity: (agentId, activity) => {
     set({
       rightPanelOpen: true,
