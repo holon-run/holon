@@ -139,11 +139,11 @@ export function AgentOverviewPanel({
           ? `${workspaceName} · ${workspace.worktree.branch}`
           : workspaceName;
         const activePath = workspace?.worktree?.path ?? workspace?.executionRoot ?? workspace?.anchor;
-        const hasWorktree = Boolean(workspace?.worktree);
-        // Find the origin workspace for browsing
-        const originWs = agent.attachedWorkspaces?.find((ws) => ws.anchor === workspace?.anchor);
-        const originBrowseId = originWs?.workspaceId;
-        const originBrowseRoot = originWs?.executionRootId;
+        const originPath = workspace?.anchor;
+        // Show Worktree + Origin labels when the active path differs from the
+        // anchor (origin). When they are the same, show a single "Path" row.
+        const isWorktreePath =
+          activePath != null && originPath != null && activePath !== originPath;
         return (
           <CollapsibleInspectorCard
             title="Workspaces"
@@ -158,7 +158,7 @@ export function AgentOverviewPanel({
                 <dl className="inspector-facts">
                   {activePath ? (
                     <div>
-                      <dt>{hasWorktree ? "Worktree" : "Path"}</dt>
+                      <dt>{isWorktreePath ? "Worktree" : "Path"}</dt>
                       <dd>
                         <a
                           href="#"
@@ -173,24 +173,20 @@ export function AgentOverviewPanel({
                       </dd>
                     </div>
                   ) : null}
-                  {hasWorktree ? (
+                  {isWorktreePath && originPath ? (
                     <div>
                       <dt>Origin</dt>
                       <dd>
-                        {originBrowseId ? (
-                          <a
-                            href="#"
-                            className="workspace-path-link"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              onBrowseFiles(originBrowseId, originBrowseRoot ?? undefined);
-                            }}
-                          >
-                            {workspace.anchor ?? "—"}
-                          </a>
-                        ) : (
-                          workspace.anchor ?? "—"
-                        )}
+                        <a
+                          href="#"
+                          className="workspace-path-link"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (workspace.id) onBrowseFiles(workspace.id, undefined);
+                          }}
+                        >
+                          {originPath}
+                        </a>
                       </dd>
                     </div>
                   ) : null}
