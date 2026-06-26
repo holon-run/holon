@@ -448,25 +448,44 @@ fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
 
 fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWorkspaceSnapshot {
     let all_entries = state.host.workspace_entries().unwrap_or_default();
+
+    // Collect all workspace IDs that might need alias resolution.
+    let mut all_ws_ids: Vec<String> = agent.agent.attached_workspaces.clone();
+    if let Some(active) = &agent.agent.active_workspace_entry {
+        all_ws_ids.push(active.workspace_id.clone());
+    }
+    let alias_map = state
+        .host
+        .resolve_workspace_aliases(&all_ws_ids)
+        .unwrap_or_default();
+    let resolve_id = |ws_id: &str| -> String {
+        alias_map
+            .get(ws_id)
+            .cloned()
+            .unwrap_or_else(|| ws_id.to_string())
+    };
+
     let mut workspace_entries: Vec<WorkspaceEntrySummary> = agent
         .agent
         .attached_workspaces
         .iter()
         .filter_map(|ws_id| {
+            let resolved = resolve_id(ws_id);
             all_entries
                 .iter()
-                .find(|e| &e.workspace_id == ws_id)
+                .find(|e| e.workspace_id == resolved)
                 .map(WorkspaceEntrySummary::from_entry)
         })
         .collect();
     if let Some(active_entry) = agent.agent.active_workspace_entry.as_ref() {
+        let resolved_active_id = resolve_id(&active_entry.workspace_id);
         if !workspace_entries
             .iter()
-            .any(|entry| entry.workspace_id == active_entry.workspace_id)
+            .any(|entry| entry.workspace_id == resolved_active_id)
         {
             if let Some(entry) = all_entries
                 .iter()
-                .find(|entry| entry.workspace_id == active_entry.workspace_id)
+                .find(|entry| entry.workspace_id == resolved_active_id)
             {
                 workspace_entries.push(WorkspaceEntrySummary::from_entry(entry));
             } else {

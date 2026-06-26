@@ -1,6 +1,6 @@
 //! Domain repository implementations and their transaction helpers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -249,6 +249,90 @@ impl WorkspaceEntryRepository<'_> {
             .collect::<Result<_>>()?;
         records.reverse();
         Ok(records)
+    }
+
+    /// Migrate a workspace entry from a random/old ID to its deterministic ID.
+    /// Updates workspace_entries PK + payload_json, workspace_occupancies, and
+    /// agent_states.active_workspace_id, then records an alias for fallback resolution.
+    pub fn migrate_workspace_id(
+        &self,
+        old_workspace_id: &str,
+        new_workspace_id: &str,
+    ) -> Result<()> {
+        let now = timestamp(Utc::now());
+        self.db.transaction(|tx| {
+            // 1. Record alias for old-ID → new-ID resolution
+            tx.execute(
+                "INSERT OR IGNORE INTO workspace_id_aliases
+                    (old_workspace_id, new_workspace_id, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![old_workspace_id, new_workspace_id, now],
+            )?;
+
+            // 2. Update workspace_entries: PK column + payload_json
+            let payload_json: Option<String> = tx
+                .query_row(
+                    "SELECT payload_json FROM workspace_entries WHERE workspace_id = ?1",
+                    [old_workspace_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            if let Some(payload) = payload_json {
+                let mut entry_json: serde_json::Value = serde_json::from_str(&payload)?;
+                if let Some(obj) = entry_json.as_object_mut() {
+                    obj.insert(
+                        "workspace_id".to_string(),
+                        serde_json::Value::String(new_workspace_id.to_string()),
+                    );
+                }
+                let new_payload = serde_json::to_string(&entry_json)?;
+                tx.execute(
+                    "UPDATE workspace_entries SET workspace_id = ?1, payload_json = ?2
+                     WHERE workspace_id = ?3",
+                    params![new_workspace_id, new_payload, old_workspace_id],
+                )?;
+            }
+
+            // 3. Update workspace_occupancies references
+            tx.execute(
+                "UPDATE workspace_occupancies SET workspace_id = ?1 WHERE workspace_id = ?2",
+                params![new_workspace_id, old_workspace_id],
+            )?;
+
+            // 4. Update agent_states.active_workspace_id column
+            tx.execute(
+                "UPDATE agent_states SET active_workspace_id = ?1 WHERE active_workspace_id = ?2",
+                params![new_workspace_id, old_workspace_id],
+            )?;
+
+            Ok(())
+        })
+    }
+
+    /// Resolve old workspace IDs to their current deterministic IDs via the alias table.
+    pub fn resolve_aliases_batch(
+        &self,
+        workspace_ids: &[String],
+    ) -> Result<HashMap<String, String>> {
+        if workspace_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let connection = self.db.connection()?;
+        let mut aliases = HashMap::new();
+        for ws_id in workspace_ids {
+            let resolved = connection
+                .query_row(
+                    "SELECT new_workspace_id FROM workspace_id_aliases WHERE old_workspace_id = ?1",
+                    [ws_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if let Some(new_id) = resolved {
+                aliases.insert(ws_id.clone(), new_id);
+            }
+        }
+        Ok(aliases)
     }
 }
 
