@@ -133,123 +133,128 @@ export function AgentOverviewPanel({
         </dl>
       </CollapsibleInspectorCard>
 
-      <CollapsibleInspectorCard
-        title="Workspace"
-        summary={workspaceName}
-        badge={<StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />}
-      >
-        <h2>{workspaceName}</h2>
-        <dl className="inspector-facts">
-          <div>
-            <dt>Origin</dt>
-            <dd>{workspace?.anchor ?? "—"}</dd>
-          </div>
-          {workspace?.worktree?.path ? (
-            <div>
-              <dt>Worktree</dt>
-              <dd>{workspace.worktree.path}</dd>
-            </div>
-          ) : null}
-          <div>
-            <dt>Mode</dt>
-            <dd>{compactMeta([modeLabel, workspace?.accessMode])}</dd>
-          </div>
-        </dl>
-        {workspace ? (
-          <details className="inspector-details-list workspace-technical-details">
-            <summary>Technical details</summary>
-            <dl className="inspector-facts">
-              <div>
-                <dt>Name</dt>
-                <dd>{workspace.name}</dd>
-              </div>
-              <div>
-                <dt>ID</dt>
-                <dd>{workspace.id}</dd>
-              </div>
-              <div>
-                <dt>Projection</dt>
-                <dd>{compactMeta([workspace.projectionKind, workspace.accessMode])}</dd>
-              </div>
-              <div>
-                <dt>Execution root</dt>
-                <dd>{workspace.executionRoot ?? "—"}</dd>
-              </div>
-              {showCwd ? (
-                <div>
-                  <dt>Cwd</dt>
-                  <dd>{workspace.cwd}</dd>
+      {(() => {
+        const wsCount = agent.attachedWorkspaces?.length ?? (workspace ? 1 : 0);
+        return (
+          <CollapsibleInspectorCard
+            title="Workspaces"
+            summary={compactMeta([
+              `${wsCount} workspace${wsCount !== 1 ? "s" : ""}`,
+              workspace?.worktree?.path ? "worktree" : undefined,
+            ])}
+            badge={<StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />}
+            defaultOpen={true}
+          >
+            {workspace ? (
+              <div className="workspace-active-section">
+                <div className="inspector-list-head">
+                  <strong>{workspaceName}</strong>
+                  <span className="state-chip active">active</span>
                 </div>
-              ) : null}
-              {workspace.worktree ? (
-                <>
+                <dl className="inspector-facts">
                   <div>
-                    <dt>Worktree</dt>
-                    <dd>{workspace.worktree.path ?? "—"}</dd>
+                    <dt>Origin</dt>
+                    <dd>{workspace.anchor ?? "—"}</dd>
                   </div>
+                  {workspace.worktree?.path ? (
+                    <div>
+                      <dt>Worktree</dt>
+                      <dd>{workspace.worktree.path}</dd>
+                    </div>
+                  ) : null}
                   <div>
-                    <dt>Original branch</dt>
-                    <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
+                    <dt>Mode</dt>
+                    <dd>{compactMeta([modeLabel, workspace.accessMode])}</dd>
                   </div>
-                </>
-              ) : null}
-            </dl>
-          </details>
-        ) : null}
-        {workspace?.id ? (
-          <button type="button" className="agent-skill-open" onClick={() => onBrowseFiles(workspace.id, workspace.executionRootId)} style={{ marginTop: "0.5rem" }}>
-            Browse Files
-          </button>
-        ) : null}
-      </CollapsibleInspectorCard>
-
-      {agent.attachedWorkspaces && agent.attachedWorkspaces.length > 0 ? (
-        <CollapsibleInspectorCard
-          title="Attached Workspaces"
-          summary={`${agent.attachedWorkspaces.length} workspaces`}
-          defaultOpen={true}
-        >
-          <div className="inspector-stack">
-            {agent.attachedWorkspaces.map((ws) => {
-              const isActive = ws.executionRootId
-                ? ws.executionRootId === workspace?.executionRootId
-                : ws.workspaceId === workspace?.id;
-              return (
-                <div
-                  key={ws.executionRootId ?? ws.workspaceId}
-                  className="workspace-list-item"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: "0.5rem",
-                    padding: "0.4rem 0",
-                    opacity: isActive ? 1 : 0.7,
-                  }}
-                >
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontWeight: isActive ? 600 : 400, fontSize: "0.85rem" }}>
-                      {ws.name}
-                      {isActive ? <span className="state-chip active" style={{ marginLeft: "0.4rem" }}>active</span> : null}
+                </dl>
+                <details className="inspector-details-list workspace-technical-details">
+                  <summary>Technical details</summary>
+                  <dl className="inspector-facts">
+                    <div>
+                      <dt>Name</dt>
+                      <dd>{workspace.name}</dd>
                     </div>
-                    <div className="inspector-muted" style={{ fontSize: "0.75rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {ws.anchor}
+                    <div>
+                      <dt>ID</dt>
+                      <dd>{workspace.id}</dd>
                     </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="agent-skill-open"
-                    onClick={() => onBrowseFiles(ws.workspaceId, ws.executionRootId)}
-                    style={{ flexShrink: 0 }}
+                    <div>
+                      <dt>Projection</dt>
+                      <dd>{compactMeta([workspace.projectionKind, workspace.accessMode])}</dd>
+                    </div>
+                    <div>
+                      <dt>Execution root</dt>
+                      <dd>{workspace.executionRoot ?? "—"}</dd>
+                    </div>
+                    {showCwd ? (
+                      <div>
+                        <dt>Cwd</dt>
+                        <dd>{workspace.cwd}</dd>
+                      </div>
+                    ) : null}
+                    {workspace.worktree ? (
+                      <>
+                        <div>
+                          <dt>Worktree</dt>
+                          <dd>{workspace.worktree.path ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>Original branch</dt>
+                          <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
+                        </div>
+                      </>
+                    ) : null}
+                  </dl>
+                </details>
+                {workspace.id ? (
+                  <a
+                    href="#"
+                    className="workspace-browse-link"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onBrowseFiles(workspace.id, workspace.executionRootId);
+                    }}
                   >
-                    Browse
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </CollapsibleInspectorCard>
-      ) : null}
+                    Browse files
+                  </a>
+                ) : null}
+              </div>
+            ) : (
+              <p className="inspector-muted">No workspace bound.</p>
+            )}
+
+            {agent.attachedWorkspaces && agent.attachedWorkspaces.length > 0 ? (
+              <div className="inspector-stack workspace-other-list">
+                {agent.attachedWorkspaces
+                  .filter((ws) => {
+                    const isActive = ws.executionRootId
+                      ? ws.executionRootId === workspace?.executionRootId
+                      : ws.workspaceId === workspace?.id;
+                    return !isActive;
+                  })
+                  .map((ws) => (
+                    <div key={ws.executionRootId ?? ws.workspaceId} className="workspace-list-item">
+                      <div className="workspace-list-item-info">
+                        <div className="workspace-list-item-name">{ws.name}</div>
+                        <div className="inspector-muted workspace-list-item-anchor">{ws.anchor}</div>
+                      </div>
+                      <a
+                        href="#"
+                        className="workspace-browse-link"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          onBrowseFiles(ws.workspaceId, ws.executionRootId);
+                        }}
+                      >
+                        Browse
+                      </a>
+                    </div>
+                  ))}
+              </div>
+            ) : null}
+          </CollapsibleInspectorCard>
+        );
+      })()}
 
       <CollapsibleInspectorCard
         title="Skills"
