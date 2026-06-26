@@ -59,7 +59,7 @@ struct FileContent {
 }
 
 /// Resolve a workspace by id and determine the execution root to browse.
-fn resolve_workspace_root(
+async fn resolve_workspace_root(
     state: &AppState,
     workspace_id: &str,
     execution_root_id: Option<&str>,
@@ -70,29 +70,43 @@ fn resolve_workspace_root(
         .find(|entry| entry.workspace_id == workspace_id)
         .ok_or_else(|| not_found(format!("workspace '{workspace_id}' not found")))?;
 
-    // The execution_root_id encodes the projection type and filesystem path:
-    //   canonical_root:{workspace_id}           -> anchor path
-    //   git_worktree_root:{workspace_id}:{path} -> embedded worktree path
+    // Resolve the filesystem root from server-side state, never from the
+    // client-provided execution_root_id string. The execution_root_id is
+    // treated as an opaque server-issued token.
     let root = match execution_root_id {
+        // No execution_root_id: use the workspace anchor from the registry.
+        None => workspace.workspace_anchor.clone(),
+        // canonical_root:{workspace_id} also resolves to the anchor. The
+        // path comes from the server-side registry, not the client string.
         Some(id) if id.starts_with("canonical_root:") => workspace.workspace_anchor.clone(),
-        Some(id) if id.starts_with("git_worktree_root:") => {
-            let rest = &id["git_worktree_root:".len()..];
-            // rest = "{workspace_id}:{normalized_path}"
-            match rest.find(':') {
-                Some(colon) => PathBuf::from(&rest[colon + 1..]),
+        // For git_worktree_root and any other format, look up the
+        // execution_root_id in active workspace entries stored in agent
+        // state. The embedded path in the ID is never trusted or parsed.
+        Some(id) => {
+            let agents = state.host.list_agents().await.map_err(error_response)?;
+            let matched = agents.iter().find_map(|agent| {
+                agent
+                    .agent
+                    .active_workspace_entry
+                    .as_ref()
+                    .filter(|entry| entry.execution_root_id == id)
+            });
+            match matched {
+                Some(entry) => {
+                    if entry.workspace_id != workspace_id {
+                        return Err(forbidden(format!(
+                            "execution_root_id does not belong to workspace '{workspace_id}'"
+                        )));
+                    }
+                    entry.execution_root.clone()
+                }
                 None => {
                     return Err(bad_request(format!(
-                        "malformed git_worktree_root execution_root_id: '{id}'"
+                        "execution_root_id not found in active workspace state: '{id}'"
                     )));
                 }
             }
         }
-        Some(id) => {
-            return Err(bad_request(format!(
-                "unsupported execution_root_id format: '{id}'"
-            )));
-        }
-        None => workspace.workspace_anchor.clone(),
     };
 
     if !root.exists() {
@@ -226,7 +240,8 @@ async fn workspace_files_inner(
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
-    let root = resolve_workspace_root(&state, &workspace_id, params.execution_root_id.as_deref())?;
+    let root =
+        resolve_workspace_root(&state, &workspace_id, params.execution_root_id.as_deref()).await?;
     let full_path = resolve_and_validate_path(&root, &path)?;
 
     let relative = path.trim_start_matches('/');
