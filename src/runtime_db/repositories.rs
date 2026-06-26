@@ -919,7 +919,7 @@ impl WaitConditionRepository<'_> {
              ORDER BY wait_condition_id ASC",
         )?;
         let rows = statement.query_map([], |row| {
-            decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery)
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
@@ -941,7 +941,7 @@ impl WaitConditionRepository<'_> {
              LIMIT ?1",
         )?;
         let rows = statement.query_map([limit], |row| {
-            decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery)
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
         })?;
         let mut records: Vec<_> = rows
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -971,7 +971,7 @@ impl WaitConditionRepository<'_> {
              LIMIT ?2",
         )?;
         let rows = statement.query_map(params![agent_id, limit], |row| {
-            decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery)
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
         })?;
         let mut records: Vec<_> = rows
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -992,7 +992,7 @@ impl WaitConditionRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
         )?;
         let rows = statement.query_map([agent_id], |row| {
-            decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery)
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
@@ -1010,7 +1010,7 @@ impl WaitConditionRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
         )?;
         let rows = statement.query_map([], |row| {
-            decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery)
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
@@ -3215,6 +3215,19 @@ pub(crate) fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {
 
 pub(crate) fn parse_optional_timestamp(value: Option<&str>) -> Result<Option<DateTime<Utc>>> {
     value.map(parse_timestamp).transpose()
+}
+
+/// Convert an [`anyhow::Error`] from row decoding into a [`rusqlite::Error`]
+/// that preserves the original message. Previously these errors were mapped to
+/// [`rusqlite::Error::InvalidQuery`] whose Display text ("Query is not
+/// read-only") is completely unrelated to the actual failure (e.g. a malformed
+/// timestamp or invalid enum value), making diagnosis nearly impossible.
+fn wait_condition_decode_error(e: anyhow::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        format!("{e:#}").into(),
+    )
 }
 
 pub(crate) fn decode_wait_condition_row(row: &rusqlite::Row<'_>) -> Result<WaitConditionRecord> {
