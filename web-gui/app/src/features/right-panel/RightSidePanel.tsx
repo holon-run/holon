@@ -54,7 +54,7 @@ export function RightSidePanel({
   onClose,
 }: RightSidePanelProps) {
   const PANEL_MIN = 320;
-  const PANEL_MAX = 900;
+  const PANEL_MAX = typeof window !== "undefined" ? Math.floor(window.innerWidth * 0.7) : 900;
   const PANEL_KEY = "holon:panelWidth";
   const panelRef = useRef<HTMLElement>(null);
   const [dragging, setDragging] = useState(false);
