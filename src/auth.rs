@@ -233,11 +233,15 @@ pub async fn request_codex_device_code() -> Result<CodexDeviceCode> {
         .json::<DeviceUserCodeResponse>()
         .await
         .context("failed to parse OpenAI Codex device code response")?;
+    let expires_in = body
+        .expires_in
+        .unwrap_or(CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS)
+        .clamp(1, CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS);
     Ok(CodexDeviceCode {
         verification_url: format!("{base_url}/codex/device"),
         user_code: body.user_code,
         interval: body.interval,
-        expires_at: Utc::now() + chrono::Duration::seconds(CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS),
+        expires_at: Utc::now() + chrono::Duration::seconds(expires_in),
         device_auth_id: body.device_auth_id,
     })
 }
@@ -405,6 +409,8 @@ struct DeviceUserCodeResponse {
     user_code: String,
     #[serde(default, deserialize_with = "deserialize_device_interval")]
     interval: u64,
+    #[serde(default, deserialize_with = "deserialize_optional_device_seconds")]
+    expires_in: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -419,13 +425,55 @@ struct DeviceAuthorizationResponse {
     code_verifier: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DevicePollStatus {
+    Pending,
+    SlowDown,
+    Expired,
+    AccessDenied,
+    Failed(String),
+}
+
 fn deserialize_device_interval<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::de::Error as _;
-    let value = String::deserialize(deserializer)?;
-    value.trim().parse::<u64>().map_err(D::Error::custom)
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Number(number) => number
+            .as_u64()
+            .ok_or_else(|| D::Error::custom("device interval must be a positive integer")),
+        Value::String(value) => value.trim().parse::<u64>().map_err(D::Error::custom),
+        _ => Err(D::Error::custom(
+            "device interval must be a string or integer",
+        )),
+    }
+}
+
+fn deserialize_optional_device_seconds<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("device seconds must be a positive integer")),
+        Some(Value::String(value)) => value
+            .trim()
+            .parse::<i64>()
+            .map(Some)
+            .map_err(D::Error::custom),
+        Some(_) => Err(D::Error::custom(
+            "device seconds must be a string or integer",
+        )),
+    }
 }
 
 async fn poll_codex_device_code_for_authorization(
@@ -435,7 +483,8 @@ async fn poll_codex_device_code_for_authorization(
     let endpoint = format!("{base_url}/api/accounts/deviceauth/token");
     let started_at = Utc::now();
     let max_wait = chrono::Duration::seconds(CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS);
-    let interval = device_code.interval.max(1);
+    let deadline = device_code.expires_at.min(started_at + max_wait);
+    let mut interval = device_code.interval.max(1);
     let client = reqwest::Client::new();
     loop {
         let response = client
@@ -455,15 +504,23 @@ async fn poll_codex_device_code_for_authorization(
                 .await
                 .context("failed to parse OpenAI Codex device authorization response");
         }
-        if status != reqwest::StatusCode::FORBIDDEN && status != reqwest::StatusCode::NOT_FOUND {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "OpenAI Codex device login failed with HTTP {status}: {}",
-                try_parse_refresh_error_message(&body).unwrap_or(body)
-            );
+        let body = response.text().await.unwrap_or_default();
+        match classify_device_poll_status(status, &body) {
+            DevicePollStatus::Pending => {}
+            DevicePollStatus::SlowDown => {
+                interval = interval.saturating_add(5);
+            }
+            DevicePollStatus::Expired => {
+                anyhow::bail!("OpenAI Codex device login expired before authorization");
+            }
+            DevicePollStatus::AccessDenied => {
+                anyhow::bail!("OpenAI Codex device login was denied by the user");
+            }
+            DevicePollStatus::Failed(message) => {
+                anyhow::bail!("OpenAI Codex device login failed with HTTP {status}: {message}");
+            }
         }
-        let elapsed = Utc::now() - started_at;
-        if elapsed >= max_wait {
+        if Utc::now() >= deadline {
             anyhow::bail!("OpenAI Codex device login expired after 15 minutes");
         }
         tokio::time::sleep(Duration::from_secs(interval)).await;
@@ -835,6 +892,27 @@ fn try_parse_refresh_error_message(body: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn classify_device_poll_status(status: reqwest::StatusCode, body: &str) -> DevicePollStatus {
+    match extract_refresh_error_code(body).as_deref() {
+        Some("authorization_pending") => DevicePollStatus::Pending,
+        Some("slow_down") => DevicePollStatus::SlowDown,
+        Some("expired_token") => DevicePollStatus::Expired,
+        Some("access_denied") => DevicePollStatus::AccessDenied,
+        Some(code) => DevicePollStatus::Failed(
+            try_parse_refresh_error_message(body).unwrap_or_else(|| code.to_string()),
+        ),
+        None if status == reqwest::StatusCode::FORBIDDEN
+            || status == reqwest::StatusCode::NOT_FOUND =>
+        {
+            DevicePollStatus::Pending
+        }
+        None if status == reqwest::StatusCode::TOO_MANY_REQUESTS => DevicePollStatus::SlowDown,
+        None => DevicePollStatus::Failed(
+            try_parse_refresh_error_message(body).unwrap_or_else(|| body.to_string()),
+        ),
+    }
+}
+
 fn decode_jwt_payload(token: &str) -> Result<Value> {
     let mut parts = token.split('.');
     let (_header, payload, _sig) = match (parts.next(), parts.next(), parts.next()) {
@@ -941,6 +1019,73 @@ mod tests {
         assert_eq!(result.account_id.as_deref(), Some("acct_login"));
         assert_eq!(credential.account_id, "acct_login");
         assert_eq!(credential.source, "credential_profile:openai-codex");
+    }
+
+    #[test]
+    fn device_user_code_response_accepts_string_and_numeric_timing_fields() {
+        let response: DeviceUserCodeResponse = serde_json::from_value(json!({
+            "device_auth_id": "auth_123",
+            "usercode": "ABCD-EFGH",
+            "interval": "2",
+            "expires_in": "600"
+        }))
+        .expect("string timing fields should parse");
+
+        assert_eq!(response.device_auth_id, "auth_123");
+        assert_eq!(response.user_code, "ABCD-EFGH");
+        assert_eq!(response.interval, 2);
+        assert_eq!(response.expires_in, Some(600));
+
+        let response: DeviceUserCodeResponse = serde_json::from_value(json!({
+            "device_auth_id": "auth_456",
+            "user_code": "WXYZ-1234",
+            "interval": 5,
+            "expires_in": 300
+        }))
+        .expect("numeric timing fields should parse");
+
+        assert_eq!(response.interval, 5);
+        assert_eq!(response.expires_in, Some(300));
+    }
+
+    #[test]
+    fn classify_device_poll_status_uses_oauth_error_codes() {
+        assert_eq!(
+            classify_device_poll_status(
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":"authorization_pending"}"#
+            ),
+            DevicePollStatus::Pending
+        );
+        assert_eq!(
+            classify_device_poll_status(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":"slow_down"}"#
+            ),
+            DevicePollStatus::SlowDown
+        );
+        assert_eq!(
+            classify_device_poll_status(
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":"expired_token"}"#
+            ),
+            DevicePollStatus::Expired
+        );
+        assert_eq!(
+            classify_device_poll_status(
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":"access_denied"}"#
+            ),
+            DevicePollStatus::AccessDenied
+        );
+        assert_eq!(
+            classify_device_poll_status(reqwest::StatusCode::FORBIDDEN, ""),
+            DevicePollStatus::Pending
+        );
+        assert_eq!(
+            classify_device_poll_status(reqwest::StatusCode::TOO_MANY_REQUESTS, ""),
+            DevicePollStatus::SlowDown
+        );
     }
 
     #[test]

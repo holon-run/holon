@@ -250,7 +250,7 @@ pub(super) fn create_codex_device_login_job(
         phase: "waiting_for_user".into(),
         progress: JobProgress {
             current: 1,
-            total: 4,
+            total: 3,
         },
         summary: "Waiting for OpenAI Codex device authorization".into(),
         items: vec![JobItem {
@@ -277,7 +277,7 @@ pub(super) fn create_codex_device_login_job(
             Ok(login) => {
                 jobs.update(&job_id, |job| {
                     job.phase = "persisting_credentials".into();
-                    job.progress.current = 3;
+                    job.progress.current = 2;
                     job.summary = "Persisting OpenAI Codex OAuth credential".into();
                     job.items = vec![JobItem {
                         id: "credential_profile".into(),
@@ -305,7 +305,7 @@ pub(super) fn create_codex_device_login_job(
                         jobs.update(&job_id, |job| {
                             job.status = JobStatus::Completed;
                             job.phase = "completed".into();
-                            job.progress.current = 4;
+                            job.progress.current = 3;
                             job.summary = "OpenAI Codex OAuth login completed".into();
                             job.items = vec![JobItem {
                                 id: "credential_profile".into(),
