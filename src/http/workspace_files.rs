@@ -1,9 +1,12 @@
+use std::io::Read;
 use std::path::Path as FsPath;
 
 use super::*;
 
 /// Maximum bytes to read for text file content before truncating.
 const READ_LIMIT_BYTES: usize = 1024 * 1024; // 1 MB
+/// Maximum bytes to sniff for content-based MIME detection.
+const SNIFF_LIMIT_BYTES: usize = 8000;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct FileQueryParams {
@@ -119,10 +122,53 @@ fn resolve_and_validate_path(
 
 /// Infer MIME type from file extension.
 fn guess_mime(path: &FsPath) -> String {
-    mime_guess::from_path(path)
+    let mime = mime_guess::from_path(path)
         .first_or_octet_stream()
         .essence_str()
-        .to_string()
+        .to_string();
+    if mime != "application/octet-stream" {
+        return mime;
+    }
+    // Extension-based detection failed; sniff content.
+    match std::fs::File::open(path) {
+        Ok(mut file) => {
+            let mut buf = vec![0u8; SNIFF_LIMIT_BYTES];
+            match file.read(&mut buf) {
+                Ok(0) => "text/plain".to_string(),
+                Ok(n) => {
+                    if sniff_is_text(&buf[..n]) {
+                        "text/plain".to_string()
+                    } else {
+                        mime
+                    }
+                }
+                Err(_) => mime,
+            }
+        }
+        Err(_) => mime,
+    }
+}
+
+/// Heuristic content sniff: returns `true` if the bytes look like text.
+///
+/// Uses the same approach as git/file(1): a NUL byte or a high proportion
+/// of non-printable control characters (excluding \t \n \r) indicates binary.
+fn sniff_is_text(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return true;
+    }
+    if data.contains(&0x00) {
+        return false;
+    }
+    // Invalid UTF-8 → binary (catches most non-text formats).
+    if std::str::from_utf8(data).is_err() {
+        return false;
+    }
+    let non_printable = data
+        .iter()
+        .filter(|&&b| (b < 0x20 || b == 0x7f) && b != 0x09 && b != 0x0a && b != 0x0d)
+        .count();
+    (non_printable as f64 / data.len() as f64) < 0.30
 }
 
 /// Determine whether a MIME type represents a text file suitable for inline reading.
@@ -346,5 +392,48 @@ async fn workspace_files_inner(
         Ok(response
             .body(Body::from(content))
             .map_err(|err| error_response(anyhow!(err)))?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sniff_detects_text() {
+        assert!(sniff_is_text(b""));
+        assert!(sniff_is_text(b"Hello, world!\n"));
+        assert!(sniff_is_text(b"all: build\n\tcargo build\n"));
+        assert!(sniff_is_text(
+            "UTF-8: \u{4e2d}\u{6587}\u{6d4b}\u{8bd5}\n".as_bytes()
+        ));
+        // Tabs, newlines, carriage returns are fine.
+        assert!(sniff_is_text(b"col1\tcol2\r\nval1\tval2\r\n"));
+    }
+
+    #[test]
+    fn sniff_detects_binary() {
+        // NUL byte → binary.
+        assert!(!sniff_is_text(&[0x00, 0x01, 0x02, 0x03]));
+        // PNG header.
+        assert!(!sniff_is_text(&[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
+        ]));
+        // ELF header.
+        assert!(!sniff_is_text(&[
+            0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00
+        ]));
+    }
+
+    #[test]
+    fn sniff_threshold_boundary() {
+        // 3 control bytes out of 13 total ≈ 23% → still text (< 30%).
+        let mut data = b"normal text\n".to_vec();
+        data.extend_from_slice(&[0x01, 0x02, 0x03]);
+        assert!(sniff_is_text(&data));
+        // 5 control bytes out of 13 ≈ 38% → binary (>= 30%).
+        let mut data = b"normal tex\n".to_vec();
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]);
+        assert!(!sniff_is_text(&data));
     }
 }
