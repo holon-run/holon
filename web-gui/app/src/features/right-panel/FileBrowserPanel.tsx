@@ -226,10 +226,10 @@ export function FileBrowserPanel({ workspaceId, initialPath }: FileBrowserPanelP
             <strong>{selectedFile.path.split("/").pop()}</strong>
             <button
               type="button"
-              aria-label="Close file viewer"
+              aria-label="Back to directory listing"
               onClick={() => setSelectedFile(null)}
             >
-              ×
+              ← Back
             </button>
           </div>
           {selectedFile.loading ? (

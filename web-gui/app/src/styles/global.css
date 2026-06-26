@@ -114,7 +114,7 @@ button {
 }
 
 .app-shell[data-panel="open"] {
-  grid-template-columns: 306px minmax(760px, 1fr) minmax(340px, 420px);
+  grid-template-columns: 306px minmax(760px, 1fr) var(--panel-w, 420px);
 }
 
 .app-shell[data-nav-collapsed="true"] {
@@ -122,7 +122,7 @@ button {
 }
 
 .app-shell[data-nav-collapsed="true"][data-panel="open"] {
-  grid-template-columns: 72px minmax(760px, 1fr) minmax(340px, 420px);
+  grid-template-columns: 72px minmax(760px, 1fr) var(--panel-w, 420px);
 }
 
 .sidebar {
@@ -3263,6 +3263,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
 }
 
 .file-browser-toolbar {
@@ -3383,12 +3384,16 @@ code {
 }
 
 .file-browser-viewer {
-  border-top: 1px solid var(--border, #ddd);
-  margin-top: 4px;
-  padding-top: 8px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 16px;
 }
 
 .file-browser-viewer-head {
@@ -3404,7 +3409,8 @@ code {
   font-family: var(--mono-font, "SF Mono", "Fira Code", monospace);
   font-size: 0.75rem;
   line-height: 1.5;
-  max-height: 400px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 10px;
   margin: 0;
@@ -3752,6 +3758,23 @@ code {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.56), transparent 180px),
     var(--surface);
+}
+
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 20;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.panel-resizer:hover,
+.panel-resizer[data-dragging="true"] {
+  background: var(--accent, #4a9eff);
 }
 
 .side-panel[hidden] {

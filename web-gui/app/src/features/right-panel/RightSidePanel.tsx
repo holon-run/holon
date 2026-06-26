@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { AgentSummary, RightPanelView, SkillCatalogState, TaskDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { TaskSummary } from "../../runtime/types";
@@ -53,6 +53,50 @@ export function RightSidePanel({
   onBrowseFiles,
   onClose,
 }: RightSidePanelProps) {
+  const PANEL_MIN = 320;
+  const PANEL_MAX = 900;
+  const PANEL_KEY = "holon:panelWidth";
+  const panelRef = useRef<HTMLElement>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const applyPanelWidth = useCallback((w: number) => {
+    document.documentElement.style.setProperty("--panel-w", `${w}px`);
+  }, []);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(PANEL_KEY);
+    if (stored) {
+      const w = parseInt(stored, 10);
+      if (!Number.isNaN(w) && w >= PANEL_MIN && w <= PANEL_MAX) {
+        applyPanelWidth(w);
+      }
+    }
+  }, [applyPanelWidth]);
+
+  const startResize = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setDragging(true);
+      const startX = e.clientX;
+      const startWidth = panelRef.current?.offsetWidth ?? 420;
+      const onMove = (ev: MouseEvent) => {
+        const delta = startX - ev.clientX;
+        const newWidth = Math.max(PANEL_MIN, Math.min(PANEL_MAX, startWidth + delta));
+        applyPanelWidth(newWidth);
+      };
+      const onUp = () => {
+        setDragging(false);
+        const finalWidth = panelRef.current?.offsetWidth ?? 420;
+        localStorage.setItem(PANEL_KEY, String(finalWidth));
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [applyPanelWidth],
+  );
+
   const [showSkillManager, setShowSkillManager] = useState(false);
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
@@ -84,7 +128,10 @@ export function RightSidePanel({
   };
 
   return (
-    <aside className="side-panel" aria-label="Context side panel" hidden={!open}>
+    <aside className="side-panel" aria-label="Context side panel" hidden={!open} ref={panelRef}>
+      {open ? (
+        <div className="panel-resizer" data-dragging={dragging} onMouseDown={startResize} />
+      ) : null}
       <div className="panel-header">
         <div>
           <span className="eyebrow">Context panel</span>
