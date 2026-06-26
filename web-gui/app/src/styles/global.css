@@ -3503,6 +3503,43 @@ code {
   font-family: inherit;
 }
 
+.file-browser-code {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 6px;
+  font-family: var(--mono-font, "SF Mono", "Fira Code", monospace);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+/* Shiki output: override its inline background to match panel theme */
+.file-browser-code > .shiki {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 6px;
+  background: var(--code-bg, #f6f8fa) !important;
+}
+
+.file-browser-code > .shiki code {
+  font-family: inherit;
+  counter-reset: line;
+}
+
+.file-browser-code > .shiki .line {
+  counter-increment: line;
+}
+
+.file-browser-code > .shiki .line::before {
+  content: counter(line);
+  display: inline-block;
+  width: 2.5rem;
+  margin-right: 1rem;
+  text-align: right;
+  color: var(--text-muted, #999);
+  user-select: none;
+}
+
 .file-browser-image {
   max-width: 100%;
   height: auto;

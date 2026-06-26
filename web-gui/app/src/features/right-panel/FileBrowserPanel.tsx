@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createHighlighter, type Highlighter } from "shiki";
 
 import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtime/types";
 import { useRuntimeStore } from "../../runtime/runtime-store";
@@ -64,6 +65,68 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// --- Shiki syntax highlighting ---
+
+const LANG_MAP: Record<string, string> = {
+  rs: "rust", ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx",
+  json: "json", md: "markdown", toml: "toml", yaml: "yaml", yml: "yaml",
+  sh: "bash", bash: "bash", css: "css", scss: "scss", html: "html",
+  sql: "sql", py: "python", go: "go", xml: "xml", diff: "diff",
+  dockerfile: "docker",
+};
+
+const SUPPORTED_LANGS = [...new Set(Object.values(LANG_MAP))];
+
+let highlighterPromise: Promise<Highlighter> | null = null;
+
+function getHighlighter(): Promise<Highlighter> {
+  if (!highlighterPromise) {
+    highlighterPromise = createHighlighter({
+      themes: ["github-light"],
+      langs: SUPPORTED_LANGS,
+    });
+  }
+  return highlighterPromise;
+}
+
+function langForFile(name: string): string | undefined {
+  const base = name.split("/").pop() ?? name;
+  const lower = base.toLowerCase();
+  if (lower === "dockerfile" || lower.startsWith("dockerfile.")) return "docker";
+  const ext = lower.split(".").pop() ?? "";
+  return LANG_MAP[ext];
+}
+
+/** Async syntax highlighting via shiki. Returns highlighted HTML or null. */
+function useShikiHighlight(content: string | undefined, filePath: string | undefined): string | null {
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!content || !filePath) {
+      setHighlighted(null);
+      return;
+    }
+    const lang = langForFile(filePath);
+    if (!lang) {
+      setHighlighted(null);
+      return;
+    }
+    let cancelled = false;
+    void getHighlighter().then((hl) => {
+      if (cancelled) return;
+      try {
+        const html = hl.codeToHtml(content, { lang, theme: "github-light" });
+        setHighlighted(html);
+      } catch {
+        setHighlighted(null);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [content, filePath]);
+
+  return highlighted;
+}
+
 export function FileBrowserPanel({ workspaceId, executionRootId, initialPath }: FileBrowserPanelProps) {
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
@@ -75,6 +138,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath }: 
   const [error, setError] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+
+  const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -251,9 +316,16 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath }: 
                   {selectedFile.totalSize ? ` (${formatSize(selectedFile.totalSize)} total)` : ""}.
                 </p>
               ) : null}
-              <pre className="file-browser-text">
-                <code>{selectedFile.content}</code>
-              </pre>
+              {highlightedHtml ? (
+                <div
+                  className="file-browser-code"
+                  dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+                />
+              ) : (
+                <pre className="file-browser-text">
+                  <code>{selectedFile.content}</code>
+                </pre>
+              )}
             </>
           ) : (
             <p className="inspector-muted">
