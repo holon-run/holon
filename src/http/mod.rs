@@ -89,6 +89,7 @@ pub(crate) use crate::{
     },
 };
 mod agents;
+mod auth;
 mod control;
 mod events;
 mod ingress;
@@ -435,6 +436,10 @@ pub fn router(state: AppState) -> Router {
             patch(control::runtime_config_update),
         )
         .route("/control/runtime/shutdown", post(control::runtime_shutdown))
+        .route(
+            "/auth/codex/device/start",
+            post(auth::start_codex_device_login),
+        )
         .route(
             "/control/runtime/credentials",
             get(control::list_credentials),

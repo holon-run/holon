@@ -12,7 +12,7 @@ pub struct JobRegistry {
 }
 
 impl JobRegistry {
-    fn insert(&self, job: JobSnapshot) {
+    pub(super) fn insert(&self, job: JobSnapshot) {
         self.jobs
             .lock()
             .expect("job registry lock")
@@ -27,7 +27,7 @@ impl JobRegistry {
             .cloned()
     }
 
-    fn update(&self, id: &str, update: impl FnOnce(&mut JobSnapshot)) {
+    pub(super) fn update(&self, id: &str, update: impl FnOnce(&mut JobSnapshot)) {
         let mut jobs = self.jobs.lock().expect("job registry lock");
         if let Some(job) = jobs.get_mut(id) {
             update(job);
@@ -235,6 +235,127 @@ async fn create_skill_install_job(
             "job": job,
         })),
     ))
+}
+
+pub(super) fn create_codex_device_login_job(
+    state: Arc<AppState>,
+    device_code: crate::auth::CodexDeviceCode,
+) -> JobSnapshot {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "auth.codex.device_login".into(),
+        status: JobStatus::Queued,
+        phase: "waiting_for_user".into(),
+        progress: JobProgress {
+            current: 1,
+            total: 4,
+        },
+        summary: "Waiting for OpenAI Codex device authorization".into(),
+        items: vec![JobItem {
+            id: "device_authorization".into(),
+            status: JobStatus::Running,
+            summary: "Waiting for user to authorize the OpenAI Codex device code".into(),
+            error: None,
+        }],
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job.clone());
+
+    let jobs = state.jobs.clone();
+    let host = state.host.clone();
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        jobs.update(&job_id, |job| {
+            job.status = JobStatus::Running;
+        });
+        match crate::auth::complete_codex_device_login(device_code).await {
+            Ok(login) => {
+                jobs.update(&job_id, |job| {
+                    job.phase = "persisting_credentials".into();
+                    job.progress.current = 3;
+                    job.summary = "Persisting OpenAI Codex OAuth credential".into();
+                    job.items = vec![JobItem {
+                        id: "credential_profile".into(),
+                        status: JobStatus::Running,
+                        summary: "Writing openai-codex credential profile".into(),
+                        error: None,
+                    }];
+                });
+                let config = host.config();
+                let profile = crate::config::OPENAI_CODEX_CREDENTIAL_PROFILE;
+                let credential_path = credential_store_path(&config.home_dir);
+                match set_credential_profile_at(
+                    &credential_path,
+                    profile,
+                    CredentialKind::OAuth,
+                    login.material,
+                ) {
+                    Ok(profile_status) => {
+                        if let Err(error) = host.reload_all_agents_config().await {
+                            tracing::warn!(
+                                error = %error,
+                                "OpenAI Codex device credential saved but hot-reload failed; restart needed"
+                            );
+                        }
+                        jobs.update(&job_id, |job| {
+                            job.status = JobStatus::Completed;
+                            job.phase = "completed".into();
+                            job.progress.current = 4;
+                            job.summary = "OpenAI Codex OAuth login completed".into();
+                            job.items = vec![JobItem {
+                                id: "credential_profile".into(),
+                                status: JobStatus::Completed,
+                                summary: "Configured openai-codex OAuth credential profile".into(),
+                                error: None,
+                            }];
+                            job.result = Some(json!({
+                                "provider_id": crate::config::ProviderId::OPENAI_CODEX,
+                                "profile": profile_status.profile,
+                                "auth_kind": profile_status.kind,
+                                "configured": true,
+                                "account_id": login.account_id,
+                            }));
+                        });
+                    }
+                    Err(error) => fail_codex_device_login_job(
+                        &jobs,
+                        &job_id,
+                        "OpenAI Codex credential persist failed",
+                        error.to_string(),
+                    ),
+                }
+            }
+            Err(error) => fail_codex_device_login_job(
+                &jobs,
+                &job_id,
+                "OpenAI Codex device login failed",
+                error.to_string(),
+            ),
+        }
+    });
+
+    job
+}
+
+fn fail_codex_device_login_job(jobs: &JobRegistry, job_id: &str, summary: &str, message: String) {
+    jobs.update(job_id, |job| {
+        job.status = JobStatus::Failed;
+        job.phase = "failed".into();
+        job.progress.current = job.progress.total;
+        job.summary = summary.into();
+        job.error = Some(message.clone());
+        job.items = vec![JobItem {
+            id: "auth.codex.device_login".into(),
+            status: JobStatus::Failed,
+            summary: summary.into(),
+            error: Some(message),
+        }];
+    });
 }
 
 fn skill_install_summary(kind: &crate::types::SkillInstallKind) -> String {
