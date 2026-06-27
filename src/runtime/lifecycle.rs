@@ -6,7 +6,7 @@ use crate::storage::AppStorage;
 use crate::types::{
     AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
     ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskRecord, TaskStatus, TokenUsage,
-    WaitingReason, WorkItemState, WorktreeSession,
+    WaitingReason, WorkItemState, WorkspaceProjectionMetadata, WorktreeSession,
 };
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -1103,12 +1103,12 @@ impl RuntimeHandle {
                     worktree_path: seed.worktree_path.clone(),
                     worktree_branch: seed.worktree_branch.clone(),
                 };
-                let metadata = serde_json::json!({
-                    "original_cwd": session.original_cwd,
-                    "original_branch": session.original_branch,
-                    "worktree_path": session.worktree_path,
-                    "worktree_branch": session.worktree_branch,
-                });
+                let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
+                    original_cwd: session.original_cwd.clone(),
+                    original_branch: session.original_branch.clone(),
+                    worktree_path: session.worktree_path.clone(),
+                    worktree_branch: session.worktree_branch.clone(),
+                };
                 (session.worktree_path.clone(), Some(session), Some(metadata))
             }
         };
@@ -1270,11 +1270,9 @@ impl RuntimeHandle {
             access_mode,
             cwd: selected_cwd.clone(),
             occupancy_id: occupancy.as_ref().map(|record| record.occupancy_id.clone()),
-            projection_metadata: Some(serde_json::json!({
-                "detected_kind": "existing_git_worktree",
-                "ownership": "external",
-                "worktree_root": execution_root,
-            })),
+            projection_metadata: Some(WorkspaceProjectionMetadata::ExistingGitWorktree {
+                worktree_root: execution_root.clone(),
+            }),
         };
         let previous_occupancy_id = existing_state
             .active_workspace_entry

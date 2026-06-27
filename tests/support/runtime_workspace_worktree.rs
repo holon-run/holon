@@ -34,7 +34,7 @@ use holon::{
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
         TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitingIntentStatus, WaitingReason, WorkItemState,
+        WaitingIntentStatus, WaitingReason, WorkItemState, WorkspaceProjectionMetadata,
     },
 };
 use serde_json::json;
@@ -235,13 +235,10 @@ pub async fn use_workspace_path_adopts_attached_parent_for_existing_git_worktree
         WorkspaceProjectionKind::GitWorktreeRoot
     );
     assert!(state.worktree_session.is_none());
-    assert_eq!(
-        active
-            .projection_metadata
-            .as_ref()
-            .and_then(|metadata| metadata["ownership"].as_str()),
-        Some("external")
-    );
+    assert!(matches!(
+        active.projection_metadata.as_ref(),
+        Some(WorkspaceProjectionMetadata::ExistingGitWorktree { .. })
+    ));
     Ok(())
 }
 

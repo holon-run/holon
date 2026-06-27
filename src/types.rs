@@ -133,6 +133,22 @@ impl WorkspaceEntry {
     }
 }
 
+/// Typed metadata for workspace projections, replacing untyped `serde_json::Value`.
+/// Uses `untagged` serde for backward compatibility with previously serialized JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum WorkspaceProjectionMetadata {
+    ManagedWorktree {
+        original_cwd: PathBuf,
+        original_branch: String,
+        worktree_path: PathBuf,
+        worktree_branch: String,
+    },
+    ExistingGitWorktree {
+        worktree_root: PathBuf,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveWorkspaceEntry {
     pub workspace_id: String,
@@ -145,7 +161,7 @@ pub struct ActiveWorkspaceEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occupancy_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub projection_metadata: Option<Value>,
+    pub projection_metadata: Option<WorkspaceProjectionMetadata>,
 }
 
 impl ActiveWorkspaceEntry {
@@ -4986,9 +5002,12 @@ mod tests {
             access_mode: WorkspaceAccessMode::ExclusiveWrite,
             cwd: PathBuf::from("/tmp/ws-b"),
             occupancy_id: Some("occupancy-b".into()),
-            projection_metadata: Some(serde_json::json!({
-                "large": "metadata that must stay out of the event"
-            })),
+            projection_metadata: Some(WorkspaceProjectionMetadata::ManagedWorktree {
+                original_cwd: PathBuf::from("/tmp/ws-b"),
+                original_branch: "main".into(),
+                worktree_path: PathBuf::from("/tmp/ws-b-worktree"),
+                worktree_branch: "feature/metadata-test".into(),
+            }),
         });
         state.worktree_session = Some(WorktreeSession {
             original_cwd: PathBuf::from("/tmp/ws-b"),
