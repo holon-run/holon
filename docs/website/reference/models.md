@@ -256,7 +256,6 @@ and capabilities.
 | `volcengine` | `doubao-seed-2-0-code-preview-260215` | `volcengine/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | ✅ |
 | `volcengine` | `doubao-seed-2-0-lite-260215` | `volcengine/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | ✅ |
-| `volcengine` | `doubao-seed-code-preview-251028` | `volcengine/doubao-seed-code-preview-251028` | 256000 | 4096 | — | ✅ |
 | `volcengine` | `glm-4-7-251222` | `volcengine/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
 | `volcengine-coding` | `ark-code-latest` | `volcengine-coding/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `volcengine-coding` | `deepseek-v3-2-251201` | `volcengine-coding/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
@@ -265,7 +264,6 @@ and capabilities.
 | `volcengine-coding` | `doubao-seed-2-0-code-preview-260215` | `volcengine-coding/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | — |
 | `volcengine-coding` | `doubao-seed-2-0-lite-260215` | `volcengine-coding/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine-coding` | `doubao-seed-2-0-pro-260215` | `volcengine-coding/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | — |
-| `volcengine-coding` | `doubao-seed-code-preview-251028` | `volcengine-coding/doubao-seed-code-preview-251028` | 256000 | 4096 | — | — |
 | `volcengine-coding` | `glm-4-7-251222` | `volcengine-coding/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
 | `volcengine-coding` | `glm-5.2` | `volcengine-coding/glm-5.2` | 204800 | 131072 | ✅ | — |
 | `volcengine-coding` | `kimi-k2.6` | `volcengine-coding/kimi-k2.6` | 262144 | 32768 | ✅ | — |

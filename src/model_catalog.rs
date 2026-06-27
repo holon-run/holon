@@ -2010,15 +2010,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine",
-            "doubao-seed-code-preview-251028",
-            "doubao-seed-code-preview-251028",
-            256_000,
-            4_096,
-            false,
-            true,
-        ),
-        catalog_model(
-            "volcengine",
             "doubao-seed-1-8-251228",
             "Doubao Seed 1.8",
             256_000,
@@ -2078,15 +2069,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             256_000,
             65_536,
             true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
-            "doubao-seed-code-preview-251028",
-            "Doubao Seed Code Preview",
-            256_000,
-            4_096,
-            false,
             false,
         ),
         catalog_model(
@@ -2187,15 +2169,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             256_000,
             65_536,
             true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "doubao-seed-code-preview-251028",
-            "Doubao Seed Code Preview",
-            256_000,
-            4_096,
-            false,
             false,
         ),
         catalog_model(
