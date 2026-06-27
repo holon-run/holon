@@ -53,8 +53,7 @@ pub use work_queue::{
 use activity::file_activity_marker;
 use legacy_jsonl::{
     append_jsonl_bytes, jsonl_bytes, max_jsonl_u64_field, migrate_events_ledger, read_jsonl_from,
-    read_latest_jsonl_matching, read_recent_jsonl, read_tail_event_seq, scan_jsonl_reverse,
-    take_recent,
+    read_latest_jsonl_matching, read_recent_jsonl, scan_jsonl_reverse, take_recent,
 };
 use memory::memory_index_agent_key;
 use recovery::external_wait_recoverability_event;
@@ -70,6 +69,8 @@ pub struct AppStorage {
     data_dir: PathBuf,
     agent_id: Option<String>,
     read_only: bool,
+    // Legacy JSONL path fields retained while dead fallback code is removed.
+    // These are no longer used for runtime reads/writes — DB is canonical.
     events_path: PathBuf,
     briefs_path: PathBuf,
     messages_path: PathBuf,
@@ -99,7 +100,8 @@ pub struct AppStorage {
     message_seq_counter: Arc<Mutex<u64>>,
     transcript_seq_counter: Arc<Mutex<u64>>,
     audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
-    scheduler_control_plane_db: Arc<Mutex<Option<RuntimeDb>>>,
+    runtime_db: RuntimeDb,
+    db_canonical: bool,
     event_bus: Arc<Mutex<Option<EventBus>>>,
 }
 
@@ -116,48 +118,140 @@ enum StorageOpenMode {
 }
 
 impl AppStorage {
-    pub fn new(data_dir: impl Into<PathBuf>) -> Result<Self> {
+    pub fn new(data_dir: impl Into<PathBuf>, runtime_db: RuntimeDb) -> Result<Self> {
         let data_dir = data_dir.into();
         let agent_id = infer_agent_id_from_data_dir(&data_dir);
-        Self::new_with_scope(data_dir, agent_id)
+        Self::new_with_scope(data_dir, agent_id, runtime_db)
+    }
+
+    /// Test-only constructor that opens its own RuntimeDb from the data dir.
+    pub fn new_for_test(data_dir: impl Into<PathBuf>) -> Result<Self> {
+        let data_dir = data_dir.into();
+        let runtime_dir = data_dir.join(RUNTIME_DIR);
+        let runtime_db = RuntimeDb::open_and_migrate(
+            runtime_dir.join("state/runtime.sqlite"),
+            runtime_dir.join("state/runtime.lock"),
+        )?;
+        Self::new_for_agent(data_dir, "default".to_string(), runtime_db)
+    }
+
+    /// Test-only constructor that uses JSONL-only storage (no DB canonical).
+    /// Preserves the old `AppStorage::new(dir.path())` behavior for tests
+    /// that explicitly test legacy JSONL read/write/migration paths.
+    pub fn new_jsonl_only(data_dir: impl Into<PathBuf>) -> Result<Self> {
+        let data_dir = data_dir.into();
+        let runtime_dir = data_dir.join(RUNTIME_DIR);
+        let runtime_db = RuntimeDb::open_and_migrate(
+            runtime_dir.join("state/runtime.sqlite"),
+            runtime_dir.join("state/runtime.lock"),
+        )?;
+        let mut storage = Self::new(data_dir, runtime_db)?;
+        storage.db_canonical = false;
+        // Re-initialize seq counters from JSONL for legacy compatibility
+        let event_seq = migrate_events_ledger(&storage.events_path)?;
+        let msg_seq = max_jsonl_u64_field(&storage.messages_path, "message_seq")?;
+        let transcript_seq = max_jsonl_u64_field(&storage.transcript_path, "transcript_seq")?;
+        *storage.event_seq_counter.lock().unwrap() = event_seq;
+        *storage.message_seq_counter.lock().unwrap() = msg_seq;
+        *storage.transcript_seq_counter.lock().unwrap() = transcript_seq;
+        Ok(storage)
+    }
+
+    /// Test-only agent-scoped constructor that uses JSONL-only storage.
+    pub fn new_for_agent_jsonl_only(
+        data_dir: impl Into<PathBuf>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self> {
+        let data_dir = data_dir.into();
+        let runtime_dir = data_dir.join(RUNTIME_DIR);
+        let runtime_db = RuntimeDb::open_and_migrate(
+            runtime_dir.join("state/runtime.sqlite"),
+            runtime_dir.join("state/runtime.lock"),
+        )?;
+        let mut storage = Self::new_for_agent(data_dir, agent_id.into(), runtime_db)?;
+        storage.db_canonical = false;
+        let event_seq = migrate_events_ledger(&storage.events_path)?;
+        let msg_seq = max_jsonl_u64_field(&storage.messages_path, "message_seq")?;
+        let transcript_seq = max_jsonl_u64_field(&storage.transcript_path, "transcript_seq")?;
+        *storage.event_seq_counter.lock().unwrap() = event_seq;
+        *storage.message_seq_counter.lock().unwrap() = msg_seq;
+        *storage.transcript_seq_counter.lock().unwrap() = transcript_seq;
+        Ok(storage)
+    }
+
+    /// Test-only agent-scoped constructor that opens its own RuntimeDb.
+    pub fn new_for_agent_for_test(
+        data_dir: impl Into<PathBuf>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self> {
+        let data_dir = data_dir.into();
+        let runtime_dir = data_dir.join(RUNTIME_DIR);
+        let runtime_db = RuntimeDb::open_and_migrate(
+            runtime_dir.join("state/runtime.sqlite"),
+            runtime_dir.join("state/runtime.lock"),
+        )?;
+        Self::new_for_agent(data_dir, agent_id, runtime_db)
+    }
+
+    /// Test-only global constructor that opens its own RuntimeDb.
+    pub fn new_global_for_test(data_dir: impl Into<PathBuf>) -> Result<Self> {
+        let data_dir = data_dir.into();
+        let runtime_dir = data_dir.join(RUNTIME_DIR);
+        let runtime_db = RuntimeDb::open_and_migrate(
+            runtime_dir.join("state/runtime.sqlite"),
+            runtime_dir.join("state/runtime.lock"),
+        )?;
+        Self::new_global(data_dir, runtime_db)
     }
 
     pub fn new_for_agent(
         data_dir: impl Into<PathBuf>,
         agent_id: impl Into<String>,
+        runtime_db: RuntimeDb,
     ) -> Result<Self> {
         let agent_id = agent_id.into();
         anyhow::ensure!(
             !agent_id.trim().is_empty(),
             "agent-scoped storage requires a non-empty agent id"
         );
-        Self::new_with_scope(data_dir, Some(agent_id))
+        Self::new_with_scope(data_dir, Some(agent_id), runtime_db)
     }
 
     pub fn open_read_only_for_agent(
         data_dir: impl Into<PathBuf>,
         agent_id: impl Into<String>,
+        runtime_db: RuntimeDb,
     ) -> Result<Self> {
         let agent_id = agent_id.into();
         anyhow::ensure!(
             !agent_id.trim().is_empty(),
             "agent-scoped storage requires a non-empty agent id"
         );
-        Self::new_with_scope_options(data_dir, Some(agent_id), StorageOpenMode::ReadOnly)
+        Self::new_with_scope_options(
+            data_dir,
+            Some(agent_id),
+            StorageOpenMode::ReadOnly,
+            runtime_db,
+        )
     }
 
-    pub fn new_global(data_dir: impl Into<PathBuf>) -> Result<Self> {
-        Self::new_with_scope(data_dir, None)
+    pub fn new_global(data_dir: impl Into<PathBuf>, runtime_db: RuntimeDb) -> Result<Self> {
+        Self::new_with_scope(data_dir, None, runtime_db)
     }
 
-    fn new_with_scope(data_dir: impl Into<PathBuf>, agent_id: Option<String>) -> Result<Self> {
-        Self::new_with_scope_options(data_dir, agent_id, StorageOpenMode::ReadWrite)
+    fn new_with_scope(
+        data_dir: impl Into<PathBuf>,
+        agent_id: Option<String>,
+        runtime_db: RuntimeDb,
+    ) -> Result<Self> {
+        Self::new_with_scope_options(data_dir, agent_id, StorageOpenMode::ReadWrite, runtime_db)
     }
 
     fn new_with_scope_options(
         data_dir: impl Into<PathBuf>,
         agent_id: Option<String>,
         mode: StorageOpenMode,
+        runtime_db: RuntimeDb,
     ) -> Result<Self> {
         let data_dir = data_dir.into();
         let runtime_dir = data_dir.join(RUNTIME_DIR);
@@ -177,22 +271,20 @@ impl AppStorage {
             }
         }
 
-        let events_path = ledger_dir.join("events.jsonl");
-        let messages_path = ledger_dir.join("messages.jsonl");
-        let transcript_path = ledger_dir.join("transcript.jsonl");
-        let event_seq_counter = match mode {
-            StorageOpenMode::ReadWrite => migrate_events_ledger(&events_path)?,
-            StorageOpenMode::ReadOnly => read_tail_event_seq(&events_path)?.unwrap_or(0),
-        };
-        let message_seq_counter = max_jsonl_u64_field(&messages_path, "message_seq")?;
-        let transcript_seq_counter = max_jsonl_u64_field(&transcript_path, "transcript_seq")?;
+        let event_seq_counter = runtime_db
+            .audit_events()
+            .max_event_seq(agent_id.as_deref())?;
+        let message_seq_counter = runtime_db.messages().max_message_seq(agent_id.as_deref())?;
+        let transcript_seq_counter = runtime_db
+            .transcript_entries()
+            .max_transcript_seq(agent_id.as_deref())?;
 
         Ok(Self {
             agent_id,
             read_only: mode == StorageOpenMode::ReadOnly,
-            events_path,
+            events_path: ledger_dir.join("events.jsonl"),
             briefs_path: ledger_dir.join("briefs.jsonl"),
-            messages_path,
+            messages_path: ledger_dir.join("messages.jsonl"),
             tasks_path: ledger_dir.join("tasks.jsonl"),
             work_items_path: ledger_dir.join("work_items.jsonl"),
             delivery_summaries_path: ledger_dir.join("delivery_summaries.jsonl"),
@@ -201,7 +293,7 @@ impl AppStorage {
             timers_path: ledger_dir.join("timers.jsonl"),
             tools_path: ledger_dir.join("tools.jsonl"),
             turns_path: ledger_dir.join("turns.jsonl"),
-            transcript_path,
+            transcript_path: ledger_dir.join("transcript.jsonl"),
             queue_entries_path: ledger_dir.join("queue_entries.jsonl"),
             waiting_intents_path: ledger_dir.join("waiting_intents.jsonl"),
             wait_conditions_path: ledger_dir.join("wait_conditions.jsonl"),
@@ -219,7 +311,8 @@ impl AppStorage {
             message_seq_counter: Arc::new(Mutex::new(message_seq_counter)),
             transcript_seq_counter: Arc::new(Mutex::new(transcript_seq_counter)),
             audit_event_index: Arc::new(Mutex::new(None)),
-            scheduler_control_plane_db: Arc::new(Mutex::new(None)),
+            runtime_db,
+            db_canonical: true,
             event_bus: Arc::new(Mutex::new(None)),
             data_dir,
         })
@@ -247,45 +340,6 @@ impl AppStorage {
             runtime_db,
             agent_id,
         });
-        Ok(())
-    }
-
-    pub fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
-        let agent_id = self.current_agent_id()?;
-        {
-            let mut counter = self
-                .message_seq_counter
-                .lock()
-                .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
-            *counter = (*counter).max(runtime_db.messages().max_message_seq(agent_id.as_deref())?);
-        }
-        {
-            let mut counter = self
-                .transcript_seq_counter
-                .lock()
-                .map_err(|_| anyhow::anyhow!("transcript sequence counter mutex poisoned"))?;
-            *counter = (*counter).max(
-                runtime_db
-                    .transcript_entries()
-                    .max_transcript_seq(agent_id.as_deref())?,
-            );
-        }
-        {
-            let mut counter = self
-                .event_seq_counter
-                .lock()
-                .map_err(|_| anyhow::anyhow!("event sequence counter mutex poisoned"))?;
-            *counter = (*counter).max(
-                runtime_db
-                    .audit_events()
-                    .max_event_seq(agent_id.as_deref())?,
-            );
-        }
-        let mut guard = self
-            .scheduler_control_plane_db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("scheduler control-plane db mutex poisoned"))?;
-        *guard = Some(runtime_db);
         Ok(())
     }
 
@@ -324,12 +378,15 @@ impl AppStorage {
         Ok(())
     }
 
+    /// Returns the runtime database. Always succeeds because RuntimeDb is now
+    /// mandatory — kept for compatibility with existing `if let Some(db)` patterns
+    /// while JSONL fallback code is removed incrementally.
     fn scheduler_control_plane_db(&self) -> Result<Option<RuntimeDb>> {
-        Ok(self
-            .scheduler_control_plane_db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("scheduler control-plane db mutex poisoned"))?
-            .clone())
+        if self.db_canonical {
+            Ok(Some(self.runtime_db.clone()))
+        } else {
+            Ok(None)
+        }
     }
 
     #[cfg(test)]
@@ -342,9 +399,7 @@ impl AppStorage {
         {
             sink.runtime_db.flush_background_writes_for_tests()?;
         }
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.flush_background_writes_for_tests()?;
-        }
+        self.runtime_db.flush_background_writes_for_tests()?;
         Ok(())
     }
 
@@ -476,24 +531,22 @@ impl AppStorage {
             return Ok(());
         }
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if runtime_db.storage_domain_is_complete("audit_events", "db")? {
-                let agent_id = self.current_agent_id()?;
-                if let Err(error) = runtime_db
-                    .audit_events()
-                    .append(agent_id.as_deref(), &event)
-                {
-                    tracing::warn!(
-                        error = %error,
-                        event_id = %event.id,
-                        event_kind = %event.kind,
-                        event_seq = event.event_seq,
-                        agent_id = agent_id.as_deref().unwrap_or("<global>"),
-                        "failed to enqueue runtime db audit event"
-                    );
-                }
-                self.publish_event(agent_id, &event)?;
-                return Ok(());
+            let agent_id = self.current_agent_id()?;
+            if let Err(error) = runtime_db
+                .audit_events()
+                .append(agent_id.as_deref(), &event)
+            {
+                tracing::warn!(
+                    error = %error,
+                    event_id = %event.id,
+                    event_kind = %event.kind,
+                    event_seq = event.event_seq,
+                    agent_id = agent_id.as_deref().unwrap_or("<global>"),
+                    "failed to enqueue runtime db audit event"
+                );
             }
+            self.publish_event(agent_id, &event)?;
+            return Ok(());
         }
         let line = serde_json::to_string(&event)?;
         let mut bytes = Vec::with_capacity(line.len() + 1);
@@ -507,11 +560,12 @@ impl AppStorage {
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             let changes = self.index_changes_for_brief(brief)?;
-            return runtime_db
+            runtime_db
                 .evidence()
-                .append_brief_with_index_changes(brief, &changes);
+                .append_brief_with_index_changes(brief, &changes)?;
+        } else {
+            self.append_jsonl(&self.briefs_path, brief)?;
         }
-        self.append_jsonl(&self.briefs_path, brief)?;
         self.enqueue_memory_index_brief_best_effort(brief)
     }
 
@@ -534,10 +588,10 @@ impl AppStorage {
                 runtime_db
                     .messages()
                     .upsert_with_index_changes(&message, &changes)?;
-                return Ok(());
+            } else {
+                let bytes = jsonl_bytes(&message)?;
+                append_jsonl_bytes(&self.messages_path, &bytes)?;
             }
-            let bytes = jsonl_bytes(&message)?;
-            append_jsonl_bytes(&self.messages_path, &bytes)?;
         }
         self.enqueue_memory_index_message_best_effort(&message)
     }
@@ -545,9 +599,12 @@ impl AppStorage {
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             let changes = self.index_changes_for_task(task)?;
-            return runtime_db.tasks().upsert_with_index_changes(task, &changes);
+            runtime_db
+                .tasks()
+                .upsert_with_index_changes(task, &changes)?;
+        } else {
+            self.append_jsonl(&self.tasks_path, task)?;
         }
-        self.append_jsonl(&self.tasks_path, task)?;
         self.enqueue_memory_index_task_best_effort(task)
     }
 
@@ -559,13 +616,12 @@ impl AppStorage {
                 .as_deref()
                 == Some(record.id.as_str());
             let changes = self.index_changes_for_work_item(record)?;
-            return runtime_db.work_items().upsert_with_index_changes(
-                record,
-                current_focus,
-                &changes,
-            );
+            runtime_db
+                .work_items()
+                .upsert_with_index_changes(record, current_focus, &changes)?;
+        } else {
+            self.append_jsonl(&self.work_items_path, record)?;
         }
-        self.append_jsonl(&self.work_items_path, record)?;
         self.enqueue_memory_index_work_item_best_effort(record)
     }
 
@@ -604,11 +660,12 @@ impl AppStorage {
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             let changes = self.index_changes_for_tool_execution(record)?;
-            return runtime_db
+            runtime_db
                 .evidence()
-                .append_tool_execution_with_index_changes(record, &changes);
+                .append_tool_execution_with_index_changes(record, &changes)?;
+        } else {
+            self.append_jsonl(&self.tools_path, record)?;
         }
-        self.append_jsonl(&self.tools_path, record)?;
         self.enqueue_memory_index_tool_execution_best_effort(record)
     }
 
@@ -717,22 +774,24 @@ impl AppStorage {
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             let changes = self.index_changes_for_context_episode(record)?;
-            return runtime_db
+            runtime_db
                 .context_episodes()
-                .upsert_with_index_changes(record, &changes);
+                .upsert_with_index_changes(record, &changes)?;
+        } else {
+            self.append_jsonl(&self.context_episodes_path, record)?;
         }
-        self.append_jsonl(&self.context_episodes_path, record)?;
         self.enqueue_memory_index_context_episode_best_effort(record)
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             let changes = self.index_changes_for_workspace_entry(entry)?;
-            return runtime_db
+            runtime_db
                 .workspace_entries()
-                .upsert_with_index_changes(entry, &changes);
+                .upsert_with_index_changes(entry, &changes)?;
+        } else {
+            self.append_jsonl(&self.workspaces_path, entry)?;
         }
-        self.append_jsonl(&self.workspaces_path, entry)?;
         self.enqueue_memory_index_workspace_entry_best_effort(entry)
     }
 
@@ -1192,6 +1251,28 @@ impl AppStorage {
 
     pub(crate) fn read_legacy_events_jsonl(&self) -> Result<Vec<AuditEvent>> {
         read_recent_jsonl(&self.events_path, usize::MAX)
+    }
+
+    pub(crate) fn read_legacy_agent_identities_jsonl(&self) -> Result<Vec<AgentIdentityRecord>> {
+        read_recent_jsonl(&self.agent_identities_path, usize::MAX)
+    }
+
+    pub(crate) fn read_legacy_workspace_entries_jsonl(&self) -> Result<Vec<WorkspaceEntry>> {
+        read_recent_jsonl(&self.workspaces_path, usize::MAX)
+    }
+
+    pub(crate) fn read_legacy_workspace_occupancies_jsonl(
+        &self,
+    ) -> Result<Vec<WorkspaceOccupancyRecord>> {
+        read_recent_jsonl(&self.occupancies_path, usize::MAX)
+    }
+
+    pub(crate) fn read_legacy_messages_jsonl(&self) -> Result<Vec<MessageEnvelope>> {
+        read_recent_jsonl(&self.messages_path, usize::MAX)
+    }
+
+    pub(crate) fn read_legacy_transcript_jsonl(&self) -> Result<Vec<TranscriptEntry>> {
+        read_recent_jsonl(&self.transcript_path, usize::MAX)
     }
 
     pub fn latest_event_seq(&self) -> Result<Option<u64>> {
@@ -2933,7 +3014,7 @@ mod tests {
     #[test]
     fn append_event_assigns_monotonic_event_seq() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
 
         storage
             .append_event(&AuditEvent::new(
@@ -2957,7 +3038,7 @@ mod tests {
             vec![1, 2]
         );
 
-        let reopened = AppStorage::new(dir.path()).unwrap();
+        let reopened = AppStorage::new_jsonl_only(dir.path()).unwrap();
         reopened
             .append_event(&AuditEvent::new(
                 "test_event",
@@ -2971,7 +3052,7 @@ mod tests {
     #[test]
     fn storage_indexes_live_audit_events_when_sink_is_enabled() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -3018,7 +3099,7 @@ mod tests {
     #[test]
     fn audit_events_use_runtime_db_after_cutover_without_live_jsonl_append() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
         storage.write_agent(&AgentState::new("agent-test")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -3028,9 +3109,6 @@ mod tests {
         runtime_db
             .audit_events()
             .import_legacy(Some("agent-test"), Vec::new())
-            .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
             .unwrap();
         storage
             .enable_audit_event_index(runtime_db.clone(), Some("agent-test".to_string()))
@@ -3063,7 +3141,7 @@ mod tests {
     #[test]
     fn audit_events_use_runtime_db_after_cutover_before_sink_is_enabled() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
         storage.write_agent(&AgentState::new("agent-test")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -3074,10 +3152,6 @@ mod tests {
             .audit_events()
             .import_legacy(Some("agent-test"), Vec::new())
             .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
         let legacy_len_before = std::fs::metadata(&storage.events_path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
@@ -3105,7 +3179,7 @@ mod tests {
     #[test]
     fn scheduler_control_plane_storage_uses_runtime_db_after_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -3120,10 +3194,6 @@ mod tests {
             .import_legacy(Vec::new())
             .unwrap();
         runtime_db.timers().import_legacy(Vec::new()).unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
         let now = truncate_to_millis(Utc::now());
         let wait_condition = WaitConditionRecord {
             id: "wait-1".into(),
@@ -3274,7 +3344,7 @@ mod tests {
     #[test]
     fn runtime_db_state_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -3311,10 +3381,6 @@ mod tests {
             .agent_identities()
             .import_legacy(Vec::new())
             .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
         let now = truncate_to_millis(Utc::now());
         let task = TaskRecord {
             id: "task-db-only".into(),
@@ -3459,7 +3525,7 @@ mod tests {
     #[test]
     fn append_turn_persists_lightweight_turn_record() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut record = TurnRecord::new("default", " turn-1 ", 7);
         record.input_message_ids = vec!["msg-1".into()];
         record.tool_execution_ids = vec!["tool-1".into()];
@@ -3492,16 +3558,13 @@ mod tests {
     #[test]
     fn append_turn_uses_runtime_db_after_cutover_without_turns_jsonl() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
         let record = TurnRecord::new("default", "turn-db", 9);
 
         storage.append_turn(&record).unwrap();
@@ -3523,20 +3586,17 @@ mod tests {
     #[test]
     fn read_recent_turns_scopes_global_runtime_db_to_current_agent() {
         let dir = tempdir().unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             dir.path().join("state/runtime.sqlite"),
             dir.path().join("state/runtime.lock"),
         )
         .unwrap();
-        let agent_a = AppStorage::new(dir.path().join("agents/agent-a")).unwrap();
-        let agent_b = AppStorage::new(dir.path().join("agents/agent-b")).unwrap();
-        agent_a
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-        agent_b
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
+        let agent_a =
+            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-a"), "agent-a")
+                .unwrap();
+        let agent_b =
+            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-b"), "agent-b")
+                .unwrap();
         agent_a
             .append_turn(&TurnRecord::new("agent-a", "turn-a", 1))
             .unwrap();
@@ -3553,20 +3613,17 @@ mod tests {
     #[test]
     fn agent_local_runtime_db_reads_scope_current_state_domains_to_current_agent() {
         let dir = tempdir().unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             dir.path().join("state/runtime.sqlite"),
             dir.path().join("state/runtime.lock"),
         )
         .unwrap();
-        let agent_a = AppStorage::new(dir.path().join("agents/agent-a")).unwrap();
-        let agent_b = AppStorage::new(dir.path().join("agents/agent-b")).unwrap();
-        agent_a
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-        agent_b
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
+        let agent_a =
+            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-a"), "agent-a")
+                .unwrap();
+        let agent_b =
+            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-b"), "agent-b")
+                .unwrap();
         let now = Utc::now();
         let task_for = |agent_id: &str, id: &str| TaskRecord {
             id: id.into(),
@@ -3694,16 +3751,12 @@ mod tests {
     #[test]
     fn append_message_uses_runtime_db_after_cutover_without_messages_jsonl() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
         storage
             .append_message(&MessageEnvelope::new(
                 "default",
@@ -3727,16 +3780,12 @@ mod tests {
     #[test]
     fn read_messages_from_preserves_recent_window_semantics_after_db_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
         for text in ["one", "two", "three", "four"] {
             storage
                 .append_message(&MessageEnvelope::new(
@@ -3764,16 +3813,12 @@ mod tests {
     #[test]
     fn append_transcript_entry_uses_runtime_db_after_cutover_without_transcript_jsonl() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
         storage
             .append_transcript_entry(&TranscriptEntry::new(
                 "default",
@@ -3794,16 +3839,13 @@ mod tests {
     #[test]
     fn runtime_db_evidence_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
         let brief = BriefRecord::new("default", BriefKind::Result, "db brief", None, None);
         let tool = ToolExecutionRecord {
             id: "tool-db-evidence".into(),
@@ -3867,16 +3909,13 @@ mod tests {
     #[test]
     fn runtime_index_outbox_write_does_not_touch_memory_index_db() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
         fs::create_dir_all(storage.shared_indexes_dir().join("memory.sqlite3")).unwrap();
 
         let tool = ToolExecutionRecord {
@@ -3920,16 +3959,12 @@ mod tests {
     #[test]
     fn runtime_db_memory_episode_and_delegation_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
         let delegation =
             WorkItemDelegationRecord::new("default", "parent-work", "child-agent", "child-work");
         let now = Utc::now();
@@ -3988,16 +4023,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let agent_dir = dir.path().join("agents/default");
         fs::create_dir_all(&agent_dir).unwrap();
-        let storage = AppStorage::new(&agent_dir).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let storage = AppStorage::new_for_test(&agent_dir).unwrap();
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
         let brief = BriefRecord::new(
             "default",
             BriefKind::Result,
@@ -4022,7 +4053,7 @@ mod tests {
     #[test]
     fn runtime_db_message_and_transcript_import_is_idempotent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -4087,7 +4118,7 @@ mod tests {
     #[test]
     fn runtime_db_message_import_failure_records_retryable_domain_state() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -4126,15 +4157,12 @@ mod tests {
     #[test]
     fn message_and_transcript_reads_ignore_legacy_jsonl_after_db_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
         let db_message = MessageEnvelope::new(
             "default",
             MessageKind::InternalFollowup,
@@ -4196,7 +4224,7 @@ mod tests {
     #[test]
     fn message_seq_counter_resumes_from_existing_ledger() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_message(&MessageEnvelope::new(
                 "default",
@@ -4210,7 +4238,7 @@ mod tests {
             ))
             .unwrap();
 
-        let reopened = AppStorage::new(dir.path()).unwrap();
+        let reopened = AppStorage::new_for_test(dir.path()).unwrap();
         reopened
             .append_message(&MessageEnvelope::new(
                 "default",
@@ -4269,7 +4297,7 @@ mod tests {
             .remove("message_seq");
         std::fs::write(&messages_path, format!("{sequenced}\n{trailing_legacy}\n")).unwrap();
 
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         storage
             .append_message(&MessageEnvelope::new(
                 "default",
@@ -4318,7 +4346,7 @@ mod tests {
         )
         .unwrap();
 
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         let events = storage.read_recent_events(10).unwrap();
         assert_eq!(
             events
@@ -4362,7 +4390,7 @@ mod tests {
         )
         .unwrap();
 
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         assert!(!std::fs::read_dir(&ledger_dir).unwrap().any(|entry| entry
             .unwrap()
             .file_name()
@@ -4382,7 +4410,7 @@ mod tests {
     #[test]
     fn storage_round_trip_agent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         storage.write_agent(&agent).unwrap();
@@ -4396,21 +4424,10 @@ mod tests {
     #[test]
     fn write_agent_with_runtime_db_writes_db_only() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let legacy_before = fs::read_to_string(dir.path().join(".holon/state/agent.json")).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
-            storage.runtime_dir().join("state/runtime.sqlite"),
-            storage.runtime_dir().join("state/runtime.lock"),
-        )
-        .unwrap();
-        runtime_db
-            .agent_states()
-            .import_legacy(storage.read_agent_file().unwrap())
-            .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
+        // With DB canonical, agent.json should NOT be created
+        assert!(!dir.path().join(".holon/state/agent.json").exists());
 
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Stopped;
@@ -4420,36 +4437,31 @@ mod tests {
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
         assert_eq!(restored.turn_index, 7);
-        assert_eq!(
-            fs::read_to_string(dir.path().join(".holon/state/agent.json")).unwrap(),
-            legacy_before
-        );
+        // Still no agent.json — DB is canonical
+        assert!(!dir.path().join(".holon/state/agent.json").exists());
     }
 
     #[test]
     fn read_agent_with_runtime_db_does_not_fallback_to_legacy_agent_json() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
-        let mut legacy_agent = AgentState::new("default");
-        legacy_agent.status = AgentStatus::Stopped;
-        storage.write_agent(&legacy_agent).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
-            storage.runtime_dir().join("state/runtime.sqlite"),
-            storage.runtime_dir().join("state/runtime.lock"),
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        // Write a legacy agent.json directly — bypassing storage
+        let legacy_agent = AgentState::new("default");
+        let agent_path = dir.path().join(".holon/state/agent.json");
+        fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        fs::write(
+            &agent_path,
+            serde_json::to_string_pretty(&legacy_agent).unwrap(),
         )
         .unwrap();
-        runtime_db.agent_states().import_legacy(None).unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
+        // DB is empty — read_agent should NOT fall back to JSONL
         assert_eq!(storage.read_agent().unwrap(), None);
     }
 
     #[test]
     fn queue_claim_fails_fast_without_scheduler_control_plane_db() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_jsonl_only(dir.path(), "default").unwrap();
         let now = Utc::now();
         let claim = QueueEntryRecord {
             message_id: "message-1".into(),
@@ -4471,7 +4483,7 @@ mod tests {
     #[test]
     fn read_agent_maps_legacy_paused_status_to_stopped() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Stopped;
         let mut value = serde_json::to_value(&agent).unwrap();
@@ -4489,7 +4501,7 @@ mod tests {
     #[test]
     fn current_agent_id_is_fixed_at_storage_construction() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "agent-a").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
 
         storage.write_agent(&AgentState::new("agent-a")).unwrap();
         let mismatch = storage
@@ -4511,7 +4523,7 @@ mod tests {
     #[test]
     fn global_storage_has_no_agent_scope_even_with_agent_json() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_global(dir.path()).unwrap();
+        let storage = AppStorage::new_global_for_test(dir.path()).unwrap();
 
         storage.write_agent(&AgentState::new("default")).unwrap();
 
@@ -4521,7 +4533,7 @@ mod tests {
     #[test]
     fn latest_active_task_records_reduce_by_id_and_filter_terminal_tasks() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let task = |id: &str, status: TaskStatus, offset: i64| TaskRecord {
             id: id.into(),
@@ -4568,7 +4580,7 @@ mod tests {
     #[test]
     fn latest_task_records_from_recent_reduces_only_bounded_history() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         let now = Utc::now();
         let task = |id: &str, summary: &str, offset: i64| TaskRecord {
             id: id.into(),
@@ -4620,7 +4632,7 @@ mod tests {
     #[test]
     fn mark_memory_index_dirty_does_not_rewrite_existing_marker() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let dirty_path = storage.indexes_dir().join("memory.default.dirty");
 
@@ -4634,7 +4646,7 @@ mod tests {
     #[test]
     fn latest_active_task_records_applies_limit_after_reverse_reduction() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
 
         for index in 0..5 {
@@ -4667,7 +4679,7 @@ mod tests {
     #[test]
     fn latest_active_task_records_for_agent_scopes_limit_and_count() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
 
         let task = |id: &str, agent_id: &str, status: TaskStatus, offset: i64| TaskRecord {
@@ -4713,7 +4725,7 @@ mod tests {
     #[test]
     fn latest_active_task_records_preserves_current_child_agent_recovery_from_older_snapshot() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         let now = Utc::now();
         let mut task = TaskRecord {
             id: "task-recovery".into(),
@@ -4750,7 +4762,7 @@ mod tests {
     #[test]
     fn cloned_storage_serializes_concurrent_large_task_appends() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let thread_count = 8;
         let records_per_thread = 40;
@@ -4790,19 +4802,17 @@ mod tests {
             handle.join().unwrap();
         }
 
-        let content = fs::read_to_string(storage.ledger_dir().join("tasks.jsonl")).unwrap();
-        let mut parsed = 0usize;
-        for line in content.lines().filter(|line| !line.trim().is_empty()) {
-            serde_json::from_str::<TaskRecord>(line).unwrap();
-            parsed += 1;
-        }
-        assert_eq!(parsed, thread_count * records_per_thread);
+        // With DB canonical, verify all concurrent appends landed in DB.
+        let tasks = storage
+            .read_recent_tasks(thread_count * records_per_thread)
+            .unwrap();
+        assert_eq!(tasks.len(), thread_count * records_per_thread);
     }
 
     #[test]
     fn storage_round_trip_transcript_entries() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         let entry = TranscriptEntry::new(
             "default",
             TranscriptEntryKind::IncomingMessage,
@@ -4825,7 +4835,7 @@ mod tests {
     #[test]
     fn append_message_assigns_monotonic_message_seq() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         for text in ["first", "second"] {
             storage
@@ -4853,7 +4863,7 @@ mod tests {
     #[test]
     fn append_transcript_entry_assigns_monotonic_transcript_seq() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         for related in ["message-1", "message-2"] {
             storage
@@ -4917,7 +4927,7 @@ mod tests {
     #[test]
     fn read_recent_jsonl_only_parses_requested_tail() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let path = storage.ledger_dir().join("briefs.jsonl");
         fs::write(
             &path,
@@ -4952,7 +4962,7 @@ mod tests {
     #[test]
     fn latest_work_item_delegation_for_child_scans_from_tail() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         fs::write(
             &storage.work_item_delegations_path,
             "{not valid json and should not be parsed}\n",
@@ -4994,7 +5004,7 @@ mod tests {
     #[test]
     fn latest_waiting_intent_scans_from_tail_for_agent_and_id() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         fs::write(
             &storage.waiting_intents_path,
             "{not valid json and should not be parsed}\n",
@@ -5047,7 +5057,7 @@ mod tests {
     #[test]
     fn append_waiting_intent_does_not_mirror_internal_wait_condition_ledger() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let active = WaitingIntentRecord {
             id: "wait-1".into(),
@@ -5084,7 +5094,7 @@ mod tests {
     #[test]
     fn active_wait_conditions_ignore_completed_work_item_scope() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let mut work = WorkItemRecord::new("default", "completed wait", WorkItemState::Open);
         work.blocked_by = Some("task".into());
@@ -5173,7 +5183,7 @@ mod tests {
         // Regression test for #1988: cancel must find active waits even after
         // the WorkItem is already marked Completed.
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let mut work = WorkItemRecord::new("default", "task with wait", WorkItemState::Open);
         work.blocked_by = Some("task".into());
@@ -5226,7 +5236,7 @@ mod tests {
     #[test]
     fn external_wait_recoverability_is_derived_and_audited() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         let now = Utc::now();
 
         for record in [
@@ -5387,7 +5397,7 @@ mod tests {
     #[test]
     fn work_queue_projection_uses_internal_wait_conditions_for_wait_state() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
 
         let mut task_wait = WorkItemRecord::new("default", "task wait", WorkItemState::Open);
@@ -5563,7 +5573,7 @@ mod tests {
     #[test]
     fn agent_posture_projection_derives_precedence_from_runtime_facts() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
@@ -5735,13 +5745,13 @@ mod tests {
             };
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         assert_eq!(posture_for(&storage, &agent), AgentSchedulingPosture::Idle);
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         storage
@@ -5760,7 +5770,7 @@ mod tests {
         );
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         let runnable = WorkItemRecord::new("default", "current runnable", WorkItemState::Open);
@@ -5773,7 +5783,7 @@ mod tests {
         );
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         let mut needs_input =
@@ -5786,7 +5796,7 @@ mod tests {
         );
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         let mut external = WorkItemRecord::new("default", "external wait", WorkItemState::Open);
@@ -5799,7 +5809,7 @@ mod tests {
         );
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
@@ -5811,7 +5821,7 @@ mod tests {
         );
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         let timer_wait = WorkItemRecord::new("default", "timer wait", WorkItemState::Open);
@@ -5823,7 +5833,7 @@ mod tests {
         );
 
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         let system_wait = WorkItemRecord::new("default", "system wait", WorkItemState::Open);
@@ -5838,7 +5848,7 @@ mod tests {
     #[test]
     fn storage_recovery_snapshot_replays_latest_queued_messages() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let queued = MessageEnvelope::new(
             "default",
             crate::types::MessageKind::WebhookEvent,
@@ -5920,7 +5930,7 @@ mod tests {
     #[test]
     fn recovery_snapshot_orders_message_replay_by_sequence_when_timestamps_tie() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let created_at = Utc::now();
         let mut second = MessageEnvelope::new(
             "default",
@@ -5980,7 +5990,7 @@ mod tests {
     #[test]
     fn recovery_snapshot_orders_message_replay_by_sequence_before_timestamp() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let created_at = Utc::now();
         let mut later = MessageEnvelope::new(
             "default",
@@ -6040,7 +6050,7 @@ mod tests {
     #[test]
     fn recovery_snapshot_scopes_active_tasks_to_agent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let task = |id: &str, agent_id: &str, offset: i64| TaskRecord {
             id: id.into(),
@@ -6076,7 +6086,7 @@ mod tests {
     #[test]
     fn storage_latest_work_items_returns_latest_record_per_id() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
         let mut updated = item.clone();
         updated.blocked_by = Some("working".into());
@@ -6095,7 +6105,7 @@ mod tests {
     #[test]
     fn storage_latest_work_items_for_agent_scans_tail_until_limit() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         fs::write(
             &storage.work_items_path,
             "{not valid json and should not be parsed}\n",
@@ -6125,7 +6135,7 @@ mod tests {
     #[test]
     fn storage_latest_timer_record_scans_from_tail_for_id() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         fs::write(
             &storage.timers_path,
             "{not valid json and should not be parsed}\n",
@@ -6169,7 +6179,7 @@ mod tests {
     #[test]
     fn storage_recovery_snapshot_includes_work_item_plan_and_todo_list() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut work_item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
         work_item.plan_artifact = Some(
             crate::work_item_plan::ensure_plan_artifact(
@@ -6205,7 +6215,7 @@ mod tests {
     #[test]
     fn storage_reads_legacy_result_checkpoint_episode_boundary() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
         let episode = serde_json::json!({
             "id": "ep_legacy",
             "agent_id": "default",
@@ -6236,7 +6246,7 @@ mod tests {
     #[test]
     fn storage_work_queue_prompt_projection_uses_current_and_orders_queue() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut current = WorkItemRecord::new("default", "current item", WorkItemState::Open);
         current.updated_at = Utc::now();
@@ -6287,7 +6297,7 @@ mod tests {
     #[test]
     fn db_backed_work_queue_prompt_projection_filters_by_current_agent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -6298,10 +6308,6 @@ mod tests {
             .work_items()
             .import_legacy(Vec::new(), None)
             .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
         let mut current = WorkItemRecord::new("default", "current agent item", WorkItemState::Open);
         current.updated_at = Utc::now();
         let mut other_agent =
@@ -6331,7 +6337,7 @@ mod tests {
     #[test]
     fn storage_work_queue_projection_derives_candidate_classes_and_current_todo() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
 
         let mut current = WorkItemRecord::new("default", "current runnable", WorkItemState::Open);
@@ -6471,7 +6477,7 @@ mod tests {
     #[test]
     fn storage_work_queue_prompt_projection_limits_waiting_for_operator() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
 
         for index in 0..5 {
@@ -6504,7 +6510,7 @@ mod tests {
     #[test]
     fn storage_waiting_contract_anchor_falls_back_to_latest_waiting_when_no_active_exists() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut waiting_old =
             WorkItemRecord::new("default", "older waiting anchor", WorkItemState::Open);
@@ -6549,7 +6555,7 @@ mod tests {
     #[test]
     fn read_agent_returns_error_on_corrupted_json() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
 
         // Write corrupted JSON to agent file
         let agent_path = dir.path().join(".holon/state/agent.json");
@@ -6563,7 +6569,7 @@ mod tests {
     #[test]
     fn write_agent_cleans_up_tmp_file_on_rename_failure() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let agent = AgentState::new("default");
 
         // Write agent successfully first
@@ -6586,7 +6592,7 @@ mod tests {
     #[test]
     fn write_agent_rejects_mismatched_agent_id() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "agent-a").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
 
         let agent = AgentState::new("agent-b");
         let result = storage.write_agent(&agent);

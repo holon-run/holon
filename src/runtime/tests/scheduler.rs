@@ -253,7 +253,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
     let tool_executions: Vec<ToolExecutionFixture> =
         read_optional_scheduler_jsonl_fixture(name, "ledger/tools.jsonl");
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = agent_fixture.current_work_item_id;
@@ -555,7 +555,7 @@ fn scheduler_projection_replays_fixture_facts() {
 #[test]
 fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some("work-active".into());
     storage.write_agent(&agent).unwrap();
@@ -620,7 +620,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
 #[test]
 fn scheduler_projection_breaks_down_waiting_intent_scopes() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     append_active_external_wait_condition(&storage, "work-wait", "default", Some("work-1"));
@@ -637,7 +637,7 @@ fn scheduler_projection_breaks_down_waiting_intent_scopes() {
 #[test]
 fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     let now = Utc::now();
@@ -691,7 +691,7 @@ fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
 #[test]
 fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Stopped;
     storage.write_agent(&agent).unwrap();
@@ -706,7 +706,7 @@ fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
 #[test]
 fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
     storage.write_agent(&agent).unwrap();
@@ -724,7 +724,7 @@ fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
 #[test]
 fn idle_boundary_decision_waits_for_non_current_work_item_wait() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
     storage.write_agent(&agent).unwrap();
@@ -770,7 +770,7 @@ fn idle_boundary_decision_waits_for_non_current_work_item_wait() {
 #[test]
 fn idle_boundary_decision_does_not_treat_asleep_with_queued_input_as_idle() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
     agent.pending = 1;
@@ -785,7 +785,7 @@ fn idle_boundary_decision_does_not_treat_asleep_with_queued_input_as_idle() {
 #[test]
 fn idle_boundary_decision_reactivates_runnable_work_while_asleep() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
     agent.current_work_item_id = Some("work-current".into());
@@ -809,7 +809,7 @@ fn idle_boundary_decision_reactivates_runnable_work_while_asleep() {
 #[test]
 fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
@@ -871,7 +871,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
 #[test]
 fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
 
@@ -910,7 +910,7 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
 #[test]
 fn background_work_item_task_does_not_block_runnable_work() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some("work-background".into());
     storage.write_agent(&agent).unwrap();
@@ -947,7 +947,7 @@ fn background_work_item_task_does_not_block_runnable_work() {
 #[test]
 fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     let work_item = WorkItemRecord::new("default", "runnable work", WorkItemState::Open);
     agent.current_work_item_id = Some(work_item.id.clone());
@@ -984,7 +984,7 @@ fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
 #[test]
 fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     let now = Utc::now();
@@ -1042,7 +1042,7 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
 #[test]
 fn scheduling_diagnostics_use_authoritative_queue_len() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
 
@@ -1060,7 +1060,7 @@ fn scheduling_diagnostics_use_authoritative_queue_len() {
 #[test]
 fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     let now = Utc::now();
@@ -1110,7 +1110,7 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
 #[test]
 fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     let now = Utc::now();
@@ -1158,7 +1158,7 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
 #[test]
 fn decide_next_action_records_duplicate_tick_evidence() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
@@ -1224,7 +1224,7 @@ fn scheduler_decision_event_records_evidence_and_bindings() {
 #[test]
 fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
     let now = Utc::now();
@@ -1281,7 +1281,7 @@ fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
 #[test]
 fn scheduler_decision_append_dedupes_identical_latest_event() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let decision = scheduler::SchedulerDecision::new(
         scheduler::SchedulerDecisionKind::WaitForExternalChange,
         "active_waiting_intents",
@@ -1400,7 +1400,7 @@ fn setup_waiting_operator_work_item(
 #[test]
 fn waiting_operator_with_expired_unconsumed_recheck_lets_agent_wake() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some("work-recheck-expired".into());
     storage.write_agent(&agent).unwrap();
@@ -1431,7 +1431,7 @@ fn waiting_operator_with_expired_unconsumed_recheck_lets_agent_wake() {
 #[test]
 fn waiting_operator_with_expired_but_consumed_recheck_still_waits() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some("work-recheck-consumed".into());
     storage.write_agent(&agent).unwrap();
@@ -1462,7 +1462,7 @@ fn waiting_operator_with_expired_but_consumed_recheck_still_waits() {
 #[test]
 fn waiting_operator_with_future_recheck_still_waits() {
     let dir = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some("work-recheck-future".into());
     storage.write_agent(&agent).unwrap();

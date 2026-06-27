@@ -277,8 +277,12 @@ async fn handle_memory_index_command(
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let agent_home = config.data_dir.join("agents").join(&agent);
-            let storage = AppStorage::new_for_agent(&agent_home, agent.clone())?;
+            let runtime_db = RuntimeDb::open_and_migrate(
+                config.runtime_db_path(),
+                config.runtime_db_lock_path(),
+            )?;
             if offline {
+                let storage = AppStorage::new_for_agent(&agent_home, agent.clone(), runtime_db)?;
                 rebuild_memory_index(&storage, workspace.as_deref())?;
                 println!(
                     "Rebuilt memory index for agent `{}`{} in offline mode.",
@@ -289,11 +293,7 @@ async fn handle_memory_index_command(
                         .unwrap_or_default()
                 );
             } else {
-                let runtime_db = RuntimeDb::open_and_migrate(
-                    config.runtime_db_path(),
-                    config.runtime_db_lock_path(),
-                )?;
-                storage.enable_scheduler_control_plane_db(runtime_db)?;
+                let storage = AppStorage::new_for_agent(&agent_home, agent.clone(), runtime_db)?;
                 request_memory_index_rebuild(&storage, workspace.as_deref(), "cli_rebuild")?;
                 println!(
                     "Requested memory index rebuild for agent `{}`{}; the background indexer will apply it.",
@@ -2230,7 +2230,9 @@ fn print_latency_diagnostics(
 ) -> Result<()> {
     let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let agent_home = config.data_dir.join("agents").join(&agent);
-    let storage = AppStorage::new_for_agent(&agent_home, agent.clone())?;
+    let runtime_db =
+        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+    let storage = AppStorage::new_for_agent(&agent_home, agent.clone(), runtime_db)?;
     let events = storage.read_recent_events(events_limit)?;
     let diagnostics = build_latency_diagnostics(&events, limit);
     if diagnostics.is_empty() {

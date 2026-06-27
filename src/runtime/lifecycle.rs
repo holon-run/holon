@@ -1831,7 +1831,8 @@ mod tests {
     #[test]
     fn storage_fallback_ignores_background_only_tasks_for_waiting_reason() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let storage = AppStorage::new(temp.path().to_path_buf()).expect("storage");
+        let storage = AppStorage::new_for_agent_for_test(temp.path().to_path_buf(), "child")
+            .expect("storage");
 
         let mut agent = AgentState::new("child");
         agent.status = AgentStatus::AwakeIdle;

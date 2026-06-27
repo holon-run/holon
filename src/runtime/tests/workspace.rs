@@ -154,7 +154,7 @@ async fn runtime_startup_migrates_legacy_agent_home_attachment_alias() {
     let dir = tempdir().unwrap();
     let agent_id = "default";
     let canonical_agent_home_id = crate::types::agent_home_workspace_id(agent_id);
-    let storage = crate::storage::AppStorage::new_for_agent(dir.path(), agent_id).unwrap();
+    let storage = crate::storage::AppStorage::new_for_agent_for_test(dir.path(), agent_id).unwrap();
     let preserved_cwd = dir.path().join("notes");
     std::fs::create_dir_all(&preserved_cwd).unwrap();
     let mut state = crate::types::AgentState::new(agent_id);

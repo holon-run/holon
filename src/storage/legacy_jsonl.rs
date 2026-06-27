@@ -7,101 +7,10 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use chrono::Utc;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-
-use chrono::Utc;
-
-pub(crate) fn migrate_events_ledger(path: &Path) -> Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    if let Some(seq) = read_tail_event_seq(path)? {
-        return Ok(seq);
-    }
-
-    let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f");
-    let tmp_path = path.with_file_name(format!(".events.jsonl.{timestamp}.tmp"));
-    let file =
-        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut tmp = fs::File::create(&tmp_path)
-        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-    let mut max_seq = 0;
-    let mut changed = false;
-
-    for line in BufReader::new(file).lines() {
-        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut value: Value = serde_json::from_str(&line)?;
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("event ledger line is not a JSON object"))?;
-        match object.get("event_seq").and_then(Value::as_u64) {
-            Some(seq) if seq > max_seq => {
-                max_seq = seq;
-            }
-            Some(seq) => {
-                anyhow::bail!(
-                    "event ledger sequence must be strictly increasing; found {seq} after {max_seq}"
-                );
-            }
-            None => {
-                max_seq += 1;
-                object.insert("event_seq".to_string(), Value::from(max_seq));
-                changed = true;
-            }
-        }
-        writeln!(tmp, "{}", serde_json::to_string(&value)?)?;
-    }
-
-    if !changed {
-        let _ = fs::remove_file(&tmp_path);
-        return Ok(max_seq);
-    }
-
-    let backup_path = path.with_file_name(format!("events.jsonl.bak.{timestamp}"));
-    fs::copy(path, &backup_path).with_context(|| {
-        format!(
-            "failed to back up {} to {}",
-            path.display(),
-            backup_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to replace {} with {}",
-            path.display(),
-            tmp_path.display()
-        )
-    })?;
-    Ok(max_seq)
-}
-
-pub(crate) fn read_tail_event_seq(path: &Path) -> Result<Option<u64>> {
-    let Some(value) = read_latest_jsonl_matching::<Value, _>(path, |_| true)? else {
-        return Ok(Some(0));
-    };
-    Ok(value.get("event_seq").and_then(Value::as_u64))
-}
-
-pub(crate) fn max_jsonl_u64_field(path: &Path, field: &str) -> Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    let mut max_value = None;
-    scan_jsonl_reverse::<Value, _>(path, |value| {
-        if let Some(sequence) = value.get(field).and_then(Value::as_u64) {
-            max_value = Some(sequence);
-            return false;
-        }
-        true
-    })?;
-    Ok(max_value.unwrap_or(0))
-}
 
 pub(crate) fn jsonl_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let line = serde_json::to_string(value)?;
@@ -305,4 +214,94 @@ where
     } else {
         Ok(None)
     }
+}
+
+pub(crate) fn migrate_events_ledger(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    if let Some(seq) = read_tail_event_seq(path)? {
+        return Ok(seq);
+    }
+
+    let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f");
+    let tmp_path = path.with_file_name(format!(".events.jsonl.{timestamp}.tmp"));
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut tmp = fs::File::create(&tmp_path)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    let mut max_seq = 0;
+    let mut changed = false;
+
+    for line in BufReader::new(file).lines() {
+        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut value: Value = serde_json::from_str(&line)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("event ledger line is not a JSON object"))?;
+        match object.get("event_seq").and_then(Value::as_u64) {
+            Some(seq) if seq > max_seq => {
+                max_seq = seq;
+            }
+            Some(seq) => {
+                anyhow::bail!(
+                    "event ledger sequence must be strictly increasing; found {seq} after {max_seq}"
+                );
+            }
+            None => {
+                max_seq += 1;
+                object.insert("event_seq".to_string(), Value::from(max_seq));
+                changed = true;
+            }
+        }
+        writeln!(tmp, "{}", serde_json::to_string(&value)?)?;
+    }
+
+    if !changed {
+        let _ = fs::remove_file(&tmp_path);
+        return Ok(max_seq);
+    }
+
+    let backup_path = path.with_file_name(format!("events.jsonl.bak.{timestamp}"));
+    fs::copy(path, &backup_path).with_context(|| {
+        format!(
+            "failed to back up {} to {}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to replace {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(max_seq)
+}
+
+pub(crate) fn read_tail_event_seq(path: &Path) -> Result<Option<u64>> {
+    let Some(value) = read_latest_jsonl_matching::<Value, _>(path, |_| true)? else {
+        return Ok(Some(0));
+    };
+    Ok(value.get("event_seq").and_then(Value::as_u64))
+}
+
+pub(crate) fn max_jsonl_u64_field(path: &Path, field: &str) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let mut max_value = None;
+    scan_jsonl_reverse::<Value, _>(path, |value| {
+        if let Some(sequence) = value.get(field).and_then(Value::as_u64) {
+            max_value = Some(sequence);
+            return false;
+        }
+        true
+    })?;
+    Ok(max_value.unwrap_or(0))
 }

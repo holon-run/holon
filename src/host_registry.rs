@@ -27,7 +27,8 @@ struct RuntimeRegistryInner {
 
 impl RuntimeRegistry {
     pub(crate) fn new(config: AppConfig, runtime_db: RuntimeDb) -> Result<Self> {
-        let host_storage = AppStorage::new_global(config.home_dir.join("host"))?;
+        let host_storage =
+            AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
         if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
             runtime_db
                 .workspace_entries()
@@ -43,7 +44,6 @@ impl RuntimeRegistry {
                 .agent_identities()
                 .import_legacy(host_storage.read_recent_agent_identities(usize::MAX)?)?;
         }
-        host_storage.enable_scheduler_control_plane_db(runtime_db)?;
         let agent_identities = host_storage
             .latest_agent_identities()?
             .into_iter()

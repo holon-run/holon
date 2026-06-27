@@ -3022,7 +3022,7 @@ mod tests {
     #[test]
     fn memory_search_indexes_agent_memory_and_repairs_external_edits() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         fs::write(
@@ -3061,8 +3061,8 @@ mod tests {
         let agents_dir = dir.path().join("agents");
         let alpha_home = agents_dir.join("alpha");
         let beta_home = agents_dir.join("beta");
-        let alpha = AppStorage::new(&alpha_home).unwrap();
-        let beta = AppStorage::new(&beta_home).unwrap();
+        let alpha = AppStorage::new_for_agent_for_test(&alpha_home, "alpha").unwrap();
+        let beta = AppStorage::new_for_agent_for_test(&beta_home, "beta").unwrap();
         alpha.write_agent(&AgentState::new("alpha")).unwrap();
         beta.write_agent(&AgentState::new("beta")).unwrap();
         ensure_agent_home_layout(&alpha_home).unwrap();
@@ -3123,8 +3123,8 @@ mod tests {
         let agents_dir = dir.path().join("agents");
         let alpha_home = agents_dir.join("alpha");
         let beta_home = agents_dir.join("beta");
-        let alpha = AppStorage::new(&alpha_home).unwrap();
-        let beta = AppStorage::new(&beta_home).unwrap();
+        let alpha = AppStorage::new_for_agent_for_test(&alpha_home, "alpha").unwrap();
+        let beta = AppStorage::new_for_agent_for_test(&beta_home, "beta").unwrap();
         alpha.write_agent(&AgentState::new("alpha")).unwrap();
         beta.write_agent(&AgentState::new("beta")).unwrap();
         ensure_agent_home_layout(&alpha_home).unwrap();
@@ -3174,7 +3174,7 @@ mod tests {
     #[test]
     fn memory_get_returns_exact_markdown_and_runtime_source_content() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         let markdown = "The agent now remembers 混合 搜索 diagnostics.";
@@ -3231,7 +3231,7 @@ mod tests {
     #[test]
     fn memory_get_resolves_known_runtime_refs_without_search_index_hit() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         rebuild_memory_index(&storage, None).unwrap();
@@ -3427,7 +3427,7 @@ mod tests {
     #[test]
     fn memory_get_message_refs_are_scoped_to_current_agent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
 
         let mut other_agent_message = MessageEnvelope::new(
@@ -3453,7 +3453,7 @@ mod tests {
     #[test]
     fn ack_briefs_are_not_semantic_memory_get_sources() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let ack = brief_with_workspace(
             "default",
@@ -3478,16 +3478,13 @@ mod tests {
     #[test]
     fn memory_get_returns_db_backed_runtime_evidence_content() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
         let body = format!(
             "db backed exact evidence {}\n{}",
             "sentinel_1623",
@@ -3509,16 +3506,13 @@ mod tests {
     #[test]
     fn memory_search_consumes_runtime_outbox_without_full_rebuild() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
         let brief = brief_with_workspace(
             "default",
             BriefKind::Result,
@@ -3569,16 +3563,13 @@ mod tests {
     #[test]
     fn memory_search_status_reports_limited_runtime_outbox_consumption() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
         let consume_limit = 2;
         let changes = (0..=consume_limit)
             .map(|index| RuntimeIndexChange {
@@ -3612,7 +3603,7 @@ mod tests {
     #[test]
     fn memory_get_hydrates_transcript_backed_brief_content() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
 
         let entry = TranscriptEntry::new(
@@ -3646,7 +3637,7 @@ mod tests {
     #[test]
     fn deleting_known_memory_markdown_removes_index_row() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         let path = agent_memory_self_path(dir.path());
@@ -3672,7 +3663,7 @@ mod tests {
     #[test]
     fn memory_search_indexes_workspace_profile_briefs_episodes_and_work_items() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         storage
@@ -3858,7 +3849,7 @@ mod tests {
     #[test]
     fn missing_index_does_not_rebuild_all_existing_memory_sources_during_search() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         storage
@@ -3926,7 +3917,7 @@ mod tests {
     #[test]
     fn controlled_changed_paths_repair_known_memory_markdown_only() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         fs::write(
@@ -3955,7 +3946,7 @@ mod tests {
     #[test]
     fn ordinary_workspace_markdown_is_not_indexed_as_memory() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         let workspace = dir.path().join("workspace");
@@ -3987,7 +3978,7 @@ mod tests {
     #[test]
     fn memory_search_indexes_task_records_with_summary_and_work_item_lookup() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
 
@@ -4047,7 +4038,7 @@ mod tests {
     #[test]
     fn memory_search_indexes_task_records_by_command_fragment_and_digest() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
 
@@ -4088,7 +4079,7 @@ mod tests {
     #[test]
     fn memory_search_task_index_uses_latest_snapshot_only() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
 
@@ -4139,7 +4130,7 @@ mod tests {
     #[test]
     fn memory_search_task_index_full_backfill_indexes_older_task_history() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
 
@@ -4187,7 +4178,7 @@ mod tests {
     #[test]
     fn pending_source_queue_incrementally_upserts_new_brief_after_backfill() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
 
@@ -4237,7 +4228,7 @@ mod tests {
     #[test]
     fn pending_delete_removes_stale_document_and_source_state() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         fs::write(
@@ -4273,7 +4264,7 @@ mod tests {
     #[test]
     fn missing_checkpoint_does_not_force_full_backfill_recovery() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         storage
@@ -4318,7 +4309,7 @@ mod tests {
     #[test]
     fn stale_source_state_schema_is_refreshed_by_bounded_backfill() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         storage
@@ -4397,7 +4388,7 @@ mod tests {
     #[test]
     fn rebuild_intent_marks_index_stale_and_is_consumed_by_bounded_refresh() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
         fs::write(
@@ -4443,7 +4434,7 @@ mod tests {
     #[test]
     fn extra_checkpoint_rows_do_not_hide_missing_required_backfill_kind() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         storage
             .append_brief(&brief_with_workspace(
@@ -4484,7 +4475,7 @@ mod tests {
     #[test]
     fn memory_get_returns_latest_task_record_for_task_source_ref() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         ensure_agent_home_layout(dir.path()).unwrap();
 
@@ -4525,7 +4516,7 @@ mod tests {
     #[test]
     fn command_receipts_preserve_long_exec_command_input_for_memory_get() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let command = "python - <<'PY'\nprint('receipt_start')\nprint('sentinel_middle_line_1246')\nprint('receipt_end')\nPY";
         storage
@@ -4582,7 +4573,7 @@ mod tests {
     #[test]
     fn command_receipts_preserve_exec_command_batch_item_inputs() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let first_command = "rg -n \"MemorySearch\" src/memory/index.rs";
         let second_command = "node - <<'NODE'\nconsole.log('batch_receipt_middle_1246')\nNODE";
@@ -4639,7 +4630,7 @@ mod tests {
     #[test]
     fn pending_exec_command_batch_item_upsert_resolves_tool_execution_record() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         storage
             .append_brief(&brief_with_workspace(
@@ -4715,7 +4706,7 @@ mod tests {
     #[test]
     fn command_output_resolves_exec_command_batch_envelope_items() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         storage
             .append_tool_execution(&ToolExecutionRecord {
@@ -4767,7 +4758,7 @@ mod tests {
     #[test]
     fn command_output_is_retrievable_but_not_search_indexed() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         storage
             .append_tool_execution(&ToolExecutionRecord {
@@ -4836,7 +4827,7 @@ mod tests {
     #[test]
     fn command_output_indexes_unavailable_batch_item_without_result() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         storage
             .append_tool_execution(&ToolExecutionRecord {
@@ -4881,7 +4872,7 @@ mod tests {
     #[test]
     fn generic_tool_output_source_ref_is_indexed_and_retrievable() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         storage
             .append_tool_execution(&ToolExecutionRecord {

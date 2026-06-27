@@ -710,14 +710,15 @@ fn prepare_runtime_storage(
     runtime_db: Option<RuntimeDb>,
 ) -> Result<PreparedRuntimeStorage> {
     let agent_id = agent_id.into();
-    let storage = AppStorage::new_for_agent(data_dir, agent_id.clone())?;
+    let runtime_dir = data_dir.join(".holon");
     let runtime_db = match runtime_db {
         Some(runtime_db) => runtime_db,
         None => RuntimeDb::open_and_migrate(
-            storage.runtime_dir().join("state/runtime.sqlite"),
-            storage.runtime_dir().join("state/runtime.lock"),
+            runtime_dir.join("state/runtime.sqlite"),
+            runtime_dir.join("state/runtime.lock"),
         )?,
     };
+    let storage = AppStorage::new_for_agent(data_dir, agent_id.clone(), runtime_db.clone())?;
     let initial_workspace = initial_workspace.into();
     let initial_workspace_entry = match &initial_workspace {
         InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),
@@ -836,7 +837,6 @@ fn prepare_runtime_storage(
             .import_legacy(storage.read_recent_context_episodes(usize::MAX)?)?;
     }
 
-    storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
     let snapshot = storage.recovery_snapshot(&agent_id)?;
     let mut queue = RuntimeQueue::default();
     for message in &snapshot.replay_messages {

@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn stale_non_terminal_updates_are_ignored_after_terminal_status_exists() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&task("task-1", TaskStatus::Completed, true))
             .unwrap();
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn conflicting_terminal_updates_are_ignored_after_terminal_status_exists() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&task("task-1", TaskStatus::Completed, true))
             .unwrap();
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn repeated_same_terminal_updates_are_preserved_for_result_events() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&task("task-1", TaskStatus::Failed, true))
             .unwrap();
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn stale_running_update_is_ignored_after_cancelling() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&task("task-1", TaskStatus::Cancelling, true))
             .unwrap();
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn active_tasks_do_not_block_from_legacy_wait_policy_payloads() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&scheduler_blocking_task("blocking", TaskStatus::Running))
             .unwrap();
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn active_task_projection_ignores_terminal_latest_records() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&task("stale", TaskStatus::Running, true))
             .unwrap();

@@ -3185,7 +3185,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
 
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_agent_for_test(dir.path(), agent_id).unwrap();
     let rt = Runtime::new().unwrap();
 
     // Create agent with idle status and an initial wake hint

@@ -8,7 +8,7 @@ mod worktree_storage_tests {
     #[test]
     fn test_storage_round_trip_session_with_worktree() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut session = AgentState::new("test-worktree-session");
         session.status = AgentStatus::AwakeRunning;
@@ -45,7 +45,7 @@ mod worktree_storage_tests {
     #[test]
     fn test_storage_round_trip_session_without_worktree() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let session = AgentState::new("normal-session");
         storage.write_agent(&session).unwrap();
