@@ -747,6 +747,33 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "openai-codex",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol (Codex)",
+            272_000,
+            128_000,
+            true,
+            true,
+        ),
+        catalog_model(
+            "openai-codex",
+            "gpt-5.6-terra",
+            "GPT-5.6 Terra (Codex)",
+            272_000,
+            128_000,
+            true,
+            true,
+        ),
+        catalog_model(
+            "openai-codex",
+            "gpt-5.6-luna",
+            "GPT-5.6 Luna (Codex)",
+            272_000,
+            128_000,
+            true,
+            true,
+        ),
+        catalog_model(
+            "openai-codex",
             "gpt-5.4-mini",
             "GPT-5.4 Mini (Codex)",
             272_000,
@@ -758,6 +785,33 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "openai-codex",
             "gpt-5.2",
             "GPT-5.2 (Codex)",
+            272_000,
+            128_000,
+            true,
+            true,
+        ),
+        catalog_model(
+            "openai",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol",
+            272_000,
+            128_000,
+            true,
+            true,
+        ),
+        catalog_model(
+            "openai",
+            "gpt-5.6-terra",
+            "GPT-5.6 Terra",
+            272_000,
+            128_000,
+            true,
+            true,
+        ),
+        catalog_model(
+            "openai",
+            "gpt-5.6-luna",
+            "GPT-5.6 Luna",
             272_000,
             128_000,
             true,
@@ -2667,6 +2721,32 @@ mod tests {
         assert_eq!(policy.runtime_max_output_tokens, 384_000);
         assert!(policy.capabilities.reasoning_summaries);
         assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
+
+        // GPT-5.6 family (Sol/Terra/Luna) added from the OpenAI limited preview.
+        let sol = catalog.resolve_policy(
+            &ModelRef::parse("openai/gpt-5.6-sol").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(sol.display_name, "GPT-5.6 Sol");
+        assert_eq!(sol.context_window_tokens, Some(272_000));
+        assert_eq!(sol.runtime_max_output_tokens, 128_000);
+        assert!(sol.capabilities.image_input);
+        assert!(sol.capabilities.reasoning_summaries);
+        assert_eq!(sol.source, ModelMetadataSource::BuiltInCatalog);
+
+        assert!(catalog
+            .get(&ModelRef::parse("openai/gpt-5.6-terra").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("openai/gpt-5.6-luna").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("openai-codex/gpt-5.6-sol").unwrap())
+            .is_some());
 
         let nearai = catalog.resolve_policy(
             &ModelRef::parse("nearai/zai-org/GLM-5.1-FP8").unwrap(),
