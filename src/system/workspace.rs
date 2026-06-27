@@ -6,7 +6,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use thiserror::Error;
 
-use super::types::WorkspaceAccessMode;
+use super::types::{WorkspaceAccessMode, WorkspaceProjectionKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspacePathErrorKind {
@@ -40,6 +40,7 @@ pub struct WorkspaceView {
     execution_root_id: Option<String>,
     access_mode: Option<WorkspaceAccessMode>,
     worktree_root: Option<PathBuf>,
+    projection_kind: WorkspaceProjectionKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,17 +123,24 @@ impl WorkspaceView {
         cwd: PathBuf,
         execution_root_id: Option<String>,
         access_mode: Option<WorkspaceAccessMode>,
+        projection_kind: WorkspaceProjectionKind,
         worktree_root: Option<PathBuf>,
     ) -> Result<Self> {
         let normalized_anchor = normalize_path(&workspace_anchor)?;
         let normalized_execution_root = normalize_path(&execution_root)?;
         let normalized_cwd = normalize_path(&cwd)?;
-        if let Some(worktree_root) = &worktree_root {
-            let normalized_worktree_root = normalize_path(worktree_root)?;
-            if normalized_worktree_root != normalized_execution_root {
+        let normalized_worktree_root = if let Some(worktree_root) = &worktree_root {
+            let normalized = normalize_path(worktree_root)?;
+            if normalized != normalized_execution_root {
                 return Err(anyhow!("worktree root must match execution root"));
             }
-        } else if !normalized_execution_root.starts_with(&normalized_anchor) {
+            Some(normalized)
+        } else {
+            None
+        };
+        if normalized_worktree_root.is_none()
+            && !normalized_execution_root.starts_with(&normalized_anchor)
+        {
             return Err(anyhow!("execution root escapes workspace anchor"));
         }
         if !normalized_cwd.starts_with(&normalized_execution_root) {
@@ -140,12 +148,13 @@ impl WorkspaceView {
         }
         Ok(Self {
             workspace_id,
-            workspace_anchor,
-            execution_root,
-            cwd,
+            workspace_anchor: normalized_anchor,
+            execution_root: normalized_execution_root,
+            cwd: normalized_cwd,
             execution_root_id,
             access_mode,
-            worktree_root,
+            projection_kind,
+            worktree_root: normalized_worktree_root,
         })
     }
 
@@ -173,6 +182,10 @@ impl WorkspaceView {
         self.access_mode
     }
 
+    pub fn projection_kind(&self) -> WorkspaceProjectionKind {
+        self.projection_kind
+    }
+
     pub fn worktree_root(&self) -> Option<&Path> {
         self.worktree_root.as_deref()
     }
@@ -184,8 +197,7 @@ impl WorkspaceView {
             self.cwd.join(relative)
         };
         let normalized_candidate = normalize_path(&candidate)?;
-        let normalized_execution_root = normalize_path(&self.execution_root)?;
-        if !normalized_candidate.starts_with(&normalized_execution_root) {
+        if !normalized_candidate.starts_with(&self.execution_root) {
             return Err(WorkspacePathError::execution_root_violation().into());
         }
         Ok(candidate)
@@ -256,6 +268,7 @@ mod tests {
             cwd.clone(),
             Some("git_worktree_root:ws-1:/workspace/nested".into()),
             Some(WorkspaceAccessMode::ExclusiveWrite),
+            WorkspaceProjectionKind::GitWorktreeRoot,
             Some(execution_root.clone()),
         )
         .unwrap();
@@ -276,6 +289,7 @@ mod tests {
             workspace_root,
             Some("canonical_root:ws-1".into()),
             Some(WorkspaceAccessMode::SharedRead),
+            WorkspaceProjectionKind::CanonicalRoot,
             None,
         )
         .unwrap();
@@ -301,6 +315,7 @@ mod tests {
             workspace_root,
             Some("canonical_root:ws-1".into()),
             Some(WorkspaceAccessMode::SharedRead),
+            WorkspaceProjectionKind::CanonicalRoot,
             None,
         )
         .unwrap();

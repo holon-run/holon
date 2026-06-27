@@ -750,6 +750,7 @@ mod tests {
             dir.path().join("workspace"),
             None,
             None,
+            crate::system::WorkspaceProjectionKind::CanonicalRoot,
             None,
         )
         .unwrap();

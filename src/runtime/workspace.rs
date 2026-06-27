@@ -149,6 +149,7 @@ pub(crate) fn workspace_view_from_state(
             entry.cwd.clone(),
             Some(entry.execution_root_id.clone()),
             Some(entry.access_mode),
+            entry.projection_kind,
             worktree_root,
         );
     }
@@ -161,6 +162,7 @@ pub(crate) fn workspace_view_from_state(
         execution_root.clone(),
         None,
         Some(WorkspaceAccessMode::ExclusiveWrite),
+        WorkspaceProjectionKind::CanonicalRoot,
         None,
     )
 }
@@ -191,6 +193,11 @@ pub(crate) fn workspace_view_for_root(
         .active_workspace_entry
         .as_ref()
         .map(|entry| entry.access_mode);
+    let projection_kind = if worktree_root.is_some() {
+        WorkspaceProjectionKind::GitWorktreeRoot
+    } else {
+        WorkspaceProjectionKind::CanonicalRoot
+    };
     WorkspaceView::new(
         workspace_id,
         workspace_anchor,
@@ -198,6 +205,7 @@ pub(crate) fn workspace_view_for_root(
         cwd,
         execution_root_id,
         access_mode,
+        projection_kind,
         worktree_root,
     )
 }
