@@ -5,6 +5,7 @@ import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
 import type {
+  CodexDeviceLoginState,
   CredentialStoreState,
   RuntimeConfigState,
   RuntimeConnection,
@@ -31,6 +32,9 @@ interface SettingsPageProps {
   onRefreshCredentialStore: () => Promise<void>;
   onSetCredential: (profile: string, kind: string, material: string) => Promise<unknown>;
   onDeleteCredential: (profile: string) => Promise<void>;
+  codexDeviceLogin: CodexDeviceLoginState;
+  onStartCodexDeviceLogin: () => Promise<void>;
+  onClearCodexDeviceLogin: () => void;
 }
 
 function splitCsv(value: string): string[] {
@@ -67,8 +71,6 @@ type StandardSearchProviderDefinition = {
   baseUrlPlaceholder?: string;
 };
 
-const credentialSources = ["env", "credential_profile", "external_cli", "credential_process", "none"];
-const credentialKinds = ["api_key", "bearer_token", "oauth", "session_token", "aws_sdk", "none"];
 const webSearchProviderKinds = [
   "duck_duck_go",
   "searxng",
@@ -181,6 +183,9 @@ export function SettingsPage({
   onRefreshCredentialStore,
   onSetCredential,
   onDeleteCredential,
+  codexDeviceLogin,
+  onStartCodexDeviceLogin,
+  onClearCodexDeviceLogin,
 }: SettingsPageProps) {
   const groupedModels = groupModelsByProvider(modelCatalog.options);
   const availableCount = modelCatalog.options.filter((model) => model.available).length;
@@ -294,6 +299,12 @@ export function SettingsPage({
     const key = apiKeyDrafts[providerId]?.trim();
     if (!key || !credentialProfile) return;
     setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
+    // Switch provider to credential_profile so the stored key is used
+    await onUpdateRuntimeConfig([
+      { key: `providers.${providerId}.auth.source`, value: "credential_profile" },
+      { key: `providers.${providerId}.auth.kind`, value: credentialKind },
+      { key: `providers.${providerId}.auth.profile`, value: credentialProfile },
+    ]);
     const result = await onSetCredential(credentialProfile, credentialKind, key);
     if (result) {
       setCredentialMessages((prev) => ({ ...prev, [providerId]: "API key saved to credential store." }));
@@ -1141,6 +1152,7 @@ export function SettingsPage({
               {sortedProviders.map((provider) => {
                 const draft = providerDrafts[provider.id];
                 if (!draft) return null;
+                const effectiveProfile = draft.credentialProfile?.trim() || `${provider.id}:default`;
                 return (
                   <form
                     className="settings-provider-editor"
@@ -1154,7 +1166,7 @@ export function SettingsPage({
                       <div>
                         <strong>{provider.id}</strong>
                         <small>
-                          {provider.transport} · {provider.credentialSource}/{provider.credentialKind}
+                          {provider.transport}
                         </small>
                       </div>
                       <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
@@ -1167,15 +1179,15 @@ export function SettingsPage({
                       </p>
                     ) : null}
                     {/* Primary: API Key management */}
-                    {draft.credentialSource === "credential_profile" && draft.credentialProfile ? (
+                    {draft.credentialKind === "api_key" ? (
                       <div className="settings-api-key-section">
                         <div className="settings-api-key-header">
-                          <span>API Key for &quot;{draft.credentialProfile}&quot;</span>
+                          <span>API Key for &quot;{effectiveProfile}&quot;</span>
                           <StatusChip
-                            className={`settings-status ${isCredentialProfileConfigured(draft.credentialProfile) ? "available" : "unavailable"}`}
-                            tone={isCredentialProfileConfigured(draft.credentialProfile) ? "success" : "error"}
+                            className={`settings-status ${isCredentialProfileConfigured(effectiveProfile) ? "available" : "unavailable"}`}
+                            tone={isCredentialProfileConfigured(effectiveProfile) ? "success" : "error"}
                           >
-                            {isCredentialProfileConfigured(draft.credentialProfile) ? "key set" : "no key"}
+                            {isCredentialProfileConfigured(effectiveProfile) ? "key set" : "no key"}
                           </StatusChip>
                         </div>
                         <div className="settings-form-row">
@@ -1194,15 +1206,15 @@ export function SettingsPage({
                             type="button"
                             variant="secondary"
                             disabled={!apiKeyDrafts[provider.id]?.trim()}
-                            onClick={() => void saveApiKey(provider.id, draft.credentialProfile!, draft.credentialKind)}
+                            onClick={() => void saveApiKey(provider.id, effectiveProfile, draft.credentialKind)}
                           >
                             Save API Key
                           </Button>
-                          {isCredentialProfileConfigured(draft.credentialProfile) ? (
+                          {isCredentialProfileConfigured(effectiveProfile) ? (
                             <Button
                               type="button"
                               variant="secondary"
-                              onClick={() => void removeApiKey(provider.id, draft.credentialProfile!)}
+                              onClick={() => void removeApiKey(provider.id, effectiveProfile)}
                             >
                               Remove Key
                             </Button>
@@ -1212,11 +1224,59 @@ export function SettingsPage({
                           ) : null}
                         </div>
                       </div>
-                    ) : (
+                    ) : null}
+                    {/* OAuth device login */}
+                    {draft.credentialKind === "oauth" ? (
+                      <div className="settings-device-login-section">
+                        {provider.credentialConfigured ? (
+                          <div className="settings-device-login-header">
+                            <span>Connected via OAuth</span>
+                            <StatusChip className="settings-status available" tone="success">
+                              credential ready
+                            </StatusChip>
+                          </div>
+                        ) : null}
+                        {codexDeviceLogin.status === "idle" || codexDeviceLogin.status === "failed" ? (
+                          <>
+                          <div className="settings-actions">
+                            <Button type="button" variant="secondary" disabled={credentialStoreLoading}
+                              onClick={() => void onStartCodexDeviceLogin()}>
+                              {provider.credentialConfigured ? "Re-login" : "Login with Device Flow"}
+                            </Button>
+                          </div>
+                          {codexDeviceLogin.status === "failed" ? (
+                            <div className="settings-device-login-error">{codexDeviceLogin.error}</div>
+                          ) : null}
+                          </>
+                        ) : null}
+                        {codexDeviceLogin.status === "starting" ? (
+                          <p className="settings-hint">Starting device login…</p>
+                        ) : null}
+                        {codexDeviceLogin.status === "waiting" ? (
+                          <div className="settings-device-login-panel">
+                            <Button type="button" variant="secondary"
+                              onClick={() => window.open(codexDeviceLogin.verificationUrl, "_blank", "noopener,noreferrer")}>
+                              Open Device Login Page →
+                            </Button>
+                            <p className="settings-hint">Enter this code on the page:</p>
+                            <div className="settings-device-login-code">{codexDeviceLogin.userCode}</div>
+                            <p className="settings-muted">Waiting for authorization…</p>
+                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>Cancel</Button>
+                          </div>
+                        ) : null}
+                        {codexDeviceLogin.status === "completed" ? (
+                          <div className="settings-device-login-panel">
+                            <StatusChip className="settings-status available" tone="success">Login successful</StatusChip>
+                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>Dismiss</Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {draft.credentialKind !== "api_key" && draft.credentialKind !== "oauth" ? (
                       <p className="settings-hint">
-                        Credential source is <code>{draft.credentialSource}</code>. Switch to <code>credential_profile</code> in Advanced to manage API keys from the web UI.
+                        This provider uses <code>{draft.credentialKind}</code> authentication via <code>{draft.credentialSource}</code>. Configure it in <code>{runtimeConfig.configFilePath ?? "config.json"}</code>.
                       </p>
-                    )}
+                    ) : null}
                     {/* Advanced: full provider config */}
                     <details className="settings-advanced">
                       <summary>Advanced</summary>
@@ -1229,51 +1289,7 @@ export function SettingsPage({
                           <span>Base URL</span>
                           <input value={draft.baseUrl} onChange={(event) => updateProviderDraft(provider.id, { baseUrl: event.target.value })} />
                         </label>
-                        <label>
-                          <span>Credential source</span>
-                          <select value={draft.credentialSource} onChange={(event) => {
-                            const source = event.target.value;
-                            if (source === "credential_profile" && !draft.credentialProfile?.trim()) {
-                              updateProviderDraft(provider.id, { credentialSource: source, credentialProfile: `${provider.id}:default` });
-                            } else {
-                              updateProviderDraft(provider.id, { credentialSource: source });
-                            }
-                          }}>
-                            {credentialSources.map((source) => (
-                              <option key={source} value={source}>
-                                {source}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
                       </div>
-                      <div className="settings-form-row">
-                        <label>
-                          <span>Credential kind</span>
-                          <select value={draft.credentialKind} onChange={(event) => updateProviderDraft(provider.id, { credentialKind: event.target.value })}>
-                            {credentialKinds.map((kind) => (
-                              <option key={kind} value={kind}>
-                                {kind}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          <span>Env variable</span>
-                          <input value={draft.credentialEnv ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialEnv: event.target.value })} />
-                        </label>
-                        <label>
-                          <span>Credential profile</span>
-                          <input value={draft.credentialProfile ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialProfile: event.target.value })} />
-                        </label>
-                      </div>
-                      {draft.credentialSource === "credential_profile" ? (
-                        <p className="settings-hint">Auto-named <code>{provider.id}:default</code> if left empty. Multiple providers can share one profile; use different names (e.g. <code>{provider.id}:work</code>) for separate keys.</p>
-                      ) : null}
-                      <label>
-                        <span>External credential provider</span>
-                        <input value={draft.credentialExternal ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialExternal: event.target.value })} />
-                      </label>
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>

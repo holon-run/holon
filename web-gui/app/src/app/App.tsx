@@ -111,6 +111,9 @@ export function App() {
   const refreshCredentialStore = useRuntimeStore((state) => state.refreshCredentialStore);
   const setCredential = useRuntimeStore((state) => state.setCredential);
   const deleteCredential = useRuntimeStore((state) => state.deleteCredential);
+  const codexDeviceLogin = useRuntimeStore((state) => state.codexDeviceLogin);
+  const startCodexDeviceLogin = useRuntimeStore((state) => state.startCodexDeviceLogin);
+  const clearCodexDeviceLogin = useRuntimeStore((state) => state.clearCodexDeviceLogin);
   const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
   const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
@@ -505,6 +508,9 @@ export function App() {
             onRefreshCredentialStore={refreshCredentialStore}
             onSetCredential={setCredential}
             onDeleteCredential={deleteCredential}
+            codexDeviceLogin={codexDeviceLogin}
+            onStartCodexDeviceLogin={startCodexDeviceLogin}
+            onClearCodexDeviceLogin={clearCodexDeviceLogin}
           />
         ) : null}
       </main>

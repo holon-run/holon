@@ -2780,6 +2780,38 @@ code {
   border-radius: 3px;
 }
 
+.settings-device-login-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-device-login-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-device-login-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface-raised, rgba(0, 0, 0, 0.04));
+  border-radius: 6px;
+}
+
+.settings-device-login-code {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-lg, 18px);
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-align: center;
+  padding: 8px;
+  background: var(--surface, rgba(0, 0, 0, 0.06));
+  border-radius: 4px;
+}
+
 .settings-checkbox {
   display: flex !important;
   grid-template-columns: none !important;
@@ -3730,6 +3762,20 @@ code {
 .settings-error,
 .settings-error-banner {
   color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.settings-device-login-error {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--danger);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .settings-diagnostics {
