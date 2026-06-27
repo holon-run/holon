@@ -935,26 +935,25 @@ impl RuntimeHandle {
             None => return Ok(Vec::new()), // no registry to check against
         };
 
-        let agent_id_snapshot = {
+        // Collect all needed state under a single agent lock acquisition.
+        let (agent_id, canonical_agent_home_id, active_workspace_id, attached_ids): (
+            String,
+            String,
+            Option<String>,
+            Vec<String>,
+        ) = {
             let guard = self.inner.agent.lock().await;
-            guard.state.id.clone()
-        };
-        let canonical_agent_home_id = crate::types::agent_home_workspace_id(&agent_id_snapshot);
-
-        let active_workspace_id = {
-            let guard = self.inner.agent.lock().await;
-            guard
-                .state
-                .active_workspace_entry
-                .as_ref()
-                .map(|e| e.workspace_id.clone())
-        };
-
-        // Collect IDs to prune under the agent lock so we have a consistent
-        // snapshot of attached_workspaces.
-        let attached_ids: Vec<String> = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.attached_workspaces.clone()
+            let canonical = crate::types::agent_home_workspace_id(&guard.state.id);
+            (
+                guard.state.id.clone(),
+                canonical,
+                guard
+                    .state
+                    .active_workspace_entry
+                    .as_ref()
+                    .map(|e| e.workspace_id.clone()),
+                guard.state.attached_workspaces.clone(),
+            )
         };
 
         let mut stale_ids = Vec::new();
@@ -968,7 +967,11 @@ impl RuntimeHandle {
             }
 
             // Check registry: entry must exist and its anchor must be a real directory.
-            let entry = bridge.workspace_entry_by_id(ws_id).await?;
+            // Skip entries with registry errors rather than aborting the entire prune.
+            let entry = match bridge.workspace_entry_by_id(ws_id).await {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let is_stale = match &entry {
                 None => true, // ID not in registry
                 Some(e) => !e.workspace_anchor.is_dir(),
@@ -983,15 +986,14 @@ impl RuntimeHandle {
         }
 
         // Remove stale IDs and persist.
-        let agent_id = {
+        {
             let mut guard = self.inner.agent.lock().await;
             guard
                 .state
                 .attached_workspaces
                 .retain(|id| !stale_ids.contains(id));
             guard.persist_state(&self.inner.storage)?;
-            guard.state.id.clone()
-        };
+        }
 
         for ws_id in &stale_ids {
             self.inner.storage.append_event(&AuditEvent::new(
