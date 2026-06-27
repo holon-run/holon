@@ -2052,6 +2052,16 @@ mod tests {
         assert!(!tokio::fs::try_exists(&doomed).await.unwrap());
     }
 
+    #[test]
+    fn strip_diff_prefix_preserves_only_double_slash_absolute_paths() {
+        assert_eq!(strip_diff_prefix("a/src/foo.rs"), "src/foo.rs");
+        assert_eq!(strip_diff_prefix("b/src/foo.rs"), "src/foo.rs");
+        assert_eq!(strip_diff_prefix("a//home/foo.rs"), "/home/foo.rs");
+        assert_eq!(strip_diff_prefix("b//home/foo.rs"), "/home/foo.rs");
+        assert_eq!(strip_diff_prefix("a/home/foo.rs"), "home/foo.rs");
+        assert_eq!(strip_diff_prefix("b/home/foo.rs"), "home/foo.rs");
+    }
+
     #[tokio::test]
     async fn apply_patch_strips_diff_prefix_from_absolute_paths() {
         let dir = tempdir().unwrap();
