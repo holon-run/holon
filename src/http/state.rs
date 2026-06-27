@@ -215,6 +215,7 @@ pub async fn agent_state(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    runtime.prune_stale_attached_workspaces().await.ok();
     let mut agent = runtime.agent_summary().await.map_err(error_response)?;
     let tasks_started = std::time::Instant::now();
     let tasks = runtime
