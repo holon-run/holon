@@ -131,19 +131,28 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
 
     lines.push(String::new());
     lines.push("Workspace".into());
-    if let Some(entry) = projection.workspace.active_workspace_entry.as_ref() {
-        lines.push(format!("  Id: {}", entry.workspace_id));
+    if let Some(ws) = projection.workspace.active_workspace() {
+        lines.push(format!("  Id: {}", ws.workspace_id));
         lines.push(format!(
             "  Mode: {}/{}",
-            workspace_projection_label(Some(entry.projection_kind)),
-            workspace_access_mode_label(Some(entry.access_mode))
+            workspace_projection_label(ws.projection_kind),
+            workspace_access_mode_label(ws.access_mode)
         ));
-        lines.push(format!("  Cwd: {}", entry.cwd.display()));
+        lines.push(format!(
+            "  Cwd: {}",
+            ws.cwd.as_deref().unwrap_or("<unknown>")
+        ));
     } else {
         lines.push("  <none>".into());
     }
-    if let Some(worktree) = projection.workspace.worktree_session.as_ref() {
-        lines.push(format!("  Worktree: {}", worktree.worktree_branch));
+    if let Some(worktree) = projection
+        .workspace
+        .active_workspace()
+        .and_then(|ws| ws.worktree.as_ref())
+    {
+        if let Some(branch) = &worktree.branch {
+            lines.push(format!("  Worktree: {}", branch));
+        }
     }
 
     lines.push(String::new());

@@ -58,22 +58,38 @@ fn agent_status_label(agent: &AgentSummary) -> &'static str {
 }
 
 fn execution_root_summary(app: &TuiApp) -> String {
-    let active_entry = app
+    // Try the unified workspace snapshot first, then fall back to the agent state's
+    // active_workspace_entry. Extract the fields we need into a common shape.
+    let (workspace_id, anchor, exec_root): (String, Option<PathBuf>, Option<PathBuf>) = app
         .projection
         .as_ref()
-        .and_then(|projection| projection.workspace.active_workspace_entry.as_ref())
+        .and_then(|projection| projection.workspace.active_workspace())
+        .map(|ws| {
+            (
+                ws.workspace_id.clone(),
+                ws.workspace_anchor.as_ref().map(PathBuf::from),
+                ws.execution_root.as_ref().map(PathBuf::from),
+            )
+        })
         .or_else(|| {
             app.selected_agent_summary()
                 .and_then(|agent| agent.agent.active_workspace_entry.as_ref())
-        });
-    let Some(entry) = active_entry else {
+                .map(|entry| {
+                    (
+                        entry.workspace_id.clone(),
+                        Some(entry.workspace_anchor.clone()),
+                        Some(entry.execution_root.clone()),
+                    )
+                })
+        })
+        .unwrap_or_else(|| (String::new(), None, None));
+
+    let Some(anchor) = anchor else {
         return "workspace not ready".into();
     };
-    let label = workspace_label(
-        entry.workspace_id.as_str(),
-        entry.workspace_anchor.as_path(),
-    );
-    format!("{} ({})", label, shorten_home_path(&entry.execution_root))
+    let exec_root = exec_root.unwrap_or_else(|| anchor.clone());
+    let label = workspace_label(&workspace_id, &anchor);
+    format!("{} ({})", label, shorten_home_path(&exec_root))
 }
 
 fn workspace_label(workspace_id: &str, workspace_anchor: &Path) -> String {

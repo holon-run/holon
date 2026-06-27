@@ -236,11 +236,7 @@ impl<'de> Deserialize<'de> for ExecutionSnapshot {
 
 impl EffectiveExecution {
     pub fn snapshot(&self) -> ExecutionSnapshot {
-        let projection_kind = if self.workspace.worktree_root().is_some() {
-            Some(WorkspaceProjectionKind::GitWorktreeRoot)
-        } else {
-            Some(WorkspaceProjectionKind::CanonicalRoot)
-        };
+        let projection_kind = Some(self.workspace.projection_kind());
         ExecutionSnapshot {
             profile: self.profile.clone(),
             policy: self.profile.policy_snapshot(),

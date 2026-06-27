@@ -6,7 +6,8 @@ use crate::storage::AppStorage;
 use crate::types::{
     AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
     ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskRecord, TaskStatus, TokenUsage,
-    WaitingReason, WorkItemState, WorktreeSession,
+    WaitingReason, WorkItemState, WorkspaceOccupancyRecord, WorkspaceProjectionMetadata,
+    WorktreeSession,
 };
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -787,6 +788,43 @@ impl RuntimeHandle {
         Ok(model_state)
     }
 
+    /// Acquire exclusive or shared occupancy for a workspace execution root.
+    /// In bridge mode this delegates to the shared `RuntimeRegistry`; in
+    /// standalone mode occupancy tracking is unavailable so it returns `None`.
+    async fn acquire_workspace_occupancy(
+        &self,
+        workspace_id: &str,
+        execution_root_id: &str,
+        holder_agent_id: &str,
+        access_mode: WorkspaceAccessMode,
+    ) -> Result<Option<WorkspaceOccupancyRecord>> {
+        match self.inner.host_bridge.as_ref() {
+            Some(bridge) => {
+                bridge
+                    .acquire_workspace_occupancy(
+                        workspace_id,
+                        execution_root_id,
+                        holder_agent_id,
+                        access_mode,
+                    )
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Release a previously acquired workspace occupancy.
+    /// In standalone mode this is a no-op returning `None`.
+    async fn release_workspace_occupancy(
+        &self,
+        occupancy_id: &str,
+    ) -> Result<Option<WorkspaceOccupancyRecord>> {
+        match self.inner.host_bridge.as_ref() {
+            Some(bridge) => bridge.release_workspace_occupancy(occupancy_id).await,
+            None => Ok(None),
+        }
+    }
+
     pub async fn attach_workspace(&self, workspace: &WorkspaceEntry) -> Result<()> {
         let mut guard = self.inner.agent.lock().await;
         if !guard
@@ -1025,9 +1063,7 @@ impl RuntimeHandle {
             self.inner.storage.mark_memory_index_dirty()?;
         }
         if let Some(occupancy_id) = previous_occupancy_id.as_deref() {
-            if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                let _ = bridge.release_workspace_occupancy(occupancy_id).await?;
-            }
+            let _ = self.release_workspace_occupancy(occupancy_id).await?;
         }
         let state = self.agent_state().await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
@@ -1103,12 +1139,12 @@ impl RuntimeHandle {
                     worktree_path: seed.worktree_path.clone(),
                     worktree_branch: seed.worktree_branch.clone(),
                 };
-                let metadata = serde_json::json!({
-                    "original_cwd": session.original_cwd,
-                    "original_branch": session.original_branch,
-                    "worktree_path": session.worktree_path,
-                    "worktree_branch": session.worktree_branch,
-                });
+                let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
+                    original_cwd: session.original_cwd.clone(),
+                    original_branch: session.original_branch.clone(),
+                    worktree_path: session.worktree_path.clone(),
+                    worktree_branch: session.worktree_branch.clone(),
+                };
                 (session.worktree_path.clone(), Some(session), Some(metadata))
             }
         };
@@ -1118,18 +1154,14 @@ impl RuntimeHandle {
             projection_kind,
             &execution_root,
         )?;
-        let occupancy = if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge
-                .acquire_workspace_occupancy(
-                    &workspace.workspace_id,
-                    &execution_root_id,
-                    &agent_id,
-                    access_mode,
-                )
-                .await?
-        } else {
-            None
-        };
+        let occupancy = self
+            .acquire_workspace_occupancy(
+                &workspace.workspace_id,
+                &execution_root_id,
+                &agent_id,
+                access_mode,
+            )
+            .await?;
         let entry = ActiveWorkspaceEntry {
             workspace_id: workspace.workspace_id.clone(),
             workspace_anchor: workspace.workspace_anchor.clone(),
@@ -1160,9 +1192,7 @@ impl RuntimeHandle {
         if let Err(error) = write_result {
             if let Some(occupancy_id) = new_occupancy_id.as_deref() {
                 if previous_occupancy_id.as_deref() != Some(occupancy_id) {
-                    if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                        let _ = bridge.release_workspace_occupancy(occupancy_id).await;
-                    }
+                    let _ = self.release_workspace_occupancy(occupancy_id).await;
                 }
             }
             if let Some(worktree) = worktree_cleanup_session.as_ref() {
@@ -1172,11 +1202,9 @@ impl RuntimeHandle {
         }
         if let Some(previous_occupancy_id) = previous_occupancy_id.as_deref() {
             if new_occupancy_id.as_deref() != Some(previous_occupancy_id) {
-                if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                    let _ = bridge
-                        .release_workspace_occupancy(previous_occupancy_id)
-                        .await?;
-                }
+                let _ = self
+                    .release_workspace_occupancy(previous_occupancy_id)
+                    .await?;
             }
         }
         let state = self.agent_state().await?;
@@ -1249,18 +1277,14 @@ impl RuntimeHandle {
             WorkspaceProjectionKind::GitWorktreeRoot,
             &execution_root,
         )?;
-        let occupancy = if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge
-                .acquire_workspace_occupancy(
-                    &workspace.workspace_id,
-                    &execution_root_id,
-                    &agent_id,
-                    access_mode,
-                )
-                .await?
-        } else {
-            None
-        };
+        let occupancy = self
+            .acquire_workspace_occupancy(
+                &workspace.workspace_id,
+                &execution_root_id,
+                &agent_id,
+                access_mode,
+            )
+            .await?;
         let entry = ActiveWorkspaceEntry {
             workspace_id: workspace.workspace_id.clone(),
             workspace_anchor: workspace.workspace_anchor.clone(),
@@ -1270,11 +1294,9 @@ impl RuntimeHandle {
             access_mode,
             cwd: selected_cwd.clone(),
             occupancy_id: occupancy.as_ref().map(|record| record.occupancy_id.clone()),
-            projection_metadata: Some(serde_json::json!({
-                "detected_kind": "existing_git_worktree",
-                "ownership": "external",
-                "worktree_root": execution_root,
-            })),
+            projection_metadata: Some(WorkspaceProjectionMetadata::ExistingGitWorktree {
+                worktree_root: execution_root.clone(),
+            }),
         };
         let previous_occupancy_id = existing_state
             .active_workspace_entry
@@ -1294,20 +1316,16 @@ impl RuntimeHandle {
         if let Err(error) = write_result {
             if let Some(occupancy_id) = new_occupancy_id.as_deref() {
                 if previous_occupancy_id.as_deref() != Some(occupancy_id) {
-                    if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                        let _ = bridge.release_workspace_occupancy(occupancy_id).await;
-                    }
+                    let _ = self.release_workspace_occupancy(occupancy_id).await;
                 }
             }
             return Err(error);
         }
         if let Some(previous_occupancy_id) = previous_occupancy_id.as_deref() {
             if new_occupancy_id.as_deref() != Some(previous_occupancy_id) {
-                if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                    let _ = bridge
-                        .release_workspace_occupancy(previous_occupancy_id)
-                        .await?;
-                }
+                let _ = self
+                    .release_workspace_occupancy(previous_occupancy_id)
+                    .await?;
             }
         }
         let state = self.agent_state().await?;

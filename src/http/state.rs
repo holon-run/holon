@@ -465,40 +465,120 @@ fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWork
             .unwrap_or_else(|| ws_id.to_string())
     };
 
-    let mut workspace_entries: Vec<WorkspaceEntrySummary> = agent
-        .agent
-        .attached_workspaces
-        .iter()
-        .filter_map(|ws_id| {
-            let resolved = resolve_id(ws_id);
-            all_entries
-                .iter()
-                .find(|e| e.workspace_id == resolved)
-                .map(WorkspaceEntrySummary::from_entry)
-        })
-        .collect();
+    use crate::types::AgentWorkspaceInfo;
+    use std::collections::HashSet;
+
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut workspaces: Vec<AgentWorkspaceInfo> = Vec::new();
+
+    // Add active workspace first (with full runtime info).
     if let Some(active_entry) = agent.agent.active_workspace_entry.as_ref() {
-        let resolved_active_id = resolve_id(&active_entry.workspace_id);
-        if !workspace_entries
-            .iter()
-            .any(|entry| entry.workspace_id == resolved_active_id)
-        {
-            if let Some(entry) = all_entries
-                .iter()
-                .find(|entry| entry.workspace_id == resolved_active_id)
-            {
-                workspace_entries.push(WorkspaceEntrySummary::from_entry(entry));
-            } else {
-                workspace_entries.push(WorkspaceEntrySummary::from_active_entry(active_entry));
-            }
+        let resolved_id = resolve_id(&active_entry.workspace_id);
+        seen_ids.insert(resolved_id.clone());
+
+        // Try to enrich with registry data (alias, repo_name).
+        let registry_entry = all_entries.iter().find(|e| e.workspace_id == resolved_id);
+        let worktree = build_worktree_info(
+            active_entry.projection_metadata.as_ref(),
+            agent.agent.worktree_session.as_ref(),
+        );
+
+        workspaces.push(AgentWorkspaceInfo {
+            workspace_id: active_entry.workspace_id.clone(),
+            workspace_alias: registry_entry.and_then(|e| e.workspace_alias.clone()),
+            workspace_anchor: Some(active_entry.workspace_anchor.display().to_string()),
+            repo_name: registry_entry.and_then(|e| e.repo_name.clone()),
+            is_active: true,
+            execution_root_id: Some(active_entry.execution_root_id.clone()),
+            execution_root: Some(active_entry.execution_root.display().to_string()),
+            cwd: Some(active_entry.cwd.display().to_string()),
+            projection_kind: Some(active_entry.projection_kind),
+            access_mode: Some(active_entry.access_mode),
+            worktree,
+        });
+    }
+
+    // Add remaining attached workspaces (identity-only info from registry).
+    for ws_id in &agent.agent.attached_workspaces {
+        let resolved = resolve_id(ws_id);
+        if seen_ids.contains(&resolved) {
+            continue;
+        }
+        seen_ids.insert(resolved.clone());
+
+        if let Some(entry) = all_entries.iter().find(|e| e.workspace_id == resolved) {
+            workspaces.push(AgentWorkspaceInfo {
+                workspace_id: entry.workspace_id.clone(),
+                workspace_alias: entry.workspace_alias.clone(),
+                workspace_anchor: Some(entry.workspace_anchor.display().to_string()),
+                repo_name: entry.repo_name.clone(),
+                is_active: false,
+                execution_root_id: None,
+                execution_root: None,
+                cwd: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree: None,
+            });
+        } else {
+            // Fallback for IDs without a registry entry.
+            workspaces.push(AgentWorkspaceInfo {
+                workspace_id: ws_id.clone(),
+                workspace_alias: None,
+                workspace_anchor: None,
+                repo_name: None,
+                is_active: false,
+                execution_root_id: None,
+                execution_root: None,
+                cwd: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree: None,
+            });
         }
     }
-    StateWorkspaceSnapshot {
-        attached_workspaces: agent.agent.attached_workspaces.clone(),
-        workspace_entries,
-        active_workspace_entry: agent.agent.active_workspace_entry.clone(),
-        active_workspace_occupancy: agent.active_workspace_occupancy.clone(),
-        worktree_session: agent.agent.worktree_session.clone(),
+
+    StateWorkspaceSnapshot { workspaces }
+}
+
+/// Merge projection_metadata and worktree_session into a unified WorktreeInfo.
+fn build_worktree_info(
+    metadata: Option<&crate::types::WorkspaceProjectionMetadata>,
+    session: Option<&crate::types::WorktreeSession>,
+) -> Option<crate::types::WorktreeInfo> {
+    use crate::types::WorkspaceProjectionMetadata;
+    let (branch, path) = match metadata {
+        Some(WorkspaceProjectionMetadata::ManagedWorktree {
+            worktree_branch,
+            worktree_path,
+            ..
+        }) => (
+            Some(worktree_branch.clone()),
+            Some(worktree_path.display().to_string()),
+        ),
+        Some(WorkspaceProjectionMetadata::ExistingGitWorktree { worktree_root }) => {
+            (None, Some(worktree_root.display().to_string()))
+        }
+        None => match session {
+            Some(s) => (
+                Some(s.worktree_branch.clone()),
+                Some(s.worktree_path.display().to_string()),
+            ),
+            None => (None, None),
+        },
+    };
+    let original_branch = session.map(|s| s.original_branch.clone());
+    let original_cwd = session.map(|s| s.original_cwd.display().to_string());
+
+    if branch.is_some() || path.is_some() || original_branch.is_some() || original_cwd.is_some() {
+        Some(crate::types::WorktreeInfo {
+            branch,
+            path,
+            original_branch,
+            original_cwd,
+        })
+    } else {
+        None
     }
 }
 
@@ -668,6 +748,159 @@ mod tests {
             super::truncate_state_bootstrap_string("你好世界a", 4),
             "你..."
         );
+    }
+
+    // ── build_worktree_info tests ──
+
+    use crate::types::{WorkspaceProjectionMetadata, WorktreeInfo, WorktreeSession};
+    use std::path::PathBuf;
+
+    #[test]
+    fn build_worktree_info_managed_worktree_metadata() {
+        let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/project/.worktrees/feature"),
+            worktree_branch: "feature".into(),
+        };
+        let session = Some(WorktreeSession {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/project/.worktrees/feature"),
+            worktree_branch: "feature".into(),
+        });
+
+        let info = super::build_worktree_info(Some(&metadata), session.as_ref());
+        let info = info.expect("should produce WorktreeInfo");
+        assert_eq!(info.branch.as_deref(), Some("feature"));
+        assert!(info
+            .path
+            .as_deref()
+            .unwrap()
+            .contains("/tmp/project/.worktrees/feature"));
+        assert_eq!(info.original_branch.as_deref(), Some("main"));
+        assert!(info
+            .original_cwd
+            .as_deref()
+            .unwrap()
+            .contains("/tmp/project"));
+    }
+
+    #[test]
+    fn build_worktree_info_existing_git_worktree_metadata() {
+        let metadata = WorkspaceProjectionMetadata::ExistingGitWorktree {
+            worktree_root: PathBuf::from("/tmp/existing-wt"),
+        };
+
+        let info = super::build_worktree_info(Some(&metadata), None);
+        let info = info.expect("should produce WorktreeInfo");
+        assert!(
+            info.branch.is_none(),
+            "existing git worktree should not have branch from metadata"
+        );
+        assert_eq!(info.path.as_deref(), Some("/tmp/existing-wt"));
+    }
+
+    #[test]
+    fn build_worktree_info_fallback_to_session_only() {
+        let session = WorktreeSession {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/project/.worktrees/dev"),
+            worktree_branch: "dev".into(),
+        };
+
+        let info = super::build_worktree_info(None, Some(&session));
+        let info = info.expect("should produce WorktreeInfo from session");
+        assert_eq!(info.branch.as_deref(), Some("dev"));
+        assert!(info
+            .path
+            .as_deref()
+            .unwrap()
+            .contains("/tmp/project/.worktrees/dev"));
+        assert_eq!(info.original_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn build_worktree_info_returns_none_when_all_none() {
+        let info = super::build_worktree_info(None, None);
+        assert!(
+            info.is_none(),
+            "should return None when both metadata and session are absent"
+        );
+    }
+
+    #[test]
+    fn build_worktree_info_session_enriches_metadata_originals() {
+        let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/wt"),
+            worktree_branch: "feat".into(),
+        };
+        let session = WorktreeSession {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/wt"),
+            worktree_branch: "feat".into(),
+        };
+
+        let info = super::build_worktree_info(Some(&metadata), Some(&session));
+        let info = info.expect("should produce WorktreeInfo");
+        assert_eq!(info.original_branch.as_deref(), Some("main"));
+        assert!(info.original_cwd.is_some());
+    }
+
+    // ── AgentWorkspaceInfo serde round-trip ──
+
+    use crate::system::{WorkspaceAccessMode, WorkspaceProjectionKind};
+    use crate::types::AgentWorkspaceInfo;
+
+    #[test]
+    fn agent_workspace_info_serde_roundtrip_full() {
+        let info = AgentWorkspaceInfo {
+            workspace_id: "ws_abc".into(),
+            workspace_alias: Some("my-project".into()),
+            workspace_anchor: Some("/home/user/project".into()),
+            repo_name: Some("project".into()),
+            is_active: true,
+            execution_root_id: Some("canonical_root:ws_abc".into()),
+            execution_root: Some("/home/user/project".into()),
+            cwd: Some("/home/user/project/src".into()),
+            projection_kind: Some(WorkspaceProjectionKind::CanonicalRoot),
+            access_mode: Some(WorkspaceAccessMode::ExclusiveWrite),
+            worktree: Some(WorktreeInfo {
+                branch: Some("feature".into()),
+                path: Some("/tmp/wt".into()),
+                original_branch: Some("main".into()),
+                original_cwd: Some("/tmp/project".into()),
+            }),
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let decoded: AgentWorkspaceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn agent_workspace_info_serde_roundtrip_minimal() {
+        let info = AgentWorkspaceInfo {
+            workspace_id: "ws_xyz".into(),
+            workspace_alias: None,
+            workspace_anchor: None,
+            repo_name: None,
+            is_active: false,
+            execution_root_id: None,
+            execution_root: None,
+            cwd: None,
+            projection_kind: None,
+            access_mode: None,
+            worktree: None,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let decoded: AgentWorkspaceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, decoded);
     }
 }
 

@@ -216,7 +216,13 @@ impl RuntimeRegistry {
         {
             // Lazy migration: migrate non-deterministic workspace IDs in place
             // and record an alias so old references in agent state still resolve.
+            // Deprecated: planned for removal once migration logs go quiet.
             if existing.workspace_id != det_id {
+                tracing::info!(
+                    old_id = %existing.workspace_id,
+                    new_id = %det_id,
+                    "workspace migration: migrated non-deterministic workspace ID to deterministic ID"
+                );
                 self.inner
                     .host_storage
                     .migrate_workspace_id(&existing.workspace_id, &det_id)?;
@@ -282,4 +288,315 @@ pub(crate) fn validate_agent_id_format(agent_id: &str) -> Result<()> {
         return Err(anyhow!("agent id must be a single normal path component"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::runtime_db::RuntimeDb;
+    use tempfile::tempdir;
+
+    fn test_registry() -> (tempfile::TempDir, RuntimeRegistry) {
+        let home = tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        let registry = RuntimeRegistry::new(config, runtime_db).unwrap();
+        (home, registry)
+    }
+
+    const ROOT_ID: &str = "canonical_root:ws_test";
+    const WS_ID: &str = "ws_test";
+
+    // ── SharedRead conflict matrix ──
+
+    #[test]
+    fn multiple_shared_read_on_same_root_succeed() {
+        let (_home, registry) = test_registry();
+
+        let r1 = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-a", WorkspaceAccessMode::SharedRead)
+            .unwrap();
+        assert!(r1.is_some());
+
+        let r2 = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-b", WorkspaceAccessMode::SharedRead)
+            .unwrap();
+        assert!(r2.is_some());
+
+        // Both should be active.
+        let active = registry
+            .active_workspace_occupancies_for_root(ROOT_ID)
+            .unwrap();
+        assert_eq!(active.len(), 2);
+    }
+
+    #[test]
+    fn same_agent_same_mode_acquiry_is_idempotent() {
+        let (_home, registry) = test_registry();
+
+        let r1 = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-a", WorkspaceAccessMode::SharedRead)
+            .unwrap()
+            .unwrap();
+
+        let r2 = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-a", WorkspaceAccessMode::SharedRead)
+            .unwrap()
+            .unwrap();
+
+        // Should return the same record, not create a new one.
+        assert_eq!(r1.occupancy_id, r2.occupancy_id);
+
+        let active = registry
+            .active_workspace_occupancies_for_root(ROOT_ID)
+            .unwrap();
+        assert_eq!(
+            active.len(),
+            1,
+            "idempotent acquire should not create duplicate"
+        );
+    }
+
+    // ── ExclusiveWrite conflict matrix ──
+
+    #[test]
+    fn exclusive_write_blocks_other_exclusive_write() {
+        let (_home, registry) = test_registry();
+
+        registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                ROOT_ID,
+                "agent-a",
+                WorkspaceAccessMode::ExclusiveWrite,
+            )
+            .unwrap();
+
+        let err = registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                ROOT_ID,
+                "agent-b",
+                WorkspaceAccessMode::ExclusiveWrite,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("already has an exclusive_write holder"),
+            "second exclusive_write from different agent should fail"
+        );
+    }
+
+    #[test]
+    fn same_agent_exclusive_write_is_idempotent() {
+        let (_home, registry) = test_registry();
+
+        let r1 = registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                ROOT_ID,
+                "agent-a",
+                WorkspaceAccessMode::ExclusiveWrite,
+            )
+            .unwrap()
+            .unwrap();
+
+        // Same agent + same mode should be idempotent even for ExclusiveWrite.
+        let r2 = registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                ROOT_ID,
+                "agent-a",
+                WorkspaceAccessMode::ExclusiveWrite,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(r1.occupancy_id, r2.occupancy_id);
+    }
+
+    #[test]
+    fn exclusive_write_then_shared_read_from_other_agent_allowed() {
+        // Documents current behavior: ExclusiveWrite does not block SharedRead
+        // from another agent. The conflict check only blocks ExclusiveWrite × ExclusiveWrite.
+        let (_home, registry) = test_registry();
+
+        registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                ROOT_ID,
+                "agent-a",
+                WorkspaceAccessMode::ExclusiveWrite,
+            )
+            .unwrap();
+
+        let r2 = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-b", WorkspaceAccessMode::SharedRead)
+            .unwrap();
+        assert!(
+            r2.is_some(),
+            "SharedRead from another agent is allowed alongside ExclusiveWrite"
+        );
+    }
+
+    // ── Release behavior ──
+
+    #[test]
+    fn release_marks_occupancy_as_released() {
+        let (_home, registry) = test_registry();
+
+        let record = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-a", WorkspaceAccessMode::SharedRead)
+            .unwrap()
+            .unwrap();
+
+        let released = registry
+            .release_workspace_occupancy(&record.occupancy_id)
+            .unwrap();
+        assert!(released.is_some());
+        assert!(released.unwrap().released_at.is_some());
+
+        let active = registry
+            .active_workspace_occupancies_for_root(ROOT_ID)
+            .unwrap();
+        assert!(
+            active.is_empty(),
+            "released occupancy should not appear in active list"
+        );
+    }
+
+    #[test]
+    fn release_is_idempotent() {
+        let (_home, registry) = test_registry();
+
+        let record = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-a", WorkspaceAccessMode::SharedRead)
+            .unwrap()
+            .unwrap();
+
+        // First release.
+        let first = registry
+            .release_workspace_occupancy(&record.occupancy_id)
+            .unwrap();
+        assert!(first.is_some());
+
+        // Second release should also return the record (already released).
+        let second = registry
+            .release_workspace_occupancy(&record.occupancy_id)
+            .unwrap();
+        assert!(second.is_some());
+        assert!(second.unwrap().released_at.is_some());
+    }
+
+    #[test]
+    fn release_nonexistent_id_returns_none() {
+        let (_home, registry) = test_registry();
+        let result = registry
+            .release_workspace_occupancy("occ_nonexistent")
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── active_workspace_occupancies_for_root ──
+
+    #[test]
+    fn active_occupancies_filter_excludes_released() {
+        let (_home, registry) = test_registry();
+
+        let r1 = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-a", WorkspaceAccessMode::SharedRead)
+            .unwrap()
+            .unwrap();
+        let _r2 = registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-b", WorkspaceAccessMode::SharedRead)
+            .unwrap()
+            .unwrap();
+
+        // Release one.
+        registry
+            .release_workspace_occupancy(&r1.occupancy_id)
+            .unwrap();
+
+        let active = registry
+            .active_workspace_occupancies_for_root(ROOT_ID)
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].holder_agent_id, "agent-b");
+    }
+
+    #[test]
+    fn active_occupancies_filter_by_root_id() {
+        let (_home, registry) = test_registry();
+
+        registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                "canonical_root:ws_a",
+                "agent-a",
+                WorkspaceAccessMode::SharedRead,
+            )
+            .unwrap();
+        registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                "canonical_root:ws_b",
+                "agent-b",
+                WorkspaceAccessMode::SharedRead,
+            )
+            .unwrap();
+
+        let active_a = registry
+            .active_workspace_occupancies_for_root("canonical_root:ws_a")
+            .unwrap();
+        assert_eq!(active_a.len(), 1);
+        assert_eq!(active_a[0].holder_agent_id, "agent-a");
+    }
+
+    // ── ensure_workspace_entry ──
+
+    #[test]
+    fn ensure_workspace_entry_creates_deterministic_id() {
+        let (_home, registry) = test_registry();
+        let dir = tempdir().unwrap();
+
+        let entry = registry
+            .ensure_workspace_entry(dir.path().to_path_buf())
+            .unwrap();
+        let expected_id = ids::deterministic_workspace_id(dir.path());
+        assert_eq!(entry.workspace_id, expected_id);
+    }
+
+    #[test]
+    fn ensure_workspace_entry_is_idempotent() {
+        let (_home, registry) = test_registry();
+        let dir = tempdir().unwrap();
+
+        let entry1 = registry
+            .ensure_workspace_entry(dir.path().to_path_buf())
+            .unwrap();
+        let entry2 = registry
+            .ensure_workspace_entry(dir.path().to_path_buf())
+            .unwrap();
+
+        assert_eq!(entry1.workspace_id, entry2.workspace_id);
+    }
+
+    #[test]
+    fn ensure_workspace_entry_extracts_repo_name() {
+        let (_home, registry) = test_registry();
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("my-repo-name")).unwrap();
+        let repo_path = dir.path().join("my-repo-name");
+
+        let entry = registry.ensure_workspace_entry(repo_path).unwrap();
+        assert_eq!(entry.repo_name.as_deref(), Some("my-repo-name"));
+    }
 }

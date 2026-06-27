@@ -510,9 +510,8 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     assert_eq!(
         snapshot
             .workspace
-            .active_workspace_entry
-            .as_ref()
-            .map(|e| e.workspace_id.clone()),
+            .active_workspace()
+            .map(|w| w.workspace_id.clone()),
         snapshot
             .agent
             .agent
@@ -520,7 +519,7 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
             .as_ref()
             .map(|e| e.workspace_id.clone())
     );
-    assert!(snapshot.workspace.active_workspace_entry.is_some());
+    assert!(snapshot.workspace.active_workspace().is_some());
 
     server.abort();
     Ok(())

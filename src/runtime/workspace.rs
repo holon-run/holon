@@ -45,6 +45,14 @@ pub(crate) fn agent_home_workspace_entry(data_dir: &Path, agent_id: &str) -> Wor
     entry
 }
 
+/// Canonicalize legacy `AGENT_HOME_WORKSPACE_ID` references in agent state to
+/// the deterministic, agent-specific canonical ID.
+///
+/// # Migration path (deprecated)
+///
+/// This function exists solely to migrate agents that still reference the
+/// old constant `AGENT_HOME_WORKSPACE_ID`. It is planned for removal once
+/// migration logs confirm no agents require canonicalization.
 pub(crate) fn canonicalize_agent_home_bindings(
     state: &mut AgentState,
     data_dir: &Path,
@@ -101,6 +109,10 @@ pub(crate) fn canonicalize_agent_home_bindings(
 
     if changed {
         state.attached_workspaces = next;
+        tracing::info!(
+            agent_id = %agent_id,
+            "workspace migration: canonicalized legacy AGENT_HOME_WORKSPACE_ID references"
+        );
     }
 
     Ok(changed)
@@ -135,22 +147,32 @@ pub(crate) fn detached_execution_root(storage: &AppStorage) -> PathBuf {
     storage.data_dir().to_path_buf()
 }
 
+impl ActiveWorkspaceEntry {
+    /// Convert the active entry into an immutable `WorkspaceView`.
+    /// Centralizes the field mapping that was previously duplicated across
+    /// `workspace_view_from_state` and other call sites.
+    pub(crate) fn to_workspace_view(&self) -> Result<WorkspaceView> {
+        let worktree_root = (self.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
+            .then(|| self.execution_root.clone());
+        WorkspaceView::new(
+            Some(self.workspace_id.clone()),
+            self.workspace_anchor.clone(),
+            self.execution_root.clone(),
+            self.cwd.clone(),
+            Some(self.execution_root_id.clone()),
+            Some(self.access_mode),
+            self.projection_kind,
+            worktree_root,
+        )
+    }
+}
+
 pub(crate) fn workspace_view_from_state(
     state: &AgentState,
     detached_execution_root: PathBuf,
 ) -> Result<WorkspaceView> {
     if let Some(entry) = state.active_workspace_entry.as_ref() {
-        let worktree_root = (entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
-            .then(|| entry.execution_root.clone());
-        return WorkspaceView::new(
-            Some(entry.workspace_id.clone()),
-            entry.workspace_anchor.clone(),
-            entry.execution_root.clone(),
-            entry.cwd.clone(),
-            Some(entry.execution_root_id.clone()),
-            Some(entry.access_mode),
-            worktree_root,
-        );
+        return entry.to_workspace_view();
     }
 
     let execution_root = detached_execution_root;
@@ -161,6 +183,7 @@ pub(crate) fn workspace_view_from_state(
         execution_root.clone(),
         None,
         Some(WorkspaceAccessMode::ExclusiveWrite),
+        WorkspaceProjectionKind::CanonicalRoot,
         None,
     )
 }
@@ -191,6 +214,11 @@ pub(crate) fn workspace_view_for_root(
         .active_workspace_entry
         .as_ref()
         .map(|entry| entry.access_mode);
+    let projection_kind = if worktree_root.is_some() {
+        WorkspaceProjectionKind::GitWorktreeRoot
+    } else {
+        WorkspaceProjectionKind::CanonicalRoot
+    };
     WorkspaceView::new(
         workspace_id,
         workspace_anchor,
@@ -198,6 +226,7 @@ pub(crate) fn workspace_view_for_root(
         cwd,
         execution_root_id,
         access_mode,
+        projection_kind,
         worktree_root,
     )
 }
@@ -334,4 +363,132 @@ pub(crate) fn execution_root_sync(storage: &AppStorage) -> PathBuf {
                 })
         })
         .unwrap_or_else(|| detached_execution_root(storage))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ActiveWorkspaceEntry;
+
+    // ── build_execution_root_id ──
+
+    #[test]
+    fn execution_root_id_canonical_root() {
+        let id = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::CanonicalRoot,
+            Path::new("/tmp/project"),
+        )
+        .unwrap();
+        assert_eq!(id, "canonical_root:ws_abc");
+    }
+
+    #[test]
+    fn execution_root_id_git_worktree_root_includes_normalized_path() {
+        let id = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/worktree-x"),
+        )
+        .unwrap();
+        assert!(id.starts_with("git_worktree_root:ws_abc:"));
+        assert!(id.contains("/tmp/project/worktree-x"));
+    }
+
+    #[test]
+    fn execution_root_id_git_worktree_root_is_stable_for_same_path() {
+        let id1 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/worktree-x"),
+        )
+        .unwrap();
+        let id2 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/worktree-x"),
+        )
+        .unwrap();
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn execution_root_id_git_worktree_root_differs_for_different_paths() {
+        let id1 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/wt-a"),
+        )
+        .unwrap();
+        let id2 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/wt-b"),
+        )
+        .unwrap();
+        assert_ne!(id1, id2);
+    }
+
+    // ── canonicalize_agent_home_bindings ──
+
+    #[test]
+    fn canonicalize_migrates_legacy_agent_home_id() {
+        let data_dir = PathBuf::from("/tmp/agent-home");
+        let mut state = AgentState::new("my-agent");
+        state.active_workspace_entry = Some(ActiveWorkspaceEntry {
+            workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
+            workspace_anchor: data_dir.clone(),
+            execution_root_id: "canonical_root:agent_home".to_string(),
+            execution_root: data_dir.clone(),
+            projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+            access_mode: WorkspaceAccessMode::SharedRead,
+            cwd: data_dir.clone(),
+            occupancy_id: None,
+            projection_metadata: None,
+        });
+        state.attached_workspaces = vec![AGENT_HOME_WORKSPACE_ID.to_string()];
+
+        let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
+
+        assert!(changed, "should report change when migrating legacy ID");
+        let canonical = agent_home_workspace_id("my-agent");
+        assert_eq!(
+            state.active_workspace_entry.as_ref().unwrap().workspace_id,
+            canonical
+        );
+        assert!(
+            state.attached_workspaces.contains(&canonical),
+            "attached_workspaces should contain canonical ID"
+        );
+        assert!(
+            !state
+                .attached_workspaces
+                .contains(&AGENT_HOME_WORKSPACE_ID.to_string()),
+            "legacy ID should be removed from attached_workspaces"
+        );
+    }
+
+    #[test]
+    fn canonicalize_is_noop_when_already_canonical() {
+        let data_dir = PathBuf::from("/tmp/agent-home");
+        let canonical = agent_home_workspace_id("my-agent");
+        let mut state = AgentState::new("my-agent");
+        state.attached_workspaces = vec![canonical.clone()];
+
+        let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
+
+        assert!(!changed, "should be no-op when already using canonical ID");
+    }
+
+    #[test]
+    fn canonicalize_handles_no_active_workspace_entry() {
+        let data_dir = PathBuf::from("/tmp/agent-home");
+        let mut state = AgentState::new("my-agent");
+        // No active_workspace_entry and no legacy references.
+        state.attached_workspaces = vec!["ws_other".to_string()];
+
+        let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
+
+        assert!(!changed, "should be no-op with no legacy references");
+    }
 }

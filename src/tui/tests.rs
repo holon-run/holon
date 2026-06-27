@@ -291,6 +291,75 @@ fn sample_model_availability(
     }
 }
 
+fn build_workspace_snapshot_from_active(
+    active: Option<&crate::types::ActiveWorkspaceEntry>,
+    attached: &[String],
+) -> Vec<crate::types::AgentWorkspaceInfo> {
+    use crate::types::{AgentWorkspaceInfo, WorktreeInfo};
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut result: Vec<AgentWorkspaceInfo> = Vec::new();
+
+    if let Some(entry) = active {
+        seen.insert(entry.workspace_id.clone());
+        result.push(AgentWorkspaceInfo {
+            workspace_id: entry.workspace_id.clone(),
+            workspace_alias: None,
+            workspace_anchor: Some(entry.workspace_anchor.display().to_string()),
+            repo_name: None,
+            is_active: true,
+            execution_root_id: Some(entry.execution_root_id.clone()),
+            execution_root: Some(entry.execution_root.display().to_string()),
+            cwd: Some(entry.cwd.display().to_string()),
+            projection_kind: Some(entry.projection_kind),
+            access_mode: Some(entry.access_mode),
+            worktree: entry.projection_metadata.as_ref().map(|m| {
+                let (branch, path) = match m {
+                    crate::types::WorkspaceProjectionMetadata::ManagedWorktree {
+                        worktree_branch,
+                        worktree_path,
+                        ..
+                    } => (
+                        Some(worktree_branch.clone()),
+                        Some(worktree_path.display().to_string()),
+                    ),
+                    crate::types::WorkspaceProjectionMetadata::ExistingGitWorktree {
+                        worktree_root,
+                    } => (None, Some(worktree_root.display().to_string())),
+                };
+                WorktreeInfo {
+                    branch,
+                    path,
+                    original_branch: None,
+                    original_cwd: None,
+                }
+            }),
+        });
+    }
+
+    for ws_id in attached {
+        if !seen.contains(ws_id) {
+            seen.insert(ws_id.clone());
+            result.push(AgentWorkspaceInfo {
+                workspace_id: ws_id.clone(),
+                workspace_alias: None,
+                workspace_anchor: None,
+                repo_name: None,
+                is_active: false,
+                execution_root_id: None,
+                execution_root: None,
+                cwd: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree: None,
+            });
+        }
+    }
+
+    result
+}
+
 fn sample_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
     AgentStateSnapshot {
         agent: sample_agent_summary(agent_id),
@@ -598,7 +667,10 @@ fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
         occupancy_id: None,
         projection_metadata: None,
     });
-    snapshot.workspace.active_workspace_entry = snapshot.agent.agent.active_workspace_entry.clone();
+    snapshot.workspace.workspaces = build_workspace_snapshot_from_active(
+        snapshot.agent.agent.active_workspace_entry.as_ref(),
+        snapshot.agent.agent.attached_workspaces.as_slice(),
+    );
     app.agents = vec![snapshot.agent.clone()];
     app.projection = Some(TuiProjection::from_snapshot(snapshot));
 
@@ -714,7 +786,10 @@ fn statusbar_view_model_uses_workspace_label_for_worktree_execution_root() {
         occupancy_id: None,
         projection_metadata: None,
     });
-    snapshot.workspace.active_workspace_entry = snapshot.agent.agent.active_workspace_entry.clone();
+    snapshot.workspace.workspaces = build_workspace_snapshot_from_active(
+        snapshot.agent.agent.active_workspace_entry.as_ref(),
+        snapshot.agent.agent.attached_workspaces.as_slice(),
+    );
     app.agents = vec![snapshot.agent.clone()];
     app.projection = Some(TuiProjection::from_snapshot(snapshot));
 
