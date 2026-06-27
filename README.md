@@ -262,23 +262,26 @@ The Rust binary embeds web GUI assets at compile time via `rust-embed`. Build
 the frontend first, then compile the binary:
 
 ```bash
-cd web-gui/app
-npm ci
-npm run build
-cd ../..
-cargo install --path .
+make all
 holon --help
+```
+
+Or step by step:
+
+```bash
+make web    # build web GUI (requires Node.js)
+make build  # build Rust binary
 ```
 
 ## Development
 
-Run checks:
+Run checks with `make`:
 
 ```bash
-cargo fmt --all -- --check
-RUSTFLAGS="-D warnings" cargo check --all-targets
-cargo test --all-targets -- --test-threads=1
+make ci
 ```
+
+See `make help` for the full list of targets.
 
 Run the benchmark harness:
 

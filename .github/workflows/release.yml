@@ -1,3 +1,4 @@
+
 name: Release
 
 on:
@@ -35,10 +36,7 @@ jobs:
           node-version: '22'
 
       - name: Build web GUI
-        working-directory: web-gui/app
-        run: |
-          npm ci
-          npm run build
+        run: make web
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
