@@ -2010,15 +2010,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine",
-            "doubao-seed-code-preview-251028",
-            "doubao-seed-code-preview-251028",
-            256_000,
-            4_096,
-            false,
-            true,
-        ),
-        catalog_model(
-            "volcengine",
             "doubao-seed-1-8-251228",
             "Doubao Seed 1.8",
             256_000,
@@ -2082,15 +2073,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-coding",
-            "doubao-seed-code-preview-251028",
-            "Doubao Seed Code Preview",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
             "doubao-seed-2-0-code-preview-260215",
             "Doubao Seed 2.0 Code",
             256_000,
@@ -2166,7 +2148,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "kimi-k2.7-code",
             "Kimi K2.7 Code",
             262_144,
-            65_536,
+            // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
+            32_768,
             true,
             false,
         ),
@@ -2190,15 +2173,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-agent",
-            "doubao-seed-code-preview-251028",
-            "Doubao Seed Code Preview",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
             "doubao-seed-2-0-code-preview-260215",
             "Doubao Seed 2.0 Code",
             256_000,
@@ -2274,7 +2248,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "kimi-k2.7-code",
             "Kimi K2.7 Code",
             262_144,
-            65_536,
+            // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
+            32_768,
             true,
             false,
         ),
