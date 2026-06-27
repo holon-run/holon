@@ -264,6 +264,33 @@ export interface CredentialStoreState {
   error?: string;
 }
 
+export interface CodexDeviceLoginResponse {
+  ok: boolean;
+  loginId: string;
+  verificationUrl: string;
+  userCode: string;
+  interval: number;
+  expiresAt: string;
+  jobId: string;
+}
+
+export type CodexDeviceLoginStatus =
+  | "idle"
+  | "starting"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface CodexDeviceLoginState {
+  status: CodexDeviceLoginStatus;
+  verificationUrl?: string;
+  userCode?: string;
+  jobId?: string;
+  expiresAt?: string;
+  error?: string;
+}
+
 export interface SearchResultLocator {
   evidenceId?: string;
   sourceRef?: string;

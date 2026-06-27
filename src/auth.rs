@@ -893,20 +893,33 @@ fn try_parse_refresh_error_message(body: &str) -> Option<String> {
 }
 
 fn classify_device_poll_status(status: reqwest::StatusCode, body: &str) -> DevicePollStatus {
-    match extract_refresh_error_code(body).as_deref() {
-        Some("authorization_pending") => DevicePollStatus::Pending,
-        Some("slow_down") => DevicePollStatus::SlowDown,
-        Some("expired_token") => DevicePollStatus::Expired,
-        Some("access_denied") => DevicePollStatus::AccessDenied,
+    let error_code = extract_refresh_error_code(body);
+    // Terminal error codes take priority regardless of HTTP status.
+    match error_code.as_deref() {
+        Some("expired_token") => return DevicePollStatus::Expired,
+        Some("access_denied") => return DevicePollStatus::AccessDenied,
+        _ => {}
+    }
+    // Standard OAuth device-flow pending/slow_down codes.
+    match error_code.as_deref() {
+        Some("authorization_pending") => return DevicePollStatus::Pending,
+        Some("slow_down") => return DevicePollStatus::SlowDown,
+        _ => {}
+    }
+    // OpenAI returns HTTP 403 with a non-standard error code when device
+    // authorization is still pending. Treat 403/404 as pending rather than
+    // letting the unrecognized code fall through to Failed.
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+        return DevicePollStatus::Pending;
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return DevicePollStatus::SlowDown;
+    }
+    // Unknown failure: surface the parsed message or raw body.
+    match error_code.as_deref() {
         Some(code) => DevicePollStatus::Failed(
             try_parse_refresh_error_message(body).unwrap_or_else(|| code.to_string()),
         ),
-        None if status == reqwest::StatusCode::FORBIDDEN
-            || status == reqwest::StatusCode::NOT_FOUND =>
-        {
-            DevicePollStatus::Pending
-        }
-        None if status == reqwest::StatusCode::TOO_MANY_REQUESTS => DevicePollStatus::SlowDown,
         None => DevicePollStatus::Failed(
             try_parse_refresh_error_message(body).unwrap_or_else(|| body.to_string()),
         ),
@@ -1085,6 +1098,24 @@ mod tests {
         assert_eq!(
             classify_device_poll_status(reqwest::StatusCode::TOO_MANY_REQUESTS, ""),
             DevicePollStatus::SlowDown
+        );
+        // OpenAI returns HTTP 403 with a non-standard error code when the
+        // device authorization is still pending. This should be treated as
+        // Pending, not Failed.
+        assert_eq!(
+            classify_device_poll_status(
+                reqwest::StatusCode::FORBIDDEN,
+                r#"{"code":"forbidden","message":"Device authorization is pending. Please try again."}"#
+            ),
+            DevicePollStatus::Pending
+        );
+        // But access_denied on 403 should still be terminal.
+        assert_eq!(
+            classify_device_poll_status(
+                reqwest::StatusCode::FORBIDDEN,
+                r#"{"error":"access_denied"}"#
+            ),
+            DevicePollStatus::AccessDenied
         );
     }
 

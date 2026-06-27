@@ -31,6 +31,7 @@ import type {
   TaskSummary,
   RuntimeConnectionProfile,
   RuntimeConfigState,
+  CodexDeviceLoginState,
   CredentialProfileStatus,
   CredentialStoreState,
   RuntimeBriefRecord,
@@ -191,6 +192,7 @@ export interface RuntimeStoreState {
   credentialStore: CredentialStoreState;
   credentialStoreLoading: boolean;
   credentialStoreError?: string;
+  codexDeviceLogin: CodexDeviceLoginState;
   search: SearchResponse | null;
   searchLoading: boolean;
   searchError?: string;
@@ -233,6 +235,8 @@ export interface RuntimeStoreState {
   refreshCredentialStore: () => Promise<void>;
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
+  startCodexDeviceLogin: () => Promise<void>;
+  clearCodexDeviceLogin: () => void;
   runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   loadSearchResultContent: (sourceRef: string) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
@@ -678,6 +682,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   credentialStore: { profiles: [] },
   credentialStoreLoading: false,
   credentialStoreError: undefined,
+  codexDeviceLogin: { status: "idle" as const },
   rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
   sessionsByAgentId: {},
   skillInstallJobs: loadSkillInstallJobs(),
@@ -833,6 +838,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       credentialStore: { profiles: [] },
       credentialStoreLoading: false,
       credentialStoreError: undefined,
+      codexDeviceLogin: { status: "idle" as const },
       search: null,
       searchError: undefined,
       sessionsByAgentId: {},
@@ -1254,6 +1260,69 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       const message = error instanceof Error ? error.message : String(error);
       set({ credentialStoreError: message });
     }
+  },
+  startCodexDeviceLogin: async () => {
+    set({ codexDeviceLogin: { status: "starting" } });
+    try {
+      const resp = await runtimeClient.startCodexDeviceLogin();
+      set({
+        codexDeviceLogin: {
+          status: "waiting",
+          verificationUrl: resp.verificationUrl,
+          userCode: resp.userCode,
+          jobId: resp.jobId,
+          expiresAt: resp.expiresAt,
+        },
+      });
+
+      const jobId = resp.jobId;
+      const pollInterval = Math.max((resp.interval ?? 5) * 1000, 3000);
+      const expiresAt = resp.expiresAt ? new Date(resp.expiresAt).getTime() : Date.now() + 300_000;
+
+      const poll = async (): Promise<void> => {
+        const current = get().codexDeviceLogin;
+        if (current.status !== "waiting" || current.jobId !== jobId) return;
+        if (Date.now() > expiresAt) {
+          set({ codexDeviceLogin: { status: "failed", error: "Device login expired." } });
+          return;
+        }
+        try {
+          const job = await runtimeClient.getJob(jobId);
+          if (job.status === "completed") {
+            const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
+              runtimeClient.listCredentials(),
+              runtimeClient.getRuntimeConfig(),
+              runtimeClient.getModels(),
+            ]);
+            set({
+              codexDeviceLogin: { status: "completed" },
+              credentialStore,
+              credentialStoreError: undefined,
+              runtimeConfig,
+              runtimeConfigError: runtimeConfig.error,
+              modelCatalog,
+              modelCatalogError: modelCatalog.error,
+            });
+            return;
+          }
+          if (job.status === "failed") {
+            set({ codexDeviceLogin: { status: "failed", error: job.error || job.summary || "Device login failed." } });
+            return;
+          }
+        } catch {
+          // Transient error — continue polling.
+        }
+        setTimeout(() => { void poll(); }, pollInterval);
+      };
+
+      setTimeout(() => { void poll(); }, pollInterval);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set({ codexDeviceLogin: { status: "failed", error: message } });
+    }
+  },
+  clearCodexDeviceLogin: () => {
+    set({ codexDeviceLogin: { status: "idle" } });
   },
   runSearch: async (query, options = {}) => {
     const trimmed = query.trim();

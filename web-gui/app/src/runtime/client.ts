@@ -6,6 +6,7 @@ import type {
   AgentSummary,
   CredentialProfileStatus,
   CredentialStoreState,
+  CodexDeviceLoginResponse,
   DashboardMetric,
   MemorySourceContent,
   RuntimeBootstrap,
@@ -452,6 +453,16 @@ interface SetCredentialResponseDto {
   profile?: CredentialProfileStatusDto;
 }
 
+interface CodexDeviceStartDto {
+  ok?: boolean;
+  login_id?: string;
+  verification_url?: string;
+  user_code?: string;
+  interval?: number;
+  expires_at?: string;
+  job?: JobDto;
+}
+
 interface RuntimeWebSearchSummaryDto {
   enabled?: boolean;
   builtin_provider_enabled?: boolean;
@@ -869,6 +880,27 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         throw new Error("Holon API base URL is not configured.");
       }
       await deleteJson<unknown>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, requestHeaders);
+    },
+    async startCodexDeviceLogin(): Promise<CodexDeviceLoginResponse> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await postJson<CodexDeviceStartDto>(
+        fetchImpl,
+        baseUrl,
+        "/auth/codex/device/start",
+        {},
+        requestHeaders,
+      );
+      return {
+        ok: response.ok ?? false,
+        loginId: response.login_id ?? "",
+        verificationUrl: response.verification_url ?? "",
+        userCode: response.user_code ?? "",
+        interval: response.interval ?? 5,
+        expiresAt: response.expires_at ?? "",
+        jobId: response.job?.id ?? "",
+      };
     },
     async search(query: string, options: RuntimeSearchOptions = {}): Promise<SearchResponse> {
       if (!baseUrl) {
