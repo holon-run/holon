@@ -100,7 +100,7 @@ waitable, delegable, and deliverable.
 ## Status and compatibility
 
 The current recommended release is
-[`v0.22.0`](https://github.com/holon-run/holon/releases/tag/v0.22.0).
+[`v0.23.0`](https://github.com/holon-run/holon/releases/tag/v0.23.0).
 
 `v0.15.0` is the baseline release where the Holon Rust runtime enters public
 compatibility maintenance. Starting from this version, the project maintains

@@ -114,19 +114,28 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release adds a workspace file browsing API for the Web GUI, supports extended thinking for Anthropic transport with thinking block audit visibility, improves Web GUI task list and overview panel, unifies CLI HTTP communication through LocalClient, and fixes skill catalog infinite loops and agent-scoped skill detail endpoints.
+          This release adds Volcengine Anthropic-compatible providers with default transports, GPT-5.6 model entries, a Codex device OAuth job, a workspace file browser and resizable panels for the Web GUI, a Makefile build system for fresh clones, content sniffing for extensionless text files, and a non-blocking skill installer, alongside fixes for model provider settings, CORS serde defaults, stale workspace pruning, and max_output_tokens caps.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Add workspace file browsing API for the Web GUI ([#2006](https://github.com/holon-run/holon/pull/2006)).
-          - Support extended thinking for Anthropic transport with thinking block audit visibility ([#2005](https://github.com/holon-run/holon/pull/2005)).
-          - Improve Web GUI task list and overview panel ([#2001](https://github.com/holon-run/holon/pull/2001)).
-          - Unify CLI HTTP communication through LocalClient ([#2010](https://github.com/holon-run/holon/pull/2010)).
-          - Fix skill catalog infinite loop on persistent fetch errors ([#2012](https://github.com/holon-run/holon/pull/2012)).
-          - Fix agent-scoped skill detail endpoint and remove legacy_id compat ([#2008](https://github.com/holon-run/holon/pull/2008)).
-          - Improve error message when workdir does not exist ([#2009](https://github.com/holon-run/holon/pull/2009)).
+          - Add Volcengine Anthropic-compatible providers and default Volcengine transports to Anthropic-compatible ([#2016](https://github.com/holon-run/holon/pull/2016), [#2024](https://github.com/holon-run/holon/pull/2024)).
+          - Add GPT-5.6 Sol/Terra/Luna model catalog entries ([#2034](https://github.com/holon-run/holon/pull/2034)).
+          - Simplify model provider settings and fix device login flow ([#2026](https://github.com/holon-run/holon/pull/2026)).
+          - Add Codex device OAuth job ([#2021](https://github.com/holon-run/holon/pull/2021)).
+          - Add workspace file browser panel with directory navigation and file viewer ([#2018](https://github.com/holon-run/holon/pull/2018)).
+          - Add resizable right panel and file viewer as separate page ([#2019](https://github.com/holon-run/holon/pull/2019)).
+          - Add Makefile build system and fix build.rs for fresh clones ([#2035](https://github.com/holon-run/holon/pull/2035)).
+          - Add content sniff fallback for extensionless text files ([#2020](https://github.com/holon-run/holon/pull/2020)).
+          - Implement non-blocking skill install with localStorage job persistence ([#2015](https://github.com/holon-run/holon/pull/2015)).
+          - Refactor workspace module stabilization with API unification and test coverage ([#2027](https://github.com/holon-run/holon/pull/2027)).
+          - Remove web GUI dist from git tracking and build in CI ([#2025](https://github.com/holon-run/holon/pull/2025)).
+          - Fix CORS allowed_methods and allowed_headers serde defaults ([ccbb528](https://github.com/holon-run/holon/commit/ccbb5289)).
+          - Cap dashscope-token-plan and kimi-k2.7-code max_output_tokens ([#2023](https://github.com/holon-run/holon/pull/2023), [#2031](https://github.com/holon-run/holon/pull/2031)).
+          - Prune stale attached_workspaces when anchor paths become invalid ([#2032](https://github.com/holon-run/holon/pull/2032)).
+          - Preserve real error in wait condition row decoding ([#2017](https://github.com/holon-run/holon/pull/2017)).
+          - Fix skill catalog infinite loop on persistent fetch errors ([#2014](https://github.com/holon-run/holon/pull/2014)).
 
           ## Install
 
