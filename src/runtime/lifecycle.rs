@@ -919,6 +919,96 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    /// Lazily remove stale entries from `attached_workspaces`.
+    ///
+    /// An entry is stale when its workspace ID is absent from the workspace
+    /// registry, or when the registry entry's anchor path no longer exists on
+    /// disk. The active workspace is always preserved, even if its anchor is
+    /// currently invalid, to avoid silently clearing the execution context.
+    ///
+    /// Returns the list of workspace IDs that were pruned (empty if nothing
+    /// changed). Each pruned ID emits a `workspace_detached` audit event with
+    /// `reason: "stale_workspace_anchor"`.
+    pub async fn prune_stale_attached_workspaces(&self) -> Result<Vec<String>> {
+        let bridge = match self.inner.host_bridge.as_ref() {
+            Some(b) => b,
+            None => return Ok(Vec::new()), // no registry to check against
+        };
+
+        // Collect all needed state under a single agent lock acquisition.
+        let (agent_id, canonical_agent_home_id, active_workspace_id, attached_ids): (
+            String,
+            String,
+            Option<String>,
+            Vec<String>,
+        ) = {
+            let guard = self.inner.agent.lock().await;
+            let canonical = crate::types::agent_home_workspace_id(&guard.state.id);
+            (
+                guard.state.id.clone(),
+                canonical,
+                guard
+                    .state
+                    .active_workspace_entry
+                    .as_ref()
+                    .map(|e| e.workspace_id.clone()),
+                guard.state.attached_workspaces.clone(),
+            )
+        };
+
+        let mut stale_ids = Vec::new();
+        for ws_id in &attached_ids {
+            // Never prune the active workspace or AgentHome (virtual, may not be in registry).
+            if Some(ws_id) == active_workspace_id.as_ref()
+                || ws_id == AGENT_HOME_WORKSPACE_ID
+                || ws_id == &canonical_agent_home_id
+            {
+                continue;
+            }
+
+            // Check registry: entry must exist and its anchor must be a real directory.
+            // Skip entries with registry errors rather than aborting the entire prune.
+            let entry = match bridge.workspace_entry_by_id(ws_id).await {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let is_stale = match &entry {
+                None => true, // ID not in registry
+                Some(e) => !e.workspace_anchor.is_dir(),
+            };
+            if is_stale {
+                stale_ids.push(ws_id.clone());
+            }
+        }
+
+        if stale_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Remove stale IDs and persist.
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard
+                .state
+                .attached_workspaces
+                .retain(|id| !stale_ids.contains(id));
+            guard.persist_state(&self.inner.storage)?;
+        }
+
+        for ws_id in &stale_ids {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "workspace_detached",
+                serde_json::json!({
+                    "agent_id": &agent_id,
+                    "workspace_id": ws_id,
+                    "reason": "stale_workspace_anchor",
+                }),
+            ))?;
+        }
+
+        Ok(stale_ids)
+    }
+
     pub(crate) async fn ensure_workspace_entry_for_path(
         &self,
         path: PathBuf,

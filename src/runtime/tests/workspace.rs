@@ -630,3 +630,146 @@ async fn wait_for_closure_blocks_until_foreground_work_clears() {
         .unwrap();
     assert_eq!(closure.outcome, ClosureOutcome::Completed);
 }
+
+// ---------------------------------------------------------------------------
+// prune_stale_attached_workspaces tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn prune_removes_workspace_id_missing_from_registry() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.attached_workspaces = vec![
+            AGENT_HOME_WORKSPACE_ID.to_string(),
+            "ws-stale-not-in-registry".to_string(),
+        ];
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
+    assert_eq!(pruned, vec!["ws-stale-not-in-registry".to_string()]);
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.attached_workspaces,
+        vec![AGENT_HOME_WORKSPACE_ID.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn prune_removes_workspace_with_deleted_anchor() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+
+    let project = tempdir().unwrap();
+    let entry = host
+        .ensure_workspace_entry(project.path().to_path_buf())
+        .unwrap();
+    let stale_id = entry.workspace_id.clone();
+    drop(project);
+
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.attached_workspaces =
+            vec![AGENT_HOME_WORKSPACE_ID.to_string(), stale_id.clone()];
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
+    assert_eq!(pruned, vec![stale_id.clone()]);
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.attached_workspaces,
+        vec![AGENT_HOME_WORKSPACE_ID.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn prune_preserves_active_workspace_even_when_stale() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+
+    let stale_active_id = "ws-stale-active".to_string();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.attached_workspaces =
+            vec![AGENT_HOME_WORKSPACE_ID.to_string(), stale_active_id.clone()];
+        guard.state.active_workspace_entry = Some(crate::types::ActiveWorkspaceEntry {
+            workspace_id: stale_active_id.clone(),
+            workspace_anchor: std::path::PathBuf::from("/nonexistent/path"),
+            execution_root_id: "canonical_root:ws-stale-active".into(),
+            execution_root: std::path::PathBuf::from("/nonexistent/path"),
+            projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+            access_mode: WorkspaceAccessMode::ExclusiveWrite,
+            cwd: std::path::PathBuf::from("/nonexistent/path"),
+            occupancy_id: None,
+            projection_metadata: None,
+        });
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
+    assert!(pruned.is_empty());
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.attached_workspaces.contains(&stale_active_id));
+}
+
+#[tokio::test]
+async fn prune_preserves_valid_workspaces() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+
+    let project = tempdir().unwrap();
+    let entry = host
+        .ensure_workspace_entry(project.path().to_path_buf())
+        .unwrap();
+    let valid_id = entry.workspace_id.clone();
+
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.attached_workspaces =
+            vec![AGENT_HOME_WORKSPACE_ID.to_string(), valid_id.clone()];
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
+    assert!(pruned.is_empty());
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.attached_workspaces.len(), 2);
+    assert!(state.attached_workspaces.contains(&valid_id));
+}
+
+#[tokio::test]
+async fn prune_emits_audit_events_for_removed_workspaces() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.attached_workspaces = vec![
+            AGENT_HOME_WORKSPACE_ID.to_string(),
+            "ws-stale-a".to_string(),
+            "ws-stale-b".to_string(),
+        ];
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
+    assert_eq!(pruned.len(), 2);
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    let detached_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "workspace_detached")
+        .collect();
+    assert_eq!(detached_events.len(), 2);
+
+    for event in &detached_events {
+        let data = event.data.as_object().unwrap();
+        assert_eq!(
+            data.get("reason").and_then(|v| v.as_str()),
+            Some("stale_workspace_anchor")
+        );
+    }
+}
