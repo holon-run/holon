@@ -3067,17 +3067,13 @@ mod tests {
     #[test]
     fn recent_turns_prefers_db_turn_records_when_available() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
         let mut operator = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -3149,17 +3145,13 @@ mod tests {
     #[test]
     fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
         let mut brief = BriefRecord::new(
             "default",
             BriefKind::Result,
@@ -3226,17 +3218,13 @@ mod tests {
     #[test]
     fn recent_turns_hydrates_turn_record_references_outside_recent_windows() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
+        let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
         let mut operator = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -3366,7 +3354,7 @@ mod tests {
     #[test]
     fn recent_turns_renders_full_operator_input_with_brief_ref() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let long_tail = "final-token-visible-after-old-preview-limit";
         let operator_text = format!(
             "{} {long_tail}",
@@ -3445,7 +3433,7 @@ mod tests {
     #[test]
     fn older_recent_turn_operator_input_is_previewed_with_message_ref() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let long_tail = "older-operator-tail-hidden-behind-message-ref";
         let message = MessageEnvelope::new(
             "default",
@@ -3493,7 +3481,7 @@ mod tests {
     #[test]
     fn recent_turns_resolves_transcript_backed_brief_content() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -3549,7 +3537,7 @@ mod tests {
     #[test]
     fn compaction_adds_summary_when_message_count_exceeds_threshold() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for idx in 0..6 {
             let msg = MessageEnvelope::new(
                 "default",
@@ -3587,7 +3575,7 @@ mod tests {
     #[test]
     fn structured_working_memory_keeps_compression_epoch_stable_during_legacy_compaction() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for idx in 0..6 {
             let msg = MessageEnvelope::new(
                 "default",
@@ -3634,7 +3622,7 @@ mod tests {
     #[test]
     fn context_fingerprint_changes_when_projected_context_lineage_changes() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for idx in 0..6 {
             let msg = MessageEnvelope::new(
                 "default",
@@ -3763,7 +3751,7 @@ mod tests {
     #[test]
     fn build_context_folds_latest_result_into_recent_turns_and_keeps_generic_context_contract() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut prior_message = MessageEnvelope::new(
             "default",
@@ -3883,7 +3871,7 @@ mod tests {
     #[test]
     fn build_context_does_not_render_recent_turns_from_orphan_recent_evidence() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         storage
             .append_message(&MessageEnvelope::new(
@@ -4092,7 +4080,7 @@ mod tests {
     #[test]
     fn recent_turns_compacts_older_successful_tool_executions() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let older_message = MessageEnvelope::new(
             "default",
@@ -4292,7 +4280,7 @@ mod tests {
     #[test]
     fn build_context_folds_briefs_into_recent_turns_without_parallel_brief_section() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let prior_message = MessageEnvelope::new(
             "default",
@@ -4383,7 +4371,7 @@ mod tests {
     #[test]
     fn recent_turns_inlines_latest_result_beyond_old_preview_limit() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let tail = "latest-result-tail-visible-after-old-preview-limit";
         let prior_message = MessageEnvelope::new(
             "default",
@@ -4455,7 +4443,7 @@ mod tests {
     #[test]
     fn continuity_result_truncation_keeps_explicit_brief_ref() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -4516,7 +4504,7 @@ mod tests {
     #[test]
     fn nearby_turns_get_larger_result_previews_than_older_turns() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut messages = Vec::new();
         let mut briefs = Vec::new();
         let mut turns = Vec::new();
@@ -4587,7 +4575,7 @@ mod tests {
     #[test]
     fn build_context_skips_messages_covered_by_compacted_summary() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for idx in 0..20 {
             let message = MessageEnvelope::new(
                 "default",
@@ -4656,7 +4644,7 @@ mod tests {
     #[test]
     fn maybe_compact_agent_persists_message_count_without_compaction() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_message(&MessageEnvelope::new(
                 "default",
@@ -4690,7 +4678,7 @@ mod tests {
     #[test]
     fn maybe_compact_agent_clears_legacy_summary_when_working_memory_is_active() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for idx in 0..6 {
             storage
                 .append_message(&MessageEnvelope::new(
@@ -4732,7 +4720,7 @@ mod tests {
     #[test]
     fn build_context_omits_working_memory_sections_by_default() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -4788,7 +4776,7 @@ mod tests {
     #[test]
     fn build_context_keeps_verification_as_raw_evidence_without_promoting_session_fact() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut prior_message = MessageEnvelope::new(
             "default",
@@ -4907,7 +4895,7 @@ mod tests {
     #[test]
     fn build_context_does_not_emit_follow_up_specific_contracts() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -4968,7 +4956,7 @@ mod tests {
     #[test]
     fn build_context_lists_skill_metadata_without_skill_body() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5064,7 +5052,7 @@ mod tests {
     #[test]
     fn build_context_lists_agent_template_catalog_without_template_body() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5123,7 +5111,7 @@ mod tests {
     #[test]
     fn build_context_includes_worktree_session_when_active() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5180,7 +5168,7 @@ mod tests {
     #[test]
     fn build_context_includes_current_work_item_and_plan_sections() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5467,7 +5455,7 @@ mod tests {
     #[test]
     fn build_context_includes_empty_current_work_item_section_when_unfocused() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5514,7 +5502,7 @@ mod tests {
     #[test]
     fn build_context_includes_ranked_work_item_candidates_and_completion_reports() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5682,7 +5670,7 @@ mod tests {
     #[test]
     fn build_context_omits_worktree_session_when_not_active() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5724,7 +5712,7 @@ mod tests {
     #[test]
     fn build_context_includes_execution_environment() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5793,7 +5781,7 @@ mod tests {
     #[test]
     fn build_context_omits_active_tasks_when_none() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let built = context_for_storage(&storage, "default");
 
@@ -5806,7 +5794,7 @@ mod tests {
     #[test]
     fn build_context_includes_active_command_task_projection() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&active_task(
                 "task-running",
@@ -5855,7 +5843,7 @@ mod tests {
     #[test]
     fn build_context_sanitizes_active_task_scalars_and_command_preview() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let task = TaskRecord {
             summary: Some("Run verification\ninjected: true".to_string()),
             work_item_id: Some("work-current\nspoofed: true".to_string()),
@@ -5898,7 +5886,7 @@ mod tests {
     #[test]
     fn build_context_scopes_active_tasks_to_current_agent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&active_task(
                 "task-default",
@@ -5932,7 +5920,7 @@ mod tests {
     #[test]
     fn build_context_omits_terminal_tasks_from_active_tasks() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_task(&active_task(
                 "task-completed",
@@ -5953,7 +5941,7 @@ mod tests {
     #[test]
     fn build_context_limits_active_tasks_and_reports_hidden_count() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for index in 0..(ACTIVE_TASKS_CONTEXT_LIMIT + 1) {
             storage
                 .append_task(&active_task(
@@ -5985,7 +5973,7 @@ mod tests {
     #[test]
     fn build_context_includes_default_external_wake_ingress() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
             .append_external_trigger(&ExternalTriggerRecord {
                 external_trigger_id: "wake-default".into(),
@@ -6049,7 +6037,7 @@ mod tests {
     #[test]
     fn build_context_uses_latest_default_external_wake_ingress() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = chrono::Utc::now();
         storage
             .append_external_trigger(&ExternalTriggerRecord {
@@ -6060,9 +6048,9 @@ mod tests {
                 delivery_mode: CallbackDeliveryMode::WakeHint,
                 trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/old".into()),
                 token_hash: "redacted-old-token-hash".into(),
-                status: ExternalTriggerStatus::Active,
+                status: ExternalTriggerStatus::Revoked,
                 created_at: now - chrono::Duration::seconds(60),
-                revoked_at: None,
+                revoked_at: Some(now - chrono::Duration::seconds(30)),
                 last_delivered_at: None,
                 delivery_count: 0,
             })
@@ -6130,7 +6118,7 @@ mod tests {
     #[test]
     fn build_context_omits_system_tick_from_recent_turns() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let operator_message = MessageEnvelope::new(
             "default",
@@ -6191,7 +6179,7 @@ mod tests {
     #[test]
     fn build_context_includes_continuation_context_for_system_tick() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut system_tick = MessageEnvelope::new(
             "default",
@@ -6262,7 +6250,7 @@ mod tests {
     #[test]
     fn recent_turns_summarizes_wake_hint_without_inlining_payload() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let long_reason = format!("github inbox updated {}", "r".repeat(180));
         let long_source = format!("agentinbox{}", "s".repeat(120));
         let long_resource = format!("github:holon-run/holon#1683?{}", "q".repeat(240));
@@ -6352,7 +6340,7 @@ mod tests {
     #[test]
     fn build_context_includes_continuation_context_for_work_queue_system_tick() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut system_tick = MessageEnvelope::new(
             "default",
@@ -6415,7 +6403,7 @@ mod tests {
     #[test]
     fn recent_turns_summarizes_work_queue_tick_without_inlining_body() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let long_reason = format!("queued_available_{}", "r".repeat(180));
         let long_work_item = format!("work_1683{}", "w".repeat(120));
 
@@ -6494,7 +6482,7 @@ mod tests {
     #[test]
     fn recent_turns_generic_system_tick_summary_includes_subsystem() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut system_tick = MessageEnvelope::new(
             "default",
@@ -6558,7 +6546,7 @@ mod tests {
     #[test]
     fn build_context_anchors_latest_operator_input_for_runtime_continuation_without_work_item() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let operator_message = MessageEnvelope::new(
             "default",
@@ -6631,7 +6619,7 @@ mod tests {
     #[test]
     fn build_context_anchor_uses_operator_input_beyond_recent_window() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let operator_message = MessageEnvelope::new(
             "default",
@@ -6731,17 +6719,13 @@ mod tests {
     #[test]
     fn resume_override_anchor_ignores_legacy_operator_without_message_seq() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        storage
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-
         let mut legacy_without_sequence = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -6833,7 +6817,7 @@ mod tests {
     #[test]
     fn build_context_work_item_anchor_does_not_duplicate_work_item_projection() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let operator_message = MessageEnvelope::new(
             "default",
@@ -6922,7 +6906,7 @@ mod tests {
     #[test]
     fn build_context_keeps_full_current_input_body_for_long_operator_prompt() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let long_path =
             "/very/long/path/to/a/workspace/projects/example/agentinbox/operator-guides/agentinbox-cli-quickstart-for-review-workflow-2026-04.md";
@@ -6975,7 +6959,7 @@ mod tests {
     #[test]
     fn build_context_renders_provenance_admission_and_authority_labels() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let session = AgentState::new("default");
         let current_message = MessageEnvelope::new(
             "default",
@@ -7019,7 +7003,7 @@ mod tests {
     #[test]
     fn build_context_uses_budgeted_hot_tail_and_preserves_section_order() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         for text in [
             "Investigate the flaky runtime wake path and patch it.",
@@ -7147,7 +7131,7 @@ mod tests {
     #[test]
     fn build_context_omits_working_memory_delta_even_when_legacy_snapshot_exists() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -7193,7 +7177,7 @@ mod tests {
     #[test]
     fn build_context_selects_only_relevant_archived_episodes_that_fit_budget() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let old_episode = ContextEpisodeRecord {
             id: "ep_old".into(),
@@ -7325,7 +7309,7 @@ mod tests {
     #[test]
     fn build_context_excludes_episode_overlapping_recent_turn_window() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let archived_episode = ContextEpisodeRecord {
             id: "ep_archived".into(),
@@ -7412,7 +7396,7 @@ mod tests {
     #[test]
     fn build_context_orders_work_item_before_relevant_episode_memory() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let mut work_item =
             crate::types::WorkItemRecord::new("default", "Fix wake path", WorkItemState::Open);
@@ -7510,7 +7494,7 @@ mod tests {
     #[test]
     fn build_context_enforces_total_prompt_budget_across_large_sections() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -7847,7 +7831,7 @@ mod tests {
     fn build_context_omits_notes_catalog_when_no_notes_directory() {
         // tempdir() has no `notes/` subdirectory; the section must be absent.
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let current_message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -7885,7 +7869,7 @@ mod tests {
     #[test]
     fn build_context_projects_frontmatter_metadata_into_notes_catalog() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         write_note(
             dir.path(),
             "release.md",
@@ -7940,7 +7924,7 @@ mod tests {
     #[test]
     fn build_context_falls_back_when_note_has_no_frontmatter() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         write_note(
             dir.path(),
             "scratchpad.md",
@@ -7989,7 +7973,7 @@ mod tests {
     #[test]
     fn build_context_truncates_notes_catalog_to_item_and_char_limits() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let total = crate::notes_catalog::MAX_NOTES_IN_CATALOG + 5;
         for idx in 0..total {
             write_note(
@@ -8051,7 +8035,7 @@ mod tests {
         // its rendered output explicitly states it never overrides higher
         // priority context.
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         write_note(
             dir.path(),
             "rogue.md",

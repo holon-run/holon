@@ -5,7 +5,6 @@ use crate::types::{
     WorkItemContinuationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState,
     AGENT_HOME_WORKSPACE_ID,
 };
-use std::{fs::OpenOptions, io::Write};
 
 fn legacy_blocking_payload_task_for_work_item(
     task_id: &str,
@@ -307,7 +306,7 @@ async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
 async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut blocked = WorkItemRecord::new(
         "default",
         "blocked work with fallback recheck",
@@ -1535,20 +1534,6 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
     let mut legacy = WorkItemRecord::new("default", "Migrate inline plan", WorkItemState::Open);
     legacy.id = "legacy-plan-item".into();
     legacy.legacy_inline_plan = Some("Keep this legacy plan body in the artifact.".into());
-    let mut legacy_json = serde_json::to_value(&legacy).unwrap();
-    legacy_json["plan"] = serde_json::json!("Keep this legacy plan body in the artifact.");
-    let work_items_path = dir
-        .path()
-        .join(".holon")
-        .join("ledger")
-        .join("work_items.jsonl");
-    std::fs::create_dir_all(work_items_path.parent().unwrap()).unwrap();
-    let mut work_items_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&work_items_path)
-        .unwrap();
-    writeln!(work_items_file, "{}", legacy_json).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -1560,6 +1545,15 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
         context_config(),
     )
     .unwrap();
+
+    runtime.storage().append_work_item(&legacy).unwrap();
+
+    // legacy_inline_plan has skip_serializing, so it is stripped on DB write.
+    // Write the plan body to the artifact file directly, simulating the
+    // materialization that occurs during legacy JSONL import.
+    let plan_path = crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &legacy.id);
+    std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();
+    std::fs::write(&plan_path, "Keep this legacy plan body in the artifact.").unwrap();
 
     let updated = runtime
         .update_work_item_fields(
@@ -4323,7 +4317,7 @@ async fn reconcile_waiting_contract_keeps_waits_when_anchor_is_newly_established
 async fn current_closure_reports_continuable_for_current_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
@@ -4362,7 +4356,7 @@ async fn current_closure_reports_continuable_for_current_work_item() {
 async fn current_needs_input_work_item_waits_for_operator_without_work_signal() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut active = WorkItemRecord::new(
         "default",
         "choose implementation direction",
@@ -4409,7 +4403,7 @@ async fn current_needs_input_work_item_waits_for_operator_without_work_signal() 
 async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let current = WorkItemRecord::new(
         "default",
         "waiting for external review",
@@ -4477,7 +4471,7 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
 async fn current_closure_reports_continuable_for_queued_work_item_without_active_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let queued = WorkItemRecord::new(
         "default",
         "surface queued runtime cleanup",
@@ -4513,7 +4507,7 @@ async fn current_closure_reports_continuable_for_queued_work_item_without_active
 async fn queued_needs_input_work_item_is_not_runnable() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut queued =
         WorkItemRecord::new("default", "waiting planning candidate", WorkItemState::Open);
     queued.plan_status = WorkItemPlanStatus::NeedsInput;
@@ -4546,7 +4540,7 @@ async fn queued_needs_input_work_item_is_not_runnable() {
 async fn queued_notification_keeps_working_memory_unfocused_before_pick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
     storage.append_work_item(&queued).unwrap();
 

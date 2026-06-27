@@ -270,7 +270,7 @@ async fn malformed_task_message_does_not_exit_runtime_loop() {
 async fn runtime_interrupts_inflight_task_after_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     storage
         .append_task(&TaskRecord {
             id: "sleep-recover".into(),
@@ -379,7 +379,7 @@ async fn runtime_interrupts_inflight_task_after_restart() {
 async fn recovered_agent_with_none_workspace_initializes_active_entry() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
     // Create a recovered agent state without active_workspace_entry
     let mut agent = AgentState::new("default");
@@ -421,7 +421,7 @@ async fn recovered_agent_with_none_workspace_initializes_active_entry() {
 async fn recovered_agent_with_missing_worktree_clears_workspace_fields() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
     // Create a recovered agent with missing worktree session
     let mut agent = AgentState::new("default");

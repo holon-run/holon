@@ -322,7 +322,7 @@ mod tests {
 
     fn storage() -> (TempDir, AppStorage) {
         let dir = TempDir::new().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
         (dir, storage)
     }
 

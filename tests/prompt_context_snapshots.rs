@@ -392,7 +392,7 @@ fn append_work_item_todo(
 #[test]
 fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut previous_operator = MessageEnvelope::new(
         "default",
@@ -486,7 +486,7 @@ Current input:
 #[test]
 fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut operator_message = MessageEnvelope::new(
         "default",
@@ -641,7 +641,7 @@ Current input:
 #[test]
 fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut work_item = WorkItemRecord::new(
         "default",
@@ -734,7 +734,7 @@ Current input:
 #[test]
 fn system_tick_context_snapshot_renders_wake_continuation() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut system_tick = MessageEnvelope::new(
         "default",
@@ -840,7 +840,7 @@ Current input:
 #[test]
 fn callback_turn_context_snapshot_preserves_provenance_labels() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let callback_message = MessageEnvelope::new(
         "default",
@@ -896,7 +896,7 @@ Current input:
 #[test]
 fn task_result_context_snapshot_renders_follow_up_continuation() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut task_result = MessageEnvelope::new(
         "default",
@@ -970,7 +970,7 @@ Current input:
 #[test]
 fn active_work_with_queued_work_shows_both_items() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     // Create an current work item
     let mut active_work = WorkItemRecord::new(
@@ -1092,7 +1092,7 @@ Current input:
 #[test]
 fn operator_turn_without_working_memory_delta() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut work_item = WorkItemRecord::new("default", "Test delta absence", WorkItemState::Open);
     work_item.id = "work_no_delta".into();
@@ -1174,7 +1174,7 @@ Current input:
 #[test]
 fn callback_with_active_work_and_delta() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut work_item = WorkItemRecord::new("default", "Handle CI callback", WorkItemState::Open);
     work_item.id = "work_ci".into();
@@ -1275,7 +1275,7 @@ Current input:
 #[test]
 fn system_tick_with_waiting_work_item() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut waiting_work = WorkItemRecord::new(
         "default",
@@ -1405,7 +1405,7 @@ Current input:
 #[test]
 fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut work_item = WorkItemRecord::new(
         "default",
@@ -1510,7 +1510,7 @@ Current input:
 #[test]
 fn task_result_with_multiple_work_items() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     // Create completed work item
     let mut completed_work =
@@ -1640,7 +1640,7 @@ Current input:
 #[test]
 fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let mut work_item = WorkItemRecord::new(
         "default",
@@ -1821,7 +1821,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
 fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_discussion(
 ) -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let initial_issue_list = [
         "alpha: turn-local projection repeats stable runtime guidance",
@@ -2026,7 +2026,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
 #[test]
 fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() -> Result<()> {
     let dir = tempdir()?;
-    let storage = AppStorage::new(dir.path())?;
+    let storage = AppStorage::new_for_test(dir.path())?;
 
     let stale_operator = MessageEnvelope::new(
         "default",

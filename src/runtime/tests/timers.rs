@@ -5,7 +5,7 @@ use super::support::*;
 async fn runtime_fires_overdue_timer_after_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     storage
         .append_timer(&TimerRecord {
             id: "timer-recover".into(),
@@ -50,7 +50,7 @@ async fn runtime_fires_overdue_timer_after_restart() {
 async fn runtime_recovers_active_timer_without_next_fire_at() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     storage
         .append_timer(&TimerRecord {
             id: "timer-missing-next-fire".into(),

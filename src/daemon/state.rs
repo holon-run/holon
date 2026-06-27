@@ -272,9 +272,9 @@ pub(crate) fn clear_persisted_daemon_lifecycle_failures(config: &AppConfig) -> R
 }
 
 fn latest_public_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFailureSummary>> {
-    let host_storage = AppStorage::new_global(config.home_dir.join("host"))?;
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+    let host_storage = AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
     let mut latest = None;
     for identity in host_storage
         .latest_agent_identities()?
@@ -287,8 +287,8 @@ fn latest_public_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFai
         let storage = AppStorage::new_for_agent(
             config.agent_root_dir().join(&identity.agent_id),
             identity.agent_id.clone(),
+            runtime_db.clone(),
         )?;
-        storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
         let failure = storage
             .read_agent()?
             .and_then(|agent| agent.last_runtime_failure);

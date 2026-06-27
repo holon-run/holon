@@ -6,7 +6,7 @@ use crate::ingress::{WakeDisposition, WakeHint};
 async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
     agent.pending_wake_hint = Some(PendingWakeHint {
@@ -52,7 +52,7 @@ async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
 async fn recovered_duplicate_wake_hint_clears_pending_without_new_tick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let pending = PendingWakeHint {
         reason: "restart duplicate wake".into(),
         description: None,
@@ -190,7 +190,7 @@ async fn triggered_wake_hint_records_scheduler_decision_before_tick() {
 async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
@@ -232,7 +232,7 @@ async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
 async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
@@ -289,7 +289,7 @@ async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
 async fn idle_tick_suppresses_continue_active_after_model_reentry_task_result() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
@@ -343,7 +343,7 @@ async fn idle_tick_suppresses_continue_active_after_model_reentry_task_result() 
 async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
@@ -406,7 +406,7 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
 async fn runtime_surfaces_queued_work_item_with_work_queue_system_tick_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new(dir.path()).unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let queued = WorkItemRecord::new(
         "default",
         "surface queued runtime cleanup",

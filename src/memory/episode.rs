@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn refresh_episode_memory_finalizes_on_active_work_switch() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 3;
         agent.current_turn_id = Some("turn-switch-3".into());
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn refresh_episode_memory_finalizes_on_anchor_change_within_work_item() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 4;
         agent.current_turn_id = Some("turn-anchor-review".into());
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn refresh_episode_memory_starts_planning_anchor_without_work_item() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 2;
         agent.current_turn_id = Some("turn-planning-anchor".into());
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn refresh_episode_memory_finalizes_on_wait_boundary() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 6;
         agent.current_turn_id = Some("turn-stable-6".into());
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn refresh_episode_memory_skips_empty_turns_without_material_state() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 2;
         agent.total_message_count = 4;
@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn refresh_episode_memory_starts_next_builder_after_boundary_turn() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 5;
         agent.total_message_count = 11;

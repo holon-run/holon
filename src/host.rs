@@ -252,9 +252,11 @@ impl RuntimeHost {
     }
 
     pub fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
-        let storage =
-            AppStorage::new_for_agent(self.agent_data_dir(agent_id), agent_id.to_string())?;
-        storage.enable_scheduler_control_plane_db(self.runtime_db().clone())?;
+        let storage = AppStorage::new_for_agent(
+            self.agent_data_dir(agent_id),
+            agent_id.to_string(),
+            self.runtime_db().clone(),
+        )?;
         storage.enable_event_bus(self.inner.event_bus.clone())?;
         Ok(storage)
     }
@@ -267,8 +269,8 @@ impl RuntimeHost {
         let storage = AppStorage::open_read_only_for_agent(
             self.agent_data_dir(agent_id),
             agent_id.to_string(),
+            self.runtime_db().clone(),
         )?;
-        storage.enable_scheduler_control_plane_db(self.runtime_db().clone())?;
         Ok(storage)
     }
 
@@ -670,7 +672,11 @@ impl RuntimeHost {
             if !agent_home.exists() {
                 continue;
             }
-            let storage = AppStorage::new_for_agent(agent_home, identity.agent_id.clone())?;
+            let storage = AppStorage::new_for_agent(
+                agent_home,
+                identity.agent_id.clone(),
+                self.runtime_db().clone(),
+            )?;
             records.extend(storage.read_recent_external_triggers(usize::MAX)?);
         }
         self.inner
@@ -1762,21 +1768,21 @@ impl RuntimeHost {
 }
 
 fn import_host_registry_domains(config: &AppConfig, runtime_db: &RuntimeDb) -> Result<()> {
-    let host_storage = AppStorage::new_global(config.home_dir.join("host"))?;
+    let host_storage = AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
     if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
         runtime_db
             .workspace_entries()
-            .import_legacy(host_storage.read_recent_workspace_entries(usize::MAX)?)?;
+            .import_legacy(host_storage.read_legacy_workspace_entries_jsonl()?)?;
     }
     if !runtime_db.storage_domain_is_complete("workspace_occupancies", "db")? {
         runtime_db
             .workspace_occupancies()
-            .import_legacy(host_storage.read_recent_workspace_occupancies(usize::MAX)?)?;
+            .import_legacy(host_storage.read_legacy_workspace_occupancies_jsonl()?)?;
     }
     if !runtime_db.storage_domain_is_complete("agent_identities", "db")? {
         runtime_db
             .agent_identities()
-            .import_legacy(host_storage.read_recent_agent_identities(usize::MAX)?)?;
+            .import_legacy(host_storage.read_legacy_agent_identities_jsonl()?)?;
     } else {
         repair_completed_host_agent_identity_import(&host_storage, runtime_db)?;
     }
@@ -1788,7 +1794,7 @@ fn repair_completed_host_agent_identity_import(
     host_storage: &AppStorage,
     runtime_db: &RuntimeDb,
 ) -> Result<()> {
-    let host_identities = host_storage.latest_agent_identities()?;
+    let host_identities = host_storage.read_legacy_agent_identities_jsonl()?;
     if host_identities.is_empty() {
         return Ok(());
     }
@@ -1818,7 +1824,7 @@ fn repair_host_agent_legacy_evidence_import(
         return Ok(());
     }
     let mut agent_ids = host_storage
-        .latest_agent_identities()?
+        .read_legacy_agent_identities_jsonl()?
         .into_iter()
         .map(|record| record.agent_id)
         .collect::<BTreeSet<_>>();
@@ -1829,8 +1835,8 @@ fn repair_host_agent_legacy_evidence_import(
         if !agent_home.exists() {
             continue;
         }
-        let storage = AppStorage::new_for_agent(agent_home, agent_id.clone())?;
-        match storage.read_all_messages() {
+        let storage = AppStorage::new_for_agent(agent_home, agent_id.clone(), runtime_db.clone())?;
+        match storage.read_legacy_messages_jsonl() {
             Ok(messages) => {
                 let legacy_max_seq = messages
                     .iter()
@@ -1852,7 +1858,7 @@ fn repair_host_agent_legacy_evidence_import(
                 );
             }
         }
-        match storage.read_all_transcript() {
+        match storage.read_legacy_transcript_jsonl() {
             Ok(entries) => {
                 let legacy_max_seq = entries
                     .iter()
@@ -1874,30 +1880,20 @@ fn repair_host_agent_legacy_evidence_import(
                 );
             }
         }
-        match storage.latest_event_seq() {
-            Ok(Some(legacy_latest_seq)) => {
+        match storage.read_legacy_events_jsonl() {
+            Ok(events) => {
+                let legacy_latest_seq =
+                    events.iter().map(|e| e.event_seq).max().unwrap_or_default();
                 let db_latest_seq = runtime_db
                     .audit_events()
                     .latest_event_seq(Some(agent_id.as_str()))?
                     .unwrap_or_default();
                 if db_latest_seq < legacy_latest_seq {
-                    match storage.read_legacy_events_jsonl() {
-                        Ok(events) => {
-                            runtime_db
-                                .audit_events()
-                                .append_many(Some(agent_id.as_str()), &events)?;
-                        }
-                        Err(error) => {
-                            warn!(
-                                agent_id = %agent_id,
-                                error = %error,
-                                "failed to repair legacy audit event import for agent"
-                            );
-                        }
-                    }
+                    runtime_db
+                        .audit_events()
+                        .append_many(Some(agent_id.as_str()), &events)?;
                 }
             }
-            Ok(None) => {}
             Err(error) => {
                 warn!(
                     agent_id = %agent_id,
@@ -2256,8 +2252,12 @@ mod tests {
     async fn debug_prompt_preview_is_storage_only_and_leaves_queued_input_unchanged() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
-        let storage = AppStorage::new_for_agent(host.agent_data_dir(&agent_id), agent_id.clone())
-            .expect("storage");
+        let storage = AppStorage::new_for_agent(
+            host.agent_data_dir(&agent_id),
+            agent_id.clone(),
+            host.runtime_db().clone(),
+        )
+        .expect("storage");
         let mut message = MessageEnvelope::new(
             &agent_id,
             MessageKind::OperatorPrompt,
@@ -2303,8 +2303,12 @@ mod tests {
     async fn debug_prompt_preview_does_not_migrate_legacy_event_ledger() {
         let (_home, host) = test_host();
         let agent_id = host.config().default_agent_id.clone();
-        let storage = AppStorage::new_for_agent(host.agent_data_dir(&agent_id), agent_id.clone())
-            .expect("storage");
+        let storage = AppStorage::new_for_agent(
+            host.agent_data_dir(&agent_id),
+            agent_id.clone(),
+            host.runtime_db().clone(),
+        )
+        .expect("storage");
         let events_path = storage.data_dir().join(".holon/ledger/events.jsonl");
         fs::write(
             &events_path,
@@ -2519,7 +2523,7 @@ mod tests {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
+        let host_storage = AppStorage::new_jsonl_only(config.home_dir.join("host")).unwrap();
         host_storage
             .append_agent_identity(&AgentIdentityRecord::new(
                 "release-bot",
@@ -2648,7 +2652,7 @@ mod tests {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
+        let host_storage = AppStorage::new_jsonl_only(config.home_dir.join("host")).unwrap();
         host_storage
             .append_agent_identity(&AgentIdentityRecord::new(
                 "release-bot",
@@ -2704,7 +2708,7 @@ mod tests {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
+        let host_storage = AppStorage::new_jsonl_only(config.home_dir.join("host")).unwrap();
         host_storage
             .append_agent_identity(&AgentIdentityRecord::new(
                 "release-bot",
@@ -2716,7 +2720,11 @@ mod tests {
                 None,
             ))
             .unwrap();
-        let agent_storage = AppStorage::new(config.agent_root_dir().join("release-bot")).unwrap();
+        let agent_storage = AppStorage::new_for_agent_jsonl_only(
+            config.agent_root_dir().join("release-bot"),
+            "release-bot",
+        )
+        .unwrap();
         let message = MessageEnvelope::new(
             "release-bot",
             MessageKind::OperatorPrompt,
@@ -3354,7 +3362,12 @@ mod tests {
         let bridge = RuntimeHostBridge {
             inner: Arc::downgrade(&host.inner),
         };
-        let storage = AppStorage::new(fixture.config.data_dir.clone()).unwrap();
+        let storage = AppStorage::new_for_agent(
+            fixture.config.data_dir.clone(),
+            "default",
+            host.runtime_db().clone(),
+        )
+        .unwrap();
         let mut state = AgentState::new("default");
         state.model_override = Some(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap());
         storage.write_agent(&state).unwrap();
@@ -3992,7 +4005,9 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_orphan")).unwrap();
+        let child_storage =
+            AppStorage::new_for_agent_for_test(host.agent_data_dir("child_orphan"), "child_orphan")
+                .unwrap();
         child_storage
             .write_agent(&AgentState::new("child_orphan"))
             .unwrap();
@@ -4065,7 +4080,11 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_parent_missing")).unwrap();
+        let child_storage = AppStorage::new_for_agent_for_test(
+            host.agent_data_dir("child_parent_missing"),
+            "child_parent_missing",
+        )
+        .unwrap();
         child_storage
             .write_agent(&AgentState::new("child_parent_missing"))
             .unwrap();
@@ -4088,7 +4107,12 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = AppStorage::new(host.agent_data_dir(&parent_agent_id)).unwrap();
+        let parent_storage = AppStorage::new_for_agent(
+            host.agent_data_dir(&parent_agent_id),
+            &parent_agent_id,
+            host.runtime_db().clone(),
+        )
+        .unwrap();
         parent_storage
             .append_task(&TaskRecord {
                 id: "task-stop".into(),
@@ -4119,7 +4143,9 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_stop")).unwrap();
+        let child_storage =
+            AppStorage::new_for_agent_for_test(host.agent_data_dir("child_stop"), "child_stop")
+                .unwrap();
         child_storage
             .write_agent(&AgentState::new("child_stop"))
             .unwrap();
@@ -4182,8 +4208,12 @@ mod tests {
     #[tokio::test]
     async fn host_shutdown_preserves_public_agent_durable_status() {
         let (_home, host) = test_host();
-        let storage =
-            AppStorage::new(host.agent_data_dir(&host.config().default_agent_id)).unwrap();
+        let storage = AppStorage::new_for_agent(
+            host.agent_data_dir(&host.config().default_agent_id),
+            &host.config().default_agent_id.clone(),
+            host.runtime_db().clone(),
+        )
+        .unwrap();
         let mut state = AgentState::new(&host.config().default_agent_id);
         state.status = AgentStatus::Stopped;
         storage.write_agent(&state).unwrap();
@@ -4193,9 +4223,6 @@ mod tests {
 
         let persisted = storage.read_agent().unwrap().unwrap();
         assert_eq!(persisted.status, AgentStatus::Stopped);
-        storage
-            .enable_scheduler_control_plane_db(host.runtime_db().clone())
-            .unwrap();
         let events = storage.read_recent_events(16).unwrap();
         assert!(events
             .iter()
@@ -4247,10 +4274,6 @@ mod tests {
             .expect("aborted run should persist a terminal record");
         assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
         assert_eq!(terminal.reason.as_deref(), Some("daemon_shutdown"));
-
-        storage
-            .enable_scheduler_control_plane_db(host.runtime_db().clone())
-            .unwrap();
         let events = storage.read_recent_events(32).unwrap();
         assert!(events.iter().any(|event| {
             event.kind == "runtime_service_shutdown_requested"

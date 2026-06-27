@@ -271,7 +271,11 @@ async fn daemon_status_surfaces_persisted_last_failure_when_runtime_stopped() {
 #[tokio::test]
 async fn daemon_status_surfaces_db_only_public_agent_runtime_failure_when_stopped() {
     let config = test_config();
-    let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
+    let runtime_db =
+        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+            .unwrap();
+    let host_storage =
+        AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone()).unwrap();
     let identity = AgentIdentityRecord::new(
         "public-agent",
         AgentKind::Named,
@@ -282,9 +286,6 @@ async fn daemon_status_surfaces_db_only_public_agent_runtime_failure_when_stoppe
         None,
     );
     host_storage.append_agent_identity(&identity).unwrap();
-    let runtime_db =
-        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
-            .unwrap();
     let failure = RuntimeFailureSummary {
         occurred_at: Utc::now(),
         summary: "public runtime failed".into(),
