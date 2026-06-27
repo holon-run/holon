@@ -2166,7 +2166,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "kimi-k2.7-code",
             "Kimi K2.7 Code",
             262_144,
-            65_536,
+            // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
+            32_768,
             true,
             false,
         ),
@@ -2274,7 +2275,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "kimi-k2.7-code",
             "Kimi K2.7 Code",
             262_144,
-            65_536,
+            // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
+            32_768,
             true,
             false,
         ),
