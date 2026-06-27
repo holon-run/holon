@@ -38,9 +38,15 @@ pub struct ApiCorsConfigFile {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_origins: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default = "default_api_cors_allowed_methods",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub allowed_methods: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default = "default_api_cors_allowed_headers",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub allowed_headers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_credentials: Option<bool>,
