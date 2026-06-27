@@ -1473,7 +1473,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             1_000_000,
-            384_000,
+            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
             true,
             false,
         ),
@@ -1482,7 +1482,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "deepseek-v4-flash",
             "DeepSeek V4 Flash",
             1_000_000,
-            384_000,
+            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
             true,
             false,
         ),
@@ -1500,7 +1500,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "kimi-k2.7-code",
             "kimi-k2.7-code",
             262_144,
-            98_304,
+            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
             true,
             true,
         ),
@@ -1509,7 +1509,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "kimi-k2.6",
             "kimi-k2.6",
             262_144,
-            98_304,
+            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
             true,
             true,
         ),
@@ -1527,7 +1527,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "glm-5.2",
             "glm-5.2",
             1_000_000,
-            131_072,
+            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
             true,
             false,
         ),
@@ -1536,7 +1536,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "glm-5.1",
             "glm-5.1",
             202_752,
-            131_072,
+            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
             true,
             false,
         ),
