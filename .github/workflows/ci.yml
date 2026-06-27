@@ -10,6 +10,7 @@ on:
       - "src/**"
       - "tests/**"
       - "builtin_templates/**"
+      - "web-gui/**"
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +20,7 @@ on:
       - "src/**"
       - "tests/**"
       - "builtin_templates/**"
+      - "web-gui/**"
 
 permissions:
   contents: read
@@ -31,6 +33,17 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build web GUI
+        working-directory: web-gui/app
+        run: |
+          npm ci
+          npm run build
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,6 +68,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build web GUI
+        working-directory: web-gui/app
+        run: |
+          npm ci
+          npm run build
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
