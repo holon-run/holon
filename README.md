@@ -258,7 +258,14 @@ Holon's documentation is organized into three layers. See
 
 ## Build from source
 
+The Rust binary embeds web GUI assets at compile time via `rust-embed`. Build
+the frontend first, then compile the binary:
+
 ```bash
+cd web-gui/app
+npm ci
+npm run build
+cd ../..
 cargo install --path .
 holon --help
 ```
