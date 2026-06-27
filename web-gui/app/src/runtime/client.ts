@@ -279,19 +279,24 @@ interface WorkItemDto {
 }
 
 interface AgentWorkspaceDto {
-    active_workspace_entry?: AgentListEntryDto["active_workspace_entry"];
-    workspace_entries?: Array<{
+    workspaces?: Array<{
       workspace_id: string;
-      workspace_anchor: string;
       workspace_alias?: string | null;
+      workspace_anchor?: string | null;
       repo_name?: string | null;
+      is_active?: boolean;
+      execution_root_id?: string | null;
+      execution_root?: string | null;
+      cwd?: string | null;
+      projection_kind?: string | null;
+      access_mode?: string | null;
+      worktree?: {
+        branch?: string | null;
+        path?: string | null;
+        original_branch?: string | null;
+        original_cwd?: string | null;
+      } | null;
     }>;
-    worktree_session?: {
-      original_branch?: string;
-      original_cwd?: string;
-      worktree_branch?: string;
-      worktree_path?: string;
-    } | null;
 }
 
 type BriefRecordDto = RuntimeBriefRecord;
@@ -1497,26 +1502,24 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const id = entry.identity?.agent_id ?? state?.agent?.agent?.id ?? "unknown-agent";
   const status = state?.agent?.agent?.status ?? entry.status ?? "unknown";
   const profile = compactJoin([entry.identity?.visibility ?? "public", entry.identity?.ownership, entry.identity?.profile_preset]);
-  const workspaceEntry = state?.workspace?.active_workspace_entry ?? entry.active_workspace_entry;
-  const workspace = workspaceEntry?.workspace_alias ?? workspaceEntry?.workspace_id ?? state?.workspace?.worktree_session?.worktree_branch ?? "not bound";
-  const workspaceSummary = projectWorkspace(workspaceEntry, state?.workspace?.worktree_session);
-  const workspaceEntries = [...(state?.workspace?.workspace_entries ?? [])];
-  if (
-    workspaceEntry?.workspace_id &&
-    !workspaceEntries.some((e) => e.workspace_id === workspaceEntry.workspace_id)
-  ) {
-    workspaceEntries.push({
-      workspace_id: workspaceEntry.workspace_id,
-      workspace_anchor: workspaceEntry.workspace_anchor ?? workspaceEntry.execution_root ?? workspaceEntry.cwd ?? workspaceEntry.workspace_id,
-      workspace_alias: workspaceEntry.workspace_alias,
-    });
-  }
-  const attachedWorkspaces = workspaceEntries.map((e) => ({
-    workspaceId: e.workspace_id,
-    name: e.workspace_alias ?? basename(e.workspace_anchor) ?? e.workspace_id,
-    anchor: e.workspace_anchor,
-    executionRootId: workspaceEntry?.workspace_id === e.workspace_id ? workspaceEntry?.execution_root_id : undefined,
-    repoName: e.repo_name ?? undefined,
+  const wsList = state?.workspace?.workspaces ?? [];
+  const activeWs = wsList.find((w) => w.is_active);
+  // Fallback to list entry's active_workspace_entry when state hasn't loaded yet.
+  const listEntry = activeWs ? undefined : entry.active_workspace_entry;
+  const workspace = activeWs
+    ? activeWs.workspace_alias ?? activeWs.workspace_id ?? activeWs.worktree?.branch ?? "not bound"
+    : listEntry?.workspace_alias ?? listEntry?.workspace_id ?? "not bound";
+  const workspaceSummary = activeWs
+    ? projectWorkspaceFromInfo(activeWs)
+    : listEntry
+      ? projectWorkspaceFromListEntry(listEntry)
+      : undefined;
+  const attachedWorkspaces = wsList.map((w) => ({
+    workspaceId: w.workspace_id,
+    name: w.workspace_alias ?? basename(w.workspace_anchor ?? w.workspace_id) ?? w.workspace_id,
+    anchor: w.workspace_anchor ?? w.workspace_id,
+    executionRootId: w.execution_root_id ?? undefined,
+    repoName: w.repo_name ?? undefined,
   }));
   const currentWork = selectCurrentWork(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
@@ -1563,34 +1566,51 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   };
 }
 
-function projectWorkspace(
-  workspaceEntry: AgentListEntryDto["active_workspace_entry"],
-  worktreeSession?: AgentWorkspaceDto["worktree_session"],
-): WorkspaceSummary | undefined {
-  if (!workspaceEntry && !worktreeSession) return undefined;
-  const metadata = workspaceEntry?.projection_metadata;
-  const anchor = workspaceEntry?.workspace_anchor ?? workspaceEntry?.execution_root ?? workspaceEntry?.cwd ?? "—";
-  const name = workspaceEntry?.workspace_alias ?? basename(anchor) ?? workspaceEntry?.workspace_id ?? "not bound";
-  const worktreeBranch = metadata?.worktree_branch ?? worktreeSession?.worktree_branch;
-  const worktreePath = metadata?.worktree_path ?? worktreeSession?.worktree_path;
+function projectWorkspaceFromInfo(ws: NonNullable<AgentWorkspaceDto["workspaces"]>[number]): WorkspaceSummary {
+  const anchor = ws.workspace_anchor ?? ws.execution_root ?? ws.cwd ?? "—";
+  const name = ws.workspace_alias ?? basename(anchor) ?? ws.workspace_id ?? "not bound";
+  const wt = ws.worktree;
   return {
-    id: workspaceEntry?.workspace_id ?? "not bound",
+    id: ws.workspace_id,
     name,
     anchor,
-    executionRootId: workspaceEntry?.execution_root_id,
-    projectionKind: workspaceEntry?.projection_kind,
-    accessMode: workspaceEntry?.access_mode,
-    executionRoot: workspaceEntry?.execution_root,
-    cwd: workspaceEntry?.cwd,
-    worktree:
-      worktreeBranch || worktreePath
-        ? {
-            branch: worktreeBranch,
-            path: worktreePath,
-            originalBranch: worktreeSession?.original_branch,
-            originalCwd: worktreeSession?.original_cwd,
-          }
-        : undefined,
+    executionRootId: ws.execution_root_id ?? undefined,
+    projectionKind: ws.projection_kind ?? undefined,
+    accessMode: ws.access_mode ?? undefined,
+    executionRoot: ws.execution_root ?? undefined,
+    cwd: ws.cwd ?? undefined,
+    worktree: wt
+      ? {
+          branch: wt.branch ?? undefined,
+          path: wt.path ?? undefined,
+          originalBranch: wt.original_branch ?? undefined,
+          originalCwd: wt.original_cwd ?? undefined,
+        }
+      : undefined,
+  };
+}
+
+function projectWorkspaceFromListEntry(entry: NonNullable<AgentListEntryDto["active_workspace_entry"]>): WorkspaceSummary {
+  const metadata = entry.projection_metadata;
+  const anchor = entry.workspace_anchor ?? entry.execution_root ?? entry.cwd ?? "—";
+  const name = entry.workspace_alias ?? basename(anchor) ?? entry.workspace_id ?? "not bound";
+  return {
+    id: entry.workspace_id ?? "not bound",
+    name,
+    anchor,
+    executionRootId: entry.execution_root_id,
+    projectionKind: entry.projection_kind,
+    accessMode: entry.access_mode,
+    executionRoot: entry.execution_root,
+    cwd: entry.cwd,
+    worktree: metadata?.worktree_branch || metadata?.worktree_path
+      ? {
+          branch: metadata?.worktree_branch,
+          path: metadata?.worktree_path,
+          originalBranch: undefined,
+          originalCwd: undefined,
+        }
+      : undefined,
   };
 }
 

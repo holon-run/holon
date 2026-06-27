@@ -21,12 +21,11 @@ use crate::{
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
     types::{
-        ActiveWorkspaceEntry, AgentListEntry, AgentSummary, AuthorityClass, BriefRecord,
-        ExternalTriggerStateSnapshot, MessageEnvelope, OperatorNotificationRecord,
-        ResolvedModelAvailability, TaskInputResult, TaskOutputResult, TaskRecord,
-        TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord, TranscriptEntry,
-        TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord,
-        WorktreeSession,
+        AgentListEntry, AgentSummary, AuthorityClass, BriefRecord, ExternalTriggerStateSnapshot,
+        MessageEnvelope, OperatorNotificationRecord, ResolvedModelAvailability, TaskInputResult,
+        TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult, TimerRecord,
+        ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord,
+        WorkItemRecord,
     },
 };
 
@@ -113,13 +112,14 @@ pub struct StateSessionSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StateWorkspaceSnapshot {
     #[serde(default)]
-    pub attached_workspaces: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_workspace_entry: Option<ActiveWorkspaceEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_workspace_occupancy: Option<WorkspaceOccupancyRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_session: Option<WorktreeSession>,
+    pub workspaces: Vec<crate::types::AgentWorkspaceInfo>,
+}
+
+impl StateWorkspaceSnapshot {
+    /// Returns the active workspace entry, if any.
+    pub fn active_workspace(&self) -> Option<&crate::types::AgentWorkspaceInfo> {
+        self.workspaces.iter().find(|w| w.is_active)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

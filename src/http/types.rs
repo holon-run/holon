@@ -274,37 +274,13 @@ pub(crate) struct StateSessionSnapshot {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct StateWorkspaceSnapshot {
-    pub(crate) attached_workspaces: Vec<String>,
-    pub(crate) workspace_entries: Vec<WorkspaceEntrySummary>,
-    pub(crate) active_workspace_entry: Option<ActiveWorkspaceEntry>,
-    pub(crate) active_workspace_occupancy: Option<WorkspaceOccupancyRecord>,
-    pub(crate) worktree_session: Option<WorktreeSession>,
+    pub(crate) workspaces: Vec<crate::types::AgentWorkspaceInfo>,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct WorkspaceEntrySummary {
-    pub(crate) workspace_id: String,
-    pub(crate) workspace_anchor: String,
-    pub(crate) workspace_alias: Option<String>,
-    pub(crate) repo_name: Option<String>,
-}
-
-impl WorkspaceEntrySummary {
-    pub(crate) fn from_entry(entry: &crate::types::WorkspaceEntry) -> Self {
+impl Default for StateWorkspaceSnapshot {
+    fn default() -> Self {
         Self {
-            workspace_id: entry.workspace_id.clone(),
-            workspace_anchor: entry.workspace_anchor.display().to_string(),
-            workspace_alias: entry.workspace_alias.clone(),
-            repo_name: entry.repo_name.clone(),
-        }
-    }
-
-    pub(crate) fn from_active_entry(entry: &ActiveWorkspaceEntry) -> Self {
-        Self {
-            workspace_id: entry.workspace_id.clone(),
-            workspace_anchor: entry.workspace_anchor.display().to_string(),
-            workspace_alias: None,
-            repo_name: None,
+            workspaces: Vec::new(),
         }
     }
 }

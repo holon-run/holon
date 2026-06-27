@@ -467,10 +467,27 @@ impl TuiProjection {
             }
             "workspace_attached" => {
                 if let Some(workspace_id) = read_string(&event.data.payload, "workspace_id") {
-                    if !self.workspace.attached_workspaces.contains(&workspace_id) {
+                    if !self
+                        .workspace
+                        .workspaces
+                        .iter()
+                        .any(|w| w.workspace_id == workspace_id)
+                    {
                         self.workspace
-                            .attached_workspaces
-                            .push(workspace_id.clone());
+                            .workspaces
+                            .push(crate::types::AgentWorkspaceInfo {
+                                workspace_id: workspace_id.clone(),
+                                workspace_alias: None,
+                                workspace_anchor: None,
+                                repo_name: None,
+                                is_active: false,
+                                execution_root_id: None,
+                                execution_root: None,
+                                cwd: None,
+                                projection_kind: None,
+                                access_mode: None,
+                                worktree: None,
+                            });
                         self.agent.agent.attached_workspaces.push(workspace_id);
                     }
                     self.stale_slices.remove(&ProjectionSlice::Agent);
@@ -482,8 +499,8 @@ impl TuiProjection {
             "workspace_detached" => {
                 if let Some(workspace_id) = read_string(&event.data.payload, "workspace_id") {
                     self.workspace
-                        .attached_workspaces
-                        .retain(|id| id != &workspace_id);
+                        .workspaces
+                        .retain(|w| w.workspace_id != workspace_id);
                     self.agent
                         .agent
                         .attached_workspaces
@@ -515,10 +532,15 @@ impl TuiProjection {
                     .cloned()
                     .and_then(decode_value::<WorktreeSession>)
                 {
-                    self.workspace.worktree_session = Some(worktree.clone());
                     self.agent.agent.worktree_session = Some(worktree.clone());
-                    if let Some(entry) = &mut self.workspace.active_workspace_entry {
-                        entry.cwd = worktree.worktree_path.clone();
+                    if let Some(ws) = self.workspace.workspaces.iter_mut().find(|w| w.is_active) {
+                        ws.cwd = Some(worktree.worktree_path.display().to_string());
+                        ws.worktree = Some(crate::types::WorktreeInfo {
+                            branch: Some(worktree.worktree_branch.clone()),
+                            path: Some(worktree.worktree_path.display().to_string()),
+                            original_branch: Some(worktree.original_branch.clone()),
+                            original_cwd: Some(worktree.original_cwd.display().to_string()),
+                        });
                     }
                     if let Some(entry) = &mut self.agent.agent.active_workspace_entry {
                         entry.cwd = worktree.worktree_path;
@@ -529,11 +551,12 @@ impl TuiProjection {
                 }
             }
             "worktree_exited" => {
-                self.workspace.worktree_session = None;
                 self.agent.agent.worktree_session = None;
-                // Restore cwd to workspace_anchor from active_workspace_entry
-                if let Some(entry) = &mut self.workspace.active_workspace_entry {
-                    entry.cwd = entry.workspace_anchor.clone();
+                if let Some(ws) = self.workspace.workspaces.iter_mut().find(|w| w.is_active) {
+                    if let Some(anchor) = ws.workspace_anchor.clone() {
+                        ws.cwd = Some(anchor);
+                    }
+                    ws.worktree = None;
                 }
                 if let Some(entry) = &mut self.agent.agent.active_workspace_entry {
                     entry.cwd = entry.workspace_anchor.clone();
@@ -1073,10 +1096,11 @@ impl TuiProjection {
         self.session.pending_count = state.pending;
         self.session.last_turn = state.last_turn_terminal.clone();
 
-        self.workspace.attached_workspaces = state.attached_workspaces.clone();
-        self.workspace.active_workspace_entry = state.active_workspace_entry.clone();
-        self.workspace.active_workspace_occupancy = None;
-        self.workspace.worktree_session = state.worktree_session.clone();
+        self.workspace.workspaces = build_workspace_snapshot(
+            &state.attached_workspaces,
+            state.active_workspace_entry.as_ref(),
+            state.worktree_session.as_ref(),
+        );
 
         self.agent.agent = state;
         self.agent.active_workspace_occupancy = None;
@@ -1111,9 +1135,7 @@ impl TuiProjection {
                     .as_ref()
                     .is_some_and(|entry| entry.workspace_id == active_workspace_id) => {}
             Some(_) => {
-                self.workspace.active_workspace_entry = None;
-                self.workspace.active_workspace_occupancy = None;
-                self.workspace.worktree_session = None;
+                self.workspace.workspaces.clear();
                 self.agent.agent.active_workspace_entry = None;
                 self.agent.active_workspace_occupancy = None;
                 self.agent.agent.worktree_session = None;
@@ -1205,11 +1227,6 @@ impl TuiProjection {
             return false;
         };
 
-        if !self.workspace.attached_workspaces.contains(&workspace_id) {
-            self.workspace
-                .attached_workspaces
-                .push(workspace_id.clone());
-        }
         if !self.agent.agent.attached_workspaces.contains(&workspace_id) {
             self.agent
                 .agent
@@ -1229,9 +1246,39 @@ impl TuiProjection {
             projection_metadata: None,
         };
 
-        self.workspace.active_workspace_entry = Some(entry.clone());
-        self.workspace.active_workspace_occupancy = None;
-        self.workspace.worktree_session = None;
+        // Update or insert active workspace in workspaces array
+        if let Some(existing) = self
+            .workspace
+            .workspaces
+            .iter_mut()
+            .find(|w| w.workspace_id == workspace_id)
+        {
+            existing.is_active = true;
+            existing.workspace_anchor = Some(workspace_anchor.display().to_string());
+            existing.execution_root_id = Some(entry.execution_root_id.clone());
+            existing.execution_root = Some(entry.execution_root.display().to_string());
+            existing.cwd = Some(cwd.display().to_string());
+            existing.projection_kind = Some(projection_kind);
+            existing.access_mode = Some(access_mode);
+            existing.worktree = None;
+        } else {
+            self.workspace.workspaces.insert(
+                0,
+                crate::types::AgentWorkspaceInfo {
+                    workspace_id: workspace_id.clone(),
+                    workspace_alias: None,
+                    workspace_anchor: Some(workspace_anchor.display().to_string()),
+                    repo_name: None,
+                    is_active: true,
+                    execution_root_id: Some(entry.execution_root_id.clone()),
+                    execution_root: Some(entry.execution_root.display().to_string()),
+                    cwd: Some(cwd.display().to_string()),
+                    projection_kind: Some(projection_kind),
+                    access_mode: Some(access_mode),
+                    worktree: None,
+                },
+            );
+        }
 
         self.agent.agent.active_workspace_entry = Some(entry);
         self.agent.active_workspace_occupancy = None;
@@ -1297,9 +1344,7 @@ impl TuiProjection {
     }
 
     fn clear_workspace(&mut self) {
-        self.workspace.active_workspace_entry = None;
-        self.workspace.active_workspace_occupancy = None;
-        self.workspace.worktree_session = None;
+        self.workspace.workspaces.clear();
 
         self.agent.agent.active_workspace_entry = None;
         self.agent.active_workspace_occupancy = None;
@@ -1309,6 +1354,66 @@ impl TuiProjection {
 
 fn decode_payload<T: DeserializeOwned>(payload: &Value) -> Option<T> {
     decode_value(payload.clone())
+}
+
+/// Build a `Vec<AgentWorkspaceInfo>` from agent state fields.
+/// Active workspace gets full runtime info; others get identity-only info.
+fn build_workspace_snapshot(
+    attached_ids: &[String],
+    active_entry: Option<&ActiveWorkspaceEntry>,
+    worktree_session: Option<&WorktreeSession>,
+) -> Vec<crate::types::AgentWorkspaceInfo> {
+    use crate::types::{AgentWorkspaceInfo, WorktreeInfo};
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut result: Vec<AgentWorkspaceInfo> = Vec::new();
+
+    // Active workspace first (with full runtime info).
+    if let Some(entry) = active_entry {
+        seen.insert(entry.workspace_id.clone());
+        let worktree = worktree_session.map(|s| WorktreeInfo {
+            branch: Some(s.worktree_branch.clone()),
+            path: Some(s.worktree_path.display().to_string()),
+            original_branch: Some(s.original_branch.clone()),
+            original_cwd: Some(s.original_cwd.display().to_string()),
+        });
+        result.push(AgentWorkspaceInfo {
+            workspace_id: entry.workspace_id.clone(),
+            workspace_alias: None,
+            workspace_anchor: Some(entry.workspace_anchor.display().to_string()),
+            repo_name: None,
+            is_active: true,
+            execution_root_id: Some(entry.execution_root_id.clone()),
+            execution_root: Some(entry.execution_root.display().to_string()),
+            cwd: Some(entry.cwd.display().to_string()),
+            projection_kind: Some(entry.projection_kind),
+            access_mode: Some(entry.access_mode),
+            worktree,
+        });
+    }
+
+    // Remaining attached workspaces (identity-only).
+    for ws_id in attached_ids {
+        if !seen.contains(ws_id) {
+            seen.insert(ws_id.clone());
+            result.push(AgentWorkspaceInfo {
+                workspace_id: ws_id.clone(),
+                workspace_alias: None,
+                workspace_anchor: None,
+                repo_name: None,
+                is_active: false,
+                execution_root_id: None,
+                execution_root: None,
+                cwd: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree: None,
+            });
+        }
+    }
+
+    result
 }
 
 fn decode_value<T: DeserializeOwned>(value: Value) -> Option<T> {
@@ -1727,7 +1832,6 @@ mod tests {
             TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage, TurnTerminalKind,
             TurnTerminalRecord, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
             WaitingIntentSummary, WaitingReason, WorkItemRecord, WorkItemState,
-            WorkspaceOccupancyRecord, WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -2687,17 +2791,15 @@ mod tests {
         assert_eq!(
             projection
                 .workspace
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.workspace_id.as_str()),
+                .active_workspace()
+                .map(|ws| ws.workspace_id.as_str()),
             Some("ws-main")
         );
         assert_eq!(
             projection
                 .workspace
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.projection_kind),
+                .active_workspace()
+                .and_then(|ws| ws.projection_kind),
             Some(WorkspaceProjectionKind::GitWorktreeRoot)
         );
         assert_eq!(
@@ -2712,13 +2814,12 @@ mod tests {
         assert!(projection
             .stale_slices
             .contains(&ProjectionSlice::Workspace));
-        assert!(projection.workspace.active_workspace_occupancy.is_none());
     }
 
     #[test]
     fn projection_updates_workspace_from_workspace_used_event() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
-        projection.agent.agent.worktree_session = projection.workspace.worktree_session.clone();
+        // worktree_session is now part of the unified workspaces array
 
         projection.apply_event(
             sample_event(
@@ -2736,13 +2837,12 @@ mod tests {
             &test_log_writer(),
         );
 
-        let entry = projection
+        let ws = projection
             .workspace
-            .active_workspace_entry
-            .as_ref()
+            .active_workspace()
             .expect("workspace_used should update active workspace");
-        assert_eq!(entry.workspace_id, crate::types::AGENT_HOME_WORKSPACE_ID);
-        assert_eq!(entry.execution_root, PathBuf::from("/tmp/agent-home"));
+        assert_eq!(ws.workspace_id, crate::types::AGENT_HOME_WORKSPACE_ID);
+        assert_eq!(ws.execution_root.as_deref(), Some("/tmp/agent-home"));
         assert_eq!(
             projection
                 .agent
@@ -2759,12 +2859,15 @@ mod tests {
         assert_eq!(
             projection
                 .workspace
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.cwd.as_path()),
-            Some(PathBuf::from("/tmp/agent-home").as_path())
+                .active_workspace()
+                .and_then(|ws| ws.cwd.as_deref()),
+            Some("/tmp/agent-home")
         );
-        assert!(projection.workspace.worktree_session.is_none());
+        assert!(projection
+            .workspace
+            .active_workspace()
+            .and_then(|w| w.worktree.as_ref())
+            .is_none());
         assert!(projection.agent.agent.worktree_session.is_none());
     }
 
@@ -3122,9 +3225,8 @@ mod tests {
         assert_eq!(
             projection
                 .workspace
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.workspace_id.as_str()),
+                .active_workspace()
+                .map(|ws| ws.workspace_id.as_str()),
             Some("legacy-ws")
         );
         assert!(!projection.stale_slices.contains(&ProjectionSlice::Session));
@@ -3146,14 +3248,12 @@ mod tests {
         assert!(projection
             .stale_slices
             .contains(&ProjectionSlice::Workspace));
-        assert!(projection.workspace.active_workspace_occupancy.is_none());
         assert!(projection.agent.active_workspace_occupancy.is_none());
         assert_eq!(
             projection
                 .workspace
-                .active_workspace_entry
-                .as_ref()
-                .map(|e| e.workspace_id.as_str()),
+                .active_workspace()
+                .map(|ws| ws.workspace_id.as_str()),
             Some("ws-updated")
         );
     }
@@ -3184,18 +3284,17 @@ mod tests {
         assert_eq!(
             projection
                 .workspace
-                .worktree_session
-                .as_ref()
-                .map(|ws| ws.worktree_branch.as_str()),
+                .active_workspace()
+                .and_then(|ws| ws.worktree.as_ref())
+                .and_then(|wt| wt.branch.as_deref()),
             Some("feature/demo")
         );
         assert_eq!(
             projection
                 .workspace
-                .active_workspace_entry
-                .as_ref()
-                .map(|e| e.cwd.as_path()),
-            Some(PathBuf::from("/tmp/ws-boot/feature").as_path())
+                .active_workspace()
+                .and_then(|ws| ws.cwd.as_deref()),
+            Some("/tmp/ws-boot/feature")
         );
 
         projection.apply_event(
@@ -3213,7 +3312,11 @@ mod tests {
         assert!(projection
             .stale_slices
             .contains(&ProjectionSlice::Workspace));
-        assert!(projection.workspace.worktree_session.is_none());
+        assert!(projection
+            .workspace
+            .active_workspace()
+            .and_then(|w| w.worktree.as_ref())
+            .is_none());
     }
 
     fn sample_event(kind: &str, payload: Value) -> AgentStreamEvent {
@@ -3346,33 +3449,24 @@ mod tests {
             }],
             operator_notifications: Vec::new(),
             workspace: StateWorkspaceSnapshot {
-                attached_workspaces: vec!["ws-boot".into()],
-                active_workspace_entry: Some(crate::types::ActiveWorkspaceEntry {
+                workspaces: vec![crate::types::AgentWorkspaceInfo {
                     workspace_id: "ws-boot".into(),
-                    workspace_anchor: PathBuf::from("/tmp/ws-boot"),
-                    execution_root_id: "root-boot".into(),
-                    execution_root: PathBuf::from("/tmp/ws-boot"),
-                    projection_kind: WorkspaceProjectionKind::CanonicalRoot,
-                    access_mode: WorkspaceAccessMode::ExclusiveWrite,
-                    cwd: PathBuf::from("/tmp/ws-boot"),
-                    occupancy_id: None,
-                    projection_metadata: None,
-                }),
-                active_workspace_occupancy: Some(WorkspaceOccupancyRecord {
-                    occupancy_id: "occ-1".into(),
-                    execution_root_id: "root-boot".into(),
-                    workspace_id: "ws-boot".into(),
-                    holder_agent_id: "default".into(),
-                    access_mode: WorkspaceAccessMode::SharedRead,
-                    acquired_at: Utc::now(),
-                    released_at: None,
-                }),
-                worktree_session: Some(WorktreeSession {
-                    original_cwd: PathBuf::from("/tmp/ws-boot"),
-                    original_branch: "main".into(),
-                    worktree_path: PathBuf::from("/tmp/ws-boot/wt"),
-                    worktree_branch: "feature/demo".into(),
-                }),
+                    workspace_alias: None,
+                    workspace_anchor: Some("/tmp/ws-boot".into()),
+                    repo_name: None,
+                    is_active: true,
+                    execution_root_id: Some("root-boot".into()),
+                    execution_root: Some("/tmp/ws-boot".into()),
+                    cwd: Some("/tmp/ws-boot/wt".into()),
+                    projection_kind: Some(WorkspaceProjectionKind::CanonicalRoot),
+                    access_mode: Some(WorkspaceAccessMode::ExclusiveWrite),
+                    worktree: Some(crate::types::WorktreeInfo {
+                        branch: Some("feature/demo".into()),
+                        path: Some("/tmp/ws-boot/wt".into()),
+                        original_branch: Some("main".into()),
+                        original_cwd: Some("/tmp/ws-boot".into()),
+                    }),
+                }],
             },
             execution: None,
         }

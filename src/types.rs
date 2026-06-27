@@ -149,6 +149,46 @@ pub enum WorkspaceProjectionMetadata {
     },
 }
 
+/// Unified per-workspace info returned by the workspace state snapshot.
+/// Replaces the previous fragmented fields (`attached_workspaces`,
+/// `workspace_entries`, `active_workspace_entry`, `worktree_session`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentWorkspaceInfo {
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_anchor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
+    pub is_active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_root_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_kind: Option<WorkspaceProjectionKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_mode: Option<WorkspaceAccessMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeInfo>,
+}
+
+/// Worktree details merged from `projection_metadata` and `worktree_session`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_cwd: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveWorkspaceEntry {
     pub workspace_id: String,

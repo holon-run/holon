@@ -465,40 +465,120 @@ fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWork
             .unwrap_or_else(|| ws_id.to_string())
     };
 
-    let mut workspace_entries: Vec<WorkspaceEntrySummary> = agent
-        .agent
-        .attached_workspaces
-        .iter()
-        .filter_map(|ws_id| {
-            let resolved = resolve_id(ws_id);
-            all_entries
-                .iter()
-                .find(|e| e.workspace_id == resolved)
-                .map(WorkspaceEntrySummary::from_entry)
-        })
-        .collect();
+    use crate::types::AgentWorkspaceInfo;
+    use std::collections::HashSet;
+
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut workspaces: Vec<AgentWorkspaceInfo> = Vec::new();
+
+    // Add active workspace first (with full runtime info).
     if let Some(active_entry) = agent.agent.active_workspace_entry.as_ref() {
-        let resolved_active_id = resolve_id(&active_entry.workspace_id);
-        if !workspace_entries
-            .iter()
-            .any(|entry| entry.workspace_id == resolved_active_id)
-        {
-            if let Some(entry) = all_entries
-                .iter()
-                .find(|entry| entry.workspace_id == resolved_active_id)
-            {
-                workspace_entries.push(WorkspaceEntrySummary::from_entry(entry));
-            } else {
-                workspace_entries.push(WorkspaceEntrySummary::from_active_entry(active_entry));
-            }
+        let resolved_id = resolve_id(&active_entry.workspace_id);
+        seen_ids.insert(resolved_id.clone());
+
+        // Try to enrich with registry data (alias, repo_name).
+        let registry_entry = all_entries.iter().find(|e| e.workspace_id == resolved_id);
+        let worktree = build_worktree_info(
+            active_entry.projection_metadata.as_ref(),
+            agent.agent.worktree_session.as_ref(),
+        );
+
+        workspaces.push(AgentWorkspaceInfo {
+            workspace_id: active_entry.workspace_id.clone(),
+            workspace_alias: registry_entry.and_then(|e| e.workspace_alias.clone()),
+            workspace_anchor: Some(active_entry.workspace_anchor.display().to_string()),
+            repo_name: registry_entry.and_then(|e| e.repo_name.clone()),
+            is_active: true,
+            execution_root_id: Some(active_entry.execution_root_id.clone()),
+            execution_root: Some(active_entry.execution_root.display().to_string()),
+            cwd: Some(active_entry.cwd.display().to_string()),
+            projection_kind: Some(active_entry.projection_kind),
+            access_mode: Some(active_entry.access_mode),
+            worktree,
+        });
+    }
+
+    // Add remaining attached workspaces (identity-only info from registry).
+    for ws_id in &agent.agent.attached_workspaces {
+        let resolved = resolve_id(ws_id);
+        if seen_ids.contains(&resolved) {
+            continue;
+        }
+        seen_ids.insert(resolved.clone());
+
+        if let Some(entry) = all_entries.iter().find(|e| e.workspace_id == resolved) {
+            workspaces.push(AgentWorkspaceInfo {
+                workspace_id: entry.workspace_id.clone(),
+                workspace_alias: entry.workspace_alias.clone(),
+                workspace_anchor: Some(entry.workspace_anchor.display().to_string()),
+                repo_name: entry.repo_name.clone(),
+                is_active: false,
+                execution_root_id: None,
+                execution_root: None,
+                cwd: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree: None,
+            });
+        } else {
+            // Fallback for IDs without a registry entry.
+            workspaces.push(AgentWorkspaceInfo {
+                workspace_id: ws_id.clone(),
+                workspace_alias: None,
+                workspace_anchor: None,
+                repo_name: None,
+                is_active: false,
+                execution_root_id: None,
+                execution_root: None,
+                cwd: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree: None,
+            });
         }
     }
-    StateWorkspaceSnapshot {
-        attached_workspaces: agent.agent.attached_workspaces.clone(),
-        workspace_entries,
-        active_workspace_entry: agent.agent.active_workspace_entry.clone(),
-        active_workspace_occupancy: agent.active_workspace_occupancy.clone(),
-        worktree_session: agent.agent.worktree_session.clone(),
+
+    StateWorkspaceSnapshot { workspaces }
+}
+
+/// Merge projection_metadata and worktree_session into a unified WorktreeInfo.
+fn build_worktree_info(
+    metadata: Option<&crate::types::WorkspaceProjectionMetadata>,
+    session: Option<&crate::types::WorktreeSession>,
+) -> Option<crate::types::WorktreeInfo> {
+    use crate::types::WorkspaceProjectionMetadata;
+    let (branch, path) = match metadata {
+        Some(WorkspaceProjectionMetadata::ManagedWorktree {
+            worktree_branch,
+            worktree_path,
+            ..
+        }) => (
+            Some(worktree_branch.clone()),
+            Some(worktree_path.display().to_string()),
+        ),
+        Some(WorkspaceProjectionMetadata::ExistingGitWorktree { worktree_root }) => {
+            (None, Some(worktree_root.display().to_string()))
+        }
+        None => match session {
+            Some(s) => (
+                Some(s.worktree_branch.clone()),
+                Some(s.worktree_path.display().to_string()),
+            ),
+            None => (None, None),
+        },
+    };
+    let original_branch = session.map(|s| s.original_branch.clone());
+    let original_cwd = session.map(|s| s.original_cwd.display().to_string());
+
+    if branch.is_some() || path.is_some() || original_branch.is_some() || original_cwd.is_some() {
+        Some(crate::types::WorktreeInfo {
+            branch,
+            path,
+            original_branch,
+            original_cwd,
+        })
+    } else {
+        None
     }
 }
 
