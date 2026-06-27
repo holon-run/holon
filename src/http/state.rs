@@ -749,6 +749,159 @@ mod tests {
             "你..."
         );
     }
+
+    // ── build_worktree_info tests ──
+
+    use crate::types::{WorkspaceProjectionMetadata, WorktreeInfo, WorktreeSession};
+    use std::path::PathBuf;
+
+    #[test]
+    fn build_worktree_info_managed_worktree_metadata() {
+        let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/project/.worktrees/feature"),
+            worktree_branch: "feature".into(),
+        };
+        let session = Some(WorktreeSession {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/project/.worktrees/feature"),
+            worktree_branch: "feature".into(),
+        });
+
+        let info = super::build_worktree_info(Some(&metadata), session.as_ref());
+        let info = info.expect("should produce WorktreeInfo");
+        assert_eq!(info.branch.as_deref(), Some("feature"));
+        assert!(info
+            .path
+            .as_deref()
+            .unwrap()
+            .contains("/tmp/project/.worktrees/feature"));
+        assert_eq!(info.original_branch.as_deref(), Some("main"));
+        assert!(info
+            .original_cwd
+            .as_deref()
+            .unwrap()
+            .contains("/tmp/project"));
+    }
+
+    #[test]
+    fn build_worktree_info_existing_git_worktree_metadata() {
+        let metadata = WorkspaceProjectionMetadata::ExistingGitWorktree {
+            worktree_root: PathBuf::from("/tmp/existing-wt"),
+        };
+
+        let info = super::build_worktree_info(Some(&metadata), None);
+        let info = info.expect("should produce WorktreeInfo");
+        assert!(
+            info.branch.is_none(),
+            "existing git worktree should not have branch from metadata"
+        );
+        assert_eq!(info.path.as_deref(), Some("/tmp/existing-wt"));
+    }
+
+    #[test]
+    fn build_worktree_info_fallback_to_session_only() {
+        let session = WorktreeSession {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/project/.worktrees/dev"),
+            worktree_branch: "dev".into(),
+        };
+
+        let info = super::build_worktree_info(None, Some(&session));
+        let info = info.expect("should produce WorktreeInfo from session");
+        assert_eq!(info.branch.as_deref(), Some("dev"));
+        assert!(info
+            .path
+            .as_deref()
+            .unwrap()
+            .contains("/tmp/project/.worktrees/dev"));
+        assert_eq!(info.original_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn build_worktree_info_returns_none_when_all_none() {
+        let info = super::build_worktree_info(None, None);
+        assert!(
+            info.is_none(),
+            "should return None when both metadata and session are absent"
+        );
+    }
+
+    #[test]
+    fn build_worktree_info_session_enriches_metadata_originals() {
+        let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/wt"),
+            worktree_branch: "feat".into(),
+        };
+        let session = WorktreeSession {
+            original_cwd: PathBuf::from("/tmp/project"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/wt"),
+            worktree_branch: "feat".into(),
+        };
+
+        let info = super::build_worktree_info(Some(&metadata), Some(&session));
+        let info = info.expect("should produce WorktreeInfo");
+        assert_eq!(info.original_branch.as_deref(), Some("main"));
+        assert!(info.original_cwd.is_some());
+    }
+
+    // ── AgentWorkspaceInfo serde round-trip ──
+
+    use crate::system::{WorkspaceAccessMode, WorkspaceProjectionKind};
+    use crate::types::AgentWorkspaceInfo;
+
+    #[test]
+    fn agent_workspace_info_serde_roundtrip_full() {
+        let info = AgentWorkspaceInfo {
+            workspace_id: "ws_abc".into(),
+            workspace_alias: Some("my-project".into()),
+            workspace_anchor: Some("/home/user/project".into()),
+            repo_name: Some("project".into()),
+            is_active: true,
+            execution_root_id: Some("canonical_root:ws_abc".into()),
+            execution_root: Some("/home/user/project".into()),
+            cwd: Some("/home/user/project/src".into()),
+            projection_kind: Some(WorkspaceProjectionKind::CanonicalRoot),
+            access_mode: Some(WorkspaceAccessMode::ExclusiveWrite),
+            worktree: Some(WorktreeInfo {
+                branch: Some("feature".into()),
+                path: Some("/tmp/wt".into()),
+                original_branch: Some("main".into()),
+                original_cwd: Some("/tmp/project".into()),
+            }),
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let decoded: AgentWorkspaceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn agent_workspace_info_serde_roundtrip_minimal() {
+        let info = AgentWorkspaceInfo {
+            workspace_id: "ws_xyz".into(),
+            workspace_alias: None,
+            workspace_anchor: None,
+            repo_name: None,
+            is_active: false,
+            execution_root_id: None,
+            execution_root: None,
+            cwd: None,
+            projection_kind: None,
+            access_mode: None,
+            worktree: None,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let decoded: AgentWorkspaceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, decoded);
+    }
 }
 
 pub async fn briefs_default(

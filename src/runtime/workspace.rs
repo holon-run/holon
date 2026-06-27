@@ -364,3 +364,131 @@ pub(crate) fn execution_root_sync(storage: &AppStorage) -> PathBuf {
         })
         .unwrap_or_else(|| detached_execution_root(storage))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ActiveWorkspaceEntry;
+
+    // ── build_execution_root_id ──
+
+    #[test]
+    fn execution_root_id_canonical_root() {
+        let id = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::CanonicalRoot,
+            Path::new("/tmp/project"),
+        )
+        .unwrap();
+        assert_eq!(id, "canonical_root:ws_abc");
+    }
+
+    #[test]
+    fn execution_root_id_git_worktree_root_includes_normalized_path() {
+        let id = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/worktree-x"),
+        )
+        .unwrap();
+        assert!(id.starts_with("git_worktree_root:ws_abc:"));
+        assert!(id.contains("/tmp/project/worktree-x"));
+    }
+
+    #[test]
+    fn execution_root_id_git_worktree_root_is_stable_for_same_path() {
+        let id1 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/worktree-x"),
+        )
+        .unwrap();
+        let id2 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/worktree-x"),
+        )
+        .unwrap();
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn execution_root_id_git_worktree_root_differs_for_different_paths() {
+        let id1 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/wt-a"),
+        )
+        .unwrap();
+        let id2 = build_execution_root_id(
+            "ws_abc",
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            Path::new("/tmp/project/wt-b"),
+        )
+        .unwrap();
+        assert_ne!(id1, id2);
+    }
+
+    // ── canonicalize_agent_home_bindings ──
+
+    #[test]
+    fn canonicalize_migrates_legacy_agent_home_id() {
+        let data_dir = PathBuf::from("/tmp/agent-home");
+        let mut state = AgentState::new("my-agent");
+        state.active_workspace_entry = Some(ActiveWorkspaceEntry {
+            workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
+            workspace_anchor: data_dir.clone(),
+            execution_root_id: "canonical_root:agent_home".to_string(),
+            execution_root: data_dir.clone(),
+            projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+            access_mode: WorkspaceAccessMode::SharedRead,
+            cwd: data_dir.clone(),
+            occupancy_id: None,
+            projection_metadata: None,
+        });
+        state.attached_workspaces = vec![AGENT_HOME_WORKSPACE_ID.to_string()];
+
+        let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
+
+        assert!(changed, "should report change when migrating legacy ID");
+        let canonical = agent_home_workspace_id("my-agent");
+        assert_eq!(
+            state.active_workspace_entry.as_ref().unwrap().workspace_id,
+            canonical
+        );
+        assert!(
+            state.attached_workspaces.contains(&canonical),
+            "attached_workspaces should contain canonical ID"
+        );
+        assert!(
+            !state
+                .attached_workspaces
+                .contains(&AGENT_HOME_WORKSPACE_ID.to_string()),
+            "legacy ID should be removed from attached_workspaces"
+        );
+    }
+
+    #[test]
+    fn canonicalize_is_noop_when_already_canonical() {
+        let data_dir = PathBuf::from("/tmp/agent-home");
+        let canonical = agent_home_workspace_id("my-agent");
+        let mut state = AgentState::new("my-agent");
+        state.attached_workspaces = vec![canonical.clone()];
+
+        let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
+
+        assert!(!changed, "should be no-op when already using canonical ID");
+    }
+
+    #[test]
+    fn canonicalize_handles_no_active_workspace_entry() {
+        let data_dir = PathBuf::from("/tmp/agent-home");
+        let mut state = AgentState::new("my-agent");
+        // No active_workspace_entry and no legacy references.
+        state.attached_workspaces = vec!["ws_other".to_string()];
+
+        let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
+
+        assert!(!changed, "should be no-op with no legacy references");
+    }
+}

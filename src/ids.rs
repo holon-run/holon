@@ -160,4 +160,35 @@ mod tests {
         assert!(random.len() >= 64);
         assert!(random.chars().all(|ch| ch.is_ascii_hexdigit()));
     }
+
+    #[test]
+    fn deterministic_workspace_id_is_stable_for_same_path() {
+        let path = Path::new("/home/user/project");
+        let id1 = deterministic_workspace_id(path);
+        let id2 = deterministic_workspace_id(path);
+        assert_eq!(id1, id2, "same path must produce same workspace ID");
+    }
+
+    #[test]
+    fn deterministic_workspace_id_differs_for_different_paths() {
+        let id1 = deterministic_workspace_id(Path::new("/home/user/project-a"));
+        let id2 = deterministic_workspace_id(Path::new("/home/user/project-b"));
+        assert_ne!(id1, id2, "different paths must produce different IDs");
+    }
+
+    #[test]
+    fn deterministic_workspace_id_uses_ws_prefix_and_hex_shape() {
+        let id = deterministic_workspace_id(Path::new("/tmp/test"));
+        let (prefix, hex) = id.split_once('_').expect("id should contain prefix");
+        assert_eq!(prefix, "ws");
+        assert_eq!(
+            hex.len(),
+            SHORT_RANDOM_HEX_LEN,
+            "hex portion should be {SHORT_RANDOM_HEX_LEN} characters"
+        );
+        assert!(
+            hex.chars().all(|ch| ch.is_ascii_hexdigit()),
+            "hex portion should only contain hex digits"
+        );
+    }
 }
