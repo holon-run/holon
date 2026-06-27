@@ -45,6 +45,14 @@ pub(crate) fn agent_home_workspace_entry(data_dir: &Path, agent_id: &str) -> Wor
     entry
 }
 
+/// Canonicalize legacy `AGENT_HOME_WORKSPACE_ID` references in agent state to
+/// the deterministic, agent-specific canonical ID.
+///
+/// # Migration path (deprecated)
+///
+/// This function exists solely to migrate agents that still reference the
+/// old constant `AGENT_HOME_WORKSPACE_ID`. It is planned for removal once
+/// migration logs confirm no agents require canonicalization.
 pub(crate) fn canonicalize_agent_home_bindings(
     state: &mut AgentState,
     data_dir: &Path,
@@ -101,6 +109,10 @@ pub(crate) fn canonicalize_agent_home_bindings(
 
     if changed {
         state.attached_workspaces = next;
+        tracing::info!(
+            agent_id = %agent_id,
+            "workspace migration: canonicalized legacy AGENT_HOME_WORKSPACE_ID references"
+        );
     }
 
     Ok(changed)

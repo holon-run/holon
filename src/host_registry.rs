@@ -216,7 +216,13 @@ impl RuntimeRegistry {
         {
             // Lazy migration: migrate non-deterministic workspace IDs in place
             // and record an alias so old references in agent state still resolve.
+            // Deprecated: planned for removal once migration logs go quiet.
             if existing.workspace_id != det_id {
+                tracing::info!(
+                    old_id = %existing.workspace_id,
+                    new_id = %det_id,
+                    "workspace migration: migrated non-deterministic workspace ID to deterministic ID"
+                );
                 self.inner
                     .host_storage
                     .migrate_workspace_id(&existing.workspace_id, &det_id)?;
