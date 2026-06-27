@@ -43,3 +43,25 @@ Before pushing the tag, verify:
 - when provider, context projection, compaction, or prompt-cache behavior
   changed, the ignored live LLM baseline in
   `docs/testing/live-llm-baseline.md` has been run manually
+- when the version number or HTTP API surface changed, regenerate the OpenAPI
+  snapshot (see below) — never edit `openapi.json` by hand
+
+## OpenAPI Snapshot
+
+A checked-in copy of the generated OpenAPI schema lives at
+`docs/website/reference/openapi.json`. The integration test
+`openapi_snapshot_matches_generated_schema` verifies that this snapshot matches
+the schema generated from the current crate version. Any version bump or HTTP
+API change will cause drift.
+
+**Do not edit `openapi.json` by hand.** After bumping the version in
+`Cargo.toml`, regenerate the snapshot:
+
+```bash
+cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored
+cargo test --test openapi_snapshot
+```
+
+The first command regenerates the file; the second verifies it matches. The
+generated output has no trailing newline — adding one manually causes the
+snapshot test to fail.
