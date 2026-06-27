@@ -1,4 +1,4 @@
-name: Rust CI
+name: CI
 
 on:
   push:
@@ -11,6 +11,8 @@ on:
       - "tests/**"
       - "builtin_templates/**"
       - "web-gui/**"
+      - "Makefile"
+      - "build.rs"
   pull_request:
     branches: [main]
     paths:
@@ -21,6 +23,8 @@ on:
       - "tests/**"
       - "builtin_templates/**"
       - "web-gui/**"
+      - "Makefile"
+      - "build.rs"
 
 permissions:
   contents: read
@@ -40,10 +44,7 @@ jobs:
           node-version: '22'
 
       - name: Build web GUI
-        working-directory: web-gui/app
-        run: |
-          npm ci
-          npm run build
+        run: make web
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,16 +52,16 @@ jobs:
           components: rustfmt, clippy
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: make fmt-check
 
       - name: Build
-        run: cargo build --all-targets
+        run: make build
 
       - name: Test
-        run: cargo test --all-targets -- --test-threads=1
+        run: make test
 
       - name: Clippy
-        run: cargo clippy --all-targets
+        run: make lint
         env:
           RUSTFLAGS: ""
   coverage:
@@ -75,10 +76,7 @@ jobs:
           node-version: '22'
 
       - name: Build web GUI
-        working-directory: web-gui/app
-        run: |
-          npm ci
-          npm run build
+        run: make web
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
