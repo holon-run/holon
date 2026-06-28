@@ -2,7 +2,7 @@ use super::super::*;
 use super::support::*;
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
-    WaitConditionRecord, WaitConditionStatus, WaitingIntentScope, WakeSource, WorkItemPlanStatus,
+    WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
     WorkItemSchedulingState, WorkReactivationMode,
 };
 use chrono::DateTime;
@@ -40,16 +40,15 @@ struct TaskFixture {
 }
 
 #[derive(Deserialize)]
-struct WaitingIntentFixture {
+struct TimerFixture {
     id: String,
-    #[allow(dead_code)]
-    scope: WaitingIntentScope,
-    work_item_id: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct TimerFixture {
+struct WaitConditionFixture {
     id: String,
+    #[serde(default)]
+    work_item_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -238,8 +237,6 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
     let work_items: Vec<WorkItemFixture> =
         read_optional_scheduler_jsonl_fixture(name, "ledger/work_items.jsonl");
     let tasks: Vec<TaskFixture> = read_optional_scheduler_jsonl_fixture(name, "ledger/tasks.jsonl");
-    let waiting_intents: Vec<WaitingIntentFixture> =
-        read_optional_scheduler_jsonl_fixture(name, "ledger/waiting_intents.jsonl");
     let timers: Vec<TimerFixture> =
         read_optional_scheduler_jsonl_fixture(name, "ledger/timers.jsonl");
     let messages: Vec<MessageFixture> =
@@ -252,6 +249,8 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
         read_optional_scheduler_jsonl_fixture(name, "ledger/briefs.jsonl");
     let tool_executions: Vec<ToolExecutionFixture> =
         read_optional_scheduler_jsonl_fixture(name, "ledger/tools.jsonl");
+    let wait_conditions: Vec<WaitConditionFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/wait_conditions.jsonl");
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
@@ -275,7 +274,6 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
             reason,
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("fixture".into()),
             resource: None,
@@ -310,33 +308,9 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
                 work_item_id: task.work_item_id,
                 summary: Some("fixture task".into()),
                 detail: Some(serde_json::json!({
-                    "wait_policy": task.wait_policy,
+                    "wait_policy": task.wait_policy
                 })),
                 recovery: None,
-            })
-            .unwrap();
-    }
-    for intent in waiting_intents {
-        storage
-            .append_wait_condition(&WaitConditionRecord {
-                id: intent.id.clone(),
-                agent_id: "default".into(),
-                work_item_id: intent.work_item_id,
-                kind: WaitConditionKind::External,
-                source: Some("fixture".into()),
-                subject_ref: None,
-                waiting_for: format!("fixture wait condition {}", intent.id),
-                wake_sources: vec![WakeSource::ExternalIngress {
-                    external_trigger_id: Some(format!("trigger-{}", intent.id)),
-                }],
-                continuation: None,
-                status: WaitConditionStatus::Active,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                expires_at: None,
-                resolved_at: None,
-                cancelled_at: None,
-                turn_id: None,
             })
             .unwrap();
     }
@@ -430,6 +404,15 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
                 invocation_surface: Some("fixture".into()),
             })
             .unwrap();
+    }
+
+    for wait in wait_conditions {
+        append_active_external_wait_condition(
+            &storage,
+            &wait.id,
+            "default",
+            wait.work_item_id.as_deref(),
+        );
     }
 
     (dir, storage, agent)
@@ -587,7 +570,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
             serde_json::json!({
                 "agent_id": "default",
                 "turn_index": 1,
-                "checkpoint": "fixture checkpoint",
+                "checkpoint": "fixture checkpoint"
             }),
         ))
         .unwrap();
@@ -596,7 +579,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
             "turn_local_baseline_over_budget",
             serde_json::json!({
                 "agent_id": "default",
-                "reason": "baseline_unfit",
+                "reason": "baseline_unfit"
             }),
         ))
         .unwrap();
@@ -822,7 +805,6 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
         description: None,
         source: Some("fixture".into()),
         scope: Some(ExternalTriggerScope::Agent),
-        waiting_intent_id: None,
         external_trigger_id: Some("trigger-1".into()),
         resource: None,
         body: None,
@@ -960,7 +942,6 @@ fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
         posture: AgentSchedulingPosture::Idle,
         reason: "fixture intentionally stale posture".into(),
         work_item_id: None,
-        waiting_intent_id: None,
         task_id: None,
         run_id: None,
     };

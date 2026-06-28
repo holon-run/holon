@@ -172,9 +172,7 @@ impl RuntimeHandle {
         {
             self.arm_continue_active_suppression().await;
         }
-        let pre_cleanup_closure = self.current_closure_decision().await?;
-        self.reconcile_waiting_contract(&message, &pre_cleanup_closure)
-            .await?;
+        self.record_wait_reconciliation_signals(&message).await?;
         let final_closure = self.current_closure_decision().await?;
         {
             let mut guard = self.inner.agent.lock().await;

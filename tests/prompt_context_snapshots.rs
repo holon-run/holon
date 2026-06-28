@@ -817,7 +817,6 @@ Continuation context:
 - Source: agentinbox
 - Scope: agent
 - External trigger id: trig_agentinbox_reviews
-- Waiting intent id: wait_agentinbox_reviews
 - Description: Check AgentInbox for unread GitHub review notifications
 - Resource: interest/pr-reviews
 - Reason: github inbox updated

@@ -155,7 +155,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_owner_active
 CREATE TABLE IF NOT EXISTS external_triggers (
   external_trigger_id TEXT PRIMARY KEY,
   target_agent_id TEXT NOT NULL,
-  waiting_intent_id TEXT,
   trigger_url TEXT,
   token_hash TEXT NOT NULL,
   status TEXT NOT NULL,

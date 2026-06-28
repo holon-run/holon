@@ -542,7 +542,6 @@ mod tests {
             description: None,
             source: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             resource: None,
             body: None,

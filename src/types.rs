@@ -1246,12 +1246,10 @@ impl MessageEnvelope {
             collect_source_ref(metadata, &mut self.source_refs, "queued_event_id");
             collect_source_ref(metadata, &mut self.source_refs, "task_result_id");
             collect_source_ref(metadata, &mut self.source_refs, "external_trigger_id");
-            collect_source_ref(metadata, &mut self.source_refs, "waiting_intent_id");
             collect_source_ref(metadata, &mut self.source_refs, "callback_delivery_id");
             collect_source_ref(metadata, &mut self.source_refs, "timer_id");
             if let Some(wake_hint) = metadata.get("wake_hint") {
                 collect_source_ref(wake_hint, &mut self.source_refs, "external_trigger_id");
-                collect_source_ref(wake_hint, &mut self.source_refs, "waiting_intent_id");
                 collect_source_ref(wake_hint, &mut self.source_refs, "resource");
             }
         }
@@ -1935,8 +1933,6 @@ pub struct PendingWakeHint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<ExternalTriggerScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting_intent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_trigger_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
@@ -1975,50 +1971,6 @@ impl<'de> Deserialize<'de> for ExternalTriggerScope {
 
 fn default_external_trigger_scope() -> ExternalTriggerScope {
     ExternalTriggerScope::Agent
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitingIntentScope {
-    WorkItem,
-    Agent,
-}
-
-fn default_waiting_intent_scope() -> WaitingIntentScope {
-    WaitingIntentScope::Agent
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitingIntentStatus {
-    Active,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WaitingIntentRecord {
-    pub id: String,
-    pub agent_id: String,
-    #[serde(default = "default_waiting_intent_scope")]
-    pub scope: WaitingIntentScope,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_item_id: Option<String>,
-    #[serde(alias = "summary")]
-    pub description: String,
-    pub source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
-    pub delivery_mode: CallbackDeliveryMode,
-    pub status: WaitingIntentStatus,
-    pub external_trigger_id: String,
-    pub created_at: DateTime<Utc>,
-    pub cancelled_at: Option<DateTime<Utc>>,
-    pub last_triggered_at: Option<DateTime<Utc>>,
-    pub trigger_count: u64,
-    pub correlation_id: Option<String>,
-    pub causation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2193,8 +2145,6 @@ pub enum ExternalTriggerStatus {
 pub struct ExternalTriggerRecord {
     pub external_trigger_id: String,
     pub target_agent_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting_intent_id: Option<String>,
     #[serde(default = "default_external_trigger_scope")]
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
@@ -2212,8 +2162,6 @@ pub struct ExternalTriggerRecord {
 pub struct ExternalTriggerStateSnapshot {
     pub external_trigger_id: String,
     pub target_agent_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub waiting_intent_id: Option<String>,
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
@@ -2228,7 +2176,6 @@ impl From<ExternalTriggerRecord> for ExternalTriggerStateSnapshot {
         Self {
             external_trigger_id: record.external_trigger_id,
             target_agent_id: record.target_agent_id,
-            waiting_intent_id: record.waiting_intent_id,
             scope: record.scope,
             delivery_mode: record.delivery_mode,
             status: record.status,
@@ -2238,24 +2185,6 @@ impl From<ExternalTriggerRecord> for ExternalTriggerStateSnapshot {
             last_delivered_at: record.last_delivered_at,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WaitingIntentSummary {
-    pub id: String,
-    pub scope: WaitingIntentScope,
-    pub description: String,
-    pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<String>,
-    pub delivery_mode: CallbackDeliveryMode,
-    pub status: WaitingIntentStatus,
-    pub trigger_count: u64,
-    pub created_at: DateTime<Utc>,
-    pub cancelled_at: Option<DateTime<Utc>>,
-    pub last_triggered_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2308,8 +2237,6 @@ impl From<WaitConditionRecord> for WaitConditionSummary {
 pub struct ExternalTriggerSummary {
     pub external_trigger_id: String,
     pub target_agent_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub waiting_intent_id: Option<String>,
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
@@ -2329,13 +2256,6 @@ pub struct ExternalTriggerCapability {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CancelWaitingResult {
-    pub waiting_intent_id: String,
-    pub external_trigger_id: String,
-    pub status: WaitingIntentStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CallbackIngressDisposition {
     Enqueued,
@@ -2347,8 +2267,6 @@ pub enum CallbackIngressDisposition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CallbackDeliveryResult {
     pub agent_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub waiting_intent_id: Option<String>,
     pub external_trigger_id: String,
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
@@ -3556,8 +3474,6 @@ pub struct AgentPostureProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting_intent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
@@ -3569,7 +3485,6 @@ impl Default for AgentPostureProjection {
             posture: AgentSchedulingPosture::Unknown,
             reason: "posture projection unavailable".into(),
             work_item_id: None,
-            waiting_intent_id: None,
             task_id: None,
             run_id: None,
         }
@@ -4801,7 +4716,6 @@ pub struct AgentSummary {
     pub skills: SkillsRuntimeView,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_children: Vec<ChildAgentSummary>,
-    pub active_waiting_intents: Vec<WaitingIntentSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_wait_conditions: Vec<WaitConditionSummary>,
     #[serde(default)]
@@ -4975,7 +4889,6 @@ impl AgentListEntry {
             loaded_agents_md: LoadedAgentsMdView::default(),
             skills: SkillsRuntimeView::default(),
             active_children: Vec::new(),
-            active_waiting_intents: Vec::new(),
             active_wait_conditions: Vec::new(),
             active_external_triggers: Vec::new(),
             recent_operator_notifications: Vec::new(),

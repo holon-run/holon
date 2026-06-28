@@ -15,7 +15,7 @@ use crate::{
         AgentSummary, AgentTokenUsageSummary, AgentVisibility, AuthorityClass, ChildAgentSummary,
         ClosureDecision, ClosureOutcome, ExternalTriggerSummary, LoadedAgentsMdView,
         OperatorNotificationRecord, RuntimePosture, SkillsRuntimeView, TokenUsage,
-        TurnTerminalKind, WaitingIntentSummary, WorkspaceOccupancyRecord,
+        TurnTerminalKind, WorkspaceOccupancyRecord,
     },
 };
 use serde_json::json;
@@ -82,7 +82,6 @@ fn minimal_agent_summary(agent_id: &str) -> AgentSummary {
         loaded_agents_md: LoadedAgentsMdView::default(),
         skills: SkillsRuntimeView::default(),
         active_children: Vec::<ChildAgentSummary>::new(),
-        active_waiting_intents: Vec::<WaitingIntentSummary>::new(),
         active_wait_conditions: Vec::new(),
         active_external_triggers: Vec::<ExternalTriggerSummary>::new(),
         recent_operator_notifications: Vec::<OperatorNotificationRecord>::new(),
@@ -103,7 +102,6 @@ fn minimal_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
         tasks: Vec::new(),
         timers: Vec::new(),
         work_items: Vec::new(),
-        waiting_intents: Vec::new(),
         external_triggers: Vec::new(),
         operator_notifications: Vec::new(),
         workspace: crate::client::StateWorkspaceSnapshot::default(),

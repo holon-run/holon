@@ -239,15 +239,6 @@ pub async fn agent_state(
         .collect::<Vec<_>>();
     crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
     sort_state_work_items(&mut work_items);
-    let waiting_started = std::time::Instant::now();
-    let waiting_intents = runtime
-        .latest_waiting_intents()
-        .await
-        .map_err(error_response)?
-        .into_iter()
-        .map(slim_state_waiting_intent_record)
-        .collect();
-    crate::diagnostics::record_projection_state_waiting_intents(waiting_started.elapsed());
     let triggers_started = std::time::Instant::now();
     let external_triggers = runtime
         .latest_external_triggers()
@@ -277,7 +268,6 @@ pub async fn agent_state(
             tasks,
             timers,
             work_items,
-            waiting_intents,
             external_triggers,
             workspace,
         },
@@ -325,24 +315,9 @@ fn slim_state_work_item_record(mut record: WorkItemRecord) -> WorkItemRecord {
     record
 }
 
-fn slim_state_waiting_intent_record(mut record: WaitingIntentRecord) -> WaitingIntentRecord {
-    record.description =
-        truncate_state_bootstrap_string(&record.description, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
-    record.source =
-        truncate_state_bootstrap_string(&record.source, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
-    record.resource = record
-        .resource
-        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    record.condition = record
-        .condition
-        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    record
-}
-
 fn slim_state_agent_summary(agent: &mut AgentSummary) {
     agent.loaded_agents_md = Default::default();
     agent.skills = Default::default();
-    agent.active_waiting_intents.clear();
     agent.active_wait_conditions.clear();
     agent.active_external_triggers.clear();
     agent.recent_operator_notifications.clear();

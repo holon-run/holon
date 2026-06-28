@@ -292,7 +292,6 @@ pub(crate) struct AgentStateSnapshot {
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) timers: Vec<TimerRecord>,
     pub(crate) work_items: Vec<WorkItemRecord>,
-    pub(crate) waiting_intents: Vec<WaitingIntentRecord>,
     pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
     pub(crate) workspace: StateWorkspaceSnapshot,
 }

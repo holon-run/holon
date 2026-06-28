@@ -1820,12 +1820,6 @@ fn render_wake_hint_context(message: &MessageEnvelope) -> Option<String> {
     {
         lines.push(format!("- External trigger id: {external_trigger_id}"));
     }
-    if let Some(waiting_intent_id) = wake_hint
-        .get("waiting_intent_id")
-        .and_then(serde_json::Value::as_str)
-    {
-        lines.push(format!("- Waiting intent id: {waiting_intent_id}"));
-    }
     if let Some(work_item_id) = wake_hint
         .get("work_item_id")
         .and_then(serde_json::Value::as_str)
@@ -5605,7 +5599,6 @@ mod tests {
             .append_external_trigger(&ExternalTriggerRecord {
                 external_trigger_id: "cb-triggered".into(),
                 target_agent_id: "default".into(),
-                waiting_intent_id: None,
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
                 trigger_url: None,
@@ -5978,7 +5971,6 @@ mod tests {
             .append_external_trigger(&ExternalTriggerRecord {
                 external_trigger_id: "wake-default".into(),
                 target_agent_id: "default".into(),
-                waiting_intent_id: None,
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
                 trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),
@@ -6043,7 +6035,6 @@ mod tests {
             .append_external_trigger(&ExternalTriggerRecord {
                 external_trigger_id: "aaa-old-wake".into(),
                 target_agent_id: "default".into(),
-                waiting_intent_id: None,
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
                 trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/old".into()),
@@ -6059,7 +6050,6 @@ mod tests {
             .append_external_trigger(&ExternalTriggerRecord {
                 external_trigger_id: "zzz-new-wake".into(),
                 target_agent_id: "default".into(),
-                waiting_intent_id: None,
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
                 trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/new".into()),

@@ -226,7 +226,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                 );
                 Ok(ProviderTurnResponse {
                     blocks: vec![ModelBlock::Text {
-                        text: "What changed: notes/result.txt\nWhy: to address the requested task: write and verify a file.\nVerification: successful verification command completed with exit status 0.".into(),
+                        text: "What changed: notes/result.txt\nWhy: to address the requested task: write and verify a file.\nVerification: successful verification command completed with exit status 0.".into()
                     }],
                     stop_reason: None,
                     input_tokens: 100,
@@ -234,7 +234,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                     cache_usage: None,
                     provider_message_id: None,
             provider_request_id: None,
-            request_diagnostics: None,
+            request_diagnostics: None
                 })
             }
         }
@@ -827,7 +827,7 @@ impl AgentProvider for UseWorkspaceProvider {
                     input: json!({
                         "path": self.workspace_path,
                         "mode": "isolated",
-                        "isolation_label": self.branch_name,
+                        "isolation_label": self.branch_name
                     }),
                 }],
                 stop_reason: None,
@@ -911,7 +911,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                         input: json!({
                             "path": self.workspace_path,
                             "mode": "isolated",
-                            "isolation_label": self.branch_name,
+                            "isolation_label": self.branch_name
                         }),
                     }],
                     stop_reason: None,
@@ -942,7 +942,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                         id: "use-home-1".into(),
                         name: "UseWorkspace".into(),
                         input: json!({
-                            "workspace_id": "agent_home",
+                            "workspace_id": "agent_home"
                         }),
                     }],
                     stop_reason: None,

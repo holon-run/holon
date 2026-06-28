@@ -32,8 +32,8 @@ use holon::{
         MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
-        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitingIntentStatus, WaitingReason, WorkItemState,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingReason,
+        WorkItemState,
     },
 };
 use serde_json::json;
@@ -1493,7 +1493,7 @@ pub async fn task_output_prefers_terminal_task_record_over_stale_task_message() 
             "task_id": task.id,
             "task_kind": "command_task",
             "task_status": "running",
-            "task_summary": "stale running status",
+            "task_summary": "stale running status"
         })),
         ..MessageEnvelope::new(
             "default",
@@ -1687,7 +1687,7 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
             "task_id": task.id,
             "task_kind": "command_task",
             "task_status": "completed",
-            "task_summary": "message-only terminal status",
+            "task_summary": "message-only terminal status"
         })),
         ..MessageEnvelope::new(
             "default",
@@ -2517,7 +2517,7 @@ pub async fn exec_command_terminal_tasks_do_not_block_new_run() -> Result<()> {
                 name: "ExecCommand".into(),
                 input: json!({
                     "cmd": cmd,
-                    "login": false,
+                    "login": false
                 }),
             },
         )
@@ -2537,7 +2537,7 @@ pub async fn exec_command_terminal_tasks_do_not_block_new_run() -> Result<()> {
                 name: "ExecCommand".into(),
                 input: json!({
                     "cmd": cmd,
-                    "login": false,
+                    "login": false
                 }),
             },
         )

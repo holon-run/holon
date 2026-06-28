@@ -2362,13 +2362,12 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
     let last_delivered_at = record.last_delivered_at.map(timestamp);
     tx.execute(
         "INSERT INTO external_triggers (
-            external_trigger_id, target_agent_id, waiting_intent_id, trigger_url,
+            external_trigger_id, target_agent_id, trigger_url,
             token_hash, status, created_at, revoked_at, last_delivered_at,
             delivery_count, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(external_trigger_id) DO UPDATE SET
             target_agent_id = excluded.target_agent_id,
-            waiting_intent_id = excluded.waiting_intent_id,
             trigger_url = excluded.trigger_url,
             token_hash = excluded.token_hash,
             status = excluded.status,
@@ -2396,7 +2395,6 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
         params![
             record.external_trigger_id,
             record.target_agent_id,
-            record.waiting_intent_id,
             record.trigger_url,
             record.token_hash,
             status,
@@ -3076,7 +3074,6 @@ pub(crate) fn normalize_external_trigger_record(
 ) -> ExternalTriggerRecord {
     record.scope = ExternalTriggerScope::Agent;
     record.delivery_mode = CallbackDeliveryMode::WakeHint;
-    record.waiting_intent_id = None;
     record
 }
 

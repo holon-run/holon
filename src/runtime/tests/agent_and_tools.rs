@@ -835,7 +835,7 @@ async fn cancelling_task_ignores_late_running_status_update() {
         work_item_id: None,
         summary: Some("regression task".into()),
         detail: Some(serde_json::json!({
-            "task_status": "cancelling",
+            "task_status": "cancelling"
         })),
         recovery: None,
     };
@@ -846,7 +846,7 @@ async fn cancelling_task_ignores_late_running_status_update() {
         status: TaskStatus::Running,
         updated_at: Utc::now(),
         detail: Some(serde_json::json!({
-            "task_status": "running",
+            "task_status": "running"
         })),
         ..task.clone()
     };
@@ -894,7 +894,7 @@ async fn latest_task_list_entries_return_compact_projection() {
             "output_path": "/tmp/output.log",
             "output_summary": "large output summary should not appear in TaskList",
             "tty": false,
-            "promoted_from_exec_command": false,
+            "promoted_from_exec_command": false
         })),
         recovery: Some(TaskRecoverySpec::CommandTask {
             summary: "watch logs".into(),
@@ -1260,7 +1260,7 @@ fn current_input_summary_extracts_body_from_context_section() {
             is_default_agent: true,
             parent_agent_id: None,
             lineage_parent_agent_id: None,
-            delegated_from_task_id: None,
+            delegated_from_task_id: None
         },
         agent_home: PathBuf::from("/tmp/agent-home"),
         execution: ExecutionSnapshot {
@@ -1274,7 +1274,7 @@ fn current_input_summary_extracts_body_from_context_section() {
             execution_root_id: None,
             projection_kind: None,
             access_mode: None,
-            worktree_root: None,
+            worktree_root: None
         },
         loaded_agents_md: LoadedAgentsMd::default(),
         loaded_agent_memory: LoadedAgentMemory::default(),
@@ -1282,7 +1282,7 @@ fn current_input_summary_extracts_body_from_context_section() {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),
             context_fingerprint: "fingerprint-default".into(),
-            compression_epoch: 0,
+            compression_epoch: 0
         },
         system_sections: vec![],
         context_sections: vec![PromptSection {
@@ -1291,10 +1291,10 @@ fn current_input_summary_extracts_body_from_context_section() {
             content:
                 "Current input:\n- [operator][operator_instruction][OperatorPrompt] Fix the failing benchmark output."
                     .into(),
-            stability: PromptStability::AgentScoped,
+            stability: PromptStability::AgentScoped
         }],
         rendered_system_prompt: String::new(),
-        rendered_context_attachment: String::new(),
+        rendered_context_attachment: String::new()
     };
 
     assert_eq!(

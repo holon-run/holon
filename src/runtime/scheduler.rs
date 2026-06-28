@@ -212,7 +212,6 @@ pub(crate) struct SchedulerDiagnostic {
     pub severity: SchedulerDiagnosticSeverity,
     pub message: String,
     pub work_item_id: Option<String>,
-    pub waiting_intent_id: Option<String>,
     pub wait_condition_id: Option<String>,
     pub evidence: Vec<String>,
 }
@@ -224,7 +223,6 @@ impl SchedulerDiagnostic {
             severity: SchedulerDiagnosticSeverity::Warning,
             message: message.into(),
             work_item_id: None,
-            waiting_intent_id: None,
             wait_condition_id: None,
             evidence: Vec::new(),
         }
@@ -389,7 +387,6 @@ pub(crate) fn scheduler_diagnostic_event(diagnostic: &SchedulerDiagnostic) -> Au
             "severity": diagnostic.severity.as_str(),
             "message": &diagnostic.message,
             "work_item_id": &diagnostic.work_item_id,
-            "waiting_intent_id": &diagnostic.waiting_intent_id,
             "wait_condition_id": &diagnostic.wait_condition_id,
             "evidence": &diagnostic.evidence,
         }),
@@ -1015,9 +1012,8 @@ pub(crate) fn work_queue_tick_idempotency_key(work_item: &WorkItemRecord, reason
 
 pub(crate) fn wake_hint_idempotency_key(pending: &PendingWakeHint) -> String {
     let scope = pending
-        .waiting_intent_id
+        .external_trigger_id
         .as_deref()
-        .or(pending.external_trigger_id.as_deref())
         .or(pending.source.as_deref())
         .unwrap_or("unknown");
     format!(
@@ -1057,7 +1053,6 @@ mod tests {
             description: None,
             source: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             resource: None,
             body: None,

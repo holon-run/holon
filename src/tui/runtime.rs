@@ -1177,7 +1177,6 @@ impl TuiApp {
                 ProjectionSlice::Tasks => "tasks",
                 ProjectionSlice::Timers => "timers",
                 ProjectionSlice::WorkItems => "work-items",
-                ProjectionSlice::WaitingIntents => "waiting",
                 ProjectionSlice::ExternalTriggers => "external-triggers",
                 ProjectionSlice::OperatorNotifications => "operator-notifications",
                 ProjectionSlice::Workspace => "workspace",

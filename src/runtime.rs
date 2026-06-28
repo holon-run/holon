@@ -91,7 +91,7 @@ use crate::{
         AgentModelOverrideAuditEvent, AgentModelSource, AgentModelState, AgentState,
         AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent, AuthorityClass,
         BriefCreatedAuditEvent, BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload,
-        CallbackDeliveryResult, CallbackIngressDisposition, CancelWaitingResult, ClosureDecision,
+        CallbackDeliveryResult, CallbackIngressDisposition, ClosureDecision,
         ContinuationResolution, ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
         ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
@@ -101,8 +101,8 @@ use crate::{
         SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
         TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
         TimerStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind,
-        ViewImageObservation, WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary,
-        WaitingReason, WorkItemLifecycleAuditEvent, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
+        ViewImageObservation, WaitingReason, WorkItemLifecycleAuditEvent, WorkspaceEntry,
+        AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -264,7 +264,6 @@ struct AgentRuntimeProjectionCache {
     tasks: HashMap<String, TaskRecord>,
     work_items: HashMap<String, crate::types::WorkItemRecord>,
     timers: HashMap<String, TimerRecord>,
-    waiting_intents: HashMap<String, WaitingIntentRecord>,
     external_triggers: HashMap<String, ExternalTriggerRecord>,
 }
 
@@ -274,14 +273,12 @@ impl AgentRuntimeProjectionCache {
         tasks: Vec<TaskRecord>,
         work_items: Vec<crate::types::WorkItemRecord>,
         timers: Vec<TimerRecord>,
-        waiting_intents: Vec<WaitingIntentRecord>,
         external_triggers: Vec<ExternalTriggerRecord>,
     ) -> Self {
         crate::diagnostics::record_runtime_projection_cache_rebuild();
         let task_agent_id = agent_id.clone();
         let work_item_agent_id = agent_id.clone();
         let timer_agent_id = agent_id.clone();
-        let waiting_intent_agent_id = agent_id.clone();
         let external_trigger_agent_id = agent_id.clone();
         Self {
             agent_id,
@@ -301,12 +298,6 @@ impl AgentRuntimeProjectionCache {
                 timers
                     .into_iter()
                     .filter(|record| record.agent_id == timer_agent_id),
-                |record| record.id.clone(),
-            ),
-            waiting_intents: latest_by(
-                waiting_intents
-                    .into_iter()
-                    .filter(|record| record.agent_id == waiting_intent_agent_id),
                 |record| record.id.clone(),
             ),
             external_triggers: latest_by(
@@ -333,12 +324,6 @@ impl AgentRuntimeProjectionCache {
     fn upsert_timer(&mut self, record: TimerRecord) {
         if record.agent_id == self.agent_id {
             self.timers.insert(record.id.clone(), record);
-        }
-    }
-
-    fn upsert_waiting_intent(&mut self, record: WaitingIntentRecord) {
-        if record.agent_id == self.agent_id {
-            self.waiting_intents.insert(record.id.clone(), record);
         }
     }
 
@@ -404,12 +389,6 @@ impl AgentRuntimeProjectionCache {
                 .then_with(|| left.id.cmp(&right.id))
         });
         take_limit(records, limit)
-    }
-
-    fn latest_waiting_intents(&self) -> Vec<WaitingIntentRecord> {
-        let mut records = self.waiting_intents.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        records
     }
 
     fn latest_external_triggers(&self) -> Vec<ExternalTriggerRecord> {
@@ -648,19 +627,6 @@ impl RuntimeHandle {
             .lock()
             .await
             .upsert_timer(record.clone());
-        Ok(())
-    }
-
-    pub(crate) async fn record_waiting_intent_projection(
-        &self,
-        record: &WaitingIntentRecord,
-    ) -> Result<()> {
-        self.inner.storage.append_waiting_intent(record)?;
-        self.inner
-            .projection_cache
-            .lock()
-            .await
-            .upsert_waiting_intent(record.clone());
         Ok(())
     }
 

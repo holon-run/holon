@@ -43,7 +43,7 @@ use holon::{
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
     tui::run_tui,
-    types::{AuditEvent, AuthorityClass, ControlAction, TimerStatus, WaitingIntentStatus},
+    types::{AuditEvent, AuthorityClass, ControlAction, TimerStatus},
 };
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -2069,13 +2069,6 @@ fn export_scheduler_fixture(
     let work_queue = storage.work_queue_prompt_projection()?;
     let active_tasks = storage.latest_active_task_records_for_agent(&agent.id, usize::MAX)?;
     let has_blocking_active_tasks = active_tasks.iter().any(|task| task.is_blocking());
-    let active_waiting_intents = storage
-        .latest_waiting_intents()?
-        .into_iter()
-        .filter(|intent| {
-            intent.agent_id == agent.id && intent.status == WaitingIntentStatus::Active
-        })
-        .collect::<Vec<_>>();
     let active_timers = storage
         .latest_timer_records()?
         .into_iter()
@@ -2101,9 +2094,6 @@ fn export_scheduler_fixture(
             "active_tasks": active_tasks.len(),
             "has_blocking_active_tasks": has_blocking_active_tasks,
             "pending_wake_hint": agent.pending_wake_hint.is_some(),
-            "active_waiting_intents": active_waiting_intents.len(),
-            "active_work_item_waiting_intents": active_waiting_intents.iter().filter(|intent| matches!(intent.scope, holon::types::WaitingIntentScope::WorkItem)).count(),
-            "active_agent_waiting_intents": active_waiting_intents.iter().filter(|intent| matches!(intent.scope, holon::types::WaitingIntentScope::Agent)).count(),
             "active_timers": active_timers.len(),
             "runtime_error": storage.read_recent_events(128)?.iter().any(|event| event.kind == "runtime_error"),
             "replay_message_ids": replay_message_ids,
@@ -2130,10 +2120,6 @@ fn export_scheduler_fixture(
     write_jsonl(
         &ledger_dir.join("work_items.jsonl"),
         &storage.read_recent_work_items(usize::MAX)?,
-    )?;
-    write_jsonl(
-        &ledger_dir.join("waiting_intents.jsonl"),
-        &storage.read_recent_waiting_intents(usize::MAX)?,
     )?;
     write_jsonl(
         &ledger_dir.join("timers.jsonl"),

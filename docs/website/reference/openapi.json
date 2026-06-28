@@ -1553,12 +1553,6 @@
                 },
                 "type": "array"
               },
-              "cancelled_waiting_intent_ids": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
               "current_focus_mode": {
                 "type": "string"
               },

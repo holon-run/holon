@@ -47,8 +47,6 @@ pub struct WorkItemFocusTransition {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cancelled_wait_condition_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cancelled_waiting_intent_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<WorkItemFocusTransitionWarning>,
 }
 
@@ -2362,7 +2360,6 @@ impl RuntimeHandle {
             current_focus_mode,
             blocker_cleared: blocker_clearance.blocker_cleared,
             cancelled_wait_condition_ids: blocker_clearance.cancelled_wait_condition_ids,
-            cancelled_waiting_intent_ids: blocker_clearance.cancelled_waiting_intent_ids,
             warnings,
         };
         self.inner.storage.append_event(&AuditEvent::new(
@@ -2378,7 +2375,6 @@ impl RuntimeHandle {
                 "current_focus_mode": transition.current_focus_mode.clone(),
                 "blocker_cleared": transition.blocker_cleared,
                 "cancelled_wait_condition_ids": transition.cancelled_wait_condition_ids.clone(),
-                "cancelled_waiting_intent_ids": transition.cancelled_waiting_intent_ids.clone(),
                 "warnings": transition.warnings.clone(),
                 "continuation_created": continuation_created.clone(),
                 "continuation_resolved": continuation_resolved.clone(),

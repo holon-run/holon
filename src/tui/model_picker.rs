@@ -234,7 +234,7 @@ mod tests {
             AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
             AgentTokenUsageSummary, AgentVisibility, ChildAgentSummary, ClosureDecision,
             ClosureOutcome, LoadedAgentsMdView, ResolvedModelAvailability, RuntimePosture,
-            SkillsRuntimeView, TokenUsage, WaitingIntentSummary,
+            SkillsRuntimeView, TokenUsage,
         },
     };
 
@@ -356,7 +356,6 @@ mod tests {
             loaded_agents_md: LoadedAgentsMdView::default(),
             skills: SkillsRuntimeView::default(),
             active_children: Vec::<ChildAgentSummary>::new(),
-            active_waiting_intents: Vec::<WaitingIntentSummary>::new(),
             active_wait_conditions: Vec::new(),
             active_external_triggers: Vec::new(),
             recent_operator_notifications: Vec::new(),

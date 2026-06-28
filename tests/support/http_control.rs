@@ -101,7 +101,6 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload["timers"].is_array());
     assert!(state_payload["work_items"].is_array());
     assert!(state_payload.get("work_plan").is_none());
-    assert!(state_payload["waiting_intents"].is_array());
     assert!(state_payload["external_triggers"].is_array());
     assert!(state_payload["workspace"].is_object());
     assert!(state_payload.get("operator_notifications").is_none());
@@ -490,9 +489,7 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
             .map(|item| item.id.clone()),
         Some(work_item.id.clone())
     );
-    assert!(snapshot.waiting_intents.is_empty());
     assert_eq!(snapshot.external_triggers.len(), 1);
-    assert!(snapshot.external_triggers[0].waiting_intent_id.is_none());
     assert_eq!(
         snapshot.external_triggers[0].target_agent_id,
         snapshot.agent.identity.agent_id
@@ -810,7 +807,7 @@ pub async fn install_skill_existing_destination_returns_conflict() -> Result<()>
     let payload = serde_json::json!({
         "kind": {
             "kind": "builtin",
-            "name": "ghx",
+            "name": "ghx"
         }
     });
 
@@ -867,7 +864,7 @@ pub async fn add_skill_to_catalog_existing_destination_returns_conflict() -> Res
     let payload = serde_json::json!({
         "kind": {
             "kind": "local",
-            "path": local_skill_path,
+            "path": local_skill_path
         }
     });
 
@@ -923,7 +920,7 @@ pub async fn create_skill_install_job_installs_local_skill() -> Result<()> {
             "params": {
                 "kind": {
                     "kind": "local",
-                    "path": local_skill_path,
+                    "path": local_skill_path
                 }
             }
         }))
@@ -1014,7 +1011,7 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
         .json(&serde_json::json!({
             "kind": {
                 "kind": "local",
-                "path": local_skill_path,
+                "path": local_skill_path
             }
         }))
         .send()
@@ -1031,7 +1028,7 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
     let enable = client
         .post(format!("{base}/control/agents/default/skills/enable"))
         .json(&serde_json::json!({
-            "name": skill_name,
+            "name": skill_name
         }))
         .send()
         .await?;
@@ -1041,7 +1038,7 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
     let disable = client
         .post(format!("{base}/control/agents/default/skills/disable"))
         .json(&serde_json::json!({
-            "name": skill_name,
+            "name": skill_name
         }))
         .send()
         .await?;
@@ -1052,7 +1049,7 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
     let remove = client
         .post(format!("{base}/api/skills/catalog/remove"))
         .json(&serde_json::json!({
-            "name": skill_name,
+            "name": skill_name
         }))
         .send()
         .await?;

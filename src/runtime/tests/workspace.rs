@@ -40,7 +40,7 @@ async fn use_workspace_path_activates_project_workspace() {
             id: "use-workspace".into(),
             name: "UseWorkspace".into(),
             input: serde_json::json!({
-                "path": workspace.path().display().to_string(),
+                "path": workspace.path().display().to_string()
             }),
         },
     )
@@ -290,7 +290,7 @@ async fn use_workspace_rejects_nonexistent_path() {
             id: "use-workspace".into(),
             name: "UseWorkspace".into(),
             input: serde_json::json!({
-                "path": nonexistent.display().to_string(),
+                "path": nonexistent.display().to_string()
             }),
         },
     )
@@ -336,7 +336,7 @@ async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
             id: "use-valid".into(),
             name: "UseWorkspace".into(),
             input: serde_json::json!({
-                "path": workspace.path().display().to_string(),
+                "path": workspace.path().display().to_string()
             }),
         },
     )
@@ -357,7 +357,7 @@ async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
             id: "use-bad".into(),
             name: "UseWorkspace".into(),
             input: serde_json::json!({
-                "path": nonexistent.display().to_string(),
+                "path": nonexistent.display().to_string()
             }),
         },
     )
@@ -394,7 +394,7 @@ async fn use_workspace_regular_file_preserves_existing_workspace() {
             id: "use-valid".into(),
             name: "UseWorkspace".into(),
             input: serde_json::json!({
-                "path": workspace.path().display().to_string(),
+                "path": workspace.path().display().to_string()
             }),
         },
     )
@@ -413,7 +413,7 @@ async fn use_workspace_regular_file_preserves_existing_workspace() {
             id: "use-file".into(),
             name: "UseWorkspace".into(),
             input: serde_json::json!({
-                "path": file_path.display().to_string(),
+                "path": file_path.display().to_string()
             }),
         },
     )
@@ -565,7 +565,6 @@ async fn current_closure_returns_none_while_pending_wake_hint_remains() {
             reason: "wake".into(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: None,
             resource: None,

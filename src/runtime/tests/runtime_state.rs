@@ -160,7 +160,6 @@ fn runtime_projection_cache_rebuilds_current_agent_active_task_projection() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
 
     let active_tasks = cache.active_tasks(10);
@@ -1180,7 +1179,6 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
             reason: "wake later".into(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("test".into()),
             resource: None,
@@ -1652,13 +1650,6 @@ async fn enqueue_normalizes_callback_payload_without_operator_elevation() {
             .map(String::as_str),
         Some("ext-1")
     );
-    assert_eq!(
-        queued
-            .source_refs
-            .get("waiting_intent_id")
-            .map(String::as_str),
-        Some("wait-1")
-    );
     assert!(queued.work_item_id.is_none());
 }
 
@@ -1772,13 +1763,6 @@ async fn enqueue_normalizes_wake_hint_as_runtime_owned_inspection_signal() {
             .get("external_trigger_id")
             .map(String::as_str),
         Some("ext-2")
-    );
-    assert_eq!(
-        queued
-            .source_refs
-            .get("waiting_intent_id")
-            .map(String::as_str),
-        Some("wait-2")
     );
     assert_eq!(
         queued.source_refs.get("resource").map(String::as_str),
@@ -3195,7 +3179,6 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
         reason: "original-hint".into(),
         description: None,
         scope: None,
-        waiting_intent_id: None,
         external_trigger_id: None,
         source: Some("test".into()),
         resource: None,
@@ -3262,7 +3245,6 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
             reason: "new-hint".into(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("test".into()),
             resource: None,

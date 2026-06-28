@@ -64,7 +64,6 @@ impl RuntimeHandle {
         let descriptor = ExternalTriggerRecord {
             external_trigger_id: external_trigger_id.clone(),
             target_agent_id: agent_id.clone(),
-            waiting_intent_id: None,
             scope: ExternalTriggerScope::Agent,
             delivery_mode: delivery_mode.clone(),
             trigger_url: Some(trigger_url.clone()),
@@ -115,34 +114,21 @@ impl RuntimeHandle {
             return Err(anyhow!("external trigger is not active"));
         }
 
-        let waiting = self.linked_waiting_intent(&descriptor).await?;
-
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
-        let correlation_id = payload.correlation_id.clone().or_else(|| {
-            waiting
-                .as_ref()
-                .and_then(|waiting| waiting.correlation_id.clone())
-        });
-        let causation_id = payload.causation_id.clone().or_else(|| {
-            waiting
-                .as_ref()
-                .and_then(|waiting| waiting.causation_id.clone())
-        });
+        let correlation_id = payload.correlation_id.clone();
+        let causation_id = payload.causation_id.clone();
 
         let disposition = {
             let disposition = self
                 .submit_wake_hint(WakeHint {
                     agent_id: agent_id.clone(),
-                    reason: callback_wake_reason(waiting.as_ref(), payload.body.as_ref()),
-                    description: waiting.as_ref().map(|waiting| waiting.description.clone()),
-                    source: waiting.as_ref().map(|waiting| waiting.source.clone()),
+                    reason: callback_wake_reason(payload.body.as_ref()),
+                    description: None,
+                    source: None,
                     scope: Some(descriptor.scope.clone()),
-                    waiting_intent_id: waiting.as_ref().map(|waiting| waiting.id.clone()),
                     external_trigger_id: Some(descriptor.external_trigger_id.clone()),
-                    resource: waiting
-                        .as_ref()
-                        .and_then(|waiting| waiting.resource.clone()),
+                    resource: None,
                     body: payload.body.clone(),
                     content_type: payload.content_type.clone(),
                     correlation_id: correlation_id.clone(),
@@ -154,26 +140,6 @@ impl RuntimeHandle {
                 WakeDisposition::Coalesced => CallbackIngressDisposition::Coalesced,
                 WakeDisposition::Ignored => CallbackIngressDisposition::Ignored,
             }
-        };
-
-        let updated_waiting = if let Some(mut linked_waiting) = waiting.clone() {
-            if linked_waiting.status == WaitingIntentStatus::Active {
-                if linked_waiting.correlation_id.is_none() {
-                    linked_waiting.correlation_id = correlation_id.clone();
-                }
-                if linked_waiting.causation_id.is_none() {
-                    linked_waiting.causation_id = causation_id.clone();
-                }
-                linked_waiting.last_triggered_at = Some(now);
-                linked_waiting.trigger_count += 1;
-                self.record_waiting_intent_projection(&linked_waiting)
-                    .await?;
-                Some(linked_waiting)
-            } else {
-                None
-            }
-        } else {
-            None
         };
 
         let mut updated_descriptor = descriptor;
@@ -194,16 +160,13 @@ impl RuntimeHandle {
             "callback_delivered",
             serde_json::json!({
                 "agent_id": agent_id,
-                "waiting_intent_id": waiting.as_ref().map(|waiting| waiting.id.clone()),
-                "work_item_id": waiting.as_ref().and_then(|waiting| waiting.work_item_id.clone()),
                 "external_trigger_id": updated_descriptor_id,
                 "scope": updated_descriptor.scope,
                 "delivery_mode": CallbackDeliveryMode::WakeHint,
                 "descriptor_delivery_mode": descriptor_delivery_mode,
                 "deprecated_enqueue_message_mapped_to_wake_hint": deprecated_enqueue_message_mapped_to_wake_hint,
-                "source": waiting.as_ref().map(|waiting| waiting.source.clone()),
-                "resource": waiting.as_ref().and_then(|waiting| waiting.resource.clone()),
-                "trigger_count": updated_waiting.as_ref().map(|waiting| waiting.trigger_count),
+                "source": serde_json::Value::Null,
+                "resource": serde_json::Value::Null,
                 "origin": "callback",
                 "delivery_surface": crate::types::MessageDeliverySurface::HttpCallbackWake,
                 "disposition": disposition,
@@ -214,7 +177,6 @@ impl RuntimeHandle {
 
         Ok(CallbackDeliveryResult {
             agent_id,
-            waiting_intent_id: waiting.map(|waiting| waiting.id),
             external_trigger_id: updated_descriptor.external_trigger_id,
             scope: updated_descriptor.scope,
             delivery_mode: CallbackDeliveryMode::WakeHint,
@@ -251,39 +213,6 @@ impl RuntimeHandle {
         ))?;
         Ok(revoked)
     }
-
-    pub async fn revoke_external_trigger_for_waiting_intent(
-        &self,
-        waiting_intent_id: &str,
-    ) -> Result<ExternalTriggerRecord> {
-        let descriptor = self
-            .latest_external_triggers()
-            .await?
-            .into_iter()
-            .find(|record| record.waiting_intent_id.as_deref() == Some(waiting_intent_id))
-            .ok_or_else(|| {
-                anyhow!(
-                    "external trigger for waiting intent {} not found",
-                    waiting_intent_id
-                )
-            })?;
-        self.revoke_external_trigger(&descriptor.external_trigger_id)
-            .await
-    }
-
-    async fn linked_waiting_intent(
-        &self,
-        descriptor: &ExternalTriggerRecord,
-    ) -> Result<Option<WaitingIntentRecord>> {
-        let Some(waiting_intent_id) = descriptor.waiting_intent_id.as_deref() else {
-            return Ok(None);
-        };
-        Ok(self
-            .latest_waiting_intents()
-            .await?
-            .into_iter()
-            .find(|record| record.id == waiting_intent_id))
-    }
 }
 
 fn capability_from_record(descriptor: &ExternalTriggerRecord) -> Result<ExternalTriggerCapability> {
@@ -302,10 +231,7 @@ fn capability_from_record(descriptor: &ExternalTriggerRecord) -> Result<External
     })
 }
 
-fn callback_wake_reason(
-    waiting: Option<&WaitingIntentRecord>,
-    body: Option<&MessageBody>,
-) -> String {
+fn callback_wake_reason(body: Option<&MessageBody>) -> String {
     match body {
         Some(MessageBody::Text { text }) if !text.trim().is_empty() => text.trim().to_string(),
         Some(MessageBody::Json { value }) => {
@@ -313,9 +239,7 @@ fn callback_wake_reason(
             truncate_activation_text(&rendered)
         }
         Some(MessageBody::Brief { text, .. }) if !text.trim().is_empty() => text.trim().to_string(),
-        _ => waiting
-            .map(|waiting| format!("external trigger fired: {}", waiting.description))
-            .unwrap_or_else(|| "external trigger fired".to_string()),
+        _ => "external trigger fired".to_string(),
     }
 }
 

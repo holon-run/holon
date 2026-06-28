@@ -53,7 +53,6 @@ pub struct WakeHint {
     pub description: Option<String>,
     pub source: Option<String>,
     pub scope: Option<crate::types::ExternalTriggerScope>,
-    pub waiting_intent_id: Option<String>,
     pub external_trigger_id: Option<String>,
     pub resource: Option<String>,
     pub body: Option<MessageBody>,

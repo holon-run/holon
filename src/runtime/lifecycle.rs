@@ -451,7 +451,6 @@ impl RuntimeHandle {
             loaded_agents_md: (&loaded_agents_md).into(),
             skills,
             active_children,
-            active_waiting_intents: self.active_waiting_intent_summaries().await?,
             active_wait_conditions: self.active_wait_condition_summaries().await?,
             active_external_triggers,
             recent_operator_notifications: self.recent_operator_notifications(10).await?,
@@ -527,7 +526,6 @@ impl RuntimeHandle {
         Ok(build_child_agent_observability(
             &agent,
             closure.waiting_reason,
-            self.active_work_item_waiting_intent_count().await?,
             &latest_tasks,
             &briefs,
         ))
@@ -565,7 +563,6 @@ impl RuntimeHandle {
         Ok(build_child_agent_observability_with_active_tasks(
             state,
             closure.waiting_reason,
-            projection.active_work_item_waiting_intents,
             &active_tasks,
             &briefs,
         ))
@@ -1641,24 +1638,16 @@ fn child_blocked_reason(
 fn build_child_agent_observability(
     agent: &AgentState,
     waiting_reason: Option<WaitingReason>,
-    active_waiting_intent_count: usize,
     latest_tasks: &[TaskRecord],
     briefs: &[BriefRecord],
 ) -> ChildAgentObservabilitySnapshot {
     let active_tasks = active_child_tasks(&agent.id, latest_tasks);
-    build_child_agent_observability_with_active_tasks(
-        agent,
-        waiting_reason,
-        active_waiting_intent_count,
-        &active_tasks,
-        briefs,
-    )
+    build_child_agent_observability_with_active_tasks(agent, waiting_reason, &active_tasks, briefs)
 }
 
 fn build_child_agent_observability_with_active_tasks(
     agent: &AgentState,
     waiting_reason: Option<WaitingReason>,
-    active_waiting_intent_count: usize,
     active_tasks: &[&TaskRecord],
     briefs: &[BriefRecord],
 ) -> ChildAgentObservabilitySnapshot {
@@ -1674,7 +1663,6 @@ fn build_child_agent_observability_with_active_tasks(
     } else if agent.current_run_id.is_some() || agent.pending > 0 {
         ChildAgentPhase::Running
     } else if waiting_reason.is_some()
-        || active_waiting_intent_count > 0
         || matches!(
             agent.status,
             AgentStatus::Asleep | AgentStatus::Booting | AgentStatus::AwakeIdle
@@ -1801,7 +1789,7 @@ mod tests {
         let mut agent = AgentState::new("child");
         agent.status = AgentStatus::AwakeIdle;
 
-        let snapshot = build_child_agent_observability(&agent, None, 0, &[], &[]);
+        let snapshot = build_child_agent_observability(&agent, None, &[], &[]);
 
         assert_eq!(snapshot.phase, ChildAgentPhase::Waiting);
     }
@@ -1822,7 +1810,7 @@ mod tests {
 
         let mut agent = AgentState::new("child");
         agent.status = AgentStatus::AwakeIdle;
-        let snapshot = build_child_agent_observability(&agent, None, 0, &[background], &[]);
+        let snapshot = build_child_agent_observability(&agent, None, &[background], &[]);
 
         assert_ne!(snapshot.phase, ChildAgentPhase::Blocked);
         assert_eq!(snapshot.blocked_reason, None);

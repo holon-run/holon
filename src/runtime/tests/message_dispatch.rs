@@ -17,7 +17,7 @@ fn task_metadata() -> serde_json::Value {
     serde_json::json!({
         "task_id": "task-dispatch-1",
         "task_kind": "command_task",
-        "task_status": "running",
+        "task_status": "running"
     })
 }
 

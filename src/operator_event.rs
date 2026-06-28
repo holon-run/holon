@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    BriefCreatedAuditEvent, BriefRecord, TaskRecord, TaskStatus, TimerRecord, WaitingIntentRecord,
+    BriefCreatedAuditEvent, BriefRecord, TaskRecord, TaskStatus, TimerRecord,
     WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState, WorktreeSession,
 };
 
@@ -270,7 +270,6 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "work_item_delegation_completed"
         | "work_item_stale_reminder_injected"
         | "work_item_stale_reminder_skipped"
-        | "work_item_waiting_intents_cancelled"
         | "missing_current_work_item_before_wait" => OperatorEventCategory::WorkItem,
         "task_created"
         | "task_status_updated"
@@ -283,10 +282,7 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "command_task_runner_failed"
         | "command_task_running_persisted"
         | "command_task_result_enqueue_failed" => OperatorEventCategory::Task,
-        "waiting_intent_created"
-        | "waiting_intent_cancelled"
-        | "stale_waiting_intents_cancelled"
-        | "callback_delivered"
+        "callback_delivered"
         | "timer_create_requested"
         | "timer_created"
         | "timer_fired"
@@ -372,20 +368,8 @@ fn event_visibility(
         ("brief_created", _) => brief_visibility(payload, context),
         ("work_item_written", _) if work_item_completed(payload) => OperatorVisibility::WorkDone,
         ("work_item_written", _) if work_item_created(payload) => OperatorVisibility::TurnResult,
-        ("waiting_intent_created", _) if waiting_intent_requires_operator(payload) => {
-            OperatorVisibility::ActionRequired
-        }
-        ("waiting_intent_created", _) if waiting_intent_is_work_item_scoped(payload) => {
-            OperatorVisibility::TurnResult
-        }
         (_, OperatorEventCategory::WorkItem) => OperatorVisibility::Progress,
-        (
-            "waiting_intent_created"
-            | "waiting_intent_cancelled"
-            | "stale_waiting_intents_cancelled"
-            | "timer_fire_failed",
-            OperatorEventCategory::Waiting,
-        ) => OperatorVisibility::Progress,
+        ("timer_fire_failed", OperatorEventCategory::Waiting) => OperatorVisibility::Progress,
         ("runtime_error", _) => OperatorVisibility::TurnResult,
         ("deferred_to_fallback" | "provider_failed_needs_recovery", _) => {
             OperatorVisibility::TurnResult
@@ -445,22 +429,6 @@ fn work_item_created(payload: &Value) -> bool {
     payload.get("action").and_then(Value::as_str) == Some("created")
 }
 
-fn waiting_intent_requires_operator(payload: &Value) -> bool {
-    decode_value::<WaitingIntentRecord>(payload.clone()).is_some_and(|waiting| {
-        waiting_intent_record_is_work_item_scoped(&waiting)
-            && waiting.source.eq_ignore_ascii_case("operator_input")
-    })
-}
-
-fn waiting_intent_is_work_item_scoped(payload: &Value) -> bool {
-    decode_value::<WaitingIntentRecord>(payload.clone())
-        .is_some_and(|waiting| waiting_intent_record_is_work_item_scoped(&waiting))
-}
-
-fn waiting_intent_record_is_work_item_scoped(waiting: &WaitingIntentRecord) -> bool {
-    waiting.scope == crate::types::WaitingIntentScope::WorkItem && waiting.work_item_id.is_some()
-}
-
 fn turn_terminal_completed(payload: &Value) -> bool {
     payload
         .get("kind")
@@ -518,13 +486,9 @@ fn is_verbose_event(kind: &str, payload: &Value) -> bool {
         | "work_item_turn_end_commit_skipped"
         | "work_item_delegation_created"
         | "work_item_delegation_completed"
-        | "work_item_waiting_intents_cancelled"
         | "missing_current_work_item_before_wait"
         | "work_item_stale_reminder_injected"
         | "work_item_stale_reminder_skipped"
-        | "waiting_intent_created"
-        | "waiting_intent_cancelled"
-        | "stale_waiting_intents_cancelled"
         | "timer_fire_failed"
         | "workspace_attached"
         | "workspace_entered"
@@ -731,11 +695,6 @@ fn event_text(
             "Work item turn commit skipped",
             reason_or_work_item_body(payload),
         ),
-        "waiting_intent_created" => waiting_intent_text(payload, fallback_summary, false),
-        "waiting_intent_cancelled" => waiting_intent_text(payload, fallback_summary, true),
-        "stale_waiting_intents_cancelled" => {
-            simple_event_text("Stale waits cancelled", count_or_reason_body(payload))
-        }
         "callback_delivered" => callback_delivered_text(payload, fallback_summary),
         "timer_create_requested" => simple_event_text("Timer requested", timer_body(payload)),
         "timer_created" => timer_text(payload, fallback_summary, false),
@@ -744,9 +703,6 @@ fn event_text(
         "work_item_written" => work_item_text(payload, fallback_summary),
         "work_item_stale_reminder_injected" => work_item_stale_reminder_text(payload, false),
         "work_item_stale_reminder_skipped" => work_item_stale_reminder_text(payload, true),
-        "work_item_waiting_intents_cancelled" => {
-            simple_event_text("Work item waits cancelled", work_item_body(payload))
-        }
         "missing_current_work_item_before_wait" => simple_event_text(
             "Missing current work item before wait",
             reason_or_work_item_body(payload),
@@ -1038,13 +994,6 @@ fn error_or_delivery_body(payload: &Value) -> Option<String> {
     error_or_message_body(payload).or_else(|| delivery_body(payload))
 }
 
-fn count_or_reason_body(payload: &Value) -> Option<String> {
-    numeric_field(payload, "count")
-        .or_else(|| numeric_field(payload, "cancelled_count"))
-        .map(|count| format!("{count} item(s)"))
-        .or_else(|| reason_or_message_body(payload))
-}
-
 fn turn_body(payload: &Value) -> Option<String> {
     let turn = numeric_field(payload, "turn_index").map(|turn| format!("turn {turn}"));
     let run = string_field(payload, "run_id").map(|run| format!("run {run}"));
@@ -1301,59 +1250,26 @@ fn operator_notification_text(
     )
 }
 
-fn waiting_intent_text(
-    payload: &Value,
-    _fallback_summary: &str,
-    cancelled: bool,
-) -> (String, Option<String>, String) {
-    let Some(waiting) = decode_value::<WaitingIntentRecord>(payload.clone()) else {
-        let title = if cancelled {
-            "Stopped waiting"
-        } else {
-            "Waiting"
-        };
-        return (title.into(), None, title.into());
-    };
-    let description = trim_summary(&waiting.description);
-    if cancelled {
-        return (
-            "Stopped waiting".into(),
-            Some(description.clone()),
-            format!("Stopped waiting: {description}"),
-        );
-    }
-    (
-        "Waiting".into(),
-        Some(description.clone()),
-        format!("Waiting: {description}"),
-    )
-}
-
 fn callback_delivered_text(
     payload: &Value,
     _fallback_summary: &str,
 ) -> (String, Option<String>, String) {
-    let waiting_id = payload.get("waiting_intent_id").and_then(Value::as_str);
     let source = payload.get("source").and_then(Value::as_str);
     let resource = payload.get("resource").and_then(Value::as_str);
     let triggered = callback_disposition_is_triggered(payload);
-    let summary = match (source, resource, waiting_id) {
-        (Some(source), Some(resource), _) if triggered => {
+    let summary = match (source, resource) {
+        (Some(source), Some(resource)) if triggered => {
             format!("External event received from {source} for {resource}; resuming agent")
         }
-        (Some(source), None, _) if triggered => {
+        (Some(source), None) if triggered => {
             format!("External event received from {source}; resuming agent")
         }
-        (None, Some(resource), _) if triggered => {
+        (None, Some(resource)) if triggered => {
             format!("External event received for {resource}; resuming agent")
         }
-        (None, None, _) if triggered => "External event received; resuming agent".into(),
-        (Some(source), _, Some(waiting_id)) => {
-            format!("External event received from {source} for wait {waiting_id}")
-        }
-        (Some(source), _, None) => format!("External event received from {source}"),
-        (None, _, Some(waiting_id)) => format!("External event received for wait {waiting_id}"),
-        (None, _, None) => "External event received".into(),
+        (None, None) if triggered => "External event received; resuming agent".into(),
+        (Some(source), _) => format!("External event received from {source}"),
+        (None, _) => "External event received".into(),
     };
     (
         "External event received".into(),
@@ -2161,7 +2077,6 @@ mod tests {
         "work_item_turn_end_commit_skipped",
         "work_item_stale_reminder_injected",
         "work_item_stale_reminder_skipped",
-        "work_item_waiting_intents_cancelled",
         "missing_current_work_item_before_wait",
         "work_item_delegation_created",
         "work_item_delegation_completed",
@@ -2176,9 +2091,6 @@ mod tests {
         "command_task_runner_failed",
         "command_task_running_persisted",
         "command_task_result_enqueue_failed",
-        "waiting_intent_created",
-        "waiting_intent_cancelled",
-        "stale_waiting_intents_cancelled",
         "callback_delivered",
         "timer_create_requested",
         "timer_created",
@@ -2508,38 +2420,6 @@ mod tests {
             lightweight_presentation.summary,
             "Work completed: merged slim PR"
         );
-
-        let waiting = json!({
-            "id": "wait-1",
-            "agent_id": "default",
-            "scope": "work_item",
-            "work_item_id": "wi-1",
-            "description": "PR checks",
-            "source": "external",
-            "resource": "github:holon-run/holon#1518",
-            "delivery_mode": "wake_hint",
-            "status": "active",
-            "external_trigger_id": "ext-1",
-            "created_at": "2026-01-01T00:00:00Z",
-            "cancelled_at": null,
-            "last_triggered_at": null,
-            "trigger_count": 0,
-            "correlation_id": null,
-            "causation_id": null
-        });
-        let waiting_presentation =
-            present_operator_event("waiting_intent_created", &waiting, "fallback", &context);
-        assert_eq!(
-            waiting_presentation.visibility,
-            OperatorVisibility::TurnResult
-        );
-        assert!(super::is_operator_event_in_display_mode(
-            "waiting_intent_created",
-            &waiting,
-            "fallback",
-            &context,
-            OperatorDisplayMode::Info
-        ));
     }
 
     #[test]
