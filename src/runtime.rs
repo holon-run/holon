@@ -1524,7 +1524,7 @@ impl RuntimeHandle {
                         message_id: message.id.clone(),
                         agent_id: message.agent_id.clone(),
                         priority: message.priority.clone(),
-                        status: QueueEntryStatus::Aborted,
+                        status: QueueEntryStatus::Interrupted,
                         created_at: message.created_at,
                         updated_at: Utc::now(),
                     })?;

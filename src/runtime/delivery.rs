@@ -117,6 +117,7 @@ fn operator_message_status(
         QueueEntryStatus::Dequeued | QueueEntryStatus::Interjected => {
             OperatorMessageStatus::Processing
         }
+        QueueEntryStatus::Interrupted => OperatorMessageStatus::Queued,
         QueueEntryStatus::Processed => OperatorMessageStatus::Processed,
         QueueEntryStatus::Aborted => OperatorMessageStatus::Failed,
         QueueEntryStatus::Dropped => OperatorMessageStatus::Dropped,

@@ -3878,8 +3878,8 @@ pub enum QueueEntryStatus {
     Dequeued,
     Processed,
     Interjected,
-    // TODO: remove `interrupted` alias after older queue ledgers have migrated.
-    #[serde(alias = "interrupted")]
+    /// Daemon shutdown interrupted processing; replay on recovery.
+    Interrupted,
     Aborted,
     Dropped,
 }
@@ -4922,10 +4922,10 @@ mod tests {
 
         let status: QueueEntryStatus =
             serde_json::from_value(serde_json::json!("interrupted")).unwrap();
-        assert_eq!(status, QueueEntryStatus::Aborted);
+        assert_eq!(status, QueueEntryStatus::Interrupted);
         assert_eq!(
             serde_json::to_value(status).unwrap(),
-            serde_json::json!("aborted")
+            serde_json::json!("interrupted")
         );
     }
 
