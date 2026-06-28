@@ -123,7 +123,7 @@ impl RuntimeHandle {
             let disposition = self
                 .submit_wake_hint(WakeHint {
                     agent_id: agent_id.clone(),
-                    reason: callback_wake_reason(None, payload.body.as_ref()),
+                    reason: callback_wake_reason(payload.body.as_ref()),
                     description: None,
                     source: None,
                     scope: Some(descriptor.scope.clone()),
@@ -231,7 +231,7 @@ fn capability_from_record(descriptor: &ExternalTriggerRecord) -> Result<External
     })
 }
 
-fn callback_wake_reason(_waiting: Option<&()>, body: Option<&MessageBody>) -> String {
+fn callback_wake_reason(body: Option<&MessageBody>) -> String {
     match body {
         Some(MessageBody::Text { text }) if !text.trim().is_empty() => text.trim().to_string(),
         Some(MessageBody::Json { value }) => {
