@@ -1615,7 +1615,9 @@ fn api_response_block_to_model(
         // Anthropic server-side tool use (e.g. web search). This is a server-
         // internal block that doesn't need to be stored or replayed.
         "server_tool_use" => None,
-        // Anthropic server-side tool result (e.g. web search results).
+        // Anthropic server-side tool result (e.g. web search results) returned
+        // in the assistant response `content` array. This is distinct from
+        // client-side tool_result blocks in user messages, handled separately.
         // Convert to Text so the content is preserved in subsequent turns.
         "tool_result" => {
             let text = match block.content {
