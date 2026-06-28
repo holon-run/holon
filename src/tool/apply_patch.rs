@@ -2396,7 +2396,7 @@ line3
    return 42
 +
 ";
-        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+        let _outcome = apply_patch(dir.path(), patch).await.unwrap();
 
         let result = tokio::fs::read_to_string(dir.path().join("f.py"))
             .await
@@ -2430,7 +2430,7 @@ line3
  let x = 1;
 +let y = 2;
 ";
-        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+        let _outcome = apply_patch(dir.path(), patch).await.unwrap();
 
         let result = tokio::fs::read_to_string(dir.path().join("f.rs"))
             .await
