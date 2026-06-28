@@ -27,6 +27,7 @@ interface RightSidePanelProps {
   onOpenSkill: (skillId: string) => void;
   onShowAgentOverview: () => void;
   onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
+  onOpenPlanFile?: (workspaceId: string, filePath: string) => void;
   onClose: () => void;
 }
 
@@ -51,6 +52,7 @@ export function RightSidePanel({
   onOpenSkill,
   onShowAgentOverview,
   onBrowseFiles,
+  onOpenPlanFile,
   onClose,
 }: RightSidePanelProps) {
   const PANEL_MIN = 320;
@@ -113,7 +115,11 @@ export function RightSidePanel({
             ? "File browser"
           : "Agent overview";
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
-  const detailWorkItem = activeView.kind === "work_item_detail" ? detailState?.workItem ?? activeView.workItem : undefined;
+  const detailWorkItem = activeView.kind === "work_item_detail"
+    ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
+      ?? detailState?.workItem
+      ?? activeView.workItem
+    : undefined;
   const taskDetailState = activeView.kind === "task_detail" ? activeView.detailState ?? taskDetailsById[activeView.task.id] : undefined;
 
   useEffect(() => {
@@ -169,14 +175,14 @@ export function RightSidePanel({
           <ActivityInspectorPanel activity={activeView.activity} detailState={activeView.detailState} />
         ) : activeView.kind === "work_item_detail" && detailWorkItem ? (
           <div className="inspector-stack">
-            <WorkItemDetailPanel workItem={detailWorkItem} detailState={detailState} />
+            <WorkItemDetailPanel workItem={detailWorkItem} detailState={detailState} onOpenPlanFile={onOpenPlanFile} />
           </div>
         ) : activeView.kind === "task_detail" ? (
           <div className="inspector-stack">
             <TaskDetailPanel task={activeView.task} detailState={taskDetailState} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} />
+          <FileBrowserPanel workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} />
         ) : (
           <AgentOverviewPanel
             agent={agent}

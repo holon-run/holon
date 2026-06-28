@@ -499,7 +499,7 @@ function WorkItemCard({
   );
 }
 
-export function WorkItemDetailPanel({ workItem, detailState }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState }) {
+export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState; onOpenPlanFile?: (workspaceId: string, filePath: string) => void }) {
   const loading = detailState?.loading && !detailState.workItem;
   const plan = workItem.planArtifact;
   return (
@@ -550,7 +550,15 @@ export function WorkItemDetailPanel({ workItem, detailState }: { workItem: WorkI
       {plan?.preview || plan?.path ? (
         <section className="work-item-detail-section">
           <h3>Plan</h3>
-          {plan.path ? <code>{plan.path}</code> : null}
+          {plan.path ? (
+            onOpenPlanFile && plan.workspaceId && plan.relativePath ? (
+              <a href="#" className="workspace-path-link" onClick={(e) => { e.preventDefault(); onOpenPlanFile(plan.workspaceId!, plan.relativePath!); }}>
+                <code>{plan.path}</code>
+              </a>
+            ) : (
+              <code>{plan.path}</code>
+            )
+          ) : null}
           {plan.preview ? <pre>{plan.preview}</pre> : null}
         </section>
       ) : null}

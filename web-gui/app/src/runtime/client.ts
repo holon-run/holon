@@ -254,6 +254,7 @@ interface WorkItemDto {
   plan_artifact?: {
     path?: string;
     relative_path?: string;
+    workspace_id?: string;
     workspace_alias?: string;
     preview?: string;
     preview_complete?: boolean;
@@ -1803,6 +1804,7 @@ function projectWorkItem(workItem: WorkItemDto | undefined, currentWorkItemId?: 
           path: planArtifact.path,
           relativePath: planArtifact.relative_path,
           workspaceAlias: planArtifact.workspace_alias,
+          workspaceId: planArtifact.workspace_id,
           preview: planArtifact.preview,
           previewComplete: planArtifact.preview_complete,
           updatedAt: planArtifact.updated_at,

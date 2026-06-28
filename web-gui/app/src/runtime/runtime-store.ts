@@ -211,7 +211,7 @@ export interface RuntimeStoreState {
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
-  showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string) => void;
+  showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
   readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
   workspaceFileUrl: (workspaceId: string, path: string, download?: boolean, executionRootId?: string) => string;
@@ -745,10 +745,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rightPanelOpen: true,
       rightPanelView: { kind: "task_detail", agentId, task },
     }),
-  showFileBrowser: (agentId, workspaceId, initialPath, executionRootId) =>
+  showFileBrowser: (agentId, workspaceId, initialPath, executionRootId, initialFilePath) =>
     set({
       rightPanelOpen: true,
-      rightPanelView: { kind: "file_browser", agentId, workspaceId, initialPath, executionRootId },
+      rightPanelView: { kind: "file_browser", agentId, workspaceId, initialPath, executionRootId, initialFilePath },
     }),
   browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
   readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
@@ -2776,9 +2776,8 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
 }
 
 function isWorkItemCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
-  if (event.type !== "work_item_written") return false;
-  const action = stringField(asRecord(event.payload), "action");
-  return action === "created" || action === "completed";
+  // Match all work_item_written events so updated/picked actions also refresh the cache.
+  return event.type === "work_item_written";
 }
 
 function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
