@@ -107,6 +107,7 @@ export function AgentPage({
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
+  const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
   const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -148,6 +149,7 @@ export function AgentPage({
   useEffect(() => {
     setVisibleTimelineItemLimit(defaultTimelineItemLimit(displayLevel));
     setModelPickerOpen(false);
+    setReasoningPopoverOpen(false);
     setSelectedProvider(null);
     setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
   }, [activeAgent.id, displayLevel]);
@@ -241,6 +243,7 @@ export function AgentPage({
 
   function toggleModelPicker() {
     const opening = !modelPickerOpen;
+    if (opening) setReasoningPopoverOpen(false);
     setModelPickerOpen(opening);
     if (opening && !modelCatalogLoading && modelCatalog.options.length === 0) {
       void onRefreshModels();
@@ -249,6 +252,13 @@ export function AgentPage({
 
   async function handleSelectModel(option: RuntimeModelOption, reasoningEffort = selectedReasoningEffort) {
     if (!option.available || changingModel) return;
+
+    // When switching to a non-reasoning model, reset thinking display to auto.
+    if (!option.supportsReasoningEffort) {
+      setSelectedReasoningEffort("auto");
+      reasoningEffort = "auto";
+    }
+
     setChangingModel(option.model);
     try {
       await onSetModel(option.model, option.supportsReasoningEffort && reasoningEffort !== "auto" ? reasoningEffort : undefined);
@@ -266,6 +276,19 @@ export function AgentPage({
     try {
       await onClearModel();
       setModelPickerOpen(false);
+    } catch {
+      // Store exposes the user-facing error.
+    } finally {
+      setChangingModel(null);
+    }
+  }
+
+  async function handleReasoningChange(effort: string) {
+    setSelectedReasoningEffort(effort);
+    if (changingModel || !activeModelSupportsReasoning) return;
+    setChangingModel("reasoning:" + effort);
+    try {
+      await onSetModel(activeAgent.model, effort !== "auto" ? effort : undefined);
     } catch {
       // Store exposes the user-facing error.
     } finally {
@@ -352,9 +375,43 @@ export function AgentPage({
                     onClick={toggleModelPicker}
                   >
                     <span className="model-button-label">{shortModelLabel(activeAgent.model)}</span>
-                    {activeReasoningBadge ? <small className="model-button-badge">{activeReasoningBadge}</small> : null}
                     <span aria-hidden="true">⌄</span>
                   </Button>
+                  {activeModelSupportsReasoning ? (
+                    <div className="thinking-picker">
+                      <Button
+                        className="thinking-button"
+                        type="button"
+                        variant="ghost"
+                        aria-expanded={reasoningPopoverOpen}
+                        aria-label={`Thinking: ${activeReasoningBadge ?? "auto"}`}
+                        title={`Thinking level: ${activeReasoningBadge ?? "auto"}`}
+                        onClick={() => setReasoningPopoverOpen((prev) => !prev)}
+                      >
+                        <svg className="thinking-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                          <path d="M8 1.5L6 6H2.5L5.5 8.5L4 13L8 10L12 13L10.5 8.5L13.5 6H10L8 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/>
+                        </svg>
+                        <small>{titleCase(activeReasoningBadge ?? "auto")}</small>
+                      </Button>
+                      {reasoningPopoverOpen ? (
+                        <div className="thinking-popover" role="dialog" aria-label="Thinking level">
+                          <div className="reasoning-options">
+                            {["auto", "low", "medium", "high", "xhigh"].map((effort) => (
+                              <button
+                                className={`${(activeReasoningBadge ?? "auto") === effort ? "is-active" : ""} ${changingModel === "reasoning:" + effort ? "is-saving" : ""}`}
+                                key={effort}
+                                type="button"
+                                disabled={changingModel !== null}
+                                onClick={() => void handleReasoningChange(effort)}
+                              >
+                                {titleCase(effort)}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {modelPickerOpen ? (
                     <div className="model-menu" role="dialog" aria-label="Switch agent model">
                       <div className="model-menu-header">
@@ -410,26 +467,6 @@ export function AgentPage({
                             <b>Step 2</b>
                             {currentProvider} models
                           </span>
-                          {activeModelSupportsReasoning || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
-                            <div className="model-picker-reasoning" aria-label="Thinking level">
-                              <span>
-                                <b>Thinking</b>
-                                Choose before selecting a reasoning model
-                              </span>
-                              <div className="reasoning-options">
-                                {["auto", "low", "medium", "high", "xhigh"].map((effort) => (
-                                  <button
-                                    className={selectedReasoningEffort === effort ? "is-active" : ""}
-                                    key={effort}
-                                    type="button"
-                                    onClick={() => setSelectedReasoningEffort(effort)}
-                                  >
-                                    {titleCase(effort)}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          ) : null}
                           <div className="model-options" role="listbox" aria-label={`${currentProvider} models`}>
                             {currentProviderModels.map((option) => (
                               <button
