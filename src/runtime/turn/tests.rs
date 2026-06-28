@@ -2746,9 +2746,24 @@ fn append_follow_up_user_texts_extends_and_recalculates_tokens() {
 fn fold_repeated_tool_call_rounds_collapses_identical_rounds() {
     // Three rounds with identical tool calls (same name + input, different ids).
     let rounds = vec![
-        fixture_round_with_tool(1, &"checking ".repeat(50), "ExecCommand", serde_json::json!({"cmd": "gh pr checks"})),
-        fixture_round_with_tool(2, &"checking ".repeat(50), "ExecCommand", serde_json::json!({"cmd": "gh pr checks"})),
-        fixture_round_with_tool(3, &"checking ".repeat(50), "ExecCommand", serde_json::json!({"cmd": "gh pr checks"})),
+        fixture_round_with_tool(
+            1,
+            &"checking ".repeat(50),
+            "ExecCommand",
+            serde_json::json!({"cmd": "gh pr checks"}),
+        ),
+        fixture_round_with_tool(
+            2,
+            &"checking ".repeat(50),
+            "ExecCommand",
+            serde_json::json!({"cmd": "gh pr checks"}),
+        ),
+        fixture_round_with_tool(
+            3,
+            &"checking ".repeat(50),
+            "ExecCommand",
+            serde_json::json!({"cmd": "gh pr checks"}),
+        ),
     ];
     let prompt_frame = fixture_prompt_frame();
 
