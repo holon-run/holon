@@ -45,6 +45,7 @@ pub struct AnthropicProvider {
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
+    supports_reasoning: bool,
     context_management: AnthropicContextManagementConfig,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     trace_home_dir: PathBuf,
@@ -155,6 +156,7 @@ impl AnthropicProvider {
             model,
             config.runtime_max_output_tokens,
             &config.home_dir,
+            true,
         )
     }
 
@@ -163,6 +165,7 @@ impl AnthropicProvider {
         model: &str,
         max_output_tokens: u32,
         trace_home_dir: &Path,
+        supports_reasoning: bool,
     ) -> Result<Self> {
         let client = build_http_client()?;
         let auth_token = provider_config
@@ -187,6 +190,7 @@ impl AnthropicProvider {
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            supports_reasoning,
             context_management: provider_config.context_management.clone(),
             builtin_web_search: provider_config.builtin_web_search.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
@@ -246,7 +250,11 @@ impl AgentProvider for AnthropicProvider {
         let request_body = MessagesRequest {
             model: &self.model,
             max_tokens: self.max_output_tokens,
-            thinking: reasoning_effort_to_thinking(&self.reasoning_effort, self.max_output_tokens),
+            thinking: if self.supports_reasoning {
+                reasoning_effort_to_thinking(&self.reasoning_effort, self.max_output_tokens)
+            } else {
+                None
+            },
             stream: true,
             system: build_anthropic_system(&request, cache_strategy),
             messages,
