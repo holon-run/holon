@@ -1340,8 +1340,7 @@ impl QueueEntryRepository<'_> {
     pub fn queued_for_agent(&self, agent_id: &str) -> Result<Vec<QueueEntryRecord>> {
         let connection = self.db.connection()?;
         let queued_status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
-        let interrupted_status =
-            enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
+        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
         let mut statement = connection.prepare(
             "SELECT payload_json
              FROM queue_entries

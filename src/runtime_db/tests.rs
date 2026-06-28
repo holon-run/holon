@@ -1163,7 +1163,10 @@ CREATE TABLE working_memory_deltas (
 
         let entries = db.queue_entries().queued_for_agent("agent-a")?;
         let message_ids: Vec<_> = entries.iter().map(|e| e.message_id.as_str()).collect();
-        assert!(message_ids.contains(&"msg-queued"), "Queued entry should be included");
+        assert!(
+            message_ids.contains(&"msg-queued"),
+            "Queued entry should be included"
+        );
         assert!(
             message_ids.contains(&"msg-interrupted"),
             "Interrupted entry should be included for recovery replay"
