@@ -266,7 +266,20 @@ pub(super) fn degraded_round_messages(
         return (exact_round_messages(round), false);
     }
 
-    let available_chars = available_tokens.saturating_mul(4);
+    // Estimate token cost of non-trimmable blocks (ToolUse, Thinking,
+    // RedactedThinking) and subtract from the budget so they don't silently
+    // consume the per-item char allocation reserved for trimmable content.
+    // Without this deduction, I/O-heavy rounds with large tool calls would
+    // exceed the intended degradation budget.
+    let non_trimmable_estimated_tokens: usize = round
+        .assistant_blocks
+        .iter()
+        .filter(|block| !matches!(block, ModelBlock::Text { .. }))
+        .map(estimate_model_block_tokens)
+        .sum();
+    let trimmable_available_tokens =
+        available_tokens.saturating_sub(non_trimmable_estimated_tokens);
+    let available_chars = trimmable_available_tokens.saturating_mul(4);
     let per_item_char_limit =
         (available_chars / trimmable_count).max(DEGRADED_ROUND_MINIMUM_CONTENT_CHARS);
 

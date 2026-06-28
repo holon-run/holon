@@ -2034,6 +2034,39 @@ fn degraded_round_messages_preserves_follow_up_texts() {
     }
 }
 
+#[test]
+fn degraded_round_messages_deducts_non_trimmable_tokens() {
+    // Large ToolUse input (~200 tokens) is non-trimmable. Without deducting
+    // it from the budget, the 800-char text would fit within 300*4=1200 chars
+    // per item and NOT be trimmed. With the deduction, only ~93 tokens remain
+    // for the text (~372 chars), so the text IS trimmed.
+    let large_input = serde_json::json!({
+        "data": "x".repeat(800),
+    });
+    let large_text = "content ".repeat(100); // 800 chars
+    let round = fixture_round_with_tool(1, &large_text, "BigTool", large_input);
+
+    let (messages, trimmed) = degraded_round_messages(&round, 300);
+    assert!(
+        trimmed,
+        "text should be trimmed because non-trimmable ToolUse tokens reduce the available budget"
+    );
+
+    let assistant_msg = messages
+        .iter()
+        .find(|m| matches!(m, ConversationMessage::AssistantBlocks(_)));
+    assert!(assistant_msg.is_some());
+    if let Some(ConversationMessage::AssistantBlocks(blocks)) = assistant_msg {
+        let has_trim_marker = blocks.iter().any(|b| {
+            matches!(b, ModelBlock::Text { text } if text.contains("[runtime: assistant text trimmed"))
+        });
+        assert!(
+            has_trim_marker,
+            "trimmed text should contain the runtime trim marker"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // completion_report_texts_by_tool_id tests
 // -----------------------------------------------------------------------
