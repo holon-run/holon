@@ -1836,6 +1836,23 @@ fn resolve_patch_path(workspace_root: &Path, path: &str) -> Result<PathBuf> {
     if !normalized_candidate.starts_with(&normalized_root) {
         return Err(path_escape(path, &normalized_candidate, &normalized_root));
     }
+
+    // Detect the common LLM mistake of prefixing an absolute path with `a/`.
+    // strip_diff_prefix turns `a/home/user/foo.rs` into the relative path
+    // `home/user/foo.rs`. If that relative file does not exist in the workspace
+    // but the absolute form `/{path}` does, return a hint error instead of
+    // letting it fail later with a confusing context_not_found.
+    if !normalized_candidate.exists() {
+        let absolute_guess = PathBuf::from(format!("/{path}"));
+        if absolute_guess.is_file() {
+            return Err(anyhow::anyhow!(
+                "Path `{path}` not found in workspace `{}`. This looks like an absolute path \
+                 that was prefixed with `a/` and stripped to a relative path — \
+                 write it as `/{path}` (no `a/` prefix) in the diff header.",
+                normalized_root.display()
+            ));
+        }
+    }
     Ok(normalized_candidate)
 }
 
@@ -2060,6 +2077,56 @@ mod tests {
         assert_eq!(strip_diff_prefix("b//home/foo.rs"), "/home/foo.rs");
         assert_eq!(strip_diff_prefix("a/home/foo.rs"), "home/foo.rs");
         assert_eq!(strip_diff_prefix("b/home/foo.rs"), "home/foo.rs");
+    }
+
+    #[tokio::test]
+    async fn resolve_patch_path_hints_when_relative_path_is_actually_absolute() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+
+        // Create a file at an absolute path that simulates the LLM mistake:
+        // LLM writes "a/tmp/holon_hint_test.rs", strip_diff_prefix produces
+        // "tmp/holon_hint_test.rs", which resolves to workspace/tmp/... (non-existent).
+        // But /tmp/holon_hint_test.rs exists → hint error.
+        let abs_file = std::path::PathBuf::from("/tmp/holon_hint_test.rs");
+        tokio::fs::write(
+            &abs_file, "test
+",
+        )
+        .await
+        .unwrap();
+
+        let result = resolve_patch_path(dir.path(), "tmp/holon_hint_test.rs");
+        assert!(
+            result.is_err(),
+            "should return error for misinterpreted absolute path"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("looks like an absolute path"),
+            "error should contain hint: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("no `a/` prefix"),
+            "error should mention no a/ prefix: {err_msg}"
+        );
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&abs_file).await;
+    }
+
+    #[tokio::test]
+    async fn resolve_patch_path_no_hint_for_genuinely_missing_relative_path() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+
+        // A relative path that doesn't exist in workspace and whose absolute
+        // form also doesn't exist → should NOT produce a hint, just resolve normally.
+        let result = resolve_patch_path(dir.path(), "nonexistent/deeply/nested/file.rs");
+        assert!(
+            result.is_ok(),
+            "should resolve normally for missing relative path without hint"
+        );
     }
 
     #[tokio::test]
