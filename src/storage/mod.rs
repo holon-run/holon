@@ -1,6 +1,5 @@
 use std::{
     fs,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -19,12 +18,11 @@ use crate::{
         AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
         AgentStatus, AuditEvent, BriefKind, BriefRecord, ContextEpisodeRecord,
         DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope, OperatorDeliveryRecord,
-        OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
-        TaskRecord, TaskStatus, TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord,
+        OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, TaskRecord,
+        TaskStatus, TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord,
         WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WorkItemContinuationFrame,
-        WorkItemContinuationState, WorkItemDelegationRecord, WorkItemDelegationState,
-        WorkItemRecord, WorkItemSchedulingState, WorkItemState, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemSchedulingState,
+        WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -36,7 +34,6 @@ const RUNTIME_CACHE_DIR: &str = "cache";
 
 mod activity;
 mod events;
-mod legacy_jsonl;
 mod memory;
 mod recovery;
 mod work_queue;
@@ -49,11 +46,19 @@ pub use work_queue::{
 };
 
 // Re-import submodule functions so existing impl AppStorage method bodies compile unchanged.
-use activity::file_activity_marker;
-use legacy_jsonl::{
-    append_jsonl_bytes, jsonl_bytes, max_jsonl_u64_field, migrate_events_ledger, read_jsonl_from,
-    read_latest_jsonl_matching, read_recent_jsonl, scan_jsonl_reverse, take_recent,
-};
+
+/// Truncate a descending-ordered Vec to `limit` items and reverse to ascending order.
+fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    if records_desc.len() > limit {
+        records_desc.truncate(limit);
+    }
+    records_desc.reverse();
+    records_desc
+}
+
 use memory::memory_index_agent_key;
 use recovery::external_wait_recoverability_event;
 use work_queue::{
@@ -68,27 +73,6 @@ pub struct AppStorage {
     data_dir: PathBuf,
     agent_id: Option<String>,
     read_only: bool,
-    // Legacy JSONL path fields retained while dead fallback code is removed.
-    // These are no longer used for runtime reads/writes — DB is canonical.
-    events_path: PathBuf,
-    briefs_path: PathBuf,
-    messages_path: PathBuf,
-    tasks_path: PathBuf,
-    work_items_path: PathBuf,
-    delivery_summaries_path: PathBuf,
-    work_item_delegations_path: PathBuf,
-    work_item_continuations_path: PathBuf,
-    timers_path: PathBuf,
-    tools_path: PathBuf,
-    turns_path: PathBuf,
-    transcript_path: PathBuf,
-    queue_entries_path: PathBuf,
-    wait_conditions_path: PathBuf,
-    external_triggers_path: PathBuf,
-    context_episodes_path: PathBuf,
-    workspaces_path: PathBuf,
-    occupancies_path: PathBuf,
-    agent_identities_path: PathBuf,
     agent_path: PathBuf,
     append_mutex: Arc<Mutex<()>>,
     event_seq_counter: Arc<Mutex<u64>>,
@@ -96,7 +80,6 @@ pub struct AppStorage {
     transcript_seq_counter: Arc<Mutex<u64>>,
     audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
     runtime_db: RuntimeDb,
-    db_canonical: bool,
     event_bus: Arc<Mutex<Option<EventBus>>>,
 }
 
@@ -145,52 +128,6 @@ impl AppStorage {
         )?;
         Self::new_for_agent(data_dir, agent_id, runtime_db)
     }
-
-    /// Test-only constructor that uses JSONL-only storage (no DB canonical).
-    /// Preserves the old `AppStorage::new(dir.path())` behavior for tests
-    /// that explicitly test legacy JSONL read/write/migration paths.
-    pub fn new_jsonl_only(data_dir: impl Into<PathBuf>) -> Result<Self> {
-        let data_dir = data_dir.into();
-        let runtime_dir = data_dir.join(RUNTIME_DIR);
-        let runtime_db = RuntimeDb::open_and_migrate(
-            runtime_dir.join("state/runtime.sqlite"),
-            runtime_dir.join("state/runtime.lock"),
-        )?;
-        let mut storage = Self::new(data_dir, runtime_db)?;
-        storage.db_canonical = false;
-        // Re-initialize seq counters from JSONL for legacy compatibility
-        let event_seq = migrate_events_ledger(&storage.events_path)?;
-        let msg_seq = max_jsonl_u64_field(&storage.messages_path, "message_seq")?;
-        let transcript_seq = max_jsonl_u64_field(&storage.transcript_path, "transcript_seq")?;
-        *storage.event_seq_counter.lock().unwrap() = event_seq;
-        *storage.message_seq_counter.lock().unwrap() = msg_seq;
-        *storage.transcript_seq_counter.lock().unwrap() = transcript_seq;
-        Ok(storage)
-    }
-
-    /// Test-only agent-scoped constructor that uses JSONL-only storage.
-    pub fn new_for_agent_jsonl_only(
-        data_dir: impl Into<PathBuf>,
-        agent_id: impl Into<String>,
-    ) -> Result<Self> {
-        let data_dir = data_dir.into();
-        let runtime_dir = data_dir.join(RUNTIME_DIR);
-        let runtime_db = RuntimeDb::open_and_migrate(
-            runtime_dir.join("state/runtime.sqlite"),
-            runtime_dir.join("state/runtime.lock"),
-        )?;
-        let mut storage = Self::new_for_agent(data_dir, agent_id.into(), runtime_db)?;
-        storage.db_canonical = false;
-        let event_seq = migrate_events_ledger(&storage.events_path)?;
-        let msg_seq = max_jsonl_u64_field(&storage.messages_path, "message_seq")?;
-        let transcript_seq = max_jsonl_u64_field(&storage.transcript_path, "transcript_seq")?;
-        *storage.event_seq_counter.lock().unwrap() = event_seq;
-        *storage.message_seq_counter.lock().unwrap() = msg_seq;
-        *storage.transcript_seq_counter.lock().unwrap() = transcript_seq;
-        Ok(storage)
-    }
-
-    /// Test-only agent-scoped constructor that opens its own RuntimeDb.
     pub fn new_for_agent_for_test(
         data_dir: impl Into<PathBuf>,
         agent_id: impl Into<String>,
@@ -293,25 +230,6 @@ impl AppStorage {
         Ok(Self {
             agent_id,
             read_only: mode == StorageOpenMode::ReadOnly,
-            events_path: ledger_dir.join("events.jsonl"),
-            briefs_path: ledger_dir.join("briefs.jsonl"),
-            messages_path: ledger_dir.join("messages.jsonl"),
-            tasks_path: ledger_dir.join("tasks.jsonl"),
-            work_items_path: ledger_dir.join("work_items.jsonl"),
-            delivery_summaries_path: ledger_dir.join("delivery_summaries.jsonl"),
-            work_item_delegations_path: ledger_dir.join("work_item_delegations.jsonl"),
-            work_item_continuations_path: ledger_dir.join("work_item_continuations.jsonl"),
-            timers_path: ledger_dir.join("timers.jsonl"),
-            tools_path: ledger_dir.join("tools.jsonl"),
-            turns_path: ledger_dir.join("turns.jsonl"),
-            transcript_path: ledger_dir.join("transcript.jsonl"),
-            queue_entries_path: ledger_dir.join("queue_entries.jsonl"),
-            wait_conditions_path: ledger_dir.join("wait_conditions.jsonl"),
-            external_triggers_path: ledger_dir.join("external_triggers.jsonl"),
-            context_episodes_path: ledger_dir.join("context_episodes.jsonl"),
-            workspaces_path: ledger_dir.join("workspaces.jsonl"),
-            occupancies_path: ledger_dir.join("workspace_occupancies.jsonl"),
-            agent_identities_path: ledger_dir.join("agent_identities.jsonl"),
             agent_path: state_dir.join("agent.json"),
             append_mutex: Arc::new(Mutex::new(())),
             event_seq_counter: Arc::new(Mutex::new(event_seq_counter)),
@@ -319,7 +237,6 @@ impl AppStorage {
             transcript_seq_counter: Arc::new(Mutex::new(transcript_seq_counter)),
             audit_event_index: Arc::new(Mutex::new(None)),
             runtime_db,
-            db_canonical: true,
             event_bus: Arc::new(Mutex::new(None)),
             data_dir,
         })
@@ -385,17 +302,6 @@ impl AppStorage {
         Ok(())
     }
 
-    /// Returns the runtime database. Always succeeds because RuntimeDb is now
-    /// mandatory — kept for compatibility with existing `if let Some(db)` patterns
-    /// while JSONL fallback code is removed incrementally.
-    fn scheduler_control_plane_db(&self) -> Result<Option<RuntimeDb>> {
-        if self.db_canonical {
-            Ok(Some(self.runtime_db.clone()))
-        } else {
-            Ok(None)
-        }
-    }
-
     #[cfg(test)]
     fn flush_audit_event_writes_for_tests(&self) -> Result<()> {
         if let Some(sink) = self
@@ -450,46 +356,43 @@ impl AppStorage {
     }
 
     pub(crate) fn runtime_db(&self) -> Result<Option<RuntimeDb>> {
-        self.scheduler_control_plane_db()
+        Ok(Some(self.runtime_db.clone()))
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
+        let empty = FileActivityMarker::default();
         Ok(PollActivityMarker {
-            briefs: file_activity_marker(&self.briefs_path)?,
+            briefs: empty.clone(),
             tasks: self.tasks_activity_marker()?,
-            tools: file_activity_marker(&self.tools_path)?,
+            tools: empty.clone(),
             events: self.audit_events_activity_marker()?,
-            transcript: file_activity_marker(&self.transcript_path)?,
+            transcript: empty,
         })
     }
 
     fn tasks_activity_marker(&self) -> Result<FileActivityMarker> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let (task_count, latest_updated_ms) = runtime_db
-                .tasks()
-                .activity_watermark_for_agent(self.current_agent_id()?.as_deref())?;
-            return Ok(FileActivityMarker {
-                exists: task_count > 0,
-                len: task_count,
-                modified_unix_ms: latest_updated_ms,
-            });
-        }
-        file_activity_marker(&self.tasks_path)
+        let runtime_db = self.runtime_db.clone();
+        let (task_count, latest_updated_ms) = runtime_db
+            .tasks()
+            .activity_watermark_for_agent(self.current_agent_id()?.as_deref())?;
+        return Ok(FileActivityMarker {
+            exists: task_count > 0,
+            len: task_count,
+            modified_unix_ms: latest_updated_ms,
+        });
     }
 
     fn audit_events_activity_marker(&self) -> Result<FileActivityMarker> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let latest_seq = runtime_db
-                .audit_events()
-                .latest_event_seq(self.current_agent_id()?.as_deref())?
-                .unwrap_or(0);
-            return Ok(FileActivityMarker {
-                exists: latest_seq > 0,
-                len: latest_seq,
-                modified_unix_ms: u128::from(latest_seq),
-            });
-        }
-        file_activity_marker(&self.events_path)
+        let runtime_db = self.runtime_db.clone();
+        let latest_seq = runtime_db
+            .audit_events()
+            .latest_event_seq(self.current_agent_id()?.as_deref())?
+            .unwrap_or(0);
+        return Ok(FileActivityMarker {
+            exists: latest_seq > 0,
+            len: latest_seq,
+            modified_unix_ms: u128::from(latest_seq),
+        });
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
@@ -537,42 +440,31 @@ impl AppStorage {
             self.publish_event(agent_id, &event)?;
             return Ok(());
         }
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let agent_id = self.current_agent_id()?;
-            if let Err(error) = runtime_db
-                .audit_events()
-                .append(agent_id.as_deref(), &event)
-            {
-                tracing::warn!(
-                    error = %error,
-                    event_id = %event.id,
-                    event_kind = %event.kind,
-                    event_seq = event.event_seq,
-                    agent_id = agent_id.as_deref().unwrap_or("<global>"),
-                    "failed to enqueue runtime db audit event"
-                );
-            }
-            self.publish_event(agent_id, &event)?;
-            return Ok(());
+        let runtime_db = self.runtime_db.clone();
+        let agent_id = self.current_agent_id()?;
+        if let Err(error) = runtime_db
+            .audit_events()
+            .append(agent_id.as_deref(), &event)
+        {
+            tracing::warn!(
+                error = %error,
+                event_id = %event.id,
+                event_kind = %event.kind,
+                event_seq = event.event_seq,
+                agent_id = agent_id.as_deref().unwrap_or("<global>"),
+                "failed to enqueue runtime db audit event"
+            );
         }
-        let line = serde_json::to_string(&event)?;
-        let mut bytes = Vec::with_capacity(line.len() + 1);
-        bytes.extend_from_slice(line.as_bytes());
-        bytes.push(b'\n');
-        append_jsonl_bytes(&self.events_path, &bytes)?;
-        self.publish_event(self.current_agent_id()?, &event)?;
-        Ok(())
+        self.publish_event(agent_id, &event)?;
+        return Ok(());
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let changes = self.index_changes_for_brief(brief)?;
-            runtime_db
-                .evidence()
-                .append_brief_with_index_changes(brief, &changes)?;
-        } else {
-            self.append_jsonl(&self.briefs_path, brief)?;
-        }
+        let runtime_db = self.runtime_db.clone();
+        let changes = self.index_changes_for_brief(brief)?;
+        runtime_db
+            .evidence()
+            .append_brief_with_index_changes(brief, &changes)?;
         self.enqueue_memory_index_brief_best_effort(brief)
     }
 
@@ -590,98 +482,75 @@ impl AppStorage {
             *counter += 1;
             message.message_seq = Some(*counter);
             drop(counter);
-            if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-                let changes = self.index_changes_for_message(&message)?;
-                runtime_db
-                    .messages()
-                    .upsert_with_index_changes(&message, &changes)?;
-            } else {
-                let bytes = jsonl_bytes(&message)?;
-                append_jsonl_bytes(&self.messages_path, &bytes)?;
-            }
+            let runtime_db = self.runtime_db.clone();
+            let changes = self.index_changes_for_message(&message)?;
+            runtime_db
+                .messages()
+                .upsert_with_index_changes(&message, &changes)?;
         }
         self.enqueue_memory_index_message_best_effort(&message)
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let changes = self.index_changes_for_task(task)?;
-            runtime_db
-                .tasks()
-                .upsert_with_index_changes(task, &changes)?;
-        } else {
-            self.append_jsonl(&self.tasks_path, task)?;
-        }
+        let runtime_db = self.runtime_db.clone();
+        let changes = self.index_changes_for_task(task)?;
+        runtime_db
+            .tasks()
+            .upsert_with_index_changes(task, &changes)?;
         self.enqueue_memory_index_task_best_effort(task)
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let current_focus = self
-                .read_agent()?
-                .and_then(|agent| agent.current_work_item_id)
-                .as_deref()
-                == Some(record.id.as_str());
-            let changes = self.index_changes_for_work_item(record)?;
-            runtime_db
-                .work_items()
-                .upsert_with_index_changes(record, current_focus, &changes)?;
-        } else {
-            self.append_jsonl(&self.work_items_path, record)?;
-        }
+        let runtime_db = self.runtime_db.clone();
+        let current_focus = self
+            .read_agent()?
+            .and_then(|agent| agent.current_work_item_id)
+            .as_deref()
+            == Some(record.id.as_str());
+        let changes = self.index_changes_for_work_item(record)?;
+        runtime_db
+            .work_items()
+            .upsert_with_index_changes(record, current_focus, &changes)?;
         self.enqueue_memory_index_work_item_best_effort(record)
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.evidence().append_delivery_summary(record)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.delivery_summaries_path, record)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.evidence().append_delivery_summary(record)?;
+        return Ok(());
     }
 
     pub fn append_work_item_delegation(&self, record: &WorkItemDelegationRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.work_item_delegations().upsert(record)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.work_item_delegations_path, record)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.work_item_delegations().upsert(record)?;
+        return Ok(());
     }
 
     pub fn append_work_item_continuation(&self, record: &WorkItemContinuationFrame) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.work_item_continuations().upsert(record)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.work_item_continuations_path, record)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.work_item_continuations().upsert(record)?;
+        return Ok(());
     }
 
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.timers().upsert(timer)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.timers_path, timer)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.timers().upsert(timer)?;
+        return Ok(());
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let changes = self.index_changes_for_tool_execution(record)?;
-            runtime_db
-                .evidence()
-                .append_tool_execution_with_index_changes(record, &changes)?;
-        } else {
-            self.append_jsonl(&self.tools_path, record)?;
-        }
+        let runtime_db = self.runtime_db.clone();
+        let changes = self.index_changes_for_tool_execution(record)?;
+        runtime_db
+            .evidence()
+            .append_tool_execution_with_index_changes(record, &changes)?;
         self.enqueue_memory_index_tool_execution_best_effort(record)
     }
 
     pub fn append_turn(&self, record: &TurnRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.turn_records().upsert(record)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.turns_path, record)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.turn_records().upsert(record)?;
+        return Ok(());
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
@@ -696,63 +565,45 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("transcript sequence counter mutex poisoned"))?;
         *counter += 1;
         entry.transcript_seq = Some(*counter);
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.transcript_entries().upsert(&entry)?;
-            return Ok(());
-        }
-        let bytes = jsonl_bytes(&entry)?;
-        append_jsonl_bytes(&self.transcript_path, &bytes)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.transcript_entries().upsert(&entry)?;
+        return Ok(());
     }
 
     pub fn append_queue_entry(&self, record: &QueueEntryRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.queue_entries().upsert(record)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.queue_entries_path, record)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.queue_entries().upsert(record)?;
+        return Ok(());
     }
 
     pub fn try_claim_queued_message(&self, record: &QueueEntryRecord) -> Result<bool> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.queue_entries().try_claim_queued_message(record);
-        }
-        anyhow::bail!("cannot atomically claim queued message without scheduler control-plane db")
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.queue_entries().try_claim_queued_message(record);
     }
 
     pub fn append_wait_condition(&self, record: &WaitConditionRecord) -> Result<()> {
         let event = external_wait_recoverability_event(record);
-        let wait_condition_bytes = jsonl_bytes(record)?;
 
         let _guard = self
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.wait_conditions().upsert(record)?;
-            if let Some(event) = event.as_ref() {
-                self.append_event_with_append_mutex_held(event)?;
-            }
-            return Ok(());
-        }
-        append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.wait_conditions().upsert(record)?;
         if let Some(event) = event.as_ref() {
             self.append_event_with_append_mutex_held(event)?;
         }
-        Ok(())
+        return Ok(());
     }
 
     pub fn append_external_trigger(&self, record: &ExternalTriggerRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.external_triggers().upsert(record)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.external_triggers_path, record)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.external_triggers().upsert(record)?;
+        Ok(())
     }
 
     pub fn append_operator_notification(&self, record: &OperatorNotificationRecord) -> Result<()> {
-        let runtime_db = self.scheduler_control_plane_db()?.ok_or_else(|| {
-            anyhow::anyhow!("runtime db is required for operator_notification persistence")
-        })?;
+        let runtime_db = self.runtime_db.clone();
         let agent_id = self.current_agent_id()?.ok_or_else(|| {
             anyhow::anyhow!("agent_id is required for operator_notification persistence")
         })?;
@@ -765,9 +616,7 @@ impl AppStorage {
         &self,
         record: &OperatorTransportBinding,
     ) -> Result<()> {
-        let runtime_db = self.scheduler_control_plane_db()?.ok_or_else(|| {
-            anyhow::anyhow!("runtime db is required for operator_transport_binding persistence")
-        })?;
+        let runtime_db = self.runtime_db.clone();
         let agent_id = self.current_agent_id()?.ok_or_else(|| {
             anyhow::anyhow!("agent_id is required for operator_transport_binding persistence")
         })?;
@@ -777,9 +626,7 @@ impl AppStorage {
     }
 
     pub fn append_operator_delivery_record(&self, record: &OperatorDeliveryRecord) -> Result<()> {
-        let runtime_db = self.scheduler_control_plane_db()?.ok_or_else(|| {
-            anyhow::anyhow!("runtime db is required for operator_delivery_record persistence")
-        })?;
+        let runtime_db = self.runtime_db.clone();
         let agent_id = self.current_agent_id()?.ok_or_else(|| {
             anyhow::anyhow!("agent_id is required for operator_delivery_record persistence")
         })?;
@@ -789,54 +636,32 @@ impl AppStorage {
     }
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let changes = self.index_changes_for_context_episode(record)?;
-            runtime_db
-                .context_episodes()
-                .upsert_with_index_changes(record, &changes)?;
-        } else {
-            self.append_jsonl(&self.context_episodes_path, record)?;
-        }
+        let runtime_db = self.runtime_db.clone();
+        let changes = self.index_changes_for_context_episode(record)?;
+        runtime_db
+            .context_episodes()
+            .upsert_with_index_changes(record, &changes)?;
         self.enqueue_memory_index_context_episode_best_effort(record)
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let changes = self.index_changes_for_workspace_entry(entry)?;
-            runtime_db
-                .workspace_entries()
-                .upsert_with_index_changes(entry, &changes)?;
-        } else {
-            self.append_jsonl(&self.workspaces_path, entry)?;
-        }
+        let runtime_db = self.runtime_db.clone();
+        let changes = self.index_changes_for_workspace_entry(entry)?;
+        runtime_db
+            .workspace_entries()
+            .upsert_with_index_changes(entry, &changes)?;
         self.enqueue_memory_index_workspace_entry_best_effort(entry)
     }
 
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.workspace_occupancies().upsert(entry)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.occupancies_path, entry)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.workspace_occupancies().upsert(entry)?;
+        Ok(())
     }
 
     pub fn append_agent_identity(&self, entry: &AgentIdentityRecord) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.agent_identities().upsert(entry)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.agent_identities_path, entry)
-    }
-
-    fn append_jsonl<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
-        self.ensure_writable()?;
-        let bytes = jsonl_bytes(value)?;
-
-        let _guard = self
-            .append_mutex
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        append_jsonl_bytes(path, &bytes)
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.agent_identities().upsert(entry)
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
@@ -1211,33 +1036,17 @@ impl AppStorage {
                 agent.id
             );
         }
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.agent_states().upsert(agent)?;
-            return Ok(());
-        }
-        let content = serde_json::to_vec_pretty(agent)?;
-        let tmp_path = self
-            .agent_path
-            .with_file_name(format!(".agent.json.{}.tmp", uuid::Uuid::new_v4().simple()));
-        fs::write(&tmp_path, content)
-            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-        fs::rename(&tmp_path, &self.agent_path).with_context(|| {
-            format!(
-                "failed to replace {} with {}",
-                self.agent_path.display(),
-                tmp_path.display()
-            )
-        })
+        let runtime_db = self.runtime_db.clone();
+        runtime_db.agent_states().upsert(agent)?;
+        return Ok(());
     }
 
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db.agent_states().latest(&agent_id);
-            }
-            return Ok(None);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db.agent_states().latest(&agent_id);
         }
-        self.read_agent_file()
+        return Ok(None);
     }
 
     pub(crate) fn read_legacy_agent_for_import(&self) -> Result<Option<AgentState>> {
@@ -1258,54 +1067,19 @@ impl AppStorage {
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
         #[cfg(test)]
         self.flush_audit_event_writes_for_tests()?;
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .audit_events()
-                .recent(self.current_agent_id()?.as_deref(), limit);
-        }
-        read_recent_jsonl(&self.events_path, limit)
-    }
-
-    pub(crate) fn read_legacy_events_jsonl(&self) -> Result<Vec<AuditEvent>> {
-        read_recent_jsonl(&self.events_path, usize::MAX)
-    }
-
-    pub(crate) fn read_legacy_agent_identities_jsonl(&self) -> Result<Vec<AgentIdentityRecord>> {
-        read_recent_jsonl(&self.agent_identities_path, usize::MAX)
-    }
-
-    pub(crate) fn read_legacy_workspace_entries_jsonl(&self) -> Result<Vec<WorkspaceEntry>> {
-        read_recent_jsonl(&self.workspaces_path, usize::MAX)
-    }
-
-    pub(crate) fn read_legacy_workspace_occupancies_jsonl(
-        &self,
-    ) -> Result<Vec<WorkspaceOccupancyRecord>> {
-        read_recent_jsonl(&self.occupancies_path, usize::MAX)
-    }
-
-    pub(crate) fn read_legacy_messages_jsonl(&self) -> Result<Vec<MessageEnvelope>> {
-        read_recent_jsonl(&self.messages_path, usize::MAX)
-    }
-
-    pub(crate) fn read_legacy_transcript_jsonl(&self) -> Result<Vec<TranscriptEntry>> {
-        read_recent_jsonl(&self.transcript_path, usize::MAX)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .audit_events()
+            .recent(self.current_agent_id()?.as_deref(), limit);
     }
 
     pub fn latest_event_seq(&self) -> Result<Option<u64>> {
         #[cfg(test)]
         self.flush_audit_event_writes_for_tests()?;
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .audit_events()
-                .latest_event_seq(self.current_agent_id()?.as_deref());
-        }
-        let mut latest = None;
-        scan_jsonl_reverse::<AuditEvent, _>(&self.events_path, |event| {
-            latest = Some(event.event_seq);
-            false
-        })?;
-        Ok(latest)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .audit_events()
+            .latest_event_seq(self.current_agent_id()?.as_deref());
     }
 
     pub(crate) fn read_event_page_matching<F>(
@@ -1321,194 +1095,92 @@ impl AppStorage {
     {
         #[cfg(test)]
         self.flush_audit_event_writes_for_tests()?;
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if limit == 0 {
-                return Ok(EventLogPage {
-                    events: Vec::new(),
-                    has_older: false,
-                    has_newer: false,
-                });
-            }
-            let descending = matches!(order, EventLogPageOrder::Desc);
-            let mut page = Vec::with_capacity(limit.saturating_add(1).min(1024));
-            let agent_id = self.current_agent_id()?;
-            let chunk_limit = limit.saturating_add(1).clamp(64, 1024);
-            let mut next_before_seq = before_seq;
-            let mut next_after_seq = after_seq;
-            loop {
-                let chunk = runtime_db.audit_events().range(
-                    agent_id.as_deref(),
-                    next_before_seq,
-                    next_after_seq,
-                    descending,
-                    chunk_limit,
-                )?;
-                let Some(last_seq) = chunk.last().map(|event| event.event_seq) else {
-                    break;
-                };
-                for event in chunk {
-                    if matches(&event) {
-                        page.push(event);
-                    }
-                    if page.len() > limit {
-                        break;
-                    }
-                }
-                if page.len() > limit {
-                    break;
-                }
-                if descending {
-                    next_before_seq = Some(last_seq);
-                } else {
-                    next_after_seq = Some(last_seq);
-                }
-            }
-            let has_more = page.len() > limit;
-            if has_more {
-                page.truncate(limit);
-            }
-            return Ok(match order {
-                EventLogPageOrder::Desc => EventLogPage {
-                    events: page,
-                    has_older: has_more,
-                    has_newer: false,
-                },
-                EventLogPageOrder::Asc => EventLogPage {
-                    events: page,
-                    has_older: false,
-                    has_newer: has_more,
-                },
-            });
-        }
-        if limit == 0 || !self.events_path.exists() {
+        let runtime_db = self.runtime_db.clone();
+        if limit == 0 {
             return Ok(EventLogPage {
                 events: Vec::new(),
                 has_older: false,
                 has_newer: false,
             });
         }
-
-        let lower = after_seq.unwrap_or(0);
-        let upper = before_seq.unwrap_or(u64::MAX);
+        let descending = matches!(order, EventLogPageOrder::Desc);
         let mut page = Vec::with_capacity(limit.saturating_add(1).min(1024));
-        match order {
-            EventLogPageOrder::Desc => {
-                scan_jsonl_reverse::<AuditEvent, _>(&self.events_path, |event| {
-                    if event.event_seq >= upper {
-                        return true;
-                    }
-                    if event.event_seq <= lower {
-                        return false;
-                    }
-                    if matches(&event) {
-                        page.push(event);
-                    }
-                    page.len() <= limit
-                })?;
-                let has_older = page.len() > limit;
-                if has_older {
-                    page.truncate(limit);
+        let agent_id = self.current_agent_id()?;
+        let chunk_limit = limit.saturating_add(1).clamp(64, 1024);
+        let mut next_before_seq = before_seq;
+        let mut next_after_seq = after_seq;
+        loop {
+            let chunk = runtime_db.audit_events().range(
+                agent_id.as_deref(),
+                next_before_seq,
+                next_after_seq,
+                descending,
+                chunk_limit,
+            )?;
+            let Some(last_seq) = chunk.last().map(|event| event.event_seq) else {
+                break;
+            };
+            for event in chunk {
+                if matches(&event) {
+                    page.push(event);
                 }
-                Ok(EventLogPage {
-                    events: page,
-                    has_older,
-                    has_newer: false,
-                })
+                if page.len() > limit {
+                    break;
+                }
             }
-            EventLogPageOrder::Asc => {
-                let file = fs::File::open(&self.events_path)
-                    .with_context(|| format!("failed to read {}", self.events_path.display()))?;
-                for line in BufReader::new(file).lines() {
-                    let line = line.with_context(|| {
-                        format!("failed to read {}", self.events_path.display())
-                    })?;
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let event: AuditEvent = serde_json::from_str(&line).with_context(|| {
-                        format!("failed to decode line from {}", self.events_path.display())
-                    })?;
-                    if event.event_seq <= lower {
-                        continue;
-                    }
-                    if event.event_seq >= upper {
-                        break;
-                    }
-                    if matches(&event) {
-                        page.push(event);
-                    }
-                    if page.len() > limit {
-                        break;
-                    }
-                }
-                let has_newer = page.len() > limit;
-                if has_newer {
-                    page.truncate(limit);
-                }
-                Ok(EventLogPage {
-                    events: page,
-                    has_older: false,
-                    has_newer,
-                })
+            if page.len() > limit {
+                break;
+            }
+            if descending {
+                next_before_seq = Some(last_seq);
+            } else {
+                next_after_seq = Some(last_seq);
             }
         }
+        let has_more = page.len() > limit;
+        if has_more {
+            page.truncate(limit);
+        }
+        return Ok(match order {
+            EventLogPageOrder::Desc => EventLogPage {
+                events: page,
+                has_older: has_more,
+                has_newer: false,
+            },
+            EventLogPageOrder::Asc => EventLogPage {
+                events: page,
+                has_older: false,
+                has_newer: has_more,
+            },
+        });
     }
 
     pub fn read_recent_briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .evidence()
-                .recent_briefs(&self.storage_agent_id()?, limit);
-        }
-        read_recent_jsonl(&self.briefs_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .evidence()
+            .recent_briefs(&self.storage_agent_id()?, limit);
     }
 
     pub fn read_brief_by_id(&self, brief_id: &str) -> Result<Option<BriefRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .evidence()
-                .brief_by_id(&self.storage_agent_id()?, brief_id);
-        }
-        let mut found = None;
-        scan_jsonl_reverse::<BriefRecord, _>(&self.briefs_path, |brief| {
-            if brief.id == brief_id {
-                found = Some(brief);
-                return false;
-            }
-            true
-        })?;
-        Ok(found)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .evidence()
+            .brief_by_id(&self.storage_agent_id()?, brief_id);
     }
 
     pub fn read_recent_messages(&self, limit: usize) -> Result<Vec<MessageEnvelope>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .messages()
-                .recent(self.current_agent_id()?.as_deref(), limit);
-        }
-        read_recent_jsonl(&self.messages_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .messages()
+            .recent(self.current_agent_id()?.as_deref(), limit);
     }
 
     pub fn read_message_by_id(&self, message_id: &str) -> Result<Option<MessageEnvelope>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .messages()
-                .by_id(self.current_agent_id()?.as_deref(), message_id);
-        }
-        let current_agent_id = self.current_agent_id()?;
-        let mut found = None;
-        scan_jsonl_reverse::<MessageEnvelope, _>(&self.messages_path, |message| {
-            if current_agent_id
-                .as_deref()
-                .is_none_or(|agent_id| message.agent_id == agent_id)
-                && message.id == message_id
-            {
-                found = Some(message);
-                return false;
-            }
-            true
-        })?;
-        Ok(found)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .messages()
+            .by_id(self.current_agent_id()?.as_deref(), message_id);
     }
 
     /// Reads messages at or after `offset`, then returns only the most recent
@@ -1517,231 +1189,174 @@ impl AppStorage {
     /// This is not equivalent to returning the first `limit` messages starting
     /// at `offset`; it preserves recent-message window semantics.
     pub fn read_messages_from(&self, offset: usize, limit: usize) -> Result<Vec<MessageEnvelope>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .messages()
-                .from(self.current_agent_id()?.as_deref(), offset, limit);
-        }
-        read_jsonl_from(&self.messages_path, offset, limit)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .messages()
+            .from(self.current_agent_id()?.as_deref(), offset, limit);
     }
 
     pub fn read_all_messages(&self) -> Result<Vec<MessageEnvelope>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .messages()
-                .all(self.current_agent_id()?.as_deref());
-        }
-        read_recent_jsonl(&self.messages_path, usize::MAX)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .messages()
+            .all(self.current_agent_id()?.as_deref());
     }
 
     pub fn read_all_message_values(&self) -> Result<Vec<Value>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .messages()
-                .all_values(self.current_agent_id()?.as_deref());
-        }
-        read_recent_jsonl(&self.messages_path, usize::MAX)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .messages()
+            .all_values(self.current_agent_id()?.as_deref());
     }
 
     pub fn read_recent_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return Ok(take_recent(
-                    runtime_db.tasks().latest_for_agent(&agent_id, limit)?,
-                    limit,
-                ));
-            }
-            return Ok(take_recent(runtime_db.tasks().latest_all()?, limit));
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return Ok(take_recent(
+                runtime_db.tasks().latest_for_agent(&agent_id, limit)?,
+                limit,
+            ));
         }
-        read_recent_jsonl(&self.tasks_path, limit)
+        return Ok(take_recent(runtime_db.tasks().latest_all()?, limit));
     }
 
     pub fn read_recent_work_items(&self, limit: usize) -> Result<Vec<WorkItemRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return Ok(take_recent(
-                    runtime_db.work_items().latest_for_agent(&agent_id, limit)?,
-                    limit,
-                ));
-            }
-            return Ok(take_recent(runtime_db.work_items().latest_all()?, limit));
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return Ok(take_recent(
+                runtime_db.work_items().latest_for_agent(&agent_id, limit)?,
+                limit,
+            ));
         }
-        read_recent_jsonl(&self.work_items_path, limit)
+        return Ok(take_recent(runtime_db.work_items().latest_all()?, limit));
     }
 
     pub fn read_recent_delivery_summaries(
         &self,
         limit: usize,
     ) -> Result<Vec<DeliverySummaryRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .evidence()
-                .recent_delivery_summaries(&self.storage_agent_id()?, limit);
-        }
-        read_recent_jsonl(&self.delivery_summaries_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .evidence()
+            .recent_delivery_summaries(&self.storage_agent_id()?, limit);
     }
 
     pub fn read_recent_work_item_delegations(
         &self,
         limit: usize,
     ) -> Result<Vec<WorkItemDelegationRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .work_item_delegations()
-                    .recent_for_agent(&agent_id, limit);
-            }
-            return runtime_db.work_item_delegations().recent(limit);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .work_item_delegations()
+                .recent_for_agent(&agent_id, limit);
         }
-        read_recent_jsonl(&self.work_item_delegations_path, limit)
+        return runtime_db.work_item_delegations().recent(limit);
     }
 
     pub fn read_recent_work_item_continuations(
         &self,
         limit: usize,
     ) -> Result<Vec<WorkItemContinuationFrame>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .work_item_continuations()
-                    .recent_for_agent(&agent_id, limit);
-            }
-            return runtime_db.work_item_continuations().recent(limit);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .work_item_continuations()
+                .recent_for_agent(&agent_id, limit);
         }
-        read_recent_jsonl(&self.work_item_continuations_path, limit)
+        return runtime_db.work_item_continuations().recent(limit);
     }
 
     pub fn read_recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db.timers().recent_for_agent(&agent_id, limit);
-            }
-            return runtime_db.timers().recent(limit);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db.timers().recent_for_agent(&agent_id, limit);
         }
-        read_recent_jsonl(&self.timers_path, limit)
+        return runtime_db.timers().recent(limit);
     }
 
     pub fn read_recent_tool_executions(&self, limit: usize) -> Result<Vec<ToolExecutionRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .evidence()
-                .recent_tool_executions(&self.storage_agent_id()?, limit);
-        }
-        read_recent_jsonl(&self.tools_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .evidence()
+            .recent_tool_executions(&self.storage_agent_id()?, limit);
     }
 
     pub fn read_tool_execution_by_id(&self, tool_id: &str) -> Result<Option<ToolExecutionRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .evidence()
-                .tool_execution_by_id(&self.storage_agent_id()?, tool_id);
-        }
-        let mut found = None;
-        scan_jsonl_reverse::<ToolExecutionRecord, _>(&self.tools_path, |tool| {
-            if tool.id == tool_id {
-                found = Some(tool);
-                return false;
-            }
-            true
-        })?;
-        Ok(found)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .evidence()
+            .tool_execution_by_id(&self.storage_agent_id()?, tool_id);
     }
 
     pub fn read_recent_turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db.turn_records().recent_for_agent(&agent_id, limit);
-            }
-            return runtime_db.turn_records().recent(limit);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db.turn_records().recent_for_agent(&agent_id, limit);
         }
-        read_recent_jsonl(&self.turns_path, limit)
+        return runtime_db.turn_records().recent(limit);
     }
 
     pub fn read_recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .transcript_entries()
-                .recent(self.current_agent_id()?.as_deref(), limit);
-        }
-        read_recent_jsonl(&self.transcript_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .transcript_entries()
+            .recent(self.current_agent_id()?.as_deref(), limit);
     }
 
     pub fn read_all_transcript(&self) -> Result<Vec<TranscriptEntry>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .transcript_entries()
-                .all(self.current_agent_id()?.as_deref());
-        }
-        read_recent_jsonl(&self.transcript_path, usize::MAX)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .transcript_entries()
+            .all(self.current_agent_id()?.as_deref());
     }
 
     pub fn read_transcript_entry_by_id(&self, entry_id: &str) -> Result<Option<TranscriptEntry>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .transcript_entries()
-                .by_id(self.current_agent_id()?.as_deref(), entry_id);
-        }
-        let current_agent_id = self.current_agent_id()?;
-        let mut found = None;
-        scan_jsonl_reverse::<TranscriptEntry, _>(&self.transcript_path, |entry| {
-            if current_agent_id
-                .as_deref()
-                .is_none_or(|agent_id| entry.agent_id == agent_id)
-                && entry.id == entry_id
-            {
-                found = Some(entry);
-                return false;
-            }
-            true
-        })?;
-        Ok(found)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .transcript_entries()
+            .by_id(self.current_agent_id()?.as_deref(), entry_id);
     }
 
     pub fn read_recent_wait_conditions(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .wait_conditions()
-                    .recent_for_agent(&agent_id, limit);
-            }
-            return runtime_db.wait_conditions().recent(limit);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .wait_conditions()
+                .recent_for_agent(&agent_id, limit);
         }
-        read_recent_jsonl(&self.wait_conditions_path, limit)
+        return runtime_db.wait_conditions().recent(limit);
     }
 
     pub fn read_recent_queue_entries(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .queue_entries()
-                .recent(self.current_agent_id()?.as_deref(), limit);
-        }
-        read_recent_jsonl(&self.queue_entries_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .queue_entries()
+            .recent(self.current_agent_id()?.as_deref(), limit);
     }
 
     pub fn read_recent_external_triggers(
         &self,
         limit: usize,
     ) -> Result<Vec<ExternalTriggerRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .external_triggers()
-                    .latest_for_agent_limit(&agent_id, limit);
-            }
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .external_triggers()
+                .latest_for_agent_limit(&agent_id, limit);
         }
-        read_recent_jsonl(&self.external_triggers_path, limit)
+        Ok(Vec::new())
     }
 
     pub fn read_recent_operator_notifications(
         &self,
         limit: usize,
     ) -> Result<Vec<OperatorNotificationRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .operator_notifications()
-                    .read_recent_for_agent(&agent_id, limit);
-            }
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .operator_notifications()
+                .read_recent_for_agent(&agent_id, limit);
         }
         Ok(Vec::new())
     }
@@ -1750,12 +1365,11 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<OperatorTransportBinding>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .operator_transport_bindings()
-                    .read_recent_for_agent(&agent_id, limit);
-            }
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .operator_transport_bindings()
+                .read_recent_for_agent(&agent_id, limit);
         }
         Ok(Vec::new())
     }
@@ -1764,59 +1378,50 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<OperatorDeliveryRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .operator_delivery_records()
-                    .read_recent_for_agent(&agent_id, limit);
-            }
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .operator_delivery_records()
+                .read_recent_for_agent(&agent_id, limit);
         }
         Ok(Vec::new())
     }
 
     pub fn read_recent_context_episodes(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .context_episodes()
-                    .recent_for_agent(&agent_id, limit);
-            }
-            return runtime_db.context_episodes().recent(limit);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .context_episodes()
+                .recent_for_agent(&agent_id, limit);
         }
-        read_recent_jsonl(&self.context_episodes_path, limit)
+        return runtime_db.context_episodes().recent(limit);
     }
 
     pub fn read_recent_workspace_entries(&self, limit: usize) -> Result<Vec<WorkspaceEntry>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return Ok(take_recent(
-                runtime_db.workspace_entries().latest_all()?,
-                limit,
-            ));
-        }
-        read_recent_jsonl(&self.workspaces_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return Ok(take_recent(
+            runtime_db.workspace_entries().latest_all()?,
+            limit,
+        ));
     }
 
     pub fn read_recent_workspace_occupancies(
         &self,
         limit: usize,
     ) -> Result<Vec<WorkspaceOccupancyRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return Ok(take_recent(
-                runtime_db.workspace_occupancies().latest_all()?,
-                limit,
-            ));
-        }
-        read_recent_jsonl(&self.occupancies_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return Ok(take_recent(
+            runtime_db.workspace_occupancies().latest_all()?,
+            limit,
+        ));
     }
 
     pub fn read_recent_agent_identities(&self, limit: usize) -> Result<Vec<AgentIdentityRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return Ok(take_recent(
-                runtime_db.agent_identities().latest_all()?,
-                limit,
-            ));
-        }
-        read_recent_jsonl(&self.agent_identities_path, limit)
+        let runtime_db = self.runtime_db.clone();
+        return Ok(take_recent(
+            runtime_db.agent_identities().latest_all()?,
+            limit,
+        ));
     }
 
     pub fn latest_task_records(&self) -> Result<Vec<TaskRecord>> {
@@ -1824,84 +1429,32 @@ impl AppStorage {
     }
 
     pub fn latest_task_records_from_recent(&self, history_limit: usize) -> Result<Vec<TaskRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return Ok(take_recent(
-                    runtime_db
-                        .tasks()
-                        .latest_for_agent(&agent_id, history_limit)?,
-                    history_limit,
-                ));
-            }
-            return Ok(take_recent(runtime_db.tasks().latest_all()?, history_limit));
-        }
-        let records = self.read_recent_tasks(history_limit)?;
-        let mut latest = std::collections::BTreeMap::<String, TaskRecord>::new();
-        for record in records {
-            if let Some(previous) = latest.get(&record.id) {
-                let mut merged = record.clone();
-                if merged.recovery.is_none() {
-                    merged.recovery = previous.recovery.clone();
-                }
-                latest.insert(record.id.clone(), merged);
-            } else {
-                latest.insert(record.id.clone(), record);
-            }
-        }
-        Ok(latest.into_values().collect())
-    }
-
-    pub fn latest_active_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db.tasks().active_for_agent(&agent_id, limit);
-            }
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
             return Ok(take_recent(
                 runtime_db
                     .tasks()
-                    .latest_all()?
-                    .into_iter()
-                    .filter(|record| is_active_task_status(&record.status))
-                    .collect(),
-                limit,
+                    .latest_for_agent(&agent_id, history_limit)?,
+                history_limit,
             ));
         }
-        if limit == 0 || !self.tasks_path.exists() {
-            return Ok(Vec::new());
+        return Ok(take_recent(runtime_db.tasks().latest_all()?, history_limit));
+    }
+
+    pub fn latest_active_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db.tasks().active_for_agent(&agent_id, limit);
         }
-
-        let mut seen = std::collections::BTreeSet::<String>::new();
-        let mut pending_recovery = std::collections::BTreeMap::<String, usize>::new();
-        let mut records = Vec::<TaskRecord>::new();
-
-        scan_jsonl_reverse::<TaskRecord, _>(&self.tasks_path, |record| {
-            if let Some(index) = pending_recovery.get(&record.id).copied() {
-                if records[index].recovery.is_none() {
-                    records[index].recovery = record.recovery.clone();
-                }
-                if records[index].recovery.is_some() {
-                    pending_recovery.remove(&record.id);
-                }
-            }
-
-            if seen.contains(&record.id) {
-                return records.len() < limit || !pending_recovery.is_empty();
-            }
-            seen.insert(record.id.clone());
-
-            if records.len() < limit && is_active_task_status(&record.status) {
-                records.push(record);
-                let index = records.len() - 1;
-                if records[index].recovery.is_none() {
-                    pending_recovery.insert(records[index].id.clone(), index);
-                }
-            }
-
-            records.len() < limit || !pending_recovery.is_empty()
-        })?;
-
-        records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-        Ok(records)
+        return Ok(take_recent(
+            runtime_db
+                .tasks()
+                .latest_all()?
+                .into_iter()
+                .filter(|record| is_active_task_status(&record.status))
+                .collect(),
+            limit,
+        ));
     }
 
     pub fn latest_active_task_records_for_agent(
@@ -1909,135 +1462,31 @@ impl AppStorage {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.tasks().active_for_agent(agent_id, limit);
-        }
-        if limit == 0 || !self.tasks_path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut seen = std::collections::BTreeSet::<String>::new();
-        let mut pending_recovery = std::collections::BTreeMap::<String, usize>::new();
-        let mut records = Vec::<TaskRecord>::new();
-
-        scan_jsonl_reverse::<TaskRecord, _>(&self.tasks_path, |record| {
-            if let Some(index) = pending_recovery.get(&record.id).copied() {
-                if records[index].recovery.is_none() {
-                    records[index].recovery = record.recovery.clone();
-                }
-                if records[index].recovery.is_some() {
-                    pending_recovery.remove(&record.id);
-                }
-            }
-
-            if seen.contains(&record.id) {
-                return records.len() < limit || !pending_recovery.is_empty();
-            }
-            seen.insert(record.id.clone());
-
-            if records.len() < limit
-                && record.agent_id == agent_id
-                && is_active_task_status(&record.status)
-            {
-                records.push(record);
-                let index = records.len() - 1;
-                if records[index].recovery.is_none() {
-                    pending_recovery.insert(records[index].id.clone(), index);
-                }
-            }
-
-            records.len() < limit || !pending_recovery.is_empty()
-        })?;
-
-        records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-        Ok(records)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.tasks().active_for_agent(agent_id, limit);
     }
 
     pub fn active_task_count_for_agent(&self, agent_id: &str) -> Result<usize> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return Ok(runtime_db
-                .tasks()
-                .active_for_agent(agent_id, usize::MAX)?
-                .len());
-        }
-        if !self.tasks_path.exists() {
-            return Ok(0);
-        }
-
-        let mut seen = std::collections::BTreeSet::<String>::new();
-        let mut count = 0usize;
-
-        scan_jsonl_reverse::<TaskRecord, _>(&self.tasks_path, |record| {
-            if !seen.insert(record.id.clone()) {
-                return true;
-            }
-            if record.agent_id == agent_id && is_active_task_status(&record.status) {
-                count += 1;
-            }
-            true
-        })?;
-
-        Ok(count)
+        let runtime_db = self.runtime_db.clone();
+        return Ok(runtime_db
+            .tasks()
+            .active_for_agent(agent_id, usize::MAX)?
+            .len());
     }
 
     pub fn latest_task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.tasks().latest(task_id);
-        }
-        if !self.tasks_path.exists() {
-            return Ok(None);
-        }
-
-        let content = fs::read_to_string(&self.tasks_path)
-            .with_context(|| format!("failed to read {}", self.tasks_path.display()))?;
-        let mut latest: Option<TaskRecord> = None;
-        for line in content.lines().rev().filter(|line| !line.trim().is_empty()) {
-            let record: TaskRecord = serde_json::from_str(line).with_context(|| {
-                format!("failed to decode line from {}", self.tasks_path.display())
-            })?;
-            if record.id != task_id {
-                continue;
-            }
-            match latest.as_mut() {
-                Some(existing) => {
-                    if existing.recovery.is_none() {
-                        existing.recovery = record.recovery.clone();
-                    }
-                    if existing.recovery.is_some() {
-                        break;
-                    }
-                }
-                None => {
-                    latest = Some(record);
-                    if latest
-                        .as_ref()
-                        .and_then(|item| item.recovery.as_ref())
-                        .is_some()
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-
-        Ok(latest)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.tasks().latest(task_id);
     }
 
     pub fn latest_work_items(&self) -> Result<Vec<WorkItemRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .work_items()
-                    .latest_for_agent(&agent_id, usize::MAX);
-            }
-            return runtime_db.work_items().latest_all();
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .work_items()
+                .latest_for_agent(&agent_id, usize::MAX);
         }
-        let records = self.read_recent_work_items(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        return runtime_db.work_items().latest_all();
     }
 
     pub fn latest_work_items_for_agent(
@@ -2045,56 +1494,22 @@ impl AppStorage {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<WorkItemRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.work_items().latest_for_agent(agent_id, limit);
-        }
-        if limit == 0 || !self.work_items_path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut seen = std::collections::BTreeSet::<String>::new();
-        let mut records = Vec::<WorkItemRecord>::new();
-        scan_jsonl_reverse::<WorkItemRecord, _>(&self.work_items_path, |record| {
-            if !seen.insert(record.id.clone()) {
-                return records.len() < limit;
-            }
-            if record.agent_id == agent_id {
-                records.push(record);
-            }
-            records.len() < limit
-        })?;
-        Ok(records)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.work_items().latest_for_agent(agent_id, limit);
     }
 
     pub fn work_queue_prompt_projection(&self) -> Result<WorkQueuePromptProjection> {
-        let db_enabled = self.scheduler_control_plane_db()?.is_some();
-        if !db_enabled && !self.work_items_path.exists() {
-            return Ok(WorkQueuePromptProjection::default());
-        }
         let current_work_item_id = self
             .read_agent()?
             .and_then(|agent| agent.current_work_item_id);
         let mut latest = std::collections::HashMap::<String, WorkItemRecord>::new();
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                for record in runtime_db
-                    .work_items()
-                    .latest_for_agent(&agent_id, usize::MAX)?
-                {
-                    latest.insert(record.id.clone(), record);
-                }
-            }
-        } else {
-            let content = fs::read_to_string(&self.work_items_path)
-                .with_context(|| format!("failed to read {}", self.work_items_path.display()))?;
-            for line in content.lines().rev().filter(|line| !line.trim().is_empty()) {
-                let record: WorkItemRecord = serde_json::from_str(line).with_context(|| {
-                    format!(
-                        "failed to decode line from {}",
-                        self.work_items_path.display()
-                    )
-                })?;
-                latest.entry(record.id.clone()).or_insert(record);
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            for record in runtime_db
+                .work_items()
+                .latest_for_agent(&agent_id, usize::MAX)?
+            {
+                latest.insert(record.id.clone(), record);
             }
         }
 
@@ -2288,13 +1703,8 @@ impl AppStorage {
             });
         }
 
-        let has_queued = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.queue_entries().has_queued_for_agent(&agent.id)?
-        } else {
-            self.latest_queue_entries()?
-                .iter()
-                .any(|entry| entry.agent_id == agent.id && entry.status == QueueEntryStatus::Queued)
-        };
+        let runtime_db = self.runtime_db.clone();
+        let has_queued = runtime_db.queue_entries().has_queued_for_agent(&agent.id)?;
         if has_queued {
             return Ok(AgentPostureProjection {
                 posture: AgentSchedulingPosture::HasQueuedInput,
@@ -2411,162 +1821,61 @@ impl AppStorage {
         agent_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Vec<WorkItemRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.work_items().due_blocked_rechecks(agent_id, now);
-        }
-        let mut due = self
-            .latest_work_items()?
-            .into_iter()
-            .filter(|item| item.agent_id == agent_id)
-            .filter(|item| item.state == WorkItemState::Open)
-            .filter(|item| item.blocked_by.is_some())
-            .filter(|item| item.recheck_at.is_some_and(|recheck_at| recheck_at <= now))
-            .filter(|item| {
-                item.recheck_consumed_at
-                    .zip(item.recheck_at)
-                    .is_none_or(|(consumed_at, recheck_at)| consumed_at < recheck_at)
-            })
-            .collect::<Vec<_>>();
-        due.sort_by(|left, right| {
-            left.recheck_at
-                .cmp(&right.recheck_at)
-                .then_with(|| compare_queue_display_order(left, right))
-        });
-        Ok(due)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.work_items().due_blocked_rechecks(agent_id, now);
     }
 
     pub fn next_blocked_work_item_recheck_at(
         &self,
         agent_id: &str,
     ) -> Result<Option<DateTime<Utc>>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.work_items().next_recheck_at(agent_id);
-        }
-        Ok(self
-            .latest_work_items()?
-            .into_iter()
-            .filter(|item| item.agent_id == agent_id)
-            .filter(|item| item.state == WorkItemState::Open)
-            .filter(|item| item.blocked_by.is_some())
-            .filter_map(|item| {
-                let recheck_at = item.recheck_at?;
-                if item
-                    .recheck_consumed_at
-                    .is_some_and(|consumed_at| consumed_at >= recheck_at)
-                {
-                    None
-                } else {
-                    Some(recheck_at)
-                }
-            })
-            .min())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.work_items().next_recheck_at(agent_id);
     }
 
     pub fn latest_work_item(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.work_items().latest(work_item_id);
-        }
-        if !self.work_items_path.exists() {
-            return Ok(None);
-        }
-
-        let content = fs::read_to_string(&self.work_items_path)
-            .with_context(|| format!("failed to read {}", self.work_items_path.display()))?;
-        for line in content.lines().rev().filter(|line| !line.trim().is_empty()) {
-            let record: WorkItemRecord = serde_json::from_str(line).with_context(|| {
-                format!(
-                    "failed to decode line from {}",
-                    self.work_items_path.display()
-                )
-            })?;
-            if record.id == work_item_id {
-                return Ok(Some(record));
-            }
-        }
-
-        Ok(None)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.work_items().latest(work_item_id);
     }
 
     pub fn latest_delivery_summary(
         &self,
         work_item_id: &str,
     ) -> Result<Option<DeliverySummaryRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .evidence()
-                .latest_delivery_summary(&self.storage_agent_id()?, work_item_id);
-        }
-        if !self.delivery_summaries_path.exists() {
-            return Ok(None);
-        }
-
-        let content = fs::read_to_string(&self.delivery_summaries_path).with_context(|| {
-            format!("failed to read {}", self.delivery_summaries_path.display())
-        })?;
-        for line in content.lines().rev().filter(|line| !line.trim().is_empty()) {
-            let record: DeliverySummaryRecord = serde_json::from_str(line).with_context(|| {
-                format!(
-                    "failed to decode line from {}",
-                    self.delivery_summaries_path.display()
-                )
-            })?;
-            if record.work_item_id == work_item_id {
-                return Ok(Some(record));
-            }
-        }
-
-        Ok(None)
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .evidence()
+            .latest_delivery_summary(&self.storage_agent_id()?, work_item_id);
     }
 
     pub fn latest_work_item_delegations(&self) -> Result<Vec<WorkItemDelegationRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .work_item_delegations()
-                    .recent_for_agent(&agent_id, usize::MAX);
-            }
-            return runtime_db.work_item_delegations().latest_all();
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .work_item_delegations()
+                .recent_for_agent(&agent_id, usize::MAX);
         }
-        let records = self.read_recent_work_item_delegations(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.delegation_id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        return runtime_db.work_item_delegations().latest_all();
     }
 
     pub fn latest_work_item_continuations(&self) -> Result<Vec<WorkItemContinuationFrame>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .work_item_continuations()
-                    .recent_for_agent(&agent_id, usize::MAX);
-            }
-            return runtime_db.work_item_continuations().latest_all();
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .work_item_continuations()
+                .recent_for_agent(&agent_id, usize::MAX);
         }
-        let records = self.read_recent_work_item_continuations(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        return runtime_db.work_item_continuations().latest_all();
     }
 
     pub fn latest_active_work_item_continuations_for_agent(
         &self,
         agent_id: &str,
     ) -> Result<Vec<WorkItemContinuationFrame>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .work_item_continuations()
-                .active_for_agent(agent_id);
-        }
-        Ok(self
-            .latest_work_item_continuations()?
-            .into_iter()
-            .filter(|record| record.agent_id == agent_id)
-            .filter(|record| record.state == WorkItemContinuationState::Active)
-            .collect())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .work_item_continuations()
+            .active_for_agent(agent_id);
     }
 
     pub fn latest_active_work_item_continuation_for_suspended(
@@ -2609,68 +1918,37 @@ impl AppStorage {
         &self,
         child_agent_id: &str,
     ) -> Result<Option<WorkItemDelegationRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .work_item_delegations()
-                .latest_for_child(child_agent_id);
-        }
-        read_latest_jsonl_matching(
-            &self.work_item_delegations_path,
-            |record: &WorkItemDelegationRecord| record.child_agent_id == child_agent_id,
-        )
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .work_item_delegations()
+            .latest_for_child(child_agent_id);
     }
 
     pub fn latest_timer_records(&self) -> Result<Vec<TimerRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db.timers().recent_for_agent(&agent_id, usize::MAX);
-            }
-            return runtime_db.timers().latest_all();
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db.timers().recent_for_agent(&agent_id, usize::MAX);
         }
-        let records = self.read_recent_timers(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        return runtime_db.timers().latest_all();
     }
 
     pub fn latest_timer_record(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.timers().latest(timer_id);
-        }
-        read_latest_jsonl_matching(&self.timers_path, |record: &TimerRecord| {
-            record.id == timer_id
-        })
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.timers().latest(timer_id);
     }
 
     pub fn active_wait_conditions_for_agent(
         &self,
         agent_id: &str,
     ) -> Result<Vec<WaitConditionRecord>> {
-        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.wait_conditions().active_for_agent(agent_id)?
-        } else {
-            // JSONL fallback: read all and filter
-            self.read_recent_wait_conditions(usize::MAX)?
-                .into_iter()
-                .filter(|record| record.agent_id == agent_id)
-                .filter(|record| record.status == WaitConditionStatus::Active)
-                .collect()
-        };
+        let runtime_db = self.runtime_db.clone();
+        let records = runtime_db.wait_conditions().active_for_agent(agent_id)?;
         self.filter_active_wait_conditions_for_live_scope(records)
     }
 
     pub fn active_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
-        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.wait_conditions().active_all()?
-        } else {
-            // JSONL fallback: read all and filter
-            self.read_recent_wait_conditions(usize::MAX)?
-                .into_iter()
-                .filter(|record| record.status == WaitConditionStatus::Active)
-                .collect()
-        };
+        let runtime_db = self.runtime_db.clone();
+        let records = runtime_db.wait_conditions().active_all()?;
         self.filter_active_wait_conditions_for_live_scope(records)
     }
 
@@ -2722,87 +2000,56 @@ impl AppStorage {
         &self,
         agent_id: &str,
     ) -> Result<Vec<WaitConditionRecord>> {
-        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.wait_conditions().active_for_agent(agent_id)?
-        } else {
-            self.read_recent_wait_conditions(usize::MAX)?
-                .into_iter()
-                .filter(|record| record.agent_id == agent_id)
-                .filter(|record| record.status == WaitConditionStatus::Active)
-                .collect()
-        };
+        let runtime_db = self.runtime_db.clone();
+        let records = runtime_db.wait_conditions().active_for_agent(agent_id)?;
         Ok(records)
     }
 
     pub fn latest_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.wait_conditions().latest_all();
-        }
-        let records = self.read_recent_wait_conditions(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.wait_conditions().latest_all();
     }
 
     pub fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db.external_triggers().latest_for_agent(&agent_id);
-            }
-            return runtime_db.external_triggers().latest_all();
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db.external_triggers().latest_for_agent(&agent_id);
         }
-        let records = self.read_recent_external_triggers(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.external_trigger_id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        return runtime_db.external_triggers().latest_all();
     }
 
     pub fn latest_operator_transport_bindings(&self) -> Result<Vec<OperatorTransportBinding>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .operator_transport_bindings()
-                    .latest_for_agent(&agent_id);
-            }
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .operator_transport_bindings()
+                .latest_for_agent(&agent_id);
         }
         Ok(Vec::new())
     }
 
     pub fn latest_operator_delivery_records(&self) -> Result<Vec<OperatorDeliveryRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
-                    .operator_delivery_records()
-                    .latest_for_agent(&agent_id);
-            }
+        let runtime_db = self.runtime_db.clone();
+        if let Some(agent_id) = self.current_agent_id()? {
+            return runtime_db
+                .operator_delivery_records()
+                .latest_for_agent(&agent_id);
         }
         Ok(Vec::new())
     }
 
     pub fn latest_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.workspace_entries().latest_all();
-        }
-        let records = self.read_recent_workspace_entries(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.workspace_id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.workspace_entries().latest_all();
     }
 
     /// Migrate a workspace entry's ID from old (random) to new (deterministic).
     /// No-ops when the runtime DB is not available (legacy storage).
     pub fn migrate_workspace_id(&self, old_id: &str, new_id: &str) -> Result<()> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db
-                .workspace_entries()
-                .migrate_workspace_id(old_id, new_id)?;
-        }
+        let runtime_db = self.runtime_db.clone();
+        runtime_db
+            .workspace_entries()
+            .migrate_workspace_id(old_id, new_id)?;
         Ok(())
     }
 
@@ -2812,49 +2059,30 @@ impl AppStorage {
         &self,
         workspace_ids: &[String],
     ) -> Result<std::collections::HashMap<String, String>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .workspace_entries()
-                .resolve_aliases_batch(workspace_ids);
-        }
-        Ok(std::collections::HashMap::new())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .workspace_entries()
+            .resolve_aliases_batch(workspace_ids);
     }
 
     pub fn latest_workspace_occupancies(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.workspace_occupancies().latest_all();
-        }
-        let records = self.read_recent_workspace_occupancies(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.occupancy_id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.workspace_occupancies().latest_all();
     }
 
     pub fn latest_agent_identities(&self) -> Result<Vec<AgentIdentityRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.agent_identities().latest_all();
-        }
-        let records = self.read_recent_agent_identities(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.agent_id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.agent_identities().latest_all();
     }
 
     pub fn latest_queue_entries(&self) -> Result<Vec<QueueEntryRecord>> {
-        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            if let Some(agent_id) = self.current_agent_id()? {
-                runtime_db
-                    .queue_entries()
-                    .recent(Some(&agent_id), usize::MAX)?
-            } else {
-                runtime_db.queue_entries().latest_all()?
-            }
+        let runtime_db = self.runtime_db.clone();
+        let records = if let Some(agent_id) = self.current_agent_id()? {
+            runtime_db
+                .queue_entries()
+                .recent(Some(&agent_id), usize::MAX)?
         } else {
-            self.read_recent_queue_entries(usize::MAX)?
+            runtime_db.queue_entries().latest_all()?
         };
         // Deduplicate by message_id, keeping the latest entry (last in chronological order)
         let mut latest = std::collections::BTreeMap::new();
@@ -2871,17 +2099,8 @@ impl AppStorage {
             messages_by_id.insert(message.id.clone(), message);
         }
 
-        let queued_entries = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.queue_entries().queued_for_agent(agent_id)?
-        } else {
-            self.latest_queue_entries()?
-                .into_iter()
-                .filter(|entry| {
-                    entry.agent_id == agent_id
-                        && entry.status == crate::types::QueueEntryStatus::Queued
-                })
-                .collect()
-        };
+        let runtime_db = self.runtime_db.clone();
+        let queued_entries = runtime_db.queue_entries().queued_for_agent(agent_id)?;
         let mut replay_messages = queued_entries
             .into_iter()
             .filter_map(|entry| messages_by_id.get(&entry.message_id).cloned())
@@ -2915,35 +2134,17 @@ impl AppStorage {
     }
 
     pub fn count_briefs(&self) -> Result<usize> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .evidence()
-                .count_briefs(&self.storage_agent_id()?);
-        }
-        if !self.briefs_path.exists() {
-            return Ok(0);
-        }
-        let content = fs::read_to_string(&self.briefs_path)?;
-        Ok(content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .evidence()
+            .count_briefs(&self.storage_agent_id()?);
     }
 
     pub fn count_messages(&self) -> Result<usize> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .messages()
-                .count(self.current_agent_id()?.as_deref());
-        }
-        if !self.messages_path.exists() {
-            return Ok(0);
-        }
-        let content = fs::read_to_string(&self.messages_path)?;
-        Ok(content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count())
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .messages()
+            .count(self.current_agent_id()?.as_deref());
     }
 }
 
@@ -3013,7 +2214,7 @@ mod tests {
     #[test]
     fn append_event_assigns_monotonic_event_seq() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         storage
             .append_event(&AuditEvent::new(
@@ -3037,7 +2238,7 @@ mod tests {
             vec![1, 2]
         );
 
-        let reopened = AppStorage::new_jsonl_only(dir.path()).unwrap();
+        let reopened = AppStorage::new_for_test(dir.path()).unwrap();
         reopened
             .append_event(&AuditEvent::new(
                 "test_event",
@@ -3113,9 +2314,6 @@ mod tests {
             .enable_audit_event_index(runtime_db.clone(), Some("agent-test".to_string()))
             .unwrap();
 
-        let legacy_len_before = std::fs::metadata(&storage.events_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
         storage
             .append_event(&AuditEvent::new(
                 "db_canonical_event",
@@ -3131,10 +2329,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "db_canonical_event");
         assert_eq!(events[0].event_seq, 1);
-        let legacy_len_after = std::fs::metadata(&storage.events_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        assert_eq!(legacy_len_after, legacy_len_before);
     }
 
     #[test]
@@ -3151,9 +2345,7 @@ mod tests {
             .audit_events()
             .import_legacy(Some("agent-test"), Vec::new())
             .unwrap();
-        let legacy_len_before = std::fs::metadata(&storage.events_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+
         storage
             .append_event(&AuditEvent::new(
                 "db_canonical_bootstrap_event",
@@ -3169,10 +2361,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "db_canonical_bootstrap_event");
         assert_eq!(events[0].event_seq, 1);
-        let legacy_len_after = std::fs::metadata(&storage.events_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        assert_eq!(legacy_len_after, legacy_len_before);
     }
 
     #[test]
@@ -3270,26 +2458,6 @@ mod tests {
         latest_timer.next_fire_at = Some(now + chrono::Duration::seconds(3));
         storage.append_timer(&later_timer).unwrap();
         storage.append_timer(&latest_timer).unwrap();
-
-        assert!(!storage.wait_conditions_path.exists());
-        assert!(!storage.queue_entries_path.exists());
-        assert!(!storage.timers_path.exists());
-
-        fs::write(
-            &storage.wait_conditions_path,
-            "{jsonl compat ignored after db cutover}\n",
-        )
-        .unwrap();
-        fs::write(
-            &storage.queue_entries_path,
-            "{jsonl compat ignored after db cutover}\n",
-        )
-        .unwrap();
-        fs::write(
-            &storage.timers_path,
-            "{jsonl compat ignored after db cutover}\n",
-        )
-        .unwrap();
 
         assert_eq!(
             storage.latest_wait_conditions().unwrap(),
@@ -4153,73 +3321,6 @@ mod tests {
     }
 
     #[test]
-    fn message_and_transcript_reads_ignore_legacy_jsonl_after_db_cutover() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
-            storage.runtime_dir().join("state/runtime.sqlite"),
-            storage.runtime_dir().join("state/runtime.lock"),
-        )
-        .unwrap();
-        let db_message = MessageEnvelope::new(
-            "default",
-            MessageKind::InternalFollowup,
-            MessageOrigin::System {
-                subsystem: "test".into(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "from db".into(),
-            },
-        );
-        let db_entry = TranscriptEntry::new(
-            "default",
-            TranscriptEntryKind::AssistantRound,
-            None,
-            Some(db_message.id.clone()),
-            serde_json::json!({ "text": "from db" }),
-        );
-        runtime_db.messages().upsert(&db_message).unwrap();
-        runtime_db.transcript_entries().upsert(&db_entry).unwrap();
-
-        fs::write(
-            storage.ledger_dir().join("messages.jsonl"),
-            serde_json::to_string(&MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
-                AuthorityClass::OperatorInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: "from jsonl".into(),
-                },
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            storage.ledger_dir().join("transcript.jsonl"),
-            serde_json::to_string(&TranscriptEntry::new(
-                "default",
-                TranscriptEntryKind::IncomingMessage,
-                None,
-                Some("legacy-message".into()),
-                serde_json::json!({ "text": "from jsonl" }),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let messages = storage.read_recent_messages(10).unwrap();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, db_message.id);
-        let transcript = storage.read_recent_transcript(10).unwrap();
-        assert_eq!(transcript.len(), 1);
-        assert_eq!(transcript[0].id, db_entry.id);
-    }
-
-    #[test]
     fn message_seq_counter_resumes_from_existing_ledger() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -4258,165 +3359,16 @@ mod tests {
     }
 
     #[test]
-    fn message_seq_counter_resumes_from_latest_tail_sequence() {
-        let dir = tempdir().unwrap();
-        let ledger_dir = dir.path().join(".holon/ledger");
-        std::fs::create_dir_all(&ledger_dir).unwrap();
-        let messages_path = ledger_dir.join("messages.jsonl");
-        let mut sequenced = serde_json::to_value(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "sequenced".into(),
-            },
-        ))
-        .unwrap();
-        sequenced
-            .as_object_mut()
-            .unwrap()
-            .insert("message_seq".to_string(), serde_json::json!(7));
-        let mut trailing_legacy = serde_json::to_value(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "legacy".into(),
-            },
-        ))
-        .unwrap();
-        trailing_legacy
-            .as_object_mut()
-            .unwrap()
-            .remove("message_seq");
-        std::fs::write(&messages_path, format!("{sequenced}\n{trailing_legacy}\n")).unwrap();
-
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
-        storage
-            .append_message(&MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
-                AuthorityClass::OperatorInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: "next".into(),
-                },
-            ))
-            .unwrap();
-
-        let messages = storage.read_recent_messages(10).unwrap();
-        assert_eq!(
-            messages.last().and_then(|message| message.message_seq),
-            Some(8)
-        );
-    }
-
-    #[test]
-    fn storage_backfills_legacy_events_jsonl_on_open() {
-        let dir = tempdir().unwrap();
-        let ledger_dir = dir.path().join(".holon/ledger");
-        std::fs::create_dir_all(&ledger_dir).unwrap();
-        let events_path = ledger_dir.join("events.jsonl");
-        std::fs::write(
-            &events_path,
-            [
-                serde_json::json!({
-                    "id": "evt-old-1",
-                    "created_at": "2026-05-20T00:00:00Z",
-                    "kind": "test_event",
-                    "data": { "n": 1 }
-                })
-                .to_string(),
-                serde_json::json!({
-                    "id": "evt-old-2",
-                    "created_at": "2026-05-20T00:00:01Z",
-                    "kind": "test_event",
-                    "data": { "n": 2 }
-                })
-                .to_string(),
-            ]
-            .join("\n"),
-        )
-        .unwrap();
-
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
-        let events = storage.read_recent_events(10).unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .map(|event| (event.id.as_str(), event.event_seq))
-                .collect::<Vec<_>>(),
-            vec![("evt-old-1", 1), ("evt-old-2", 2)]
-        );
-        assert!(std::fs::read_dir(&ledger_dir).unwrap().any(|entry| entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("events.jsonl.bak.")));
-
-        storage
-            .append_event(&AuditEvent::new(
-                "test_event",
-                serde_json::json!({ "n": 3 }),
-            ))
-            .unwrap();
-        let events = storage.read_recent_events(10).unwrap();
-        assert_eq!(events.last().map(|event| event.event_seq), Some(3));
-    }
-
-    #[test]
-    fn storage_uses_tail_event_seq_without_rewriting_migrated_ledger() {
-        let dir = tempdir().unwrap();
-        let ledger_dir = dir.path().join(".holon/ledger");
-        std::fs::create_dir_all(&ledger_dir).unwrap();
-        let events_path = ledger_dir.join("events.jsonl");
-        let first = AuditEvent {
-            id: "evt-new-1".into(),
-            event_seq: 41,
-            created_at: Utc::now(),
-            kind: "test_event".into(),
-            data: serde_json::json!({ "n": 1 }),
-        };
-        std::fs::write(
-            &events_path,
-            format!("{}\n", serde_json::to_string(&first).unwrap()),
-        )
-        .unwrap();
-
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
-        assert!(!std::fs::read_dir(&ledger_dir).unwrap().any(|entry| entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("events.jsonl.bak.")));
-
-        storage
-            .append_event(&AuditEvent::new(
-                "test_event",
-                serde_json::json!({ "n": 2 }),
-            ))
-            .unwrap();
-        let events = storage.read_recent_events(10).unwrap();
-        assert_eq!(events.last().map(|event| event.event_seq), Some(42));
-    }
-
-    #[test]
     fn storage_round_trip_agent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
         storage.write_agent(&agent).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Asleep);
-        assert!(dir.path().join(".holon/state/agent.json").is_file());
-        assert!(!dir.path().join("agent.json").exists());
+        assert!(!dir.path().join(".holon/state/agent.json").exists());
     }
 
     #[test]
@@ -4454,28 +3406,6 @@ mod tests {
         .unwrap();
         // DB is empty — read_agent should NOT fall back to JSONL
         assert_eq!(storage.read_agent().unwrap(), None);
-    }
-
-    #[test]
-    fn queue_claim_fails_fast_without_scheduler_control_plane_db() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent_jsonl_only(dir.path(), "default").unwrap();
-        let now = Utc::now();
-        let claim = QueueEntryRecord {
-            message_id: "message-1".into(),
-            agent_id: "default".into(),
-            priority: Priority::Normal,
-            status: QueueEntryStatus::Dequeued,
-            created_at: now,
-            updated_at: now,
-        };
-
-        let error = storage.try_claim_queued_message(&claim).unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("without scheduler control-plane db"));
-        assert!(!storage.queue_entries_path.exists());
     }
 
     #[test]
@@ -4578,7 +3508,7 @@ mod tests {
     #[test]
     fn latest_task_records_from_recent_reduces_only_bounded_history() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
         let task = |id: &str, summary: &str, offset: i64| TaskRecord {
             id: id.into(),
@@ -4606,6 +3536,9 @@ mod tests {
         storage
             .append_task(&task("bounded-repeat", "latest repeat snapshot", 3))
             .unwrap();
+        storage
+            .append_task(&task("bounded-extra", "extra task", 4))
+            .unwrap();
 
         let latest = storage.latest_task_records_from_recent(3).unwrap();
         let rendered = latest
@@ -4622,7 +3555,8 @@ mod tests {
             rendered,
             vec![
                 ("bounded-other", "other recent snapshot"),
-                ("bounded-repeat", "latest repeat snapshot")
+                ("bounded-repeat", "latest repeat snapshot"),
+                ("bounded-extra", "extra task"),
             ]
         );
     }
@@ -4721,43 +3655,6 @@ mod tests {
     }
 
     #[test]
-    fn latest_active_task_records_preserves_current_child_agent_recovery_from_older_snapshot() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
-        let now = Utc::now();
-        let mut task = TaskRecord {
-            id: "task-recovery".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: now,
-            updated_at: now,
-            parent_message_id: None,
-            work_item_id: None,
-            summary: None,
-            detail: None,
-            recovery: Some(TaskRecoverySpec::ChildAgentTask {
-                summary: "recover".into(),
-                prompt: "resume with artifact".into(),
-                authority_class: AuthorityClass::OperatorInstruction,
-                workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
-            }),
-        };
-        storage.append_task(&task).unwrap();
-
-        task.updated_at = now + chrono::Duration::seconds(1);
-        task.recovery = None;
-        storage.append_task(&task).unwrap();
-
-        let active = storage.latest_active_task_records(1).unwrap();
-        assert_eq!(active.len(), 1);
-        assert!(matches!(
-            active[0].recovery,
-            Some(TaskRecoverySpec::ChildAgentTask { .. })
-        ));
-    }
-
-    #[test]
     fn cloned_storage_serializes_concurrent_large_task_appends() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -4810,7 +3707,7 @@ mod tests {
     #[test]
     fn storage_round_trip_transcript_entries() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let entry = TranscriptEntry::new(
             "default",
             TranscriptEntryKind::IncomingMessage,
@@ -4824,8 +3721,6 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].kind, TranscriptEntryKind::IncomingMessage);
         assert_eq!(restored[0].related_message_id.as_deref(), Some("message-1"));
-        assert!(dir.path().join(".holon/ledger/transcript.jsonl").is_file());
-        assert!(!dir.path().join("transcript.jsonl").exists());
         assert!(storage.indexes_dir().is_dir());
         assert!(storage.cache_dir().is_dir());
     }
@@ -4921,51 +3816,10 @@ mod tests {
         assert_eq!(message.message_seq, None);
         assert_eq!(entry.transcript_seq, None);
     }
-
-    #[test]
-    fn read_recent_jsonl_only_parses_requested_tail() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let path = storage.ledger_dir().join("briefs.jsonl");
-        fs::write(
-            &path,
-            [
-                "{not valid json}".to_string(),
-                serde_json::to_string(&TranscriptEntry::new(
-                    "default",
-                    TranscriptEntryKind::IncomingMessage,
-                    None,
-                    Some("older".into()),
-                    serde_json::json!({ "text": "older" }),
-                ))
-                .unwrap(),
-                serde_json::to_string(&TranscriptEntry::new(
-                    "default",
-                    TranscriptEntryKind::IncomingMessage,
-                    None,
-                    Some("newer".into()),
-                    serde_json::json!({ "text": "newer" }),
-                ))
-                .unwrap(),
-            ]
-            .join("\n"),
-        )
-        .unwrap();
-
-        let entries = read_recent_jsonl::<TranscriptEntry>(&path, 1).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].related_message_id.as_deref(), Some("newer"));
-    }
-
     #[test]
     fn latest_work_item_delegation_for_child_scans_from_tail() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        fs::write(
-            &storage.work_item_delegations_path,
-            "{not valid json and should not be parsed}\n",
-        )
-        .unwrap();
 
         let other = WorkItemDelegationRecord::new(
             "parent-agent",
@@ -5144,7 +3998,7 @@ mod tests {
     #[test]
     fn external_wait_recoverability_is_derived_and_audited() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let now = Utc::now();
 
         for record in [
@@ -5987,12 +4841,7 @@ mod tests {
     #[test]
     fn storage_latest_work_items_for_agent_scans_tail_until_limit() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
-        fs::write(
-            &storage.work_items_path,
-            "{not valid json and should not be parsed}\n",
-        )
-        .unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let older = WorkItemRecord::new("default", "older", WorkItemState::Open);
         let mut updated = older.clone();
         updated.objective = "updated".into();
@@ -6018,11 +4867,6 @@ mod tests {
     fn storage_latest_timer_record_scans_from_tail_for_id() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        fs::write(
-            &storage.timers_path,
-            "{not valid json and should not be parsed}\n",
-        )
-        .unwrap();
         let now = Utc::now();
         let older = TimerRecord {
             id: "timer-1".into(),
@@ -6091,37 +4935,6 @@ mod tests {
         assert_eq!(
             snapshot.work_items[0].todo_list[0].state,
             TodoItemState::InProgress
-        );
-    }
-
-    #[test]
-    fn storage_reads_legacy_result_checkpoint_episode_boundary() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
-        let episode = serde_json::json!({
-            "id": "ep_legacy",
-            "agent_id": "default",
-            "workspace_id": "agent_home",
-            "created_at": "2026-04-20T00:00:00Z",
-            "finalized_at": "2026-04-20T00:01:00Z",
-            "start_turn_index": 3,
-            "end_turn_index": 4,
-            "start_message_count": 6,
-            "end_message_count": 8,
-            "boundary_reason": "result_checkpoint",
-            "summary": "legacy episode",
-        });
-        fs::write(
-            dir.path().join(".holon/ledger/context_episodes.jsonl"),
-            format!("{}\n", serde_json::to_string(&episode).unwrap()),
-        )
-        .unwrap();
-
-        let episodes = storage.read_recent_context_episodes(4).unwrap();
-        assert_eq!(episodes.len(), 1);
-        assert_eq!(
-            episodes[0].boundary_reason,
-            EpisodeBoundaryReason::LegacyResultCheckpoint
         );
     }
 
@@ -6431,20 +5244,6 @@ mod tests {
             ]
         );
         assert!(projection.current.is_none());
-    }
-
-    #[test]
-    fn read_agent_returns_error_on_corrupted_json() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_jsonl_only(dir.path()).unwrap();
-
-        // Write corrupted JSON to agent file
-        let agent_path = dir.path().join(".holon/state/agent.json");
-        fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
-        fs::write(&agent_path, "{invalid json}").unwrap();
-
-        let result = storage.read_agent();
-        assert!(result.is_err(), "read_agent should error on corrupted JSON");
     }
 
     #[test]

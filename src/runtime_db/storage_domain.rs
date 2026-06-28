@@ -18,32 +18,11 @@ pub struct StorageDomainSnapshot {
     pub updated_at: String,
 }
 
-/// Legacy JSONL export posture for a storage domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegacyJsonlPosture {
-    Disabled,
-    DebugExportOnly,
-    AuditMirror,
-    LegacyImportOnly,
-}
-
-impl LegacyJsonlPosture {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::DebugExportOnly => "debug_export_only",
-            Self::AuditMirror => "audit_mirror",
-            Self::LegacyImportOnly => "legacy_import_only",
-        }
-    }
-}
-
 /// Expected storage domain configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExpectedStorageDomain {
     pub domain: &'static str,
     pub canonical_source: &'static str,
-    pub legacy_jsonl_posture: LegacyJsonlPosture,
 }
 
 pub(crate) fn read_storage_domain_connection(
