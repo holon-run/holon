@@ -1311,7 +1311,7 @@ fn apply_hunks(path: &str, mut state: FileState, hunks: &[PatchHunk]) -> Result<
             .filter(|line| line.kind != HunkLineKind::Add)
             .map(|line| line.text.clone())
             .collect::<Vec<_>>();
-        let new_block = hunk
+        let mut new_block = hunk
             .lines
             .iter()
             .filter(|line| line.kind != HunkLineKind::Remove)
@@ -1321,7 +1321,30 @@ fn apply_hunks(path: &str, mut state: FileState, hunks: &[PatchHunk]) -> Result<
         let index = if old_block.is_empty() {
             hunk.old_start.saturating_sub(1).min(state.lines.len())
         } else {
-            find_unique_match(path, &state.lines, &old_block, hunk.old_start)?
+            let m = find_unique_match(path, &state.lines, &old_block, hunk.old_start)?;
+            if m.relaxed_level.is_some() {
+                // Relaxed match: rebuild new_block so context lines use the
+                // file's actual content, preserving whitespace exactly.
+                // Added lines keep LLM content; removed lines advance offset.
+                let mut rebuilt = Vec::with_capacity(new_block.len());
+                let mut file_offset = 0usize;
+                for line in &hunk.lines {
+                    match line.kind {
+                        HunkLineKind::Context => {
+                            rebuilt.push(state.lines[m.index + file_offset].clone());
+                            file_offset += 1;
+                        }
+                        HunkLineKind::Add => {
+                            rebuilt.push(line.text.clone());
+                        }
+                        HunkLineKind::Remove => {
+                            file_offset += 1;
+                        }
+                    }
+                }
+                new_block = rebuilt;
+            }
+            m.index
         };
         state
             .lines
@@ -1340,7 +1363,7 @@ fn find_unique_match(
     lines: &[String],
     needle: &[String],
     hint: usize,
-) -> Result<usize> {
+) -> Result<UniqueMatch> {
     if needle.len() > lines.len() {
         return Err(context_not_found(path, needle, lines, hint));
     }
@@ -1348,15 +1371,15 @@ fn find_unique_match(
     if let Some((window_start, window_end)) = hint_match_window(lines.len(), needle.len(), hint) {
         let window_matches = find_exact_matches(lines, needle, window_start, window_end);
         if window_matches.len() == 1 {
-            return Ok(window_matches[0]);
+            return Ok(UniqueMatch::exact(window_matches[0]));
         }
     }
 
     let matches = find_exact_matches(lines, needle, 0, lines.len() - needle.len());
     match matches.len() {
-        0 => Err(context_not_found(path, needle, lines, hint)),
-        1 => Ok(matches[0]),
-        _ => Err(ambiguous_context(path, needle, lines, &matches, hint)),
+        0 => find_relaxed_unique(path, lines, needle, hint),
+        1 => Ok(UniqueMatch::exact(matches[0])),
+        _ => find_relaxed_unique(path, lines, needle, hint),
     }
 }
 
@@ -1387,6 +1410,82 @@ fn find_exact_matches(
     let mut matches = Vec::new();
     for idx in start..=end_inclusive {
         if lines[idx..idx + needle.len()] == *needle {
+            matches.push(idx);
+        }
+    }
+    matches
+}
+
+/// Result of a unique context-block match. When `relaxed_level` is `Some`,
+/// the match was found via whitespace-normalized comparison and the caller
+/// must rebuild context lines from the file's actual content.
+struct UniqueMatch {
+    index: usize,
+    relaxed_level: Option<u8>,
+}
+
+impl UniqueMatch {
+    fn exact(index: usize) -> Self {
+        Self {
+            index,
+            relaxed_level: None,
+        }
+    }
+}
+
+/// After exact matching fails, try progressively more aggressive whitespace
+/// normalization. Each level must produce a unique match to be accepted;
+/// multiple matches or zero matches advance to the next level.
+fn find_relaxed_unique(
+    path: &str,
+    lines: &[String],
+    needle: &[String],
+    hint: usize,
+) -> Result<UniqueMatch> {
+    let end = lines.len() - needle.len();
+    for level in 1u8..=3 {
+        let matches = find_relaxed_matches(lines, needle, 0, end, level);
+        if matches.len() == 1 {
+            return Ok(UniqueMatch {
+                index: matches[0],
+                relaxed_level: Some(level),
+            });
+        }
+    }
+    // Re-run level 3 to distinguish 0 matches (context_not_found) from
+    // multiple matches (ambiguous_context).
+    let matches = find_relaxed_matches(lines, needle, 0, end, 3);
+    if matches.is_empty() {
+        Err(context_not_found(path, needle, lines, hint))
+    } else {
+        Err(ambiguous_context(path, needle, lines, &matches, hint))
+    }
+}
+
+/// Compare lines after normalizing whitespace according to `level`:
+/// 1 = `trim_end`, 2 = `trim`, 3 = `split_whitespace().join(" ")`.
+fn find_relaxed_matches(
+    lines: &[String],
+    needle: &[String],
+    start: usize,
+    end_inclusive: usize,
+    level: u8,
+) -> Vec<usize> {
+    let normalize = |s: &str| -> String {
+        match level {
+            1 => s.trim_end().to_string(),
+            2 => s.trim().to_string(),
+            _ => s.split_whitespace().collect::<Vec<_>>().join(" "),
+        }
+    };
+    let norm_needle: Vec<String> = needle.iter().map(|s| normalize(s)).collect();
+    let mut matches = Vec::new();
+    for idx in start..=end_inclusive {
+        let norm_lines: Vec<String> = lines[idx..idx + needle.len()]
+            .iter()
+            .map(|s| normalize(s))
+            .collect();
+        if norm_lines == norm_needle {
             matches.push(idx);
         }
     }
@@ -2235,6 +2334,143 @@ rename to new.txt
         assert_eq!(
             tokio::fs::read_to_string(&file).await.unwrap(),
             "ONE\ntwo\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn relaxed_match_trailing_whitespace_preserves_context() {
+        let dir = tempdir().unwrap();
+        // File has trailing whitespace on context line.
+        tokio::fs::write(
+            dir.path().join("f.rs"),
+            "line1
+    let x = 1;   
+line3
+",
+        )
+        .await
+        .unwrap();
+
+        // LLM omits trailing whitespace in context — should still match via relaxed.
+        let patch = "--- a/f.rs
++++ b/f.rs
+@@ -1,3 +1,3 @@
+ line1
+    let x = 1;
+ line3
+";
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+        assert!(outcome.diagnostics.is_empty(), "no diagnostics expected");
+
+        let result = tokio::fs::read_to_string(dir.path().join("f.rs"))
+            .await
+            .unwrap();
+        // Context line should retain original trailing whitespace.
+        assert!(
+            result.contains(
+                "    let x = 1;   
+"
+            ),
+            "context line should preserve original trailing whitespace: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relaxed_match_indent_difference_preserves_context() {
+        let dir = tempdir().unwrap();
+        // File uses 4-space indent.
+        tokio::fs::write(
+            dir.path().join("f.py"),
+            "def foo():
+    return 42
+",
+        )
+        .await
+        .unwrap();
+
+        // LLM writes 2-space indent in context — relaxed match should work.
+        let patch = "--- a/f.py
++++ b/f.py
+@@ -1,2 +1,3 @@
+ def foo():
+   return 42
++
+";
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        let result = tokio::fs::read_to_string(dir.path().join("f.py"))
+            .await
+            .unwrap();
+        // Context line should preserve file's actual 4-space indent.
+        assert!(
+            result.contains(
+                "    return 42
+"
+            ),
+            "Python context line must preserve original 4-space indent: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relaxed_match_multiple_spaces_preserves_context() {
+        let dir = tempdir().unwrap();
+        // File has extra spaces between tokens.
+        tokio::fs::write(
+            dir.path().join("f.rs"),
+            "let  x   =     1;
+",
+        )
+        .await
+        .unwrap();
+
+        // LLM writes single spaces — level 3 relaxed match should find it.
+        let patch = "--- a/f.rs
++++ b/f.rs
+@@ -1,1 +1,2 @@
+ let x = 1;
++let y = 2;
+";
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        let result = tokio::fs::read_to_string(dir.path().join("f.rs"))
+            .await
+            .unwrap();
+        // Context line should preserve file's original multi-space formatting.
+        assert!(
+            result.contains(
+                "let  x   =     1;
+"
+            ),
+            "context line should preserve original spacing: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relaxed_match_ambiguous_reports_error() {
+        let dir = tempdir().unwrap();
+        // Two identical lines that differ only in trailing whitespace.
+        tokio::fs::write(
+            dir.path().join("f.rs"),
+            "foo   
+bar
+foo  
+",
+        )
+        .await
+        .unwrap();
+
+        // LLM writes "foo" — should match both (level 1 trim_end normalizes both to "foo").
+        // Level 2 and 3 also match both. All levels ambiguous → ambiguous error.
+        let patch = "--- a/f.rs
++++ b/f.rs
+@@ -1,1 +1,1 @@
+-foo
++replaced
+";
+        let result = apply_patch(dir.path(), patch).await;
+        assert!(
+            result.is_err(),
+            "ambiguous context should produce error, not silent match"
         );
     }
 
