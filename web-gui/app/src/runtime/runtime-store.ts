@@ -2776,9 +2776,8 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
 }
 
 function isWorkItemCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
-  if (event.type !== "work_item_written") return false;
-  const action = stringField(asRecord(event.payload), "action");
-  return action === "created" || action === "completed";
+  // Match all work_item_written events so updated/picked actions also refresh the cache.
+  return event.type === "work_item_written";
 }
 
 function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
