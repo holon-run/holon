@@ -115,7 +115,11 @@ export function RightSidePanel({
             ? "File browser"
           : "Agent overview";
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
-  const detailWorkItem = activeView.kind === "work_item_detail" ? detailState?.workItem ?? activeView.workItem : undefined;
+  const detailWorkItem = activeView.kind === "work_item_detail"
+    ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
+      ?? detailState?.workItem
+      ?? activeView.workItem
+    : undefined;
   const taskDetailState = activeView.kind === "task_detail" ? activeView.detailState ?? taskDetailsById[activeView.task.id] : undefined;
 
   useEffect(() => {
