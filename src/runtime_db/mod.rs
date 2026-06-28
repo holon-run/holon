@@ -27,9 +27,7 @@ pub use crate::runtime_db::evidence::{
 pub use crate::runtime_db::index_outbox::{
     RuntimeIndexChange, RuntimeIndexOperation, RuntimeIndexOutboxRepository, RuntimeIndexOutboxRow,
 };
-pub use crate::runtime_db::storage_domain::{
-    ExpectedStorageDomain, LegacyJsonlPosture, StorageDomainSnapshot,
-};
+pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub use crate::runtime_db::types::{
     AgentIdentityRepository, AgentStateRepository, AuditEventSink, ContextEpisodeRepository,
     EvidenceRepository, ExternalTriggerRepository, MessageRepository, OperatorDeliveryRepository,
@@ -284,92 +282,74 @@ impl RuntimeDb {
             ExpectedStorageDomain {
                 domain: "agent_states",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "workspace_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "workspace_occupancies",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "agent_identities",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "work_items",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "work_item_delegations",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "work_item_continuations",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::Disabled,
             },
             ExpectedStorageDomain {
                 domain: CONTEXT_EPISODE_ANCHORS_DOMAIN,
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "tasks",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "external_triggers",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "wait_conditions",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "queue_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "timers",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "turn_records",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::Disabled,
             },
             ExpectedStorageDomain {
                 domain: "messages",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "transcript_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "evidence",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "audit_events",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
         ]
     }
@@ -414,10 +394,8 @@ impl RuntimeDb {
         for expected_domain in expected {
             match read_storage_domain_connection(&connection, expected_domain.domain)? {
                 None => diagnostics.push(format!(
-                    "storage domain {} is missing; expected canonical_source={} legacy_jsonl_posture={}",
-                    expected_domain.domain,
-                    expected_domain.canonical_source,
-                    expected_domain.legacy_jsonl_posture.as_str()
+                    "storage domain {} is missing; expected canonical_source={}",
+                    expected_domain.domain, expected_domain.canonical_source
                 )),
                 Some(snapshot) => {
                     if snapshot.import_status == "failed" {
@@ -473,17 +451,6 @@ impl RuntimeDb {
             return Ok(false);
         };
         Ok(snapshot.import_status == "complete" && snapshot.canonical_source == canonical_source)
-    }
-
-    pub(crate) fn mark_storage_domain_complete(
-        &self,
-        domain: &'static str,
-        canonical_source: &'static str,
-        checkpoint: serde_json::Value,
-    ) -> Result<()> {
-        self.transaction_once(|tx| {
-            upsert_storage_domain(tx, domain, "complete", canonical_source, Some(checkpoint))
-        })
     }
 
     fn run_storage_domain_import(

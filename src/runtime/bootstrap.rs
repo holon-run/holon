@@ -984,7 +984,7 @@ fn prepare_runtime_storage(
     if !storage_domain_complete(&runtime_db, "audit_events")? {
         runtime_db
             .audit_events()
-            .import_legacy(Some(&state.id), storage.read_legacy_events_jsonl()?)?;
+            .import_legacy(Some(&state.id), Vec::new())?;
     }
     runtime_db.validate_expected_storage_domains(
         crate::runtime_db::RuntimeDb::expected_storage_domains(),

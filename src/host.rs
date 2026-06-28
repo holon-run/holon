@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::HashMap,
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -69,7 +69,6 @@ pub struct RuntimeHost {
 pub(crate) const TEMP_AGENT_PREFIX: &str = "tmp_";
 const TEMP_RUN_AGENT_PREFIX: &str = "tmp_run_";
 const TEMP_CHILD_AGENT_PREFIX: &str = "tmp_child_";
-const HOST_AGENT_LEGACY_EVIDENCE_REPAIR_DOMAIN: &str = "host_agent_legacy_evidence_repair";
 // Give runtime loops a short cleanup window while keeping daemon stop bounded.
 #[cfg(not(test))]
 const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
@@ -173,7 +172,6 @@ impl RuntimeHost {
     pub fn prepare_runtime_storage(config: &AppConfig) -> Result<()> {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-        import_host_registry_domains(config, &runtime_db)?;
         RuntimeHandle::prepare_runtime_storage(
             config.default_agent_id.clone(),
             config.agent_root_dir().join(&config.default_agent_id),
@@ -1767,150 +1765,6 @@ impl RuntimeHost {
     }
 }
 
-fn import_host_registry_domains(config: &AppConfig, runtime_db: &RuntimeDb) -> Result<()> {
-    let host_storage = AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
-    if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
-        runtime_db
-            .workspace_entries()
-            .import_legacy(host_storage.read_legacy_workspace_entries_jsonl()?)?;
-    }
-    if !runtime_db.storage_domain_is_complete("workspace_occupancies", "db")? {
-        runtime_db
-            .workspace_occupancies()
-            .import_legacy(host_storage.read_legacy_workspace_occupancies_jsonl()?)?;
-    }
-    if !runtime_db.storage_domain_is_complete("agent_identities", "db")? {
-        runtime_db
-            .agent_identities()
-            .import_legacy(host_storage.read_legacy_agent_identities_jsonl()?)?;
-    } else {
-        repair_completed_host_agent_identity_import(&host_storage, runtime_db)?;
-    }
-    repair_host_agent_legacy_evidence_import(config, &host_storage, runtime_db)?;
-    Ok(())
-}
-
-fn repair_completed_host_agent_identity_import(
-    host_storage: &AppStorage,
-    runtime_db: &RuntimeDb,
-) -> Result<()> {
-    let host_identities = host_storage.read_legacy_agent_identities_jsonl()?;
-    if host_identities.is_empty() {
-        return Ok(());
-    }
-    let db_identities = runtime_db
-        .agent_identities()
-        .latest_all()?
-        .into_iter()
-        .map(|record| (record.agent_id.clone(), record.updated_at))
-        .collect::<BTreeMap<_, _>>();
-    for record in host_identities {
-        let should_repair = db_identities
-            .get(&record.agent_id)
-            .is_none_or(|db_updated_at| record.updated_at > *db_updated_at);
-        if should_repair {
-            runtime_db.agent_identities().upsert(&record)?;
-        }
-    }
-    Ok(())
-}
-
-fn repair_host_agent_legacy_evidence_import(
-    config: &AppConfig,
-    host_storage: &AppStorage,
-    runtime_db: &RuntimeDb,
-) -> Result<()> {
-    if runtime_db.storage_domain_is_complete(HOST_AGENT_LEGACY_EVIDENCE_REPAIR_DOMAIN, "db")? {
-        return Ok(());
-    }
-    let mut agent_ids = host_storage
-        .read_legacy_agent_identities_jsonl()?
-        .into_iter()
-        .map(|record| record.agent_id)
-        .collect::<BTreeSet<_>>();
-    agent_ids.insert(config.default_agent_id.clone());
-
-    for agent_id in &agent_ids {
-        let agent_home = config.agent_root_dir().join(agent_id.as_str());
-        if !agent_home.exists() {
-            continue;
-        }
-        let storage = AppStorage::new_for_agent(agent_home, agent_id.clone(), runtime_db.clone())?;
-        match storage.read_legacy_messages_jsonl() {
-            Ok(messages) => {
-                let legacy_max_seq = messages
-                    .iter()
-                    .filter_map(|message| message.message_seq)
-                    .max()
-                    .unwrap_or_default();
-                let db_max_seq = runtime_db
-                    .messages()
-                    .max_message_seq(Some(agent_id.as_str()))?;
-                if db_max_seq < legacy_max_seq {
-                    runtime_db.messages().upsert_many(&messages)?;
-                }
-            }
-            Err(error) => {
-                warn!(
-                    agent_id = %agent_id,
-                    error = %error,
-                    "failed to repair legacy message import for agent"
-                );
-            }
-        }
-        match storage.read_legacy_transcript_jsonl() {
-            Ok(entries) => {
-                let legacy_max_seq = entries
-                    .iter()
-                    .filter_map(|entry| entry.transcript_seq)
-                    .max()
-                    .unwrap_or_default();
-                let db_max_seq = runtime_db
-                    .transcript_entries()
-                    .max_transcript_seq(Some(agent_id.as_str()))?;
-                if db_max_seq < legacy_max_seq {
-                    runtime_db.transcript_entries().upsert_many(&entries)?;
-                }
-            }
-            Err(error) => {
-                warn!(
-                    agent_id = %agent_id,
-                    error = %error,
-                    "failed to repair legacy transcript import for agent"
-                );
-            }
-        }
-        match storage.read_legacy_events_jsonl() {
-            Ok(events) => {
-                let legacy_latest_seq =
-                    events.iter().map(|e| e.event_seq).max().unwrap_or_default();
-                let db_latest_seq = runtime_db
-                    .audit_events()
-                    .latest_event_seq(Some(agent_id.as_str()))?
-                    .unwrap_or_default();
-                if db_latest_seq < legacy_latest_seq {
-                    runtime_db
-                        .audit_events()
-                        .append_many(Some(agent_id.as_str()), &events)?;
-                }
-            }
-            Err(error) => {
-                warn!(
-                    agent_id = %agent_id,
-                    error = %error,
-                    "failed to inspect legacy audit event import for agent"
-                );
-            }
-        }
-    }
-    runtime_db.mark_storage_domain_complete(
-        HOST_AGENT_LEGACY_EVIDENCE_REPAIR_DOMAIN,
-        "db",
-        json!({ "scanned_agents": agent_ids.len() }),
-    )?;
-    Ok(())
-}
-
 impl RuntimeHostBridge {
     fn host(&self) -> Result<RuntimeHost> {
         let inner = self
@@ -2216,10 +2070,10 @@ mod tests {
         storage::AppStorage,
         system::WorkspaceProjectionKind,
         types::{
-            AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentSchedulingPosture, AgentStatus, AgentVisibility, AuthorityClass, ControlAction,
-            MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
-            QueueEntryStatus, TaskRecord, TaskRecoverySpec, TaskStatus, TurnTerminalKind,
+            AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
+            AgentVisibility, AuthorityClass, ControlAction, MessageBody, MessageEnvelope,
+            MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+            TaskRecoverySpec, TaskStatus, TurnTerminalKind,
         },
     };
 
@@ -2297,48 +2151,6 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message_id, message.id);
         assert_eq!(entries[0].status, QueueEntryStatus::Queued);
-    }
-
-    #[tokio::test]
-    async fn debug_prompt_preview_does_not_migrate_legacy_event_ledger() {
-        let (_home, host) = test_host();
-        let agent_id = host.config().default_agent_id.clone();
-        let storage = AppStorage::new_for_agent(
-            host.agent_data_dir(&agent_id),
-            agent_id.clone(),
-            host.runtime_db().clone(),
-        )
-        .expect("storage");
-        let events_path = storage.data_dir().join(".holon/ledger/events.jsonl");
-        fs::write(
-            &events_path,
-            r#"{"id":"evt_legacy","kind":"test","created_at":"2026-01-01T00:00:00Z"}"#,
-        )
-        .unwrap();
-        let before = fs::read_to_string(&events_path).unwrap();
-
-        let prompt = host
-            .preview_agent_prompt(
-                &agent_id,
-                "inspect prompt".into(),
-                AuthorityClass::OperatorInstruction,
-            )
-            .await
-            .unwrap();
-
-        assert!(prompt.render_dump().contains("inspect prompt"));
-        assert_eq!(fs::read_to_string(&events_path).unwrap(), before);
-        let backups = fs::read_dir(events_path.parent().unwrap())
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("events.jsonl.bak.")
-            })
-            .count();
-        assert_eq!(backups, 0);
     }
 
     #[tokio::test]
@@ -2519,57 +2331,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pre_server_prepare_does_not_empty_cutover_host_agent_registry() {
-        let home = tempdir().unwrap();
-        write_test_model_config(home.path());
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new_jsonl_only(config.home_dir.join("host")).unwrap();
-        host_storage
-            .append_agent_identity(&AgentIdentityRecord::new(
-                "release-bot",
-                AgentKind::Named,
-                AgentVisibility::Public,
-                AgentOwnership::SelfOwned,
-                AgentProfilePreset::PublicNamed,
-                None,
-                None,
-            ))
-            .unwrap();
-
-        RuntimeHost::prepare_runtime_storage(&config).unwrap();
-        let runtime_db =
-            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
-                .unwrap();
-        assert!(
-            runtime_db
-                .storage_domain_is_complete("agent_identities", "db")
-                .unwrap(),
-            "pre-server preparation should complete host-wide agent identity import from host storage"
-        );
-        assert_eq!(
-            runtime_db
-                .agent_identities()
-                .latest("release-bot")
-                .unwrap()
-                .expect("release-bot identity should be imported before per-agent preparation")
-                .agent_id,
-            "release-bot"
-        );
-
-        let host =
-            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
-        let listed = host
-            .list_agent_entries()
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|entry| entry.identity.agent_id)
-            .collect::<Vec<_>>();
-        assert!(listed.contains(&"release-bot".to_string()));
-        assert!(listed.contains(&host.config().default_agent_id));
-    }
-
-    #[tokio::test]
     async fn unloaded_list_agent_entries_reads_agent_state_from_db_without_agent_json() {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
@@ -2645,192 +2406,6 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(error, PublicAgentError::Stopped { .. }));
-    }
-
-    #[tokio::test]
-    async fn pre_server_prepare_repairs_completed_empty_host_agent_registry_cutover() {
-        let home = tempdir().unwrap();
-        write_test_model_config(home.path());
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new_jsonl_only(config.home_dir.join("host")).unwrap();
-        host_storage
-            .append_agent_identity(&AgentIdentityRecord::new(
-                "release-bot",
-                AgentKind::Named,
-                AgentVisibility::Public,
-                AgentOwnership::SelfOwned,
-                AgentProfilePreset::PublicNamed,
-                None,
-                None,
-            ))
-            .unwrap();
-        let runtime_db =
-            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
-                .unwrap();
-        runtime_db
-            .agent_identities()
-            .import_legacy(Vec::new())
-            .unwrap();
-        assert!(runtime_db
-            .storage_domain_is_complete("agent_identities", "db")
-            .unwrap());
-        assert!(runtime_db
-            .agent_identities()
-            .latest("release-bot")
-            .unwrap()
-            .is_none());
-
-        RuntimeHost::prepare_runtime_storage(&config).unwrap();
-
-        assert_eq!(
-            runtime_db
-                .agent_identities()
-                .latest("release-bot")
-                .unwrap()
-                .expect("release-bot identity should be repaired from host storage")
-                .agent_id,
-            "release-bot"
-        );
-        let host =
-            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
-        let listed = host
-            .list_agent_entries()
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|entry| entry.identity.agent_id)
-            .collect::<Vec<_>>();
-        assert!(listed.contains(&"release-bot".to_string()));
-    }
-
-    #[tokio::test]
-    async fn pre_server_prepare_repairs_completed_empty_agent_message_cutover() {
-        let home = tempdir().unwrap();
-        write_test_model_config(home.path());
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new_jsonl_only(config.home_dir.join("host")).unwrap();
-        host_storage
-            .append_agent_identity(&AgentIdentityRecord::new(
-                "release-bot",
-                AgentKind::Named,
-                AgentVisibility::Public,
-                AgentOwnership::SelfOwned,
-                AgentProfilePreset::PublicNamed,
-                None,
-                None,
-            ))
-            .unwrap();
-        let agent_storage = AppStorage::new_for_agent_jsonl_only(
-            config.agent_root_dir().join("release-bot"),
-            "release-bot",
-        )
-        .unwrap();
-        let message = MessageEnvelope::new(
-            "release-bot",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "legacy message".into(),
-            },
-        );
-        agent_storage.append_message(&message).unwrap();
-        let transcript = TranscriptEntry::new(
-            "release-bot",
-            TranscriptEntryKind::IncomingMessage,
-            Some(1),
-            Some(message.id.clone()),
-            json!({"text": "legacy message"}),
-        );
-        agent_storage.append_transcript_entry(&transcript).unwrap();
-        agent_storage
-            .append_event(&crate::types::AuditEvent::new(
-                "legacy_chat_event",
-                json!({"text": "legacy message"}),
-            ))
-            .unwrap();
-
-        let runtime_db =
-            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
-                .unwrap();
-        runtime_db.messages().import_legacy(Vec::new()).unwrap();
-        runtime_db
-            .transcript_entries()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db
-            .audit_events()
-            .import_legacy(Some("release-bot"), Vec::new())
-            .unwrap();
-        assert_eq!(runtime_db.messages().count(Some("release-bot")).unwrap(), 0);
-        assert_eq!(
-            runtime_db
-                .transcript_entries()
-                .all(Some("release-bot"))
-                .unwrap()
-                .len(),
-            0
-        );
-        assert_eq!(
-            runtime_db
-                .audit_events()
-                .recent(Some("release-bot"), 10)
-                .unwrap()
-                .len(),
-            0
-        );
-
-        RuntimeHost::prepare_runtime_storage(&config).unwrap();
-
-        assert_eq!(runtime_db.messages().count(Some("release-bot")).unwrap(), 1);
-        assert_eq!(
-            runtime_db
-                .transcript_entries()
-                .all(Some("release-bot"))
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            runtime_db
-                .audit_events()
-                .recent(Some("release-bot"), 10)
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn list_agent_entries_tolerates_corrupt_stored_posture_ledgers() {
-        let (_home, host) = test_host();
-        host.create_named_agent("release-bot", None).await.unwrap();
-        let agent_home = host.agent_data_dir("release-bot");
-        let work_items_path = agent_home.join(".holon/ledger/work_items.jsonl");
-        std::fs::write(&work_items_path, "not json\n").unwrap();
-
-        let entries = host.list_agent_entries().await.unwrap();
-        let loaded_release_bot = entries
-            .iter()
-            .find(|entry| entry.identity.agent_id == "release-bot")
-            .expect("release-bot should still be listed");
-        assert_eq!(
-            loaded_release_bot.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-
-        host.unload_runtime("release-bot").await;
-
-        let entries = host.list_agent_entries().await.unwrap();
-        let stored_release_bot = entries
-            .iter()
-            .find(|entry| entry.identity.agent_id == "release-bot")
-            .expect("unloaded release-bot should still be listed");
-        assert_eq!(
-            stored_release_bot.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
     }
 
     #[tokio::test]
