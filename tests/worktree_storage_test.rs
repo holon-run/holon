@@ -8,9 +8,10 @@ mod worktree_storage_tests {
     #[test]
     fn test_storage_round_trip_session_with_worktree() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let agent_id = "test-worktree-session";
+        let storage = AppStorage::new_for_test_with_agent(dir.path(), agent_id).unwrap();
 
-        let mut session = AgentState::new("test-worktree-session");
+        let mut session = AgentState::new(agent_id);
         session.status = AgentStatus::AwakeRunning;
         session.worktree_session = Some(WorktreeSession {
             original_cwd: PathBuf::from("/original/repo"),
@@ -45,9 +46,10 @@ mod worktree_storage_tests {
     #[test]
     fn test_storage_round_trip_session_without_worktree() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let agent_id = "normal-session";
+        let storage = AppStorage::new_for_test_with_agent(dir.path(), agent_id).unwrap();
 
-        let session = AgentState::new("normal-session");
+        let session = AgentState::new(agent_id);
         storage.write_agent(&session).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();

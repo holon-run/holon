@@ -135,6 +135,22 @@ impl AppStorage {
         Self::new_for_agent(data_dir, "default".to_string(), runtime_db)
     }
 
+    /// Test-only constructor that opens its own RuntimeDb and scopes storage
+    /// to the given agent id. Use this when the test writes agent state for a
+    /// non-`default` session id.
+    pub fn new_for_test_with_agent(
+        data_dir: impl Into<PathBuf>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self> {
+        let data_dir = data_dir.into();
+        let runtime_dir = data_dir.join(RUNTIME_DIR);
+        let runtime_db = RuntimeDb::open_and_migrate(
+            runtime_dir.join("state/runtime.sqlite"),
+            runtime_dir.join("state/runtime.lock"),
+        )?;
+        Self::new_for_agent(data_dir, agent_id, runtime_db)
+    }
+
     /// Test-only constructor that uses JSONL-only storage (no DB canonical).
     /// Preserves the old `AppStorage::new(dir.path())` behavior for tests
     /// that explicitly test legacy JSONL read/write/migration paths.
