@@ -8,7 +8,7 @@ use crate::context::ContextConfig;
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
 const DEFAULT_COMPACTION_TRIGGER_PERCENT: u8 = 90;
 const DEFAULT_KEEP_RECENT_PERCENT: u8 = 38;
-const DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS: usize = 64_000;
+const DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS: usize = 128_000;
 const DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS: usize = 2_500;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -3047,9 +3047,9 @@ mod tests {
             8192,
         );
 
-        assert_eq!(policy.prompt_budget_estimated_tokens, 64_000);
-        assert_eq!(policy.compaction_trigger_estimated_tokens, 57_600);
-        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 21_888);
+        assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);
+        assert_eq!(policy.compaction_trigger_estimated_tokens, 115_200);
+        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 43_776);
         assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
     }
 
