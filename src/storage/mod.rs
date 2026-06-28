@@ -4845,9 +4845,10 @@ mod tests {
         let older = WorkItemRecord::new("default", "older", WorkItemState::Open);
         let mut updated = older.clone();
         updated.objective = "updated".into();
-        updated.updated_at = Utc::now();
+        updated.updated_at = older.created_at + chrono::Duration::milliseconds(100);
         let other_agent = WorkItemRecord::new("other", "other agent", WorkItemState::Open);
-        let newest = WorkItemRecord::new("default", "newest", WorkItemState::Open);
+        let mut newest = WorkItemRecord::new("default", "newest", WorkItemState::Open);
+        newest.updated_at = older.created_at + chrono::Duration::milliseconds(200);
 
         storage.append_work_item(&older).unwrap();
         storage.append_work_item(&updated).unwrap();

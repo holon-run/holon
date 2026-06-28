@@ -383,17 +383,6 @@ impl ModelRef {
         })
     }
 
-    pub fn from_legacy_anthropic_model(model: &str) -> Result<Self> {
-        let trimmed = model.trim();
-        if trimmed.is_empty() {
-            return Err(anyhow!("model ref must not be empty"));
-        }
-        Ok(Self {
-            provider: ProviderId::anthropic(),
-            model: trimmed.to_string(),
-        })
-    }
-
     pub fn as_string(&self) -> String {
         format!("{}/{}", self.provider.as_str(), self.model)
     }
