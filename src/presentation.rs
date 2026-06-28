@@ -14,7 +14,7 @@ use crate::operator_event::OperatorEventCategory;
 use crate::tui::projection::ProjectionEventRecord;
 use crate::types::{
     BriefCreatedAuditEvent, BriefKind, BriefRecord, MessageBody, MessageEnvelope, MessageOrigin,
-    WaitingIntentRecord, WaitingIntentScope, WorkItemLifecycleAuditEvent, WorkItemRecord,
+    WorkItemLifecycleAuditEvent, WorkItemRecord,
 };
 
 pub(crate) const LIVE_WORKING_ACTIVITY_DISPLAY_LEVEL: u8 = 4;
@@ -923,29 +923,6 @@ impl PresentationReducer {
                     }
                 }
 
-                "waiting_intent_created" => {
-                    if let Some(item) = work_item_waiting_notice_item(event, events) {
-                        items.push(TimedItem::from_event(item, event));
-                    } else {
-                        items.push(TimedItem::from_event(
-                            self.event_to_presentation(event),
-                            event,
-                        ));
-                    }
-                }
-
-                "work_item_waiting_intents_cancelled" => {
-                    let (item_id, summary) = work_item_bookkeeping_parts(event, events);
-                    items.push(TimedItem::from_event(
-                        PresentationItem::WorkItemBookkeeping {
-                            item_id,
-                            transition: WorkItemTransition::WaitCancelled,
-                            summary,
-                        },
-                        event,
-                    ));
-                }
-
                 "task_result_received"
                 | "task_child_spawned"
                 | "supervised_child_task_recovery_failed"
@@ -1395,54 +1372,6 @@ fn work_item_event_transition(kind: &str) -> WorkItemTransition {
         "work_item_delegation_completed" => WorkItemTransition::DelegationCompleted,
         "missing_current_work_item_before_wait" => WorkItemTransition::Waiting,
         _ => WorkItemTransition::Updated,
-    }
-}
-
-fn work_item_waiting_notice_item(
-    event: &ProjectionEventRecord,
-    events: &[ProjectionEventRecord],
-) -> Option<PresentationItem> {
-    let waiting: WaitingIntentRecord = serde_json::from_value(event.payload.clone()).ok()?;
-    if waiting.scope != WaitingIntentScope::WorkItem {
-        return None;
-    }
-    let work_item_id = waiting.work_item_id.as_deref()?;
-    let objective = work_item_objective_from_events(work_item_id, events)
-        .unwrap_or_else(|| work_item_id.into());
-    let reason = work_item_waiting_reason(&waiting);
-    Some(PresentationItem::WorkItemCard {
-        action: "waiting".into(),
-        summary: format!("{objective}: {reason}"),
-    })
-}
-
-fn work_item_waiting_reason(waiting: &WaitingIntentRecord) -> String {
-    let description = waiting.description.trim();
-    let detail = waiting
-        .resource
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| (!description.is_empty()).then_some(description));
-    let source = waiting.source.trim();
-    if source.eq_ignore_ascii_case("task_result") || source.eq_ignore_ascii_case("task") {
-        detail
-            .map(|detail| format!("waiting for task result {detail}"))
-            .unwrap_or_else(|| "waiting for task result".into())
-    } else if source.eq_ignore_ascii_case("operator_input")
-        || source.eq_ignore_ascii_case("operator")
-    {
-        detail
-            .map(|detail| format!("waiting for operator input: {detail}"))
-            .unwrap_or_else(|| "waiting for operator input".into())
-    } else if source.eq_ignore_ascii_case("external") {
-        detail
-            .map(|detail| format!("waiting for external wake {detail}"))
-            .unwrap_or_else(|| "waiting for external wake".into())
-    } else {
-        detail
-            .map(|detail| format!("waiting: {detail}"))
-            .unwrap_or_else(|| "waiting".into())
     }
 }
 
@@ -3298,91 +3227,6 @@ mod tests {
             }
             other => panic!("expected WorkItemBookkeeping, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn reducer_promotes_work_item_waiting_intent_to_waiting_card() {
-        let created = make_event(
-            "work_item_written",
-            "work item created",
-            json!({
-                "action": "created",
-                "record": {
-                    "id": "wi-1",
-                    "agent_id": "default",
-                    "workspace_id": "agent_home",
-                    "objective": "wait for CI",
-                    "state": "open",
-                    "plan_status": "draft",
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z"
-                }
-            }),
-        );
-        let waiting = make_event(
-            "waiting_intent_created",
-            "waiting intent created",
-            json!({
-                "id": "wait-1",
-                "agent_id": "default",
-                "scope": "work_item",
-                "work_item_id": "wi-1",
-                "description": "PR checks",
-                "source": "external",
-                "resource": "github:holon-run/holon#1518",
-                "delivery_mode": "wake_hint",
-                "status": "active",
-                "external_trigger_id": "ext-1",
-                "created_at": "2026-01-01T00:00:00Z",
-                "cancelled_at": null,
-                "last_triggered_at": null,
-                "trigger_count": 0,
-                "correlation_id": null,
-                "causation_id": null
-            }),
-        );
-
-        let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(
-            &[created, waiting],
-            &BriefTextLookup(&std::collections::BTreeMap::new()),
-        );
-
-        assert_eq!(items.len(), 2);
-        match &items[1].item {
-            PresentationItem::WorkItemCard { action, summary } => {
-                assert_eq!(action, "waiting");
-                assert!(summary.contains("wait for CI"));
-                assert!(summary.contains("github:holon-run/holon#1518"));
-                assert_eq!(items[1].item.min_display_level(), 3);
-            }
-            other => panic!("expected WorkItemCard, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn reducer_keeps_bare_waiting_intent_cancelled_generic() {
-        let cancelled = make_event(
-            "waiting_intent_cancelled",
-            "waiting intent cancelled",
-            json!({
-                "waiting_intent_id": "wait-agent",
-                "external_trigger_id": "ext-agent"
-            }),
-        );
-
-        let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(
-            &[cancelled],
-            &BriefTextLookup(&std::collections::BTreeMap::new()),
-        );
-
-        assert_eq!(items.len(), 1);
-        assert!(matches!(
-            items[0].item,
-            PresentationItem::WaitingNotice { .. }
-        ));
-        assert!(!items[0].item.render(4)[0].body.contains("work item"));
     }
 
     #[test]

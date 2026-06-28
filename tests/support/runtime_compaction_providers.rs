@@ -146,7 +146,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                         name: "ExecCommand".into(),
                         input: json!({
                             "cmd": "printf 'round-1-output'",
-                            "max_output_tokens": 12,
+                            "max_output_tokens": 12
                         }),
                     },
                 ],
@@ -168,7 +168,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                         name: "ExecCommand".into(),
                         input: json!({
                             "cmd": "printf 'round-2-output'",
-                            "max_output_tokens": 12,
+                            "max_output_tokens": 12
                         }),
                     },
                 ],
@@ -190,7 +190,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                         name: "ExecCommand".into(),
                         input: json!({
                             "cmd": "printf 'round-3-output'",
-                            "max_output_tokens": 12,
+                            "max_output_tokens": 12
                         }),
                     },
                 ],
@@ -286,7 +286,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                         name: "ExecCommand".into(),
                         input: json!({
                             "cmd": "printf 'recovery-round-2-output'",
-                            "max_output_tokens": 16,
+                            "max_output_tokens": 16
                         }),
                     },
                 ],
@@ -309,7 +309,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                         name: "ExecCommand".into(),
                         input: json!({
                             "cmd": "printf 'recovery-round-3-output'",
-                            "max_output_tokens": 16,
+                            "max_output_tokens": 16
                         }),
                     },
                 ],
@@ -402,7 +402,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                         "Round 1 planning {} {}",
                         "deep-context reconstruction ".repeat(240),
                         "Output token limit hit. Continue exactly where you left off. Do not restart from the top."
-                    ),
+                    )
                 }],
                 stop_reason: Some("max_tokens".into()),
                 input_tokens: 0,
@@ -410,7 +410,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 cache_usage: None,
                 provider_message_id: None,
             provider_request_id: None,
-            request_diagnostics: None,
+            request_diagnostics: None
             }),
             2 => Ok(ProviderTurnResponse {
                 blocks: vec![
@@ -418,15 +418,15 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                         text: format!(
                             "Round 2 checkpoint signal {}. [Runtime-generated full progress checkpoint request]",
                             "delta capture ".repeat(220)
-                        ),
+                        )
                     },
                     ModelBlock::ToolUse {
                         id: "exec-round-2".into(),
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "awk 'BEGIN { for (i=0; i<900; i++) printf \"exec_round_2_marker \" }'",
-                            "max_output_tokens": 24,
-                        }),
+                            "max_output_tokens": 24
+                        })
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -435,7 +435,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 cache_usage: None,
                 provider_message_id: None,
             provider_request_id: None,
-            request_diagnostics: None,
+            request_diagnostics: None
             }),
             3 => {
                 let task_id = self
@@ -450,15 +450,15 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                             text: format!(
                                 "Round 3 follow-up {}",
                                 "continuity anchor ".repeat(220)
-                            ),
+                            )
                         },
                         ModelBlock::ToolUse {
                             id: "task-output-round-3".into(),
                             name: "TaskOutput".into(),
                             input: serde_json::json!({
                                 "task_id": task_id,
-                                "block": false,
-                            }),
+                                "block": false
+                            })
                         },
                     ],
                     stop_reason: Some("tool_use".into()),
@@ -467,7 +467,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                     cache_usage: None,
                     provider_message_id: None,
             provider_request_id: None,
-            request_diagnostics: None,
+            request_diagnostics: None
                 })
             }
             4 => Ok(ProviderTurnResponse {
@@ -476,15 +476,15 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                         text: format!(
                             "Round 4 checkpointing {}",
                             "stable progression ".repeat(220)
-                        ),
+                        )
                     },
                     ModelBlock::ToolUse {
                         id: "exec-round-4".into(),
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "awk 'BEGIN { for (i=0; i<840; i++) printf \"exec_round_4_marker \" }'",
-                            "max_output_tokens": 24,
-                        }),
+                            "max_output_tokens": 24
+                        })
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -493,11 +493,11 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 cache_usage: None,
                 provider_message_id: None,
             provider_request_id: None,
-            request_diagnostics: None,
+            request_diagnostics: None
             }),
             _ => Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::Text {
-                    text: "Completed after bounded repeated compaction.".into(),
+                    text: "Completed after bounded repeated compaction.".into()
                 }],
                 stop_reason: Some("end_turn".into()),
                 input_tokens: 0,
@@ -505,8 +505,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 cache_usage: None,
                 provider_message_id: None,
             provider_request_id: None,
-            request_diagnostics: None,
-            }),
+            request_diagnostics: None
+            })
         }
     }
 }

@@ -13,7 +13,6 @@ async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
         reason: "restart wake".into(),
         description: None,
         scope: None,
-        waiting_intent_id: None,
         external_trigger_id: None,
         source: Some("test".into()),
         resource: None,
@@ -57,7 +56,6 @@ async fn recovered_duplicate_wake_hint_clears_pending_without_new_tick() {
         reason: "restart duplicate wake".into(),
         description: None,
         scope: None,
-        waiting_intent_id: None,
         external_trigger_id: None,
         source: Some("test".into()),
         resource: None,
@@ -88,7 +86,7 @@ async fn recovered_duplicate_wake_hint_clears_pending_without_new_tick() {
     duplicate.metadata = Some(serde_json::json!({
         "wake_hint": {
             "idempotency_key": idempotency_key,
-            "reason": "restart duplicate wake",
+            "reason": "restart duplicate wake"
         }
     }));
     storage.append_message(&duplicate).unwrap();
@@ -153,7 +151,6 @@ async fn triggered_wake_hint_records_scheduler_decision_before_tick() {
             description: None,
             source: Some("test".into()),
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             resource: None,
             body: Some(MessageBody::Text {
@@ -357,7 +354,6 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
         reason: "resume from callback".into(),
         description: None,
         scope: None,
-        waiting_intent_id: None,
         external_trigger_id: None,
         source: Some("test".into()),
         resource: None,
@@ -506,7 +502,6 @@ fn wake_hint_smoke() -> WakeHint {
         description: None,
         source: Some("test".into()),
         scope: None,
-        waiting_intent_id: None,
         external_trigger_id: None,
         resource: None,
         body: Some(MessageBody::Text {

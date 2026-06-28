@@ -23,7 +23,7 @@ use holon::{
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
         OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
-        WaitingIntentStatus, WorkItemState,
+        WorkItemState,
     },
 };
 use reqwest::Client;

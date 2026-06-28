@@ -999,7 +999,6 @@ fn prepare_runtime_storage(
         runtime_db
             .timers()
             .recent_for_agent(&state.id, usize::MAX)?,
-        storage.read_recent_waiting_intents(usize::MAX)?,
         runtime_db.external_triggers().latest_for_agent(&state.id)?,
     );
 

@@ -83,8 +83,8 @@ pub(crate) use crate::{
         MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
         OperatorTransportDeliveryAuthKind, Priority, TaskRecord, TaskStatus, TaskStatusSnapshot,
-        TaskStopResult, TimerRecord, TodoItem, TranscriptEntry, TurnTerminalRecord,
-        WaitingIntentRecord, WaitingReason, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        TaskStopResult, TimerRecord, TodoItem, TranscriptEntry, TurnTerminalRecord, WaitingReason,
+        WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
 mod agents;

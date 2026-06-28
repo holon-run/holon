@@ -60,7 +60,7 @@ fn task_from_message_parses_command_task_with_running_status() {
             "task_id": "cmd-1",
             "task_kind": "command_task",
             "task_status": "running",
-            "task_summary": "run tests",
+            "task_summary": "run tests"
         }),
     );
     let record = tasks::task_from_message(&msg, "agent-1").unwrap();
@@ -78,7 +78,7 @@ fn task_from_message_infers_running_for_task_status_without_explicit_status() {
         MessageKind::TaskStatus,
         serde_json::json!({
             "task_id": "t-2",
-            "task_kind": "command_task",
+            "task_kind": "command_task"
         }),
     );
     let record = tasks::task_from_message(&msg, "default").unwrap();
@@ -91,7 +91,7 @@ fn task_from_message_infers_completed_for_task_result_without_explicit_status() 
         MessageKind::TaskResult,
         serde_json::json!({
             "task_id": "t-3",
-            "task_kind": "command_task",
+            "task_kind": "command_task"
         }),
     );
     let record = tasks::task_from_message(&msg, "default").unwrap();
@@ -112,7 +112,7 @@ fn task_from_message_parses_all_terminal_statuses() {
             serde_json::json!({
                 "task_id": format!("t-{}", status_str),
                 "task_kind": "command_task",
-                "task_status": status_str,
+                "task_status": status_str
             }),
         );
         let record = tasks::task_from_message(&msg, "default").unwrap();
@@ -127,7 +127,7 @@ fn task_from_message_unknown_status_defaults_to_queued() {
         serde_json::json!({
             "task_id": "t-unknown",
             "task_kind": "command_task",
-            "task_status": "bogus_status",
+            "task_status": "bogus_status"
         }),
     );
     let record = tasks::task_from_message(&msg, "default").unwrap();
@@ -141,7 +141,7 @@ fn task_from_message_extracts_work_item_id_from_metadata() {
         serde_json::json!({
             "task_id": "t-wi",
             "task_kind": "command_task",
-            "work_item_id": "wi-from-meta",
+            "work_item_id": "wi-from-meta"
         }),
     );
     let record = tasks::task_from_message(&msg, "default").unwrap();
@@ -154,7 +154,7 @@ fn task_from_message_falls_back_to_message_work_item_id() {
         MessageKind::TaskStatus,
         serde_json::json!({
             "task_id": "t-wi2",
-            "task_kind": "command_task",
+            "task_kind": "command_task"
         }),
     );
     msg.work_item_id = Some("wi-from-msg".into());
@@ -170,7 +170,7 @@ fn task_from_message_preserves_task_detail_and_recovery() {
             "task_id": "t-detail",
             "task_kind": "command_task",
             "task_detail": { "cancel_requested": true },
-            "task_recovery": { "kind": "command_task", "summary": "test cmd", "spec": { "cmd": "true", "workdir": null, "shell": null, "login": false, "tty": false, "yield_time_ms": 0, "max_output_tokens": null, "accepts_input": false, "terminal_reentry": false }, "authority_class": "operator_instruction", "promoted_from_exec_command": false },
+            "task_recovery": { "kind": "command_task", "summary": "test cmd", "spec": { "cmd": "true", "workdir": null, "shell": null, "login": false, "tty": false, "yield_time_ms": 0, "max_output_tokens": null, "accepts_input": false, "terminal_reentry": false }, "authority_class": "operator_instruction", "promoted_from_exec_command": false }
         }),
     );
     let record = tasks::task_from_message(&msg, "default").unwrap();

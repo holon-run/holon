@@ -217,7 +217,7 @@ async fn malformed_task_message_does_not_exit_runtime_loop() {
     );
     malformed.metadata = Some(serde_json::json!({
         "task_kind": "child_agent_task",
-        "task_status": "completed",
+        "task_status": "completed"
     }));
     let malformed = runtime.enqueue(malformed).await.unwrap();
     runtime

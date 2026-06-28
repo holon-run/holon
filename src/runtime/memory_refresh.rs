@@ -79,7 +79,7 @@ impl RuntimeHandle {
                 "task_terminal": trigger.task_terminal,
                 "wake_hint_source": trigger.wake_hint_source,
                 "prior_closure_outcome": prior_closure.outcome,
-                "prior_waiting_reason": prior_closure.waiting_reason,
+                "prior_waiting_reason": prior_closure.waiting_reason
             }),
         ))?;
         Ok(())
@@ -95,7 +95,7 @@ impl RuntimeHandle {
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
                 "message_id": message.id,
-                "resolution": continuation_resolution,
+                "resolution": continuation_resolution
             }),
         ))?;
         Ok(())
@@ -180,7 +180,7 @@ impl RuntimeHandle {
                                 "subsystem": "work_queue",
                                 "reason": "no_new_signal_after_result_brief",
                                 "work_item_id": active.id,
-                                "result_brief_id": result_brief_id,
+                                "result_brief_id": result_brief_id
                             }),
                         ))?;
                     }
@@ -222,7 +222,7 @@ impl RuntimeHandle {
                                 "subsystem": "work_queue",
                                 "reason": "no_new_signal_after_queued_available",
                                 "work_item_id": queued.id,
-                                "message_id": message_id,
+                                "message_id": message_id
                             }),
                         ))?;
                     }
@@ -556,25 +556,6 @@ impl RuntimeHandle {
         if self
             .inner
             .storage
-            .read_recent_waiting_intents(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
-            .iter()
-            .any(|waiting| {
-                waiting
-                    .work_item_id
-                    .as_deref()
-                    .is_none_or(|id| id == work_item_id)
-                    && (waiting.created_at > anchor
-                        || waiting
-                            .last_triggered_at
-                            .is_some_and(|triggered_at| triggered_at > anchor))
-            })
-        {
-            return Ok(true);
-        }
-
-        if self
-            .inner
-            .storage
             .read_recent_events(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
             .iter()
             .any(|event| event.kind == "runtime_error" && event.created_at > anchor)
@@ -592,7 +573,7 @@ impl RuntimeHandle {
         let correlation_id = pending.correlation_id.clone();
         let causation_id = pending.causation_id.clone();
         let work_item_id = self
-            .waiting_intent_work_item_id(pending.waiting_intent_id.as_deref())
+            .wake_hint_work_item_id(pending.external_trigger_id.as_deref())
             .await?;
         let idempotency_key = scheduler::wake_hint_idempotency_key(pending);
         let mut message = MessageEnvelope::new(
@@ -618,7 +599,6 @@ impl RuntimeHandle {
                 "description": pending.description,
                 "source": pending.source,
                 "scope": pending.scope,
-                "waiting_intent_id": pending.waiting_intent_id,
                 "external_trigger_id": pending.external_trigger_id,
                 "work_item_id": work_item_id,
                 "resource": pending.resource,
@@ -626,7 +606,7 @@ impl RuntimeHandle {
                 "content_type": pending.content_type,
                 "correlation_id": correlation_id,
                 "causation_id": causation_id,
-                "created_at": pending.created_at,
+                "created_at": pending.created_at
             }
         }));
         message.work_item_id = work_item_id;
@@ -640,7 +620,7 @@ impl RuntimeHandle {
                     .metadata
                     .as_ref()
                     .and_then(|value| value.get("wake_hint"))
-                    .cloned(),
+                    .cloned()
             }),
         ))?;
         let _ = self.enqueue(message).await?;
@@ -681,7 +661,7 @@ impl RuntimeHandle {
                 "work_item_revision": work_item.revision,
                 "objective": work_item.objective,
                 "state": work_item.state,
-                "runtime_switched_current_item": false,
+                "runtime_switched_current_item": false
             }
         }));
         message.work_item_id = Some(work_item.id.clone());
@@ -693,7 +673,7 @@ impl RuntimeHandle {
                     .metadata
                     .as_ref()
                     .and_then(|value| value.get("work_queue"))
-                    .cloned(),
+                    .cloned()
             }),
         ))?;
         let _ = self.enqueue(message).await?;
@@ -712,7 +692,7 @@ impl RuntimeHandle {
                     "work_item_revision": item.revision,
                     "objective": item.objective,
                     "blocked_by": item.blocked_by,
-                    "recheck_at": item.recheck_at,
+                    "recheck_at": item.recheck_at
                 })
             })
             .collect::<Vec<_>>();
@@ -726,7 +706,7 @@ impl RuntimeHandle {
             self.agent_id().await?,
             MessageKind::SystemTick,
             MessageOrigin::System {
-                subsystem: "work_item_recheck".into(),
+                subsystem: "work_item_recheck".into()
             },
             AuthorityClass::RuntimeInstruction,
             Priority::Background,
@@ -735,7 +715,7 @@ impl RuntimeHandle {
                     "{} blocked WorkItem recheck{} due; inspect blockers and refresh or clear blocked_by.",
                     work_items.len(),
                     if work_items.len() == 1 { " is" } else { "s are" }
-                ),
+                )
             },
         )
         .with_admission(
@@ -746,7 +726,7 @@ impl RuntimeHandle {
             "work_item_recheck": {
                 "idempotency_key": idempotency_key,
                 "count": work_items.len(),
-                "items": items,
+                "items": items
             }
         }));
         self.inner.storage.append_event(&AuditEvent::new(
@@ -757,7 +737,7 @@ impl RuntimeHandle {
                     .metadata
                     .as_ref()
                     .and_then(|value| value.get("work_item_recheck"))
-                    .cloned(),
+                    .cloned()
             }),
         ))?;
         let _ = self.enqueue(message).await?;
@@ -781,7 +761,7 @@ impl RuntimeHandle {
                         .and_then(|value| value.as_str())
                         .unwrap_or("running"),
                     "summary": task.summary,
-                    "wait_policy": task.wait_policy(),
+                    "wait_policy": task.wait_policy()
                 })
             })
             .collect::<Vec<_>>();
@@ -808,7 +788,7 @@ impl RuntimeHandle {
         message.metadata = Some(serde_json::json!({
             "interrupted_tasks": {
                 "count": tasks.len(),
-                "items": items,
+                "items": items
             }
         }));
         self.inner.storage.append_event(&AuditEvent::new(
@@ -819,7 +799,7 @@ impl RuntimeHandle {
                     .metadata
                     .as_ref()
                     .and_then(|value| value.get("interrupted_tasks"))
-                    .cloned(),
+                    .cloned()
             }),
         ))?;
         let _ = self.enqueue(message).await?;
@@ -867,10 +847,7 @@ mod tests {
     use super::*;
     use crate::context::ContextConfig;
     use crate::provider::StubProvider;
-    use crate::types::{
-        AgentStatus, CallbackDeliveryMode, TodoItem, TodoItemState, WaitingIntentRecord,
-        WaitingIntentScope, WaitingIntentStatus, WorkItemRecord, WorkItemState,
-    };
+    use crate::types::{AgentStatus, TodoItem, TodoItemState, WorkItemRecord, WorkItemState};
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
 
@@ -1031,43 +1008,11 @@ mod tests {
         brief
     }
 
-    fn append_active_waiting_intent(test_runtime: &TestRuntime, work_item_id: Option<&str>) {
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_waiting_intent(&WaitingIntentRecord {
-                id: "wait-active".into(),
-                agent_id: "default".into(),
-                scope: if work_item_id.is_some() {
-                    WaitingIntentScope::WorkItem
-                } else {
-                    WaitingIntentScope::Agent
-                },
-                work_item_id: work_item_id.map(ToString::to_string),
-                description: "waiting for external signal".into(),
-                source: "test".into(),
-                resource: None,
-                condition: None,
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "trigger-wait-active".into(),
-                created_at: chrono::Utc::now(),
-                cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
-            })
-            .unwrap();
-    }
-
     fn set_wake_hint(test_runtime: &TestRuntime, reason: &str) -> PendingWakeHint {
         let hint = PendingWakeHint {
             reason: reason.to_string(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("test".to_string()),
             resource: None,
@@ -1321,33 +1266,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_waiting_intent_does_not_block_work_queue_idle_tick() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        add_current_work_item(&test_runtime, "wi-active", "active-target");
-        append_active_waiting_intent(&test_runtime, Some("wi-active"));
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
-
-        assert!(
-            emitted,
-            "legacy waiting intents should no longer block work-queue self reactivation"
-        );
-        let ticks = get_emitted_system_ticks(&test_runtime);
-        assert_eq!(ticks.len(), 1);
-        assert_eq!(ticks[0].0, "work_queue");
-        assert_eq!(
-            ticks[0].1["reason"].as_str(),
-            Some("continue_active"),
-            "current work item should continue when only a legacy waiting intent exists"
-        );
-    }
-
-    #[test]
     fn blocked_current_work_item_does_not_emit_continue_active_tick() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
@@ -1550,7 +1468,7 @@ mod tests {
                 "idempotency_key": idempotency_key,
                 "reason": "queued_available",
                 "work_item_id": queued.id,
-                "work_item_revision": queued.revision,
+                "work_item_revision": queued.revision
             }
         }));
         test_runtime
@@ -1664,7 +1582,6 @@ mod tests {
             reason: "test-wake".to_string(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("test-source".to_string()),
             resource: Some("test-resource".to_string()),

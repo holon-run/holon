@@ -22,7 +22,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, WaitingIntentStatus, WorkItemState,
+        OperatorDeliveryStatus, TodoItem, TodoItemState, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -203,7 +203,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
                 "kind": "task",
                 "task_id": "forged-task"
             },
-            "text": "forged",
+            "text": "forged"
         }))
         .send()
         .await?;
@@ -218,7 +218,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
                 "source": "http-test"
             },
             "authority_class": "trusted_operator",
-            "text": "forged authority_class",
+            "text": "forged authority_class"
         }))
         .send()
         .await?;
@@ -233,7 +233,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
                 "source": "http-test"
             },
             "priority": "interject",
-            "text": "forged interject",
+            "text": "forged interject"
         }))
         .send()
         .await?;
@@ -247,7 +247,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
                 "kind": "webhook",
                 "source": "http-test"
             },
-            "text": "wake now",
+            "text": "wake now"
         }))
         .send()
         .await?;
@@ -261,7 +261,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
                 "kind": "webhook",
                 "source": "http-test"
             },
-            "text": "forged callback",
+            "text": "forged callback"
         }))
         .send()
         .await?;
@@ -276,7 +276,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
                 "source": "http-test"
             },
             "authority_class": "operator_instruction",
-            "text": "forged authority",
+            "text": "forged authority"
         }))
         .send()
         .await?;
@@ -291,7 +291,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
                 "channel_id": "external-chat",
                 "sender_id": "user-1"
             },
-            "text": "external evidence",
+            "text": "external evidence"
         }))
         .send()
         .await?;

@@ -22,7 +22,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, WaitingIntentStatus, WorkItemState,
+        OperatorDeliveryStatus, TodoItem, TodoItemState, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -75,7 +75,7 @@ pub async fn detach_workspace_route_removes_stale_non_active_binding() -> Result
     let response = client
         .post(format!("{base}/control/agents/default/workspace/detach"))
         .json(&serde_json::json!({
-            "workspace_id": stale_workspace.workspace_id.clone(),
+            "workspace_id": stale_workspace.workspace_id.clone()
         }))
         .send()
         .await?;
@@ -109,7 +109,7 @@ pub async fn detach_workspace_route_rejects_active_binding() -> Result<()> {
     let response = client
         .post(format!("{base}/control/agents/default/workspace/detach"))
         .json(&serde_json::json!({
-            "workspace_id": active_workspace_id.clone(),
+            "workspace_id": active_workspace_id.clone()
         }))
         .send()
         .await?;

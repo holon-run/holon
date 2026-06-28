@@ -24,8 +24,7 @@ use crate::{
         AgentListEntry, AgentSummary, AuthorityClass, BriefRecord, ExternalTriggerStateSnapshot,
         MessageEnvelope, OperatorNotificationRecord, ResolvedModelAvailability, TaskInputResult,
         TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult, TimerRecord,
-        ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord,
-        WorkItemRecord,
+        ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WorkItemRecord,
     },
 };
 
@@ -131,8 +130,6 @@ pub struct AgentStateSnapshot {
     pub timers: Vec<TimerRecord>,
     #[serde(default)]
     pub work_items: Vec<WorkItemRecord>,
-    #[serde(default)]
-    pub waiting_intents: Vec<WaitingIntentRecord>,
     #[serde(default)]
     pub external_triggers: Vec<ExternalTriggerStateSnapshot>,
     #[serde(default)]

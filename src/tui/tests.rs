@@ -32,7 +32,7 @@ use crate::{
         AgentSummary, AgentTokenUsageSummary, AgentVisibility, BriefContentSource, BriefKind,
         BriefRecord, ChildAgentSummary, ClosureDecision, ClosureOutcome, LoadedAgentsMdView,
         MessageBody, OperatorMessageRecord, OperatorMessageStatus, RuntimePosture,
-        SkillsRuntimeView, TokenUsage, WaitingIntentSummary,
+        SkillsRuntimeView, TokenUsage,
     },
 };
 use chrono::Utc;
@@ -236,7 +236,6 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
         loaded_agents_md: LoadedAgentsMdView::default(),
         skills: SkillsRuntimeView::default(),
         active_children: Vec::<ChildAgentSummary>::new(),
-        active_waiting_intents: Vec::<WaitingIntentSummary>::new(),
         active_wait_conditions: Vec::new(),
         active_external_triggers: Vec::new(),
         recent_operator_notifications: Vec::new(),
@@ -371,7 +370,6 @@ fn sample_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
         tasks: Vec::new(),
         timers: Vec::new(),
         work_items: Vec::new(),
-        waiting_intents: Vec::new(),
         external_triggers: Vec::new(),
         operator_notifications: Vec::new(),
         workspace: StateWorkspaceSnapshot::default(),
@@ -466,7 +464,7 @@ fn tool_executed_event_envelope(
             "duration_ms": 0,
             "status": "success",
             "summary": tool_name,
-            "tool_name": tool_name,
+            "tool_name": tool_name
         }),
     )
 }
@@ -712,7 +710,7 @@ fn statusbar_view_model_converges_from_workspace_used_event() {
                 "execution_root": "/tmp/agent-home",
                 "projection_kind": "canonical_root",
                 "access_mode": "exclusive_write",
-                "cwd": "/tmp/agent-home",
+                "cwd": "/tmp/agent-home"
             }),
         ),
         &app.log_writer,
@@ -746,7 +744,7 @@ fn statusbar_view_model_converges_from_provider_round_model_event() {
             "provider_round_completed",
             json!({
                 "requested_model": "openai/gpt-5.4",
-                "active_model": "anthropic/claude-sonnet-4-6",
+                "active_model": "anthropic/claude-sonnet-4-6"
             }),
         ),
         &app.log_writer,
@@ -1370,7 +1368,7 @@ async fn paste_updates_model_picker_filter() {
         OverlayState::ModelPicker {
             provider: None,
             filter: "gpt-5.3".into(),
-            selected: 0,
+            selected: 0
         }
     );
 }
@@ -1391,7 +1389,7 @@ async fn paste_into_debug_prompt_stays_single_line() {
     assert_eq!(
         app.overlay,
         OverlayState::DebugPromptInput {
-            composer: ComposerState::from("explain first second"),
+            composer: ComposerState::from("explain first second")
         }
     );
 }
@@ -1790,7 +1788,7 @@ async fn model_picker_enter_opens_provider_model_page() {
         OverlayState::ModelPicker {
             provider: Some("openrouter".into()),
             filter: String::new(),
-            selected: 0,
+            selected: 0
         }
     );
 }
@@ -1825,7 +1823,7 @@ async fn model_picker_opens_effort_for_models_with_reasoning_support() {
             model: "openai_codex/gpt-5.4".into(),
             selected: 0,
             return_filter: String::new(),
-            return_selected: 1,
+            return_selected: 1
         }
     );
 }
@@ -1869,7 +1867,7 @@ async fn model_effort_picker_esc_returns_to_provider_model_page() {
         OverlayState::ModelPicker {
             provider: Some("openai_codex".into()),
             filter: "gpt".into(),
-            selected: 1,
+            selected: 1
         }
     );
 }
@@ -2619,7 +2617,7 @@ fn chat_text_ignores_ack_lifecycle_event_but_keeps_result_brief_events() {
         json!({
             "agent_id": "default",
             "message_id": "msg-duplicate",
-            "summary": "Queued work: duplicate",
+            "summary": "Queued work: duplicate"
         }),
     );
     apply_brief_event(
@@ -3038,8 +3036,8 @@ fn chat_text_omits_task_system_events() {
                     "summary": "Run command: cargo test --lib wake_hint_preserved_when_replaced_during_emission 2>&1",
                     "detail": null,
                     "recovery": null
-                }),
-            },
+                })
+            }
         }, &crate::tui::logging::TuiLogWriter::new_temp().unwrap());
     app.projection = Some(projection);
 
@@ -4528,19 +4526,17 @@ fn stale_projection_event_schedules_refresh() {
 
     tx.send(TuiRuntimeMessage::Event(AgentStreamEvent {
         id: "evt-stale".into(),
-        event: "waiting_intent_created".into(),
+        event: "callback_delivered".into(),
         data: StreamEventEnvelope {
             id: "evt-stale".into(),
             event_seq: 2,
             ts: Utc::now(),
             agent_id: "default".into(),
-            event_type: "waiting_intent_created".into(),
+            event_type: "callback_delivered".into(),
             provenance: None,
             payload: json!({
-                "waiting_intent_id": "wait-2",
                 "external_trigger_id": "cb-2",
-                "agent_id": "default",
-                "source": "github"
+                "agent_id": "default"
             }),
         },
     }))

@@ -197,7 +197,7 @@ mod tests {
                 "output_summary": format!("{id} summary"),
                 "exit_status": 0,
                 "accepts_input": true,
-                "input_target": "stdin",
+                "input_target": "stdin"
             })),
             recovery: None,
         }
@@ -213,7 +213,6 @@ mod tests {
         ExternalTriggerRecord {
             external_trigger_id: id.into(),
             target_agent_id: agent_id.into(),
-            waiting_intent_id: Some(format!("wait-{id}")),
             scope: ExternalTriggerScope::Agent,
             delivery_mode: CallbackDeliveryMode::EnqueueMessage,
             trigger_url: Some(format!("https://example.test/{id}")),
@@ -1518,7 +1517,6 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(active.external_trigger_id, "trigger-newer");
         assert_eq!(active.scope, ExternalTriggerScope::Agent);
         assert_eq!(active.delivery_mode, CallbackDeliveryMode::WakeHint);
-        assert_eq!(active.waiting_intent_id, None);
 
         let all = db.external_triggers().latest_for_agent("agent-a")?;
         assert_eq!(all.len(), 2);
@@ -1581,7 +1579,6 @@ CREATE TABLE working_memory_deltas (
             0,
         );
         trigger.delivery_mode = CallbackDeliveryMode::WakeHint;
-        trigger.waiting_intent_id = None;
         db.external_triggers().upsert(&trigger)?;
 
         trigger.delivery_count = 2;
@@ -1772,7 +1769,7 @@ CREATE TABLE working_memory_deltas (
         let mut child = task_record("task-child", "agent-a", TaskStatus::Running, 1);
         child.detail = Some(serde_json::json!({
             "child_agent_id": "child-a",
-            "input_target": "child_followup",
+            "input_target": "child_followup"
         }));
 
         db.tasks().upsert(&command)?;
@@ -1803,7 +1800,7 @@ CREATE TABLE working_memory_deltas (
             "output_path": "/tmp/task-large.log",
             "initial_output": "i".repeat(TASK_PAYLOAD_STRING_LIMIT + 10),
             "output_summary": "s".repeat(TASK_PAYLOAD_STRING_LIMIT + 10),
-            "lines": (0..(TASK_PAYLOAD_ARRAY_LIMIT + 10)).collect::<Vec<_>>(),
+            "lines": (0..(TASK_PAYLOAD_ARRAY_LIMIT + 10)).collect::<Vec<_>>()
         }));
 
         db.tasks().upsert(&task)?;

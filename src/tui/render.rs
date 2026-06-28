@@ -186,11 +186,11 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
     }
     lines.push(String::new());
     lines.push("Waiting".into());
-    if projection.waiting_intents.is_empty() {
-        lines.push("  No active waiting intents".into());
+    if projection.agent.active_wait_conditions.is_empty() {
+        lines.push("  No active wait conditions".into());
     } else {
-        for waiting in projection.waiting_intents.iter().take(2) {
-            lines.push(format!("  - {}", trim(&waiting.description, 44)));
+        for condition in projection.agent.active_wait_conditions.iter().take(2) {
+            lines.push(format!("  - {}", trim(&condition.waiting_for, 44)));
         }
     }
     if !projection.external_triggers.is_empty() {
@@ -1017,10 +1017,6 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
         }
     ));
     lines.push(format!(
-        "Waiting intents: {}",
-        agent.active_waiting_intents.len()
-    ));
-    lines.push(format!(
         "External triggers: {}",
         agent.active_external_triggers.len()
     ));
@@ -1181,7 +1177,6 @@ mod tests {
                     last_result_brief: None,
                 },
             }],
-            active_waiting_intents: Vec::new(),
             active_wait_conditions: Vec::new(),
             active_external_triggers: Vec::new(),
             recent_operator_notifications: Vec::new(),

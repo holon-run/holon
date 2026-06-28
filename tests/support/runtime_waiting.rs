@@ -407,7 +407,7 @@ pub async fn update_work_item_replaces_latest_plan_snapshot_for_existing_work_it
         latest.todo_list[1],
         TodoItem {
             text: "project work queue into prompt".into(),
-            state: TodoItemState::InProgress,
+            state: TodoItemState::InProgress
         }
     );
     assert_eq!(latest.updated_at, updated.updated_at);
@@ -454,7 +454,6 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
             reason: "pr changed".into(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("github".into()),
             resource: None,
@@ -470,7 +469,6 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
             reason: "ci changed".into(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("ci".into()),
             resource: None,
@@ -519,7 +517,6 @@ pub async fn stopped_agent_ignores_wake_hint() -> Result<()> {
             reason: "something changed".into(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("watcher".into()),
             resource: None,
@@ -726,8 +723,8 @@ pub async fn notify_operator_prefers_reply_route_for_delivery() -> Result<()> {
         metadata: Some(json!({
             "operator_transport": {
                 "binding_id": "opbind-z-ingress",
-                "reply_route_id": "route-reply-preferred",
-            },
+                "reply_route_id": "route-reply-preferred"
+            }
         })),
         ..MessageEnvelope::new(
             "default",
@@ -790,8 +787,8 @@ pub async fn notify_operator_ignores_reply_route_when_binding_no_longer_matches(
         metadata: Some(json!({
             "operator_transport": {
                 "binding_id": "opbind-z-ingress",
-                "reply_route_id": "route-reply-preferred",
-            },
+                "reply_route_id": "route-reply-preferred"
+            }
         })),
         ..MessageEnvelope::new(
             "default",
@@ -854,7 +851,7 @@ pub async fn notify_operator_falls_back_to_default_route_without_reply_route() -
     let inbound = MessageEnvelope {
         metadata: Some(json!({
             "operator_transport": {
-                "binding_id": "opbind-default",
+                "binding_id": "opbind-default"
             }
         })),
         ..MessageEnvelope::new(
@@ -978,14 +975,13 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .next()
         .expect("trigger url should end with a token");
 
-    let waiting = runtime.latest_waiting_intents().await?;
+    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
     assert!(waiting.is_empty());
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Active);
 
     let summary = runtime.agent_summary().await?;
-    assert!(summary.active_waiting_intents.is_empty());
     assert_eq!(summary.active_external_triggers.len(), 1);
     assert_ne!(summary.closure.outcome, ClosureOutcome::Waiting);
     assert_ne!(
@@ -1008,7 +1004,6 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         )
         .await?;
     let state_text = state_result.content_text()?;
-    assert!(state_text.contains("active_waiting_intents"));
     assert!(state_text.contains("active_external_triggers"));
     assert!(state_text.contains("external_trigger_id"));
     assert!(!state_text.contains(callback_token));
@@ -1023,7 +1018,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
                 id: "tool-cancel-external-trigger-rejected".into(),
                 name: "CancelExternalTrigger".into(),
                 input: json!({
-                    "external_trigger_id": capability.external_trigger_id,
+                    "external_trigger_id": capability.external_trigger_id
                 }),
             },
         )
@@ -1050,7 +1045,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .expect("external_trigger_revoked event");
     assert!(cancelled_event.data["external_trigger_id"].is_string());
 
-    let waiting = runtime.latest_waiting_intents().await?;
+    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
     assert!(waiting.is_empty());
     let revoked_descriptor = descriptors
@@ -1071,7 +1066,6 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
     })
     .await?;
     let summary = runtime.agent_summary().await?;
-    assert!(summary.active_waiting_intents.is_empty());
     assert!(summary
         .active_external_triggers
         .iter()
@@ -1126,7 +1120,7 @@ pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -
                 text: "Generate a comprehensive technical report covering multiple domains. \
                       Include detailed sections on: 1) System architecture patterns 2) Data flow strategies \
                       3) Security considerations 4) Performance optimization 5) Monitoring approaches. \
-                      After completing your analysis, finish with Sleep.".into(),
+                      After completing your analysis, finish with Sleep.".into()
             },
         ))
         .await?;

@@ -33,8 +33,8 @@ use holon::{
         MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
-        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitingIntentStatus, WaitingReason, WorkItemState,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingReason,
+        WorkItemState,
     },
 };
 use serde_json::json;
@@ -376,7 +376,6 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
             reason: "pr review requested".into(),
             description: None,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             source: Some("github".into()),
             resource: Some("pr/273".into()),
@@ -529,7 +528,7 @@ pub async fn repeated_turn_local_compaction_evolves_checkpoint_mode_and_keeps_la
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
-                text: "Run a long-running review loop that repeatedly requires compaction and checkpointing.".into(),
+                text: "Run a long-running review loop that repeatedly requires compaction and checkpointing.".into()
             },
         ))
         .await?;
@@ -656,7 +655,7 @@ pub async fn max_output_recovery_followed_by_turn_local_compaction_preserves_pro
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
-                text: "Produce analysis in constrained output, then continue after recovery while preserving checkpoint progress.".into(),
+                text: "Produce analysis in constrained output, then continue after recovery while preserving checkpoint progress.".into()
             },
         ))
         .await?;
@@ -798,7 +797,7 @@ pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -
                 text: "Generate a comprehensive technical report covering multiple domains. \
                       Include detailed sections on: 1) System architecture patterns 2) Data flow strategies \
                       3) Security considerations 4) Performance optimization 5) Monitoring approaches. \
-                      After completing your analysis, finish with Sleep.".into(),
+                      After completing your analysis, finish with Sleep.".into()
             },
         ))
         .await?;

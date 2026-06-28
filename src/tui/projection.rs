@@ -29,8 +29,8 @@ use crate::{
         ActiveWorkspaceEntry, AgentModelOverrideAuditEvent, AgentState, AgentStateChangedEvent,
         AgentSummary, BriefContentSource, BriefCreatedAuditEvent, BriefRecord, ClosureDecision,
         ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, TaskLifecycleAuditEvent,
-        TaskRecord, TimerRecord, TimerStatus, TranscriptEntry, WaitingIntentRecord,
-        WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState, WorktreeSession,
+        TaskRecord, TimerRecord, TimerStatus, TranscriptEntry, WorkItemLifecycleAuditEvent,
+        WorkItemRecord, WorkItemState, WorktreeSession,
     },
 };
 
@@ -49,7 +49,6 @@ pub(crate) enum ProjectionSlice {
     Tasks,
     Timers,
     WorkItems,
-    WaitingIntents,
     ExternalTriggers,
     OperatorNotifications,
     Workspace,
@@ -88,7 +87,6 @@ pub(crate) struct TuiProjection {
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) timers: Vec<TimerRecord>,
     pub(crate) work_items: Vec<WorkItemRecord>,
-    pub(crate) waiting_intents: Vec<WaitingIntentRecord>,
     pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
     pub(crate) operator_notifications: Vec<crate::types::OperatorNotificationRecord>,
     pub(crate) workspace: StateWorkspaceSnapshot,
@@ -118,7 +116,6 @@ impl TuiProjection {
             tasks,
             timers: snapshot.timers,
             work_items: snapshot.work_items,
-            waiting_intents: snapshot.waiting_intents,
             external_triggers,
             operator_notifications,
             workspace: snapshot.workspace,
@@ -603,17 +600,8 @@ impl TuiProjection {
                 // Conversation preview and event overlays. Avoid forcing a
                 // full /state refresh during normal turn progress.
             }
-            "waiting_intent_created" | "waiting_intent_cancelled" => {
-                self.mark_stale([
-                    ProjectionSlice::WaitingIntents,
-                    ProjectionSlice::ExternalTriggers,
-                ]);
-            }
             "callback_delivered" => {
-                self.mark_stale([
-                    ProjectionSlice::ExternalTriggers,
-                    ProjectionSlice::WaitingIntents,
-                ]);
+                self.mark_stale([ProjectionSlice::ExternalTriggers]);
             }
             "operator_notification_requested" => {
                 if let Some(record) =
@@ -1659,16 +1647,6 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
                     .map(|record| format!("{} [{:?}]", record.objective_preview, record.state))
             })
             .unwrap_or_else(|| event.data.event_type.clone()),
-        "waiting_intent_created" => decode_payload::<WaitingIntentRecord>(&event.data.payload)
-            .map(|waiting| format!("waiting: {}", trim_summary(&waiting.description)))
-            .unwrap_or_else(|| event.data.event_type.clone()),
-        "waiting_intent_cancelled" => event
-            .data
-            .payload
-            .get("waiting_intent_id")
-            .and_then(Value::as_str)
-            .map(|id| format!("waiting cancelled: {id}"))
-            .unwrap_or_else(|| event.data.event_type.clone()),
         "operator_notification_requested" => {
             decode_payload::<crate::types::OperatorNotificationRecord>(&event.data.payload)
                 .map(|notification| format!("operator notified: {}", notification.summary))
@@ -1677,7 +1655,7 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
         "callback_delivered" => event
             .data
             .payload
-            .get("waiting_intent_id")
+            .get("external_trigger_id")
             .and_then(Value::as_str)
             .map(|id| format!("callback delivered for {id}"))
             .unwrap_or_else(|| event.data.event_type.clone()),
@@ -1830,8 +1808,7 @@ mod tests {
             MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
             RuntimePosture, SkillsRuntimeView, TaskLifecycleAuditEvent, TaskRecord, TaskStatus,
             TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage, TurnTerminalKind,
-            TurnTerminalRecord, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
-            WaitingIntentSummary, WaitingReason, WorkItemRecord, WorkItemState,
+            TurnTerminalRecord, WaitingReason, WorkItemRecord, WorkItemState,
         },
     };
     use chrono::Utc;
@@ -1883,7 +1860,7 @@ mod tests {
                 "tool_names": ["ExecCommand"],
                 "tool_call_count": 1,
                 "has_tool_calls": true,
-                "raw_text": "debug assistant body",
+                "raw_text": "debug assistant body"
             }),
         }];
         let mut projection = TuiProjection::from_snapshot(snapshot);
@@ -2425,7 +2402,7 @@ mod tests {
                     "text_preview": null,
                     "tool_names": ["ExecCommand", "ReadFile"],
                     "tool_call_count": 2,
-                    "has_tool_calls": true,
+                    "has_tool_calls": true
                 }),
             ),
             &test_log_writer(),
@@ -2449,7 +2426,7 @@ mod tests {
                     "tool_names": [],
                     "tool_call_count": 0,
                     "has_text": false,
-                    "has_tool_calls": false,
+                    "has_tool_calls": false
                 }),
             ),
             &test_log_writer(),
@@ -2486,21 +2463,21 @@ mod tests {
                     "message_id": "message-1",
                     "message_kind": "operator_prompt",
                     "error": "visible error",
-                    "token_usage": null,
+                    "token_usage": null
                 }),
             ),
             (
                 "deferred_to_fallback",
                 json!({
                     "operator_message": "OpenAI Codex authentication failed. Queued fallback turn on anthropic/claude-sonnet-4-6.",
-                    "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+                    "fallback_model_ref": "anthropic/claude-sonnet-4-6"
                 }),
             ),
             (
                 "provider_failed_needs_recovery",
                 json!({
                     "operator_message": "Provider failed after output. Queued recovery turn on anthropic/claude-sonnet-4-6.",
-                    "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+                    "fallback_model_ref": "anthropic/claude-sonnet-4-6"
                 }),
             ),
             (
@@ -2514,7 +2491,7 @@ mod tests {
                     "delivery_surface": "http_control_prompt",
                     "admission_context": "local_process",
                     "correlation_id": null,
-                    "causation_id": null,
+                    "causation_id": null
                 }),
             ),
             ("control_applied", json!({ "action": "pause" })),
@@ -2534,7 +2511,7 @@ mod tests {
                 "deferred_to_fallback",
                 json!({
                     "operator_message": "OpenAI Codex authentication failed. Queued fallback turn on anthropic/claude-sonnet-4-6.",
-                    "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+                    "fallback_model_ref": "anthropic/claude-sonnet-4-6"
                 }),
             ),
             &test_log_writer(),
@@ -2616,7 +2593,7 @@ mod tests {
                     "id": "notification-1",
                     "summary": "needs review",
                     "message": "needs review",
-                    "created_at": Utc::now(),
+                    "created_at": Utc::now()
                 }),
             ),
             &test_log_writer(),
@@ -2672,7 +2649,7 @@ mod tests {
                         provenance: None,
                         payload: json!({
                             "waiting_intent_id": format!("wait-{index}"),
-                            "source": "github",
+                            "source": "github"
                         }),
                     },
                 },
@@ -2782,7 +2759,7 @@ mod tests {
                     "execution_root": "/tmp/ws-main/worktree",
                     "projection_kind": "git_worktree_root",
                     "access_mode": "exclusive_write",
-                    "cwd": "/tmp/ws-main/worktree",
+                    "cwd": "/tmp/ws-main/worktree"
                 }),
             ),
             &test_log_writer(),
@@ -2831,7 +2808,7 @@ mod tests {
                     "execution_root": "/tmp/agent-home",
                     "projection_kind": "canonical_root",
                     "access_mode": "exclusive_write",
-                    "cwd": "/tmp/agent-home",
+                    "cwd": "/tmp/agent-home"
                 }),
             ),
             &test_log_writer(),
@@ -2889,7 +2866,7 @@ mod tests {
                 json!({
                     "agent_id": "default",
                     "model": model,
-                    "pending_next_turn": false,
+                    "pending_next_turn": false
                 }),
             ),
             &test_log_writer(),
@@ -2920,7 +2897,7 @@ mod tests {
                 "provider_round_completed",
                 json!({
                     "requested_model": "openai/gpt-5.4",
-                    "active_model": "anthropic/claude-sonnet-4-6",
+                    "active_model": "anthropic/claude-sonnet-4-6"
                 }),
             ),
             &test_log_writer(),
@@ -2954,7 +2931,7 @@ mod tests {
                 json!({
                     "requested_model": null,
                     "active_model": null,
-                    "fallback_active": false,
+                    "fallback_active": false
                 }),
             ),
             &test_log_writer(),
@@ -2985,7 +2962,7 @@ mod tests {
                 "work_item_written",
                 json!({
                     "action": "created",
-                    "record": work_item,
+                    "record": work_item
                 }),
             ),
             &test_log_writer(),
@@ -3119,21 +3096,17 @@ mod tests {
 
         projection.apply_event(
             sample_event(
-                "waiting_intent_created",
+                "callback_delivered",
                 json!({
-                    "waiting_intent_id": "wait-2",
                     "external_trigger_id": "cb-2",
                     "agent_id": "default",
-                    "source": "github",
-                    "delivery_mode": "enqueue_message",
+                    "scope": "agent",
+                    "delivery_mode": "wake_hint"
                 }),
             ),
             &test_log_writer(),
         );
 
-        assert!(projection
-            .stale_slices
-            .contains(&ProjectionSlice::WaitingIntents));
         assert!(projection
             .stale_slices
             .contains(&ProjectionSlice::ExternalTriggers));
@@ -3416,29 +3389,9 @@ mod tests {
                 }];
                 vec![item]
             },
-            waiting_intents: vec![WaitingIntentRecord {
-                id: "wait-1".into(),
-                agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
-                work_item_id: None,
-                description: "wait".into(),
-                source: "github".into(),
-                resource: Some("pull_request:251".into()),
-                condition: Some("review".into()),
-                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "cb-1".into(),
-                created_at: Utc::now(),
-                cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
-            }],
             external_triggers: vec![ExternalTriggerStateSnapshot {
                 external_trigger_id: "cb-1".into(),
                 target_agent_id: "default".into(),
-                waiting_intent_id: Some("wait-1".into()),
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
                 status: ExternalTriggerStatus::Active,
@@ -3603,7 +3556,6 @@ mod tests {
             loaded_agents_md: LoadedAgentsMdView::default(),
             skills: SkillsRuntimeView::default(),
             active_children: Vec::<ChildAgentSummary>::new(),
-            active_waiting_intents: Vec::<WaitingIntentSummary>::new(),
             active_wait_conditions: Vec::new(),
             active_external_triggers: Vec::new(),
             recent_operator_notifications: Vec::new(),

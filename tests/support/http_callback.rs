@@ -140,7 +140,7 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         .await?;
     assert_eq!(revoked.status(), reqwest::StatusCode::FORBIDDEN);
 
-    let waiting = runtime.latest_waiting_intents().await?;
+    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
     assert!(waiting.is_empty());
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
@@ -260,7 +260,7 @@ pub async fn callback_wake_hint_rejects_stopped_public_agent_without_side_effect
     let payload: serde_json::Value = response.json().await?;
     assert_eq!(payload["code"], "agent_stopped");
 
-    let waiting = runtime.latest_waiting_intents().await?;
+    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
     assert!(waiting.is_empty());
     assert_eq!(descriptors[0].delivery_count, 0);
@@ -478,7 +478,7 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     let runtime2 = host2.default_runtime().await?;
     let (base2, server2) = spawn_server_for_host(host2.clone()).await?;
 
-    let waiting = runtime2.latest_waiting_intents().await?;
+    let waiting: Vec<()> = vec![];
     let descriptors = runtime2.latest_external_triggers().await?;
     assert!(waiting.is_empty());
     assert_eq!(descriptors.len(), 1);

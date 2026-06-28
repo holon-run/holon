@@ -905,7 +905,6 @@ pub async fn control_wake(
             description: None,
             source: request.source,
             scope: None,
-            waiting_intent_id: None,
             external_trigger_id: None,
             resource: None,
             body: None,

@@ -29,8 +29,8 @@ pub(crate) use crate::{
         LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
         PendingWakeHint, Priority, QueueEntryStatus, TaskKind, TaskOutputRetrievalStatus,
         TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TodoItem,
-        TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus,
-        WaitingReason, WorkItemRecord, WorkItemState, WorkReactivationMode, WorkspaceEntry,
+        TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord, WaitingReason,
+        WorkItemRecord, WorkItemState, WorkReactivationMode, WorkspaceEntry,
     },
 };
 
@@ -311,7 +311,7 @@ impl AgentProvider for OneToolThenTextProvider {
                 name: "ExecCommand".into(),
                 input: serde_json::json!({
                     "cmd": "printf 'ok'",
-                    "shell": "sh",
+                    "shell": "sh"
                 }),
             }]
         } else {
@@ -574,7 +574,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "printf 'first-round-output-should-not-stay-exact'",
-                            "yield_time_ms": 30000,
+                            "yield_time_ms": 30000
                         }),
                     },
                 ],
@@ -596,7 +596,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "printf 'second-round-output-should-remain-exact'",
-                            "yield_time_ms": 30000,
+                            "yield_time_ms": 30000
                         }),
                     },
                 ],
@@ -618,7 +618,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "printf 'third-round-output-should-remain-exact'",
-                            "yield_time_ms": 30000,
+                            "yield_time_ms": 30000
                         }),
                     },
                 ],
@@ -658,7 +658,7 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
                     id: "exec-baseline-over-budget".into(),
                     name: "ExecCommand".into(),
                     input: serde_json::json!({
-                        "cmd": "printf 'baseline-over-budget'",
+                        "cmd": "printf 'baseline-over-budget'"
                     }),
                 }],
                 stop_reason: Some("tool_use".into()),
@@ -693,7 +693,7 @@ impl AgentProvider for SleepOnlyToolProvider {
                 name: "Sleep".into(),
                 input: serde_json::json!({
                     "reason": "waiting for review",
-                    "duration_ms": 250,
+                    "duration_ms": 250
                 }),
             }],
             stop_reason: None,
@@ -728,7 +728,7 @@ impl AgentProvider for WaitForOnlyToolProvider {
                     "reason": "waiting for PR checks",
                     "wake": "external",
                     "resource": "github:holon-run/holon#1939",
-                    "recheck_after_ms": 1800000,
+                    "recheck_after_ms": 1800000
                 }),
             }],
             stop_reason: None,
@@ -753,7 +753,7 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                     id: "legacy-task".into(),
                     name: "CreateTask".into(),
                     input: serde_json::json!({
-                        "prompt": "removed public task surface",
+                        "prompt": "removed public task surface"
                     }),
                 }],
                 stop_reason: None,
@@ -809,7 +809,7 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                     id: "truncated-patch".into(),
                     name: "ApplyPatch".into(),
                     input: serde_json::json!({
-                        "patch": "--- /dev/null\n+++ b/app.txt\n@@ -0,0 +1 @@\n+should-not-be-written\n",
+                        "patch": "--- /dev/null\n+++ b/app.txt\n@@ -0,0 +1 @@\n+should-not-be-written\n"
                     }),
                 }],
                 stop_reason: Some("max_tokens".into()),
@@ -890,22 +890,22 @@ impl AgentProvider for FailingTimelineProvider {
                             is_body: true,
                             is_decode: false,
                             is_redirect: false,
-                            status: None,
+                            status: None
                         }),
                         http_trace: Some(ProviderHttpTraceDiagnostics {
                             mode: "failure_only".into(),
                             path: "/Users/example/.holon/http-trace/default/trace-1-1.jsonl"
                                 .into(),
-                            status: None,
+                            status: None
                         }),
-                        source_chain: vec!["connection reset by peer".into()],
-                    }),
+                        source_chain: vec!["connection reset by peer".into()]
+                    })
                 }],
                 aggregated_token_usage: None,
                 requested_model_ref: "openai/gpt-5.4".into(),
                 active_model_ref: None,
                 winning_model_ref: None,
-                pending_fallback_model_ref: None,
+                pending_fallback_model_ref: None
             },
             anyhow!("bad request"),
         ))
@@ -932,13 +932,13 @@ impl AgentProvider for ContextLengthExceededProvider {
                     advanced_to_fallback: false,
                     backoff_ms: None,
                     token_usage: Some(TokenUsage::new(125_166, 0)),
-                    transport_diagnostics: None,
+                    transport_diagnostics: None
                 }],
                 aggregated_token_usage: Some(TokenUsage::new(125_166, 0)),
                 requested_model_ref: "openai-codex/gpt-5.3-codex-spark".into(),
                 active_model_ref: None,
                 winning_model_ref: None,
-                pending_fallback_model_ref: None,
+                pending_fallback_model_ref: None
             },
             anyhow!("context_length_exceeded: input too long"),
         ))
@@ -1085,7 +1085,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::Text {
-                    text: "What changed: app.txt\nWhy: to address the requested task.\nVerification: successful verification command completed.".into(),
+                    text: "What changed: app.txt\nWhy: to address the requested task.\nVerification: successful verification command completed.".into()
                 }],
                 stop_reason: None,
                 input_tokens: 25,
@@ -1093,7 +1093,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                 cache_usage: None,
                 provider_message_id: None,
             provider_request_id: None,
-            request_diagnostics: None,
+            request_diagnostics: None
             });
         }
 
@@ -1106,7 +1106,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                     id: "patch".into(),
                     name: "ApplyPatch".into(),
                     input: serde_json::json!({
-                        "patch": "--- a/app.txt\n+++ b/app.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n",
+                        "patch": "--- a/app.txt\n+++ b/app.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n"
                     }),
                 },
                 ModelBlock::ToolUse {
@@ -1114,7 +1114,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                     name: "ExecCommand".into(),
                     input: serde_json::json!({
                         "cmd": "printf 'tests passed'",
-                        "shell": "sh",
+                        "shell": "sh"
                     }),
                 },
             ],
@@ -1123,7 +1123,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                 name: "ExecCommand".into(),
                 input: serde_json::json!({
                     "cmd": "cat app.txt",
-                    "workdir": ".",
+                    "workdir": "."
                 }),
             }],
             _ => vec![ModelBlock::ToolUse {
@@ -1158,7 +1158,7 @@ impl AgentProvider for SkillReadProvider {
                 name: "ExecCommand".into(),
                 input: serde_json::json!({
                     "cmd": "cat .agents/skills/demo/SKILL.md",
-                    "workdir": ".",
+                    "workdir": "."
                 }),
             }],
             _ => vec![ModelBlock::Text {

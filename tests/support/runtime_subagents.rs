@@ -33,8 +33,8 @@ use holon::{
         MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
-        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitingIntentStatus, WaitingReason, WorkItemState,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingReason,
+        WorkItemState,
     },
 };
 use serde_json::json;
@@ -399,7 +399,7 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
             "task_id": task.id,
             "task_kind": "child_agent_task",
             "task_status": "running",
-            "task_summary": "stale task status",
+            "task_summary": "stale task status"
         })),
         ..MessageEnvelope::new(
             "default",

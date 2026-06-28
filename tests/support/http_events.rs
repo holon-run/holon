@@ -24,7 +24,7 @@ use holon::{
         ControlAction, ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope,
         MessageKind, MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord,
         TaskStatus, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
-        WaitingIntentStatus, WorkItemState,
+        WorkItemState,
     },
 };
 use reqwest::Client;
@@ -404,7 +404,7 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
             "priority": "interject",
             "summary": "operator prompt admitted",
             "text_preview": "inspect status",
-            "raw_text": "debug-only prompt body",
+            "raw_text": "debug-only prompt body"
         }),
     ))?;
     let mut brief = BriefRecord::new(
@@ -429,7 +429,7 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
             "duration_ms": 123,
             "exit_status": 0,
             "summary": "cargo check passed",
-            "stdout": "debug-only output",
+            "stdout": "debug-only output"
         }),
     ))?;
 
@@ -516,7 +516,7 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
             "callback_delivered",
             serde_json::json!({
                 "waiting_intent_id": format!("wait-{index}"),
-                "source": "github",
+                "source": "github"
             }),
         ))?;
     }
@@ -590,7 +590,7 @@ pub async fn events_stream_includes_tool_payload() -> Result<()> {
             "exec_command_cmd": "cargo test --lib",
             "raw_output": "test result: ok",
             "local_path": "/tmp/output.txt",
-            "artifact_ref": "artifact://test-output",
+            "artifact_ref": "artifact://test-output"
         }),
     ))?;
 
@@ -701,7 +701,7 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
             "has_text": true,
             "has_tool_calls": true,
             "raw_text": "full assistant text included in operator replay",
-            "provider_trace": { "detail": "debug-info" },
+            "provider_trace": { "detail": "debug-info" }
         }),
     ))?;
 
@@ -779,7 +779,7 @@ pub async fn events_stream_preserves_raw_payload_with_control_auth() -> Result<(
             "workspace_anchor": "/repo/holon",
             "execution_root": "/repo/holon/worktree",
             "projection_kind": "worktree",
-            "access_mode": "shared_read",
+            "access_mode": "shared_read"
         }),
     ))?;
 
@@ -824,7 +824,7 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
             "tool_call_count": 1,
             "has_text": false,
             "has_tool_calls": true,
-            "raw_text": "debug-only assistant body",
+            "raw_text": "debug-only assistant body"
         }),
     ))?;
 
@@ -856,7 +856,7 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
         serde_json::json!({
             "agent_id": "default",
             "tool_name": "ReadFile",
-            "task_id": "task-tail",
+            "task_id": "task-tail"
         }),
     ))?;
 

@@ -1614,7 +1614,6 @@ mod tests {
             .upsert(&ExternalTriggerRecord {
                 external_trigger_id: "legacy-work-item-trigger".into(),
                 target_agent_id: "default".into(),
-                waiting_intent_id: None,
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
                 trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),

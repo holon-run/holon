@@ -33,8 +33,8 @@ use holon::{
         MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
-        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitingIntentStatus, WaitingReason, WorkItemState, WorkspaceProjectionMetadata,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingReason,
+        WorkItemState, WorkspaceProjectionMetadata,
     },
 };
 use serde_json::json;
