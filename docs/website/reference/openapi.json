@@ -1066,13 +1066,6 @@
               "id": {
                 "type": "string"
               },
-              "legacy_inline_plan": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "writeOnly": true
-              },
               "objective": {
                 "type": "string"
               },
@@ -1312,13 +1305,6 @@
               },
               "id": {
                 "type": "string"
-              },
-              "legacy_inline_plan": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "writeOnly": true
               },
               "objective": {
                 "type": "string"
@@ -4361,13 +4347,6 @@
           },
           "id": {
             "type": "string"
-          },
-          "legacy_inline_plan": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "writeOnly": true
           },
           "objective": {
             "type": "string"

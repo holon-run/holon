@@ -40,10 +40,7 @@ pub(crate) fn ensure_plan_artifact(
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let body = initial_plan
-            .or(record.legacy_inline_plan.as_deref())
-            .unwrap_or_default()
-            .as_bytes();
+        let body = initial_plan.unwrap_or_default().as_bytes();
         fs::write(&path, body).with_context(|| format!("failed to write {}", path.display()))?;
     }
     describe_plan_artifact(&path, &record.agent_id, &record.id)
@@ -54,9 +51,8 @@ pub(crate) fn refresh_plan_artifact_metadata(
     record: &mut WorkItemRecord,
 ) -> Result<bool> {
     let previous = record.plan_artifact.clone();
-    let had_inline_plan = record.legacy_inline_plan.is_some();
     let path = plan_path(agent_home, &record.id);
-    if !path.exists() && record.legacy_inline_plan.is_none() && record.plan_artifact.is_some() {
+    if !path.exists() && record.plan_artifact.is_some() {
         anyhow::bail!(
             "missing plan artifact {} for work item {}",
             path.display(),
@@ -64,9 +60,8 @@ pub(crate) fn refresh_plan_artifact_metadata(
         );
     }
     let artifact = ensure_plan_artifact(agent_home, record, None)?;
-    record.legacy_inline_plan = None;
     record.plan_artifact = Some(artifact);
-    Ok(had_inline_plan || record.plan_artifact != previous)
+    Ok(record.plan_artifact != previous)
 }
 
 pub(crate) fn describe_plan_artifact(
