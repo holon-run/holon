@@ -1339,14 +1339,19 @@ impl QueueEntryRepository<'_> {
     /// Returns only entries currently queued for a specific agent.
     pub fn queued_for_agent(&self, agent_id: &str) -> Result<Vec<QueueEntryRecord>> {
         let connection = self.db.connection()?;
-        let status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
+        let queued_status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
+        let interrupted_status =
+            enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
         let mut statement = connection.prepare(
             "SELECT payload_json
              FROM queue_entries
-             WHERE agent_id = ?1 AND status = ?2
+             WHERE agent_id = ?1 AND status IN (?2, ?3)
              ORDER BY updated_at DESC, created_at DESC, message_id ASC",
         )?;
-        let rows = statement.query_map(params![agent_id, status], |row| row.get::<_, String>(0))?;
+        let rows = statement.query_map(
+            params![agent_id, queued_status, interrupted_status],
+            |row| row.get::<_, String>(0),
+        )?;
         let mut records: Vec<_> = rows
             .map(|row| decode_queue_entry_payload(&row?))
             .collect::<Result<_>>()?;

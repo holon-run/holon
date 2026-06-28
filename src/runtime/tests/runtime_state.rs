@@ -1855,7 +1855,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
     let queue_entries = runtime.storage().latest_queue_entries().unwrap();
     assert!(queue_entries
         .iter()
-        .any(|entry| entry.status == QueueEntryStatus::Aborted));
+        .any(|entry| entry.status == QueueEntryStatus::Interrupted));
     let events = runtime.all_events().unwrap();
     assert!(events
         .iter()

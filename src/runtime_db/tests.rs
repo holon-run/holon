@@ -1127,6 +1127,56 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn queued_for_agent_includes_interrupted_entries() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+
+        let queued_entry = QueueEntryRecord {
+            message_id: "msg-queued".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let interrupted_entry = QueueEntryRecord {
+            message_id: "msg-interrupted".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: now + chrono::Duration::seconds(1),
+            updated_at: now + chrono::Duration::seconds(1),
+        };
+        let aborted_entry = QueueEntryRecord {
+            message_id: "msg-aborted".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Aborted,
+            created_at: now + chrono::Duration::seconds(2),
+            updated_at: now + chrono::Duration::seconds(2),
+        };
+
+        db.queue_entries().upsert(&queued_entry)?;
+        db.queue_entries().upsert(&interrupted_entry)?;
+        db.queue_entries().upsert(&aborted_entry)?;
+
+        let entries = db.queue_entries().queued_for_agent("agent-a")?;
+        let message_ids: Vec<_> = entries.iter().map(|e| e.message_id.as_str()).collect();
+        assert!(message_ids.contains(&"msg-queued"), "Queued entry should be included");
+        assert!(
+            message_ids.contains(&"msg-interrupted"),
+            "Interrupted entry should be included for recovery replay"
+        );
+        assert!(
+            !message_ids.contains(&"msg-aborted"),
+            "Aborted entry should NOT be included"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn runtime_db_foreign_keys_are_enabled_per_connection() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
