@@ -85,9 +85,6 @@ pub struct AppStorage {
     queue_entries_path: PathBuf,
     wait_conditions_path: PathBuf,
     external_triggers_path: PathBuf,
-    operator_notifications_path: PathBuf,
-    operator_transport_bindings_path: PathBuf,
-    operator_delivery_records_path: PathBuf,
     context_episodes_path: PathBuf,
     workspaces_path: PathBuf,
     occupancies_path: PathBuf,
@@ -311,9 +308,6 @@ impl AppStorage {
             queue_entries_path: ledger_dir.join("queue_entries.jsonl"),
             wait_conditions_path: ledger_dir.join("wait_conditions.jsonl"),
             external_triggers_path: ledger_dir.join("external_triggers.jsonl"),
-            operator_notifications_path: ledger_dir.join("operator_notifications.jsonl"),
-            operator_transport_bindings_path: ledger_dir.join("operator_transport_bindings.jsonl"),
-            operator_delivery_records_path: ledger_dir.join("operator_delivery_records.jsonl"),
             context_episodes_path: ledger_dir.join("context_episodes.jsonl"),
             workspaces_path: ledger_dir.join("workspaces.jsonl"),
             occupancies_path: ledger_dir.join("workspace_occupancies.jsonl"),
@@ -756,18 +750,42 @@ impl AppStorage {
     }
 
     pub fn append_operator_notification(&self, record: &OperatorNotificationRecord) -> Result<()> {
-        self.append_jsonl(&self.operator_notifications_path, record)
+        let runtime_db = self.scheduler_control_plane_db()?.ok_or_else(|| {
+            anyhow::anyhow!("runtime db is required for operator_notification persistence")
+        })?;
+        let agent_id = self.current_agent_id()?.ok_or_else(|| {
+            anyhow::anyhow!("agent_id is required for operator_notification persistence")
+        })?;
+        runtime_db
+            .operator_notifications()
+            .insert(&agent_id, record)
     }
 
     pub fn append_operator_transport_binding(
         &self,
         record: &OperatorTransportBinding,
     ) -> Result<()> {
-        self.append_jsonl(&self.operator_transport_bindings_path, record)
+        let runtime_db = self.scheduler_control_plane_db()?.ok_or_else(|| {
+            anyhow::anyhow!("runtime db is required for operator_transport_binding persistence")
+        })?;
+        let agent_id = self.current_agent_id()?.ok_or_else(|| {
+            anyhow::anyhow!("agent_id is required for operator_transport_binding persistence")
+        })?;
+        runtime_db
+            .operator_transport_bindings()
+            .upsert(&agent_id, record)
     }
 
     pub fn append_operator_delivery_record(&self, record: &OperatorDeliveryRecord) -> Result<()> {
-        self.append_jsonl(&self.operator_delivery_records_path, record)
+        let runtime_db = self.scheduler_control_plane_db()?.ok_or_else(|| {
+            anyhow::anyhow!("runtime db is required for operator_delivery_record persistence")
+        })?;
+        let agent_id = self.current_agent_id()?.ok_or_else(|| {
+            anyhow::anyhow!("agent_id is required for operator_delivery_record persistence")
+        })?;
+        runtime_db
+            .operator_delivery_records()
+            .upsert(&agent_id, record)
     }
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
@@ -1718,21 +1736,42 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<OperatorNotificationRecord>> {
-        read_recent_jsonl(&self.operator_notifications_path, limit)
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .operator_notifications()
+                    .read_recent_for_agent(&agent_id, limit);
+            }
+        }
+        Ok(Vec::new())
     }
 
     pub fn read_recent_operator_transport_bindings(
         &self,
         limit: usize,
     ) -> Result<Vec<OperatorTransportBinding>> {
-        read_recent_jsonl(&self.operator_transport_bindings_path, limit)
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .operator_transport_bindings()
+                    .read_recent_for_agent(&agent_id, limit);
+            }
+        }
+        Ok(Vec::new())
     }
 
     pub fn read_recent_operator_delivery_records(
         &self,
         limit: usize,
     ) -> Result<Vec<OperatorDeliveryRecord>> {
-        read_recent_jsonl(&self.operator_delivery_records_path, limit)
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .operator_delivery_records()
+                    .read_recent_for_agent(&agent_id, limit);
+            }
+        }
+        Ok(Vec::new())
     }
 
     pub fn read_recent_context_episodes(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
@@ -2723,21 +2762,25 @@ impl AppStorage {
     }
 
     pub fn latest_operator_transport_bindings(&self) -> Result<Vec<OperatorTransportBinding>> {
-        let records = self.read_recent_operator_transport_bindings(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.binding_id.clone(), record);
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .operator_transport_bindings()
+                    .latest_for_agent(&agent_id);
+            }
         }
-        Ok(latest.into_values().collect())
+        Ok(Vec::new())
     }
 
     pub fn latest_operator_delivery_records(&self) -> Result<Vec<OperatorDeliveryRecord>> {
-        let records = self.read_recent_operator_delivery_records(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.delivery_intent_id.clone(), record);
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .operator_delivery_records()
+                    .latest_for_agent(&agent_id);
+            }
         }
-        Ok(latest.into_values().collect())
+        Ok(Vec::new())
     }
 
     pub fn latest_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {

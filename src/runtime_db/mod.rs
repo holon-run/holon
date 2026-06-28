@@ -32,7 +32,8 @@ pub use crate::runtime_db::storage_domain::{
 };
 pub use crate::runtime_db::types::{
     AgentIdentityRepository, AgentStateRepository, AuditEventSink, ContextEpisodeRepository,
-    EvidenceRepository, ExternalTriggerRepository, MessageRepository, QueueEntryRepository,
+    EvidenceRepository, ExternalTriggerRepository, MessageRepository, OperatorDeliveryRepository,
+    OperatorNotificationRepository, OperatorTransportBindingRepository, QueueEntryRepository,
     TaskRepository, TimerRepository, TranscriptRepository, TurnRecordRepository,
     WaitConditionRepository, WorkItemContinuationRepository, WorkItemDelegationRepository,
     WorkItemRepository, WorkspaceEntryRepository, WorkspaceOccupancyRepository,
@@ -260,6 +261,18 @@ impl RuntimeDb {
 
     pub fn context_episodes(&self) -> ContextEpisodeRepository<'_> {
         ContextEpisodeRepository { db: self }
+    }
+
+    pub fn operator_notifications(&self) -> OperatorNotificationRepository<'_> {
+        OperatorNotificationRepository { db: self }
+    }
+
+    pub fn operator_transport_bindings(&self) -> OperatorTransportBindingRepository<'_> {
+        OperatorTransportBindingRepository { db: self }
+    }
+
+    pub fn operator_delivery_records(&self) -> OperatorDeliveryRepository<'_> {
+        OperatorDeliveryRepository { db: self }
     }
 
     pub fn runtime_index_outbox(&self) -> RuntimeIndexOutboxRepository<'_> {
