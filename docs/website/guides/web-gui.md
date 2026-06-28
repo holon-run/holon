@@ -35,6 +35,9 @@ The Dashboard provides a runtime overview:
 - **Agent roster** — all agents with their status (Awake, Asleep, Booting),
   pending message counts, and current model.
 - **Runtime health** — scheduler posture, wake hints, and recent activity.
+- **Task list** — click a task to open its detail panel showing status,
+  command, workdir, and output. Task events (creation, status updates,
+  completion) refresh the list in real time.
 - **Quick actions** — create agents, attach workspaces, and view agent detail.
 
 ### Agent Conversation
@@ -82,7 +85,33 @@ The Skill Management page is available at `/app/skills` in the Web GUI.
 It is also accessible from the navigation sidebar when the daemon is
 running with the embedded GUI.
 
+Skill installation through the Web GUI is **non-blocking** — when you
+add a skill via the browser, the install runs as a background job (see
+[Job API](#job-monitoring)). A progress indicator shows the current
+status, and the job state persists in localStorage so you can track it
+across page reloads.
+
 For CLI-based skill management, see [Skills Guide](/guides/skills.md).
+
+### Workspace File Browser
+
+The Web GUI includes a workspace file browser accessible from the left
+sidebar when a workspace is attached:
+
+- **Directory tree** — Navigate workspace directories in a collapsible
+  tree view with expand/collapse for subdirectories.
+- **File preview** — Click a file to preview its content in the main
+  panel. Text files render inline with syntax highlighting; binary and
+  image files display metadata and a download link.
+- **Resizable panels** — Drag the divider between the file tree and
+  content panel to adjust the layout.
+- **Dedicated file viewer page** — Open files in a full-page viewer for
+  a larger reading surface, accessible via the file tree context menu.
+
+The file browser uses the workspace file browsing API
+(`GET /workspaces/{id}/files` and `GET /workspaces/{id}/files/{path}`).
+Path traversal and symlink escapes are blocked; file reads are capped
+at 1 MB.
 
 ### Settings
 
@@ -91,7 +120,10 @@ Configure Holon from the browser:
 - **Model settings** — view and change the default model, override per-agent
   models, and set reasoning effort.
 - **API keys** — add or update provider credentials (API keys) through the
-  credential store without editing JSON files.
+  credential store without editing JSON files. The settings page
+  automatically determines the right credential method for each provider
+  (API key input for api_key providers, device login link for OAuth
+  providers like Codex).
 - **Runtime configuration** — view the current execution environment,
   attached workspaces, and policy snapshot.
 
@@ -104,6 +136,10 @@ When viewing an agent or the Dashboard, the right panel shows:
 - **Token usage** — cumulative and per-turn token consumption.
 - **Active children** — spawned child agents and their status.
 - **Tool latency** — per-tool call count and total duration.
+
+The right panel also hosts contextual detail views. For example, clicking
+a task in the Dashboard opens a **Task Detail** panel showing status,
+kind, command, workdir, and output right alongside the main view.
 
 ## Remote Access
 
@@ -162,6 +198,15 @@ grouped by phase:
 Each metric includes `count`, `total_ms`, `max_ms`, and `avg_ms`. Use this to
 diagnose slow turns, identify expensive tools, or track provider latency over
 time.
+
+### Job Monitoring
+
+Long-running operations such as skill installation run as tracked jobs:
+
+- **Job list** — View active and recent jobs with status, phase, and
+  progress at `/app/jobs`.
+- **Job detail** — Click a job to see progress items, result summary,
+  and timestamps.
 
 ## See Also
 

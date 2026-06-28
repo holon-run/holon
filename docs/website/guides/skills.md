@@ -112,6 +112,17 @@ holon skills reconcile
 holon skills reconcile my-skill
 ```
 
+#### Update skills from remote sources
+
+```bash
+holon skills update
+```
+
+Fetches remote skill sources and compares against the lock file
+(`.skill-lock.json`). Skills that have changed upstream are downloaded
+and updated. The update preserves the npx `skills` v3 lock format
+(source, subdir, mode, etag) for interoperability.
+
 ### Agent Skills (per-agent)
 
 Once a skill is in the library, enable it for a specific agent:
@@ -170,6 +181,7 @@ holon skills disable my-skill --agent reviewer
 | Layer | Command | Purpose |
 |-------|---------|---------|
 | Library | `holon skills catalog` | List library catalog |
+| Library | `holon skills update` | Fetch and update skills from remote sources |
 | Library | `holon skills refresh` | Refresh runtime catalog by rescanning local roots |
 | Library | `holon skills add <source>` | Add a skill to the library |
 | Library | `holon skills remove <name>` | Remove from the library |
@@ -194,6 +206,7 @@ The HTTP control plane separates library and agent operations:
 | `POST` | `/api/skills/catalog/remove` | Remove from the library |
 | `POST` | `/api/skills/catalog/reconcile` | Reconcile with lock file |
 | `POST` | `/api/skills/catalog/check` | Check consistency |
+| `POST` | `/api/skills/_update` | Update skills from remote sources |
 
 ### Agent endpoints
 
@@ -207,6 +220,13 @@ The HTTP control plane separates library and agent operations:
 > `POST /control/agents/:agent_id/skills/uninstall` remain for
 > compatibility but are superseded by enable/disable and
 > add/remove.
+
+### Non-blocking install jobs
+
+When a skill is installed through the HTTP API (e.g., from the Web
+GUI), the install runs as a background job instead of blocking the
+request. Job progress is available at `GET /api/jobs/{job_id}` and
+persists across page reloads via localStorage.
 
 ## TUI integration
 
