@@ -551,6 +551,9 @@ export function App() {
           onBrowseFiles={(workspaceId: string, executionRootId?: string) => {
             showFileBrowser(selectedAgent.id, workspaceId, undefined, executionRootId);
           }}
+          onOpenPlanFile={(workspaceId: string, filePath: string) => {
+            showFileBrowser(selectedAgent.id, workspaceId, undefined, undefined, filePath);
+          }}
           onClose={() => setRightPanelOpen(false)}
         />
       ) : null}

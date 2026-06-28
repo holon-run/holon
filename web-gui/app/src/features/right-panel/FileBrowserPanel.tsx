@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createHighlighter, type Highlighter } from "shiki";
 
 import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtime/types";
@@ -7,6 +7,7 @@ import { useRuntimeStore } from "../../runtime/runtime-store";
 interface FileBrowserPanelProps {
   workspaceId: string;
   executionRootId?: string;
+  initialFilePath?: string;
   initialPath?: string;
 }
 
@@ -127,17 +128,20 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
   return highlighted;
 }
 
-export function FileBrowserPanel({ workspaceId, executionRootId, initialPath }: FileBrowserPanelProps) {
+export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath }: FileBrowserPanelProps) {
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
   const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
 
-  const [currentPath, setCurrentPath] = useState(initialPath ?? "");
+  const effectiveInitialPath =
+    initialPath ?? (initialFilePath ? initialFilePath.split("/").slice(0, -1).join("/") : "");
+  const [currentPath, setCurrentPath] = useState(effectiveInitialPath);
   const [listing, setListing] = useState<WorkspaceDirectoryListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const autoOpenedRef = useRef(false);
 
   const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
 
@@ -160,8 +164,18 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath }: 
   );
 
   useEffect(() => {
-    void loadDir(initialPath ?? "");
-  }, [loadDir, initialPath]);
+    void loadDir(effectiveInitialPath);
+  }, [loadDir, effectiveInitialPath]);
+
+  // Auto-open the initial file after the directory listing loads.
+  useEffect(() => {
+    if (!listing || !initialFilePath || autoOpenedRef.current) return;
+    const fileName = initialFilePath.split("/").pop();
+    const entry = listing.entries.find((e) => e.name === fileName);
+    if (!entry) return;
+    autoOpenedRef.current = true;
+    void openEntry(entry);
+  }, [listing, initialFilePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const breadcrumbParts = currentPath.split("/").filter(Boolean);
 

@@ -79,6 +79,7 @@ export interface WorkItemPlanArtifactSummary {
   path?: string;
   relativePath?: string;
   workspaceAlias?: string;
+  workspaceId?: string;
   preview?: string;
   previewComplete?: boolean;
   updatedAt?: string;
@@ -478,6 +479,7 @@ export type RightPanelView =
       agentId: string;
       workspaceId: string;
       executionRootId?: string;
+      initialFilePath?: string;
       initialPath?: string;
     };
 
