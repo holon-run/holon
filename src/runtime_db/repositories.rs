@@ -1326,10 +1326,11 @@ impl QueueEntryRepository<'_> {
     pub fn has_queued_for_agent(&self, agent_id: &str) -> Result<bool> {
         let connection = self.db.connection()?;
         let status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
+        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
         let exists: Option<i64> = connection
             .query_row(
-                "SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status = ?2 LIMIT 1",
-                params![agent_id, status],
+                "SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status IN (?2, ?3) LIMIT 1",
+                params![agent_id, status, interrupted_status],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
@@ -2874,6 +2875,7 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
 
 fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<bool> {
     let queued_status = enum_string(&QueueEntryStatus::Queued)?;
+    let interrupted_status = enum_string(&QueueEntryStatus::Interrupted)?;
     let mut claimed = record.clone();
     claimed.status = QueueEntryStatus::Dequeued;
     let payload_json = serde_json::to_string(&claimed)?;
@@ -2888,7 +2890,7 @@ fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) 
              payload_json = ?7
          WHERE message_id = ?1
            AND agent_id = ?2
-           AND status = ?8",
+           AND status IN (?8, ?9)",
         params![
             claimed.message_id,
             claimed.agent_id,
@@ -2898,6 +2900,7 @@ fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) 
             timestamp(claimed.updated_at),
             payload_json,
             queued_status,
+            interrupted_status,
         ],
     )?;
     Ok(changed == 1)

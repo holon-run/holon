@@ -1180,6 +1180,39 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn try_claim_succeeds_for_interrupted_entry() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+
+        let record = QueueEntryRecord {
+            message_id: "msg-interrupted".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&record)?;
+
+        // An Interrupted entry must be claimable, otherwise recovery would
+        // silently drop it. See PR #2052 review feedback.
+        assert!(db.queue_entries().has_queued_for_agent("agent-a")?);
+        let mut claim = record.clone();
+        claim.status = QueueEntryStatus::Dequeued;
+        claim.updated_at = now + chrono::Duration::seconds(1);
+        assert!(
+            db.queue_entries().try_claim_queued_message(&claim)?,
+            "Interrupted entry should be claimable for replay"
+        );
+        assert_eq!(
+            db.queue_entries().latest_all()?[0].status,
+            QueueEntryStatus::Dequeued
+        );
+        Ok(())
+    }
+
+    #[test]
     fn runtime_db_foreign_keys_are_enabled_per_connection() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
