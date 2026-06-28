@@ -131,6 +131,8 @@ struct ApiResponseBlock {
     id: Option<String>,
     name: Option<String>,
     input: Option<Value>,
+    tool_use_id: Option<String>,
+    content: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -1528,7 +1530,7 @@ fn warn_unsupported_anthropic_response_block(
 ) {
     if matches!(
         block.kind.as_str(),
-        "text" | "tool_use" | "thinking" | "redacted_thinking"
+        "text" | "tool_use" | "thinking" | "redacted_thinking" | "server_tool_use" | "tool_result"
     ) {
         return;
     }
@@ -1610,6 +1612,37 @@ fn api_response_block_to_model(
         "redacted_thinking" => Some(ModelBlock::RedactedThinking {
             data: block.data.unwrap_or_default(),
         }),
+        // Anthropic server-side tool use (e.g. web search). This is a server-
+        // internal block that doesn't need to be stored or replayed.
+        "server_tool_use" => None,
+        // Anthropic server-side tool result (e.g. web search results) returned
+        // in the assistant response `content` array. This is distinct from
+        // client-side tool_result blocks in user messages, handled separately.
+        // Convert to Text so the content is preserved in subsequent turns.
+        "tool_result" => {
+            let text = match block.content {
+                Some(Value::String(s)) => s,
+                Some(Value::Array(arr)) => {
+                    // Anthropic tool_result content is an array of content blocks.
+                    // Extract text blocks and concatenate.
+                    arr.iter()
+                        .filter_map(|v| {
+                            v.get("text")
+                                .and_then(|t| t.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+                Some(other) => other.to_string(),
+                None => String::new(),
+            };
+            if text.is_empty() {
+                None
+            } else {
+                Some(ModelBlock::Text { text })
+            }
+        }
         _ => None,
     }
 }
@@ -2250,6 +2283,7 @@ mod tests {
             id: None,
             name: None,
             input: None,
+            ..Default::default()
         };
 
         let model_block =
@@ -2281,6 +2315,7 @@ mod tests {
             id: None,
             name: None,
             input: None,
+            ..Default::default()
         }];
 
         assert!(anthropic_response_has_text_form_tool_call_violation(
@@ -2314,6 +2349,7 @@ mod tests {
             id: None,
             name: None,
             input: None,
+            ..Default::default()
         }];
 
         assert!(anthropic_response_has_text_form_tool_call_violation(
@@ -2335,6 +2371,7 @@ mod tests {
                 id: None,
                 name: None,
                 input: None,
+                ..Default::default()
             },
             ApiResponseBlock {
                 kind: "tool_use".to_string(),
@@ -2345,6 +2382,7 @@ mod tests {
                 id: Some("toolu_1".to_string()),
                 name: Some("ExecCommand".to_string()),
                 input: Some(json!({ "cmd": "echo ok" })),
+                ..Default::default()
             },
         ];
 
@@ -3128,6 +3166,7 @@ mod tests {
             id: Some("toolu_1".to_string()),
             name: Some("structured_response_answer_v1".to_string()),
             input: Some(json!({ "answer": "ok" })),
+            ..Default::default()
         };
 
         let model_block = api_response_block_to_model(block, Some("structured_response_answer_v1"))
@@ -3195,5 +3234,52 @@ mod tests {
     fn reasoning_effort_to_thinking_skips_when_too_small() {
         // max_output_tokens = 1024 → max_tokens - 1 = 1023 < 1024 min → skip
         assert!(reasoning_effort_to_thinking(&Some("high".into()), 1024).is_none());
+    }
+
+    #[test]
+    fn api_response_block_tool_result_converts_to_text() {
+        let block = ApiResponseBlock {
+            kind: "tool_result".to_string(),
+            tool_use_id: Some("srv_001".to_string()),
+            content: Some(json!([{
+                "type": "text",
+                "text": "Search results: Rust is awesome."
+            }])),
+            ..Default::default()
+        };
+        let model = api_response_block_to_model(block, None);
+        assert!(
+            matches!(&model, Some(ModelBlock::Text { text }) if text.contains("Search results: Rust is awesome.")),
+            "tool_result should convert to Text preserving content, got: {model:?}"
+        );
+    }
+
+    #[test]
+    fn api_response_block_server_tool_use_returns_none() {
+        let block = ApiResponseBlock {
+            kind: "server_tool_use".to_string(),
+            id: Some("srv_search_1".to_string()),
+            name: Some("web_search".to_string()),
+            input: Some(json!({"query": "rust async"})),
+            ..Default::default()
+        };
+        let model = api_response_block_to_model(block, None);
+        assert!(
+            model.is_none(),
+            "server_tool_use should return None (server-side only), got: {model:?}"
+        );
+    }
+
+    #[test]
+    fn warn_unsupported_silent_for_server_tool_blocks() {
+        // These types are handled, so warn_unsupported should return early (no warn!).
+        for kind in &["server_tool_use", "tool_result"] {
+            let block = ApiResponseBlock {
+                kind: kind.to_string(),
+                ..Default::default()
+            };
+            // The function returns () — if it doesn't panic/warn, we're good.
+            warn_unsupported_anthropic_response_block(&block, "test", "model", 0, None, false);
+        }
     }
 }

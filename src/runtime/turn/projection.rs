@@ -350,6 +350,95 @@ pub(super) fn degraded_round_messages(
     (messages, trimmed)
 }
 
+/// Check if two rounds contain identical tool calls (same name + input, ignoring id).
+fn rounds_have_identical_tool_calls(a: &TurnRoundRecord, b: &TurnRoundRecord) -> bool {
+    let extract = |round: &TurnRoundRecord| -> Vec<(String, serde_json::Value)> {
+        round
+            .assistant_blocks
+            .iter()
+            .filter_map(|block| match block {
+                ModelBlock::ToolUse { name, input, .. } => Some((name.clone(), input.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let a_tools = extract(a);
+    let b_tools = extract(b);
+    !a_tools.is_empty() && a_tools == b_tools
+}
+
+/// Fold consecutive identical tool-call rounds, keeping only the last one
+/// in each group and replacing earlier rounds with a summary marker.
+/// Returns a projection outcome if folding brings the conversation under budget.
+fn fold_repeated_tool_call_rounds(
+    prompt_frame: &ProviderPromptFrame,
+    runtime_reminder: Option<&str>,
+    rounds: &[TurnRoundRecord],
+    effective_budget_estimated_tokens: usize,
+    tool_overhead_estimated_tokens: usize,
+) -> Option<TurnLocalProjectionOutcome> {
+    // Detect if there are any consecutive identical rounds to fold.
+    let has_repeats = rounds
+        .windows(2)
+        .any(|w| rounds_have_identical_tool_calls(&w[0], &w[1]));
+    if !has_repeats {
+        return None;
+    }
+
+    let mut conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    push_runtime_reminder_message(&mut conversation, runtime_reminder);
+
+    let mut folded_count = 0usize;
+    let mut skip_count = 0usize;
+    for (i, round) in rounds.iter().enumerate() {
+        if i + 1 < rounds.len() && rounds_have_identical_tool_calls(round, &rounds[i + 1]) {
+            skip_count += 1;
+            folded_count += 1;
+            continue;
+        }
+        if skip_count > 0 {
+            conversation.push(ConversationMessage::UserText(format!(
+                "[runtime: {skip_count} repeated identical tool call round(s) omitted]"
+            )));
+            skip_count = 0;
+        }
+        conversation.extend(exact_round_messages(round));
+    }
+    if skip_count > 0 {
+        conversation.push(ConversationMessage::UserText(format!(
+            "[runtime: {skip_count} repeated identical tool call round(s) omitted]"
+        )));
+    }
+
+    let projected_estimated_tokens = estimate_projection_tokens(prompt_frame, &conversation);
+    if projected_estimated_tokens > effective_budget_estimated_tokens {
+        return None; // Folding wasn't enough; fall through to more aggressive compaction.
+    }
+
+    Some(TurnLocalProjectionOutcome::Projection(
+        TurnLocalProjection {
+            conversation,
+            compaction: Some(TurnLocalCompactionStats {
+                compacted_rounds: folded_count,
+                exact_tail_rounds: rounds.len().saturating_sub(folded_count),
+                projected_estimated_tokens,
+                effective_budget_estimated_tokens,
+                tool_overhead_estimated_tokens,
+                strict_fallback_applied: false,
+                checkpoint_request_id: None,
+                checkpoint_mode: None,
+                checkpoint_anchor_generation: None,
+                checkpoint_base_round: None,
+                previous_checkpoint_round: None,
+                anchor_changed_since_checkpoint: false,
+                last_round_degraded: false,
+            }),
+        },
+    ))
+}
+
 pub(super) fn select_exact_tail_start(
     rounds: &[TurnRoundRecord],
     keep_recent_budget: usize,
@@ -509,6 +598,18 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             conversation: exact_conversation,
             compaction: None,
         });
+    }
+
+    // Try folding consecutive identical tool-call rounds before more aggressive compaction.
+    let folded = fold_repeated_tool_call_rounds(
+        prompt_frame,
+        runtime_reminder,
+        rounds,
+        effective_budget_estimated_tokens,
+        tool_overhead_estimated_tokens,
+    );
+    if let Some(outcome) = folded {
+        return outcome;
     }
 
     let minimum_exact_round_estimated_tokens =

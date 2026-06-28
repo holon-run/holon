@@ -2774,3 +2774,76 @@ fn append_follow_up_user_texts_extends_and_recalculates_tokens() {
         "tokens should increase after adding follow-up texts"
     );
 }
+
+#[test]
+fn fold_repeated_tool_call_rounds_collapses_identical_rounds() {
+    // Three rounds with identical tool calls (same name + input, different ids).
+    let rounds = vec![
+        fixture_round_with_tool(
+            1,
+            &"checking ".repeat(50),
+            "ExecCommand",
+            serde_json::json!({"cmd": "gh pr checks"}),
+        ),
+        fixture_round_with_tool(
+            2,
+            &"checking ".repeat(50),
+            "ExecCommand",
+            serde_json::json!({"cmd": "gh pr checks"}),
+        ),
+        fixture_round_with_tool(
+            3,
+            &"checking ".repeat(50),
+            "ExecCommand",
+            serde_json::json!({"cmd": "gh pr checks"}),
+        ),
+    ];
+    let prompt_frame = fixture_prompt_frame();
+
+    // Build the exact conversation to find its token count.
+    let mut exact_conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    for round in &rounds {
+        exact_conversation.extend(exact_round_messages(round));
+    }
+    let exact_tokens = estimate_projection_tokens(&prompt_frame, &exact_conversation);
+
+    // Set a budget that is exceeded by the exact conversation but not by the folded one.
+    // The folded conversation replaces 2 of 3 rounds with a short marker.
+    let tight_budget = exact_tokens.saturating_sub(50) + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+
+    let projection = build_turn_local_projection(
+        &prompt_frame,
+        &rounds,
+        &[],
+        &TurnLocalCheckpointState::default(),
+        Some("req-fold".into()),
+        tight_budget,
+        120,
+    );
+
+    let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+        panic!("expected projection outcome, not baseline over budget");
+    };
+
+    // Folding should have triggered compaction.
+    let compaction = projection
+        .compaction
+        .as_ref()
+        .expect("compaction stats should be present after folding");
+    assert!(
+        compaction.compacted_rounds >= 2,
+        "expected at least 2 rounds folded, got {}",
+        compaction.compacted_rounds
+    );
+
+    // The folded conversation should contain the omission marker.
+    let has_marker = projection.conversation.iter().any(|msg| {
+        matches!(msg, ConversationMessage::UserText(t) if t.contains("repeated identical tool call round(s) omitted"))
+    });
+    assert!(
+        has_marker,
+        "folded conversation should contain omission marker"
+    );
+}
