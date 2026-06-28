@@ -90,6 +90,7 @@ pub(crate) fn build_candidate(
                 &config.home_dir,
                 openai_compaction_policy,
                 resolved_policy.verbosity,
+                resolved_policy.capabilities.supports_reasoning,
             )?,
         ),
         ProviderTransportKind::OpenAiResponses => {
@@ -107,6 +108,7 @@ pub(crate) fn build_candidate(
                 &model_ref.model,
                 max_output_tokens,
                 &config.home_dir,
+                resolved_policy.capabilities.supports_reasoning,
             )?)
         }
         ProviderTransportKind::OpenAiChatCompletions => {

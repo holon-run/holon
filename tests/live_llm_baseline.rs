@@ -212,6 +212,7 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
         &live_anthropic_model(),
         runtime_max_output_tokens,
         trace_home_dir.path(),
+        true,
     )?;
     let frame = anthropic_cache_frame();
 

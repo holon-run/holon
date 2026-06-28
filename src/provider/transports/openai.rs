@@ -73,6 +73,7 @@ pub struct OpenAiCodexProvider {
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
+    supports_reasoning: bool,
     verbosity: Option<ModelVerbosity>,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
@@ -319,6 +320,7 @@ impl OpenAiCodexProvider {
             &config.home_dir,
             openai_compaction_policy_from_config(config, ProviderId::openai_codex(), model),
             openai_verbosity_from_config(config, ProviderId::openai_codex(), model),
+            false,
         )
     }
 
@@ -327,6 +329,7 @@ impl OpenAiCodexProvider {
         model: &str,
         max_output_tokens: u32,
         trace_home_dir: &Path,
+        supports_reasoning: bool,
     ) -> Result<Self> {
         Self::from_runtime_config_with_compaction_policy(
             provider_config,
@@ -339,6 +342,7 @@ impl OpenAiCodexProvider {
                 max_output_tokens,
             ),
             openai_verbosity_for_model(ProviderId::openai_codex(), model, max_output_tokens),
+            supports_reasoning,
         )
     }
 
@@ -349,6 +353,7 @@ impl OpenAiCodexProvider {
         trace_home_dir: &Path,
         compaction_policy: OpenAiCompactionPolicy,
         verbosity: Option<ModelVerbosity>,
+        supports_reasoning: bool,
     ) -> Result<Self> {
         let client = build_http_client()?;
         let codex_home = provider_config
@@ -372,6 +377,7 @@ impl OpenAiCodexProvider {
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            supports_reasoning,
             verbosity,
             builtin_web_search: provider_config.builtin_web_search.clone(),
             compaction_policy,
@@ -970,7 +976,11 @@ impl AgentProvider for OpenAiCodexProvider {
             &request,
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
-            self.reasoning_effort.as_deref(),
+            if self.supports_reasoning {
+                self.reasoning_effort.as_deref()
+            } else {
+                None
+            },
             self.verbosity,
         )?;
         let mut plan = plan_openai_responses_request(body, &request, &self.continuation, false)?;
@@ -1121,7 +1131,11 @@ impl AgentProvider for OpenAiCodexProvider {
             &probe_request,
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
-            self.reasoning_effort.as_deref(),
+            if self.supports_reasoning {
+                self.reasoning_effort.as_deref()
+            } else {
+                None
+            },
             self.verbosity,
         )?;
         let headers = openai_codex_headers(&credential, &self.originator);
@@ -5155,6 +5169,7 @@ mod tests {
             "gpt-codex-test",
             1024,
             home.path(),
+            true,
         )
         .unwrap();
 
@@ -5224,6 +5239,7 @@ mod tests {
             "gpt-codex-test",
             1024,
             home.path(),
+            true,
         )
         .unwrap();
 
@@ -5296,6 +5312,7 @@ mod tests {
             "gpt-codex-test",
             1024,
             home.path(),
+            true,
         )
         .unwrap();
 

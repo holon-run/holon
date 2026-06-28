@@ -36,6 +36,8 @@ pub struct ModelCapabilityFlags {
     #[serde(default)]
     pub image_input: bool,
     #[serde(default)]
+    pub supports_reasoning: bool,
+    #[serde(default)]
     pub interactive_exec: bool,
 }
 
@@ -48,6 +50,8 @@ pub struct ModelCapabilityOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interactive_exec: Option<bool>,
 }
 
@@ -56,6 +60,7 @@ impl ModelCapabilityOverride {
         self.parallel_tool_calls.is_none()
             && self.reasoning_summaries.is_none()
             && self.image_input.is_none()
+            && self.supports_reasoning.is_none()
             && self.interactive_exec.is_none()
     }
 
@@ -68,6 +73,9 @@ impl ModelCapabilityOverride {
         }
         if let Some(value) = self.image_input {
             base.image_input = value;
+        }
+        if let Some(value) = self.supports_reasoning {
+            base.supports_reasoning = value;
         }
         if let Some(value) = self.interactive_exec {
             base.interactive_exec = value;
@@ -502,6 +510,13 @@ fn catalog_model(
     }
 }
 
+/// Mark a built-in catalog entry as supporting reasoning/thinking parameters.
+/// Only models flagged here will receive reasoning_effort at the transport layer.
+fn with_reasoning(mut entry: BuiltInModelMetadata) -> BuiltInModelMetadata {
+    entry.capabilities.supports_reasoning = true;
+    entry
+}
+
 fn mirror_catalog_models(
     entries: &[BuiltInModelMetadata],
     source_provider: &str,
@@ -538,6 +553,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
@@ -555,6 +571,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
@@ -574,6 +591,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 image_input: true,
                 reasoning_summaries: true,
                 interactive_exec: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
@@ -593,6 +611,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 image_input: true,
                 reasoning_summaries: true,
                 interactive_exec: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
@@ -612,6 +631,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 image_input: true,
                 reasoning_summaries: true,
                 interactive_exec: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
@@ -631,6 +651,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 image_input: true,
                 reasoning_summaries: true,
                 interactive_exec: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
@@ -649,6 +670,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             capabilities: ModelCapabilityFlags {
                 image_input: true,
                 reasoning_summaries: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::ConservativeBuiltin,
@@ -667,6 +689,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             capabilities: ModelCapabilityFlags {
                 image_input: true,
                 reasoning_summaries: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::ConservativeBuiltin,
@@ -685,6 +708,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             capabilities: ModelCapabilityFlags {
                 image_input: true,
                 reasoning_summaries: true,
+                supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::ConservativeBuiltin,
@@ -700,7 +724,7 @@ fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
 
 fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
-        catalog_model(
+        with_reasoning(catalog_model(
             "anthropic",
             "claude-opus-4-7",
             "Claude Opus 4.7",
@@ -708,8 +732,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "anthropic",
             "claude-opus-4-6",
             "Claude Opus 4.6",
@@ -717,8 +741,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "anthropic",
             "claude-opus-4-5",
             "Claude Opus 4.5",
@@ -726,8 +750,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             64_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "anthropic",
             "claude-sonnet-4-5",
             "Claude Sonnet 4.5",
@@ -735,8 +759,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             64_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai-codex",
             "gpt-5.5",
             "GPT-5.5 (Codex)",
@@ -744,8 +768,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai-codex",
             "gpt-5.6-sol",
             "GPT-5.6 Sol (Codex)",
@@ -753,8 +777,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai-codex",
             "gpt-5.6-terra",
             "GPT-5.6 Terra (Codex)",
@@ -762,8 +786,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai-codex",
             "gpt-5.6-luna",
             "GPT-5.6 Luna (Codex)",
@@ -771,8 +795,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai-codex",
             "gpt-5.4-mini",
             "GPT-5.4 Mini (Codex)",
@@ -780,8 +804,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai-codex",
             "gpt-5.2",
             "GPT-5.2 (Codex)",
@@ -789,8 +813,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai",
             "gpt-5.6-sol",
             "GPT-5.6 Sol",
@@ -798,8 +822,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai",
             "gpt-5.6-terra",
             "GPT-5.6 Terra",
@@ -807,8 +831,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
-        catalog_model(
+        )),
+        with_reasoning(catalog_model(
             "openai",
             "gpt-5.6-luna",
             "GPT-5.6 Luna",
@@ -816,7 +840,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
+        )),
         catalog_model("openai", "gpt-5.5", "GPT-5.5", 272_000, 128_000, true, true),
         catalog_model("openai", "gpt-5.2", "GPT-5.2", 272_000, 128_000, true, true),
         catalog_model(
@@ -1035,7 +1059,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        catalog_model(
+        with_reasoning(catalog_model(
             "litellm",
             "claude-opus-4-6",
             "Claude Opus 4.6",
@@ -1043,7 +1067,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        ),
+        )),
         catalog_model(
             "minimax",
             "MiniMax-M3",

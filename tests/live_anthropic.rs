@@ -78,6 +78,7 @@ async fn live_anthropic_builtin_web_search_reports_backend() -> Result<()> {
         &model,
         runtime_max_output_tokens,
         trace_home_dir.path(),
+        true,
     )?;
     let capability = provider
         .builtin_web_search()

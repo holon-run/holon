@@ -62,6 +62,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
         model,
         runtime_max_output_tokens,
         trace_home_dir.path(),
+        true,
     )?;
 
     let tool = ToolSpec {
@@ -204,6 +205,7 @@ async fn provider_builtin_web_search_reports_backend(
         model,
         runtime_max_output_tokens,
         trace_home_dir.path(),
+        true,
     )?;
     let capability = provider.builtin_web_search().with_context(|| {
         format!("{provider_id_text}/{model} did not declare builtin web search")
@@ -300,6 +302,7 @@ async fn live_configured_model_chain_builtin_web_search_support() -> Result<()> 
                     &model_ref.model,
                     config.runtime_max_output_tokens,
                     trace_home_dir.path(),
+                    true,
                 )?)
             }
             ProviderTransportKind::OpenAiResponses => {
@@ -316,6 +319,7 @@ async fn live_configured_model_chain_builtin_web_search_support() -> Result<()> 
                     &model_ref.model,
                     config.runtime_max_output_tokens,
                     trace_home_dir.path(),
+                    true,
                 )?)
             }
             ProviderTransportKind::OpenAiChatCompletions
