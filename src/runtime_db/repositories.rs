@@ -827,6 +827,155 @@ impl ExternalTriggerRepository<'_> {
     }
 }
 
+impl OperatorNotificationRepository<'_> {
+    pub fn insert(&self, agent_id: &str, record: &OperatorNotificationRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| insert_operator_notification_tx(tx, agent_id, record))
+    }
+
+    pub fn read_recent_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<OperatorNotificationRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM operator_notifications
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC, notification_id DESC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_operator_notification_payload(&row?))
+            .collect()
+    }
+}
+
+impl OperatorTransportBindingRepository<'_> {
+    pub fn upsert(&self, agent_id: &str, record: &OperatorTransportBinding) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_operator_transport_binding_tx(tx, agent_id, record))
+    }
+
+    pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<OperatorTransportBinding>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM operator_transport_bindings
+             WHERE target_agent_id = ?1
+             ORDER BY created_at DESC, binding_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_operator_transport_binding_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn read_recent_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<OperatorTransportBinding>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM operator_transport_bindings
+             WHERE target_agent_id = ?1
+             ORDER BY created_at DESC, binding_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_operator_transport_binding_payload(&row?))
+            .collect()
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<OperatorTransportBinding>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM operator_transport_bindings
+             ORDER BY created_at DESC, binding_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_operator_transport_binding_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+}
+
+impl OperatorDeliveryRepository<'_> {
+    pub fn upsert(&self, agent_id: &str, record: &OperatorDeliveryRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_operator_delivery_record_tx(tx, agent_id, record))
+    }
+
+    pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<OperatorDeliveryRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM operator_delivery_records
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC, delivery_intent_id DESC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_operator_delivery_record_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn read_recent_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<OperatorDeliveryRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM operator_delivery_records
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC, delivery_intent_id DESC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_operator_delivery_record_payload(&row?))
+            .collect()
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<OperatorDeliveryRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM operator_delivery_records
+             ORDER BY created_at DESC, delivery_intent_id DESC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_operator_delivery_record_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+}
+
 impl TaskRepository<'_> {
     pub fn import_legacy(&self, records: Vec<TaskRecord>) -> Result<()> {
         if self.db.storage_domain_is_complete("tasks", "db")? {
@@ -2408,6 +2557,77 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
     Ok(())
 }
 
+fn insert_operator_notification_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    record: &OperatorNotificationRecord,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO operator_notifications (
+            notification_id, agent_id, created_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            record.notification_id,
+            agent_id,
+            timestamp(record.created_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_operator_transport_binding_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    record: &OperatorTransportBinding,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let status = enum_string(&record.status)?;
+    tx.execute(
+        "INSERT INTO operator_transport_bindings (
+            binding_id, target_agent_id, status, created_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(binding_id) DO UPDATE SET
+            target_agent_id = excluded.target_agent_id,
+            status = excluded.status,
+            created_at = excluded.created_at,
+            payload_json = excluded.payload_json",
+        params![
+            record.binding_id,
+            agent_id,
+            status,
+            timestamp(record.created_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_operator_delivery_record_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    record: &OperatorDeliveryRecord,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    tx.execute(
+        "INSERT INTO operator_delivery_records (
+            delivery_intent_id, agent_id, created_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(delivery_intent_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            created_at = excluded.created_at,
+            payload_json = excluded.payload_json",
+        params![
+            record.delivery_intent_id,
+            agent_id,
+            timestamp(record.created_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
 fn upsert_work_item_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
@@ -3282,6 +3502,26 @@ pub(crate) fn decode_context_episode_payload(payload: &str) -> Result<ContextEpi
 
 pub(crate) fn decode_external_trigger_payload(payload: &str) -> Result<ExternalTriggerRecord> {
     serde_json::from_str(payload).context("decoding external trigger payload from runtime db")
+}
+
+pub(crate) fn decode_operator_notification_payload(
+    payload: &str,
+) -> Result<OperatorNotificationRecord> {
+    serde_json::from_str(payload).context("decoding operator notification payload from runtime db")
+}
+
+pub(crate) fn decode_operator_transport_binding_payload(
+    payload: &str,
+) -> Result<OperatorTransportBinding> {
+    serde_json::from_str(payload)
+        .context("decoding operator transport binding payload from runtime db")
+}
+
+pub(crate) fn decode_operator_delivery_record_payload(
+    payload: &str,
+) -> Result<OperatorDeliveryRecord> {
+    serde_json::from_str(payload)
+        .context("decoding operator delivery record payload from runtime db")
 }
 
 pub(crate) fn decode_task_payload(payload: &str) -> Result<TaskRecord> {

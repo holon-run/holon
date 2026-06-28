@@ -73,3 +73,15 @@ pub struct WorkItemContinuationRepository<'a> {
 pub struct ContextEpisodeRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }
+
+pub struct OperatorNotificationRepository<'a> {
+    pub(crate) db: &'a RuntimeDb,
+}
+
+pub struct OperatorTransportBindingRepository<'a> {
+    pub(crate) db: &'a RuntimeDb,
+}
+
+pub struct OperatorDeliveryRepository<'a> {
+    pub(crate) db: &'a RuntimeDb,
+}

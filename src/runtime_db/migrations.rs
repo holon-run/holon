@@ -798,6 +798,43 @@ CREATE TABLE IF NOT EXISTS workspace_id_aliases (
 );
 "#,
     },
+    Migration {
+        version: 22,
+        name: "operator_domains",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS operator_notifications (
+  notification_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (notification_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_operator_notifications_agent_created
+  ON operator_notifications(agent_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS operator_transport_bindings (
+  binding_id TEXT PRIMARY KEY,
+  target_agent_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_operator_transport_bindings_agent_status
+  ON operator_transport_bindings(target_agent_id, status);
+
+CREATE TABLE IF NOT EXISTS operator_delivery_records (
+  delivery_intent_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_operator_delivery_records_agent_created
+  ON operator_delivery_records(agent_id, created_at DESC);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
