@@ -187,17 +187,20 @@ Holon supports two OAuth-style flows:
 
 ### OpenAI Codex OAuth
 
-Codex uses the `codex` CLI for OAuth authentication. When onboarding with
-Codex as your provider, the wizard:
+Codex supports two OAuth flows:
 
-1. Opens your browser for OAuth login
-2. Captures the resulting credential from the `codex` CLI's auth store
-3. Stores it as a credential profile
+- **Device OAuth (recommended)** — Holon requests a device code, prints a
+  verification URL and user code. Open the URL in any browser, enter the
+  code, and the daemon automatically polls for completion. The entire flow
+  runs as a background job (see Web GUI Job Monitoring).
+- **Browser OAuth** — The `codex` CLI opens a browser for OAuth login and
+  stores the credential locally. Holon reads it via `external_cli`.
 
-This provider uses `credential_source: external_cli` and
-`credential_kind: oauth` in the config.
+The provider uses `credential_source: external_cli` and
+`credential_kind: oauth` for browser OAuth, or device OAuth via the
+onboarding wizard.
 
-If your Codex credential expires, run `holon onboard` again — the wizard
+If your credential expires, run `holon onboard` again — the wizard
 detects the expiry and guides you through re-authentication.
 
 ### Vercel AI Gateway OIDC
@@ -212,7 +215,7 @@ For both OAuth and OIDC flows, the recommended setup path is:
 holon onboard
 ```
 
-The wizard handles the entire OAuth browser flow and stores the credential
+The wizard handles the entire OAuth flow and stores the credential
 securely. You should not attempt to configure OAuth providers manually in
 `config.json` unless you are scripting a headless deployment.
 
