@@ -841,6 +841,10 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         )),
+        // Standard OpenAI transport (OpenAiProvider) never sends reasoning params
+        // (its complete_turn hardcodes reasoning_effort: None), so with_reasoning()
+        // is intentionally omitted here. If that transport is ever wired to send
+        // reasoning, wrap these entries with with_reasoning().
         catalog_model("openai", "gpt-5.5", "GPT-5.5", 272_000, 128_000, true, true),
         catalog_model("openai", "gpt-5.2", "GPT-5.2", 272_000, 128_000, true, true),
         catalog_model(

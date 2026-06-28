@@ -5506,6 +5506,45 @@ mod tests {
     }
 
     #[test]
+    fn openai_codex_request_omits_reasoning_when_supports_reasoning_is_false() {
+        // Negative-path guard test: when supports_reasoning=false, the provider
+        // passes reasoning_effort=None to build_openai_responses_request, which
+        // must produce a body with reasoning=null and no reasoning.effort field.
+        let request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("hello".into())],
+            vec![],
+        );
+
+        // Guard suppressed path (supports_reasoning=false → None)
+        let suppressed = build_openai_responses_request(
+            "gpt-test",
+            4096,
+            &request,
+            OpenAiResponsesTransportContract::CodexStreaming,
+            ToolSchemaContract::Relaxed,
+            None,
+            None,
+        )
+        .expect("suppressed reasoning request should build");
+        assert_eq!(suppressed["reasoning"], json!(null));
+        assert!(suppressed["reasoning"].get("effort").is_none());
+
+        // Guard enabled path (supports_reasoning=true → Some)
+        let enabled = build_openai_responses_request(
+            "gpt-test",
+            4096,
+            &request,
+            OpenAiResponsesTransportContract::CodexStreaming,
+            ToolSchemaContract::Relaxed,
+            Some("low"),
+            None,
+        )
+        .expect("enabled reasoning request should build");
+        assert_eq!(enabled["reasoning"]["effort"], json!("low"));
+    }
+
+    #[test]
     fn openai_provider_window_tracks_latest_compaction_item() {
         let items = vec![
             json!({ "type": "message", "role": "user" }),
