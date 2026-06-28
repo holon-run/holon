@@ -388,7 +388,9 @@ export function AgentPage({
                         title={`Thinking level: ${activeReasoningBadge ?? "auto"}`}
                         onClick={() => setReasoningPopoverOpen((prev) => !prev)}
                       >
-                        <span aria-hidden="true">🧠</span>
+                        <svg className="thinking-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                          <path d="M8 1.5L6 6H2.5L5.5 8.5L4 13L8 10L12 13L10.5 8.5L13.5 6H10L8 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/>
+                        </svg>
                         <small>{titleCase(activeReasoningBadge ?? "auto")}</small>
                       </Button>
                       {reasoningPopoverOpen ? (

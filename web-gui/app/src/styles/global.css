@@ -2287,6 +2287,9 @@ code {
 
 .model-picker {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .model-button {
@@ -2329,6 +2332,11 @@ code {
   padding-inline: 8px;
   opacity: 0.72;
   transition: opacity 0.15s;
+}
+
+.thinking-icon {
+  flex: 0 0 auto;
+  color: var(--accent);
 }
 
 .thinking-button:hover,
