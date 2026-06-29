@@ -59,7 +59,9 @@ async fn next_sse_event_kind(
 }
 
 async fn newest_event_seq(base: &str, client: &Client, token: Option<&str>) -> Result<u64> {
-    let mut request = client.get(format!("{base}/agents/default/events?limit=1&order=desc"));
+    let mut request = client.get(format!(
+        "{base}/api/agents/default/events?limit=1&order=desc"
+    ));
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
@@ -105,7 +107,9 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
         serde_json::json!({ "n": 3 }),
     ))?;
     let latest: serde_json::Value = client
-        .get(format!("{base}/agents/default/events?limit=2&order=desc"))
+        .get(format!(
+            "{base}/api/agents/default/events?limit=2&order=desc"
+        ))
         .send()
         .await?
         .json()
@@ -121,7 +125,7 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
 
     let older: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/events?before_seq={}&limit=2&order=desc",
+            "{base}/api/agents/default/events?before_seq={}&limit=2&order=desc",
             latest["oldest_seq"].as_u64().expect("oldest seq")
         ))
         .send()
@@ -141,7 +145,7 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     let newer = fetch_events_page_until(
         &client,
         format!(
-            "{base}/agents/default/events?after_seq={}&limit=2&order=asc",
+            "{base}/api/agents/default/events?after_seq={}&limit=2&order=asc",
             older["newest_seq"].as_u64().expect("newest seq")
         ),
         |page| {
@@ -168,7 +172,7 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
 
     let bounded_newer: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/events?after_seq={latest_oldest}&before_seq={}&limit=10&order=desc",
+            "{base}/api/agents/default/events?after_seq={latest_oldest}&before_seq={}&limit=10&order=desc",
             latest_newest + 1
         ))
         .send()
@@ -181,7 +185,7 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
 
     let bounded_older: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/events?after_seq={older_newest}&before_seq={latest_newest}&limit=10&order=asc"
+            "{base}/api/agents/default/events?after_seq={older_newest}&before_seq={latest_newest}&limit=10&order=asc"
         ))
         .send()
         .await?
@@ -192,7 +196,9 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     assert_eq!(bounded_older["has_newer"], false);
 
     let empty_cursor: serde_json::Value = client
-        .get(format!("{base}/agents/default/events?limit=2&order=desc"))
+        .get(format!(
+            "{base}/api/agents/default/events?limit=2&order=desc"
+        ))
         .send()
         .await?
         .json()
@@ -218,7 +224,7 @@ pub async fn events_route_supports_cursor_replay() -> Result<()> {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "first message" }))
         .send()
         .await?;
@@ -227,13 +233,13 @@ pub async fn events_route_supports_cursor_replay() -> Result<()> {
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "second message" }))
         .send()
         .await?;
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}"
+            "{base}/api/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -251,7 +257,7 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "cursor bootstrap" }))
         .send()
         .await?;
@@ -260,14 +266,14 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "cursor replay" }))
         .send()
         .await?;
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}"
+            "{base}/api/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -296,7 +302,7 @@ pub async fn events_stream_receives_live_events_without_polling_replay() -> Resu
     let client = reqwest::Client::new();
 
     let mut stream = client
-        .get(format!("{base}/agents/default/events/stream"))
+        .get(format!("{base}/api/agents/default/events/stream"))
         .send()
         .await?;
     runtime.storage().append_event(&AuditEvent::new(
@@ -317,7 +323,10 @@ pub async fn global_events_stream_receives_live_agent_events() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    let mut stream = client.get(format!("{base}/events/stream")).send().await?;
+    let mut stream = client
+        .get(format!("{base}/api/events/stream"))
+        .send()
+        .await?;
     runtime.storage().append_event(&AuditEvent::new(
         "global_live_test_event",
         serde_json::json!({ "global": true }),
@@ -341,7 +350,7 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "provenance bootstrap" }))
         .send()
         .await?;
@@ -350,14 +359,14 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "provenance replay" }))
         .send()
         .await?;
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}"
+            "{base}/api/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -385,7 +394,7 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "stable operator event bootstrap" }))
         .send()
         .await?;
@@ -435,7 +444,7 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
 
     let page = fetch_events_page_until(
         &client,
-        format!("{base}/agents/default/events?after_seq={after_seq}&limit=10&order=asc"),
+        format!("{base}/api/agents/default/events?after_seq={after_seq}&limit=10&order=asc"),
         |page| {
             page["events"].as_array().is_some_and(|events| {
                 events
@@ -534,7 +543,7 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
 
     let page = fetch_events_page_until(
         &client,
-        format!("{base}/agents/default/events?limit=2&order=desc&max_level=info"),
+        format!("{base}/api/agents/default/events?limit=2&order=desc&max_level=info"),
         |page| {
             page["events"].as_array().is_some_and(|events| {
                 events.len() == 2
@@ -552,7 +561,9 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
     assert!(page["cursor_seq"].as_u64().is_some());
 
     let unfiltered: serde_json::Value = client
-        .get(format!("{base}/agents/default/events?limit=32&order=desc"))
+        .get(format!(
+            "{base}/api/agents/default/events?limit=32&order=desc"
+        ))
         .send()
         .await?
         .json()
@@ -573,7 +584,7 @@ pub async fn events_stream_includes_tool_payload() -> Result<()> {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "event stream bootstrap" }))
         .send()
         .await?;
@@ -596,7 +607,7 @@ pub async fn events_stream_includes_tool_payload() -> Result<()> {
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}"
+            "{base}/api/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -650,7 +661,7 @@ pub async fn tool_execution_route_returns_canonical_output() -> Result<()> {
 
     let response = client
         .get(format!(
-            "{base}/agents/default/tool-executions/tool-http-detail"
+            "{base}/api/agents/default/tool-executions/tool-http-detail"
         ))
         .send()
         .await?;
@@ -661,7 +672,7 @@ pub async fn tool_execution_route_returns_canonical_output() -> Result<()> {
 
     let missing = client
         .get(format!(
-            "{base}/agents/default/tool-executions/missing-tool"
+            "{base}/api/agents/default/tool-executions/missing-tool"
         ))
         .send()
         .await?;
@@ -677,7 +688,7 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "assistant round stream bootstrap" }))
         .send()
         .await?;
@@ -707,7 +718,7 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}"
+            "{base}/api/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -760,7 +771,7 @@ pub async fn events_stream_preserves_raw_payload_with_control_auth() -> Result<(
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "text": "workspace stream bootstrap" }))
         .send()
@@ -785,7 +796,7 @@ pub async fn events_stream_preserves_raw_payload_with_control_auth() -> Result<(
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}"
+            "{base}/api/agents/default/events/stream?after_seq={after_seq}"
         ))
         .bearer_auth(token)
         .send()
@@ -829,7 +840,9 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
     ))?;
 
     let page: serde_json::Value = client
-        .get(format!("{base}/agents/default/events?limit=10&order=desc"))
+        .get(format!(
+            "{base}/api/agents/default/events?limit=10&order=desc"
+        ))
         .send()
         .await?
         .json()
@@ -862,7 +875,7 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}"
+            "{base}/api/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -885,7 +898,7 @@ pub async fn events_stream_requires_control_auth_when_configured() -> Result<()>
     let client = reqwest::Client::new();
 
     let response = client
-        .get(format!("{base}/agents/default/events/stream"))
+        .get(format!("{base}/api/agents/default/events/stream"))
         .send()
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
@@ -925,7 +938,7 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
     let (base, server) = spawn_server_for_host(host).await?;
 
     let snapshot: serde_json::Value = reqwest::Client::new()
-        .get(format!("{base}/agents/default/state"))
+        .get(format!("{base}/api/agents/default/state"))
         .send()
         .await?
         .json()
@@ -954,7 +967,9 @@ pub async fn events_stream_with_missing_cursor_returns_not_found() -> Result<()>
     let (_host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{base}/agents/default/events/stream?after_seq=999"))
+        .get(format!(
+            "{base}/api/agents/default/events/stream?after_seq=999"
+        ))
         .send()
         .await?;
     let status = response.status();

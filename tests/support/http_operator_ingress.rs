@@ -56,7 +56,9 @@ pub async fn operator_ingress_records_remote_operator_provenance() -> Result<()>
     .await?;
 
     let response = client
-        .post(format!("{base}/control/agents/default/operator-ingress"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-ingress"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "text": "remote operator continue",
@@ -157,7 +159,9 @@ pub async fn operator_ingress_defaults_provider_provenance_from_binding() -> Res
     .await?;
 
     let response = client
-        .post(format!("{base}/control/agents/default/operator-ingress"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-ingress"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "text": "remote operator without provider",
@@ -207,7 +211,9 @@ pub async fn operator_ingress_requires_control_auth() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/operator-ingress"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-ingress"
+        ))
         .json(&serde_json::json!({
             "text": "unauthenticated remote operator",
             "actor_id": "operator:jolestar",
@@ -227,7 +233,9 @@ pub async fn operator_transport_binding_validates_delivery_auth_and_redacts_audi
     let client = reqwest::Client::new();
 
     let missing_bearer = client
-        .post(format!("{base}/control/agents/default/operator-bindings"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-bindings"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "binding_id": "opbind-missing-bearer-token",
@@ -247,7 +255,9 @@ pub async fn operator_transport_binding_validates_delivery_auth_and_redacts_audi
     assert_eq!(missing_bearer.status(), reqwest::StatusCode::BAD_REQUEST);
 
     let hmac = client
-        .post(format!("{base}/control/agents/default/operator-bindings"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-bindings"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "binding_id": "opbind-hmac",
@@ -303,7 +313,9 @@ pub async fn operator_ingress_validates_binding_and_actor() -> Result<()> {
     let client = reqwest::Client::new();
 
     let missing = client
-        .post(format!("{base}/control/agents/default/operator-ingress"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-ingress"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "text": "missing binding",
@@ -322,7 +334,9 @@ pub async fn operator_ingress_validates_binding_and_actor() -> Result<()> {
     )
     .await?;
     let wrong_actor = client
-        .post(format!("{base}/control/agents/default/operator-ingress"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-ingress"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "text": "wrong actor",
@@ -368,7 +382,9 @@ pub async fn operator_ingress_rejects_stopped_agent_without_queueing() -> Result
     .await?;
 
     let response = client
-        .post(format!("{base}/control/agents/default/operator-ingress"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-ingress"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "text": "remote after stop",

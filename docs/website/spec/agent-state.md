@@ -187,7 +187,7 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
 ## User-facing projection (`AgentSummary`)
 
 `AgentSummary` is the stable projection returned by `AgentGet` and
-`GET /agents`. It includes:
+`GET /api/agents`. It includes:
 
 - `identity` — agent identity badge (visibility/ownership/profile)
 - `agent` — core `AgentState` including status, pending count, turn index

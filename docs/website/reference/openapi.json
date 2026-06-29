@@ -4589,7 +4589,7 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/": {
+    "/api/": {
       "get": {
         "description": "Return the default agent id.",
         "operationId": "root",
@@ -4637,7 +4637,7 @@
         ]
       }
     },
-    "/agents/list": {
+    "/api/agents/list": {
       "get": {
         "description": "Return lightweight public agent entries.",
         "operationId": "listAgents",
@@ -4685,7 +4685,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/agents/{agent_id}/briefs": {
+    "/api/agents/{agent_id}/briefs": {
       "get": {
         "description": "Return recent user-facing delivery briefs. Query parameter: limit.",
         "operationId": "agentBriefs",
@@ -4745,7 +4745,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/agents/{agent_id}/briefs/{brief_id}": {
+    "/api/agents/{agent_id}/briefs/{brief_id}": {
       "get": {
         "description": "Return a persisted user-facing delivery brief by id.",
         "operationId": "agentBrief",
@@ -4812,7 +4812,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/enqueue": {
+    "/api/agents/{agent_id}/enqueue": {
       "post": {
         "description": "Enqueue a public channel/webhook message for the named agent.",
         "operationId": "enqueueAgent",
@@ -4880,7 +4880,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/events": {
+    "/api/agents/{agent_id}/events": {
       "get": {
         "description": "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
         "operationId": "agentEvents",
@@ -4938,7 +4938,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/events/stream": {
+    "/api/agents/{agent_id}/events/stream": {
       "get": {
         "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
         "operationId": "agentEventsStream",
@@ -4986,7 +4986,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/messages/{message_id}": {
+    "/api/agents/{agent_id}/messages/{message_id}": {
       "get": {
         "description": "Return a persisted message envelope by id for the selected agent.",
         "operationId": "agentMessage",
@@ -5053,7 +5053,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/messages:batchGet": {
+    "/api/agents/{agent_id}/messages:batchGet": {
       "post": {
         "description": "Return persisted message envelopes for the selected agent. Missing or cross-agent ids are reported in missing_message_ids.",
         "operationId": "agentMessagesBatchGet",
@@ -5121,7 +5121,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/skills": {
+    "/api/agents/{agent_id}/skills": {
       "get": {
         "description": "Return skills enabled/effective for an agent.",
         "operationId": "agentSkills",
@@ -5179,7 +5179,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/state": {
+    "/api/agents/{agent_id}/state": {
       "get": {
         "description": "Return the lightweight bootstrap snapshot for an agent. Heavy task, work-item, operator notification, and execution details are available through dedicated routes and events.",
         "operationId": "agentState",
@@ -5239,7 +5239,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/agents/{agent_id}/status": {
+    "/api/agents/{agent_id}/status": {
       "get": {
         "description": "Return the public AgentSummary read model.",
         "operationId": "agentStatus",
@@ -5299,7 +5299,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/agents/{agent_id}/tasks": {
+    "/api/agents/{agent_id}/tasks": {
       "get": {
         "description": "Return active task records. Query parameter: limit.",
         "operationId": "agentTasks",
@@ -5357,7 +5357,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/tasks/{task_id}": {
+    "/api/agents/{agent_id}/tasks/{task_id}": {
       "get": {
         "description": "Return a task lifecycle snapshot by id.",
         "operationId": "agentTaskStatus",
@@ -5424,7 +5424,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/tasks/{task_id}/output": {
+    "/api/agents/{agent_id}/tasks/{task_id}/output": {
       "get": {
         "description": "Return a task output snapshot. Query parameters: block, timeout_ms.",
         "operationId": "agentTaskOutput",
@@ -5491,7 +5491,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/timers": {
+    "/api/agents/{agent_id}/timers": {
       "get": {
         "description": "Return recent timer records. Query parameter: limit.",
         "operationId": "agentTimers",
@@ -5549,7 +5549,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/timers/{timer_id}": {
+    "/api/agents/{agent_id}/timers/{timer_id}": {
       "get": {
         "description": "Return a timer record by id.",
         "operationId": "agentTimer",
@@ -5616,7 +5616,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/tool-executions/{tool_execution_id}": {
+    "/api/agents/{agent_id}/tool-executions/{tool_execution_id}": {
       "get": {
         "description": "Return a persisted tool execution record by id.",
         "operationId": "agentToolExecution",
@@ -5683,7 +5683,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/transcript": {
+    "/api/agents/{agent_id}/transcript": {
       "get": {
         "description": "Return recent transcript entries. Query parameter: limit.",
         "operationId": "agentTranscript",
@@ -5743,7 +5743,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/agents/{agent_id}/transcript/{entry_id}": {
+    "/api/agents/{agent_id}/transcript/{entry_id}": {
       "get": {
         "description": "Return a persisted transcript entry by id for the selected agent.",
         "operationId": "agentTranscriptEntry",
@@ -5801,7 +5801,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/transcript:batchGet": {
+    "/api/agents/{agent_id}/transcript:batchGet": {
       "post": {
         "description": "Return persisted transcript entries for the selected agent. Missing or cross-agent ids are reported in missing_entry_ids.",
         "operationId": "agentTranscriptBatchGet",
@@ -5869,7 +5869,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/work-items": {
+    "/api/agents/{agent_id}/work-items": {
       "get": {
         "description": "Return latest work item records for the agent. Query parameter: limit.",
         "operationId": "agentWorkItems",
@@ -5927,7 +5927,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/work-items/{work_item_id}": {
+    "/api/agents/{agent_id}/work-items/{work_item_id}": {
       "get": {
         "description": "Return a work item record by id.",
         "operationId": "agentWorkItem",
@@ -5994,7 +5994,7 @@
         ]
       }
     },
-    "/agents/{agent_id}/worktree-summary": {
+    "/api/agents/{agent_id}/worktree-summary": {
       "get": {
         "description": "Return managed worktree summary for an agent.",
         "operationId": "agentWorktreeSummary",
@@ -6052,6 +6052,2652 @@
           "agents"
         ],
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+      }
+    },
+    "/api/auth/codex/device/start": {
+      "post": {
+        "description": "Request an OpenAI Codex device code and start a background job that persists the OAuth credential profile after user authorization.",
+        "operationId": "startCodexDeviceLogin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Start Codex device login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/briefs": {
+      "get": {
+        "description": "Compatibility alias for the default agent briefs route. Query parameter: limit.",
+        "operationId": "defaultBriefs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Default agent briefs alias",
+        "tags": [
+          "compat"
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+      }
+    },
+    "/api/callbacks/enqueue/{callback_token}": {
+      "post": {
+        "description": "Capability-token callback ingress for enqueue delivery. The token is a secret path segment and examples intentionally use a placeholder.",
+        "operationId": "callbackEnqueue",
+        "parameters": [
+          {
+            "description": "Opaque callback capability token. This is a secret and must not be exposed in examples.",
+            "in": "path",
+            "name": "callback_token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallbackBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "CallbackToken": []
+          }
+        ],
+        "summary": "Callback enqueue ingress",
+        "tags": [
+          "callbacks"
+        ]
+      }
+    },
+    "/api/callbacks/wake/{callback_token}": {
+      "post": {
+        "description": "Capability-token callback ingress for wake delivery. The token is a secret path segment and examples intentionally use a placeholder.",
+        "operationId": "callbackWake",
+        "parameters": [
+          {
+            "description": "Opaque callback capability token. This is a secret and must not be exposed in examples.",
+            "in": "path",
+            "name": "callback_token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallbackBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "CallbackToken": []
+          }
+        ],
+        "summary": "Callback wake ingress",
+        "tags": [
+          "callbacks"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/control": {
+      "post": {
+        "description": "Submit a lifecycle control action.",
+        "operationId": "controlAgent",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Control agent lifecycle",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/create": {
+      "post": {
+        "description": "Create a public named agent, optionally from a template.",
+        "operationId": "createAgent",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create named agent",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/current-run/abort": {
+      "post": {
+        "description": "Request abort for the current agent run.",
+        "operationId": "abortCurrentRun",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbortCurrentRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Abort current run",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/debug-prompt": {
+      "post": {
+        "description": "Render a diagnostic prompt preview.",
+        "operationId": "debugPrompt",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebugPromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Debug prompt",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/model": {
+      "post": {
+        "description": "Set an agent model override and optional reasoning effort.",
+        "operationId": "setAgentModel",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAgentModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Set agent model override",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/model/clear": {
+      "post": {
+        "description": "Clear an agent model override.",
+        "operationId": "clearAgentModel",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClearAgentModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Clear agent model override",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/operator-bindings": {
+      "post": {
+        "description": "Create or update a remote operator transport binding.",
+        "operationId": "createOperatorTransportBinding",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorTransportBindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create operator binding",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/operator-ingress": {
+      "post": {
+        "description": "Deliver an authenticated remote operator prompt.",
+        "operationId": "operatorIngress",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorIngressRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Operator ingress",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/prompt": {
+      "post": {
+        "description": "Submit a trusted operator prompt through the control plane.",
+        "operationId": "controlPrompt",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlPromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Submit operator prompt",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/skills/disable": {
+      "post": {
+        "description": "Disable a skill for an agent.",
+        "operationId": "disableSkill",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisableSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Disable agent skill",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/skills/enable": {
+      "post": {
+        "description": "Enable a locally known skill for an agent.",
+        "operationId": "enableSkill",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnableSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Enable agent skill",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/skills/install": {
+      "post": {
+        "description": "Compatibility alias for older agent skill install behavior.",
+        "operationId": "installSkill",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Install skill compatibility alias",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/skills/uninstall": {
+      "post": {
+        "description": "Compatibility alias for disabling an agent skill.",
+        "operationId": "uninstallSkill",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UninstallSkillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Uninstall skill compatibility alias",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/tasks": {
+      "post": {
+        "description": "Schedule a command task for an agent.",
+        "operationId": "createCommandTask",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCommandTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create command task",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/tasks/{task_id}/input": {
+      "post": {
+        "description": "Deliver text input to a managed task.",
+        "operationId": "taskInput",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Task id.",
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskInputResult"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Task input",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/tasks/{task_id}/stop": {
+      "post": {
+        "description": "Request cancellation for a managed task.",
+        "operationId": "taskStop",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Task id.",
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskStopRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskStopResult"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Task stop",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/timers": {
+      "post": {
+        "description": "Schedule a timer for an agent.",
+        "operationId": "createTimer",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTimerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create timer",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/timers/{timer_id}/cancel": {
+      "post": {
+        "description": "Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.",
+        "operationId": "cancelTimer",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Timer id.",
+            "in": "path",
+            "name": "timer_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTimerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Cancel timer",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/wake": {
+      "post": {
+        "description": "Submit a trusted wake hint.",
+        "operationId": "controlWake",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlWakeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Wake agent",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/work-items": {
+      "post": {
+        "description": "Create or enqueue a public work item objective.",
+        "operationId": "createWorkItem",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create work item",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/work-items/{work_item_id}": {
+      "patch": {
+        "description": "Mutate work item objective, plan status, todo list, or blocker fields.",
+        "operationId": "updateWorkItem",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Work item id.",
+            "in": "path",
+            "name": "work_item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update work item",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/work-items/{work_item_id}/complete": {
+      "post": {
+        "description": "Mark an open work item completed.",
+        "operationId": "completeWorkItem",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Work item id.",
+            "in": "path",
+            "name": "work_item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteWorkItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Complete work item",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/work-items/{work_item_id}/pick": {
+      "post": {
+        "description": "Make an existing open work item the current focus for the agent.",
+        "operationId": "pickWorkItem",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Work item id.",
+            "in": "path",
+            "name": "work_item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PickWorkItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickWorkItemResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Pick work item",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/workspace/attach": {
+      "post": {
+        "description": "Attach a workspace path to an agent.",
+        "operationId": "attachWorkspace",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachWorkspaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Attach workspace",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/workspace/detach": {
+      "post": {
+        "description": "Detach a workspace binding by workspace id.",
+        "operationId": "detachWorkspace",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetachWorkspaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Detach workspace",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/workspace/exit": {
+      "post": {
+        "description": "Return an agent to its default AgentHome workspace.",
+        "operationId": "exitWorkspace",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExitWorkspaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Exit workspace",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/runtime/config": {
+      "get": {
+        "description": "Return the daemon effective runtime configuration surface.",
+        "operationId": "runtimeConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfigReadResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime config",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "patch": {
+        "description": "Persist runtime-mutable config updates and classify their effect as restart/reload-required or rejected.",
+        "operationId": "runtimeConfigUpdate",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeConfigUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfigUpdateResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update runtime config",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/credentials": {
+      "get": {
+        "description": "List credential profiles stored in the runtime credential store.",
+        "operationId": "runtimeCredentials",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime credential profiles",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/credentials/{profile}": {
+      "delete": {
+        "description": "Remove a credential profile from the runtime credential store.",
+        "operationId": "deleteRuntimeCredential",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Delete runtime credential",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "put": {
+        "description": "Set an API key credential profile in the runtime credential store.",
+        "operationId": "setRuntimeCredential",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Set runtime credential",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/performance": {
+      "get": {
+        "description": "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.",
+        "operationId": "runtimePerformance",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceDiagnosticsSnapshot"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime performance diagnostics",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/readiness": {
+      "get": {
+        "description": "Return daemon readiness metadata.",
+        "operationId": "runtimeReadiness",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime readiness",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/shutdown": {
+      "post": {
+        "description": "Request graceful runtime shutdown.",
+        "operationId": "runtimeShutdown",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime shutdown",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/status": {
+      "get": {
+        "description": "Return daemon status and runtime activity metadata.",
+        "operationId": "runtimeStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime status",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/enqueue": {
+      "post": {
+        "description": "Enqueue a public channel/webhook message for the default agent.",
+        "operationId": "enqueueDefault",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnqueueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Enqueue default agent message",
+        "tags": [
+          "ingress"
+        ]
+      }
+    },
+    "/api/events/stream": {
+      "get": {
+        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor.",
+        "operationId": "eventsStream",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events stream. Each data frame contains a StreamEventEnvelope JSON object."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error before stream establishment."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Global event stream",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/api/handshake": {
+      "get": {
+        "description": "Return auth mode, protocol version, capabilities, and runtime hints.",
+        "operationId": "handshake",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Protocol handshake",
+        "tags": [
+          "discovery"
+        ]
       }
     },
     "/api/jobs": {
@@ -6157,6 +8803,170 @@
         "summary": "Job status",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/api/memory/get": {
+      "post": {
+        "description": "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.",
+        "operationId": "runtimeMemoryGet",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGetResult"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Fetch runtime memory source",
+        "tags": [
+          "search"
+        ]
+      }
+    },
+    "/api/models": {
+      "get": {
+        "description": "Return model catalog entries and runtime availability.",
+        "operationId": "models",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List available models",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/api/search": {
+      "post": {
+        "description": "Search the same memory v2 index used by the agent MemorySearch tool.",
+        "operationId": "runtimeSearch",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Search runtime memory",
+        "tags": [
+          "search"
         ]
       }
     },
@@ -6614,2817 +9424,7 @@
         ]
       }
     },
-    "/auth/codex/device/start": {
-      "post": {
-        "description": "Request an OpenAI Codex device code and start a background job that persists the OAuth credential profile after user authorization.",
-        "operationId": "startCodexDeviceLogin",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Start Codex device login",
-        "tags": [
-          "auth"
-        ]
-      }
-    },
-    "/briefs": {
-      "get": {
-        "description": "Compatibility alias for the default agent briefs route. Query parameter: limit.",
-        "operationId": "defaultBriefs",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Default agent briefs alias",
-        "tags": [
-          "compat"
-        ],
-        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
-      }
-    },
-    "/callbacks/enqueue/{callback_token}": {
-      "post": {
-        "description": "Capability-token callback ingress for enqueue delivery. The token is a secret path segment and examples intentionally use a placeholder.",
-        "operationId": "callbackEnqueue",
-        "parameters": [
-          {
-            "description": "Opaque callback capability token. This is a secret and must not be exposed in examples.",
-            "in": "path",
-            "name": "callback_token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CallbackBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "CallbackToken": []
-          }
-        ],
-        "summary": "Callback enqueue ingress",
-        "tags": [
-          "callbacks"
-        ]
-      }
-    },
-    "/callbacks/wake/{callback_token}": {
-      "post": {
-        "description": "Capability-token callback ingress for wake delivery. The token is a secret path segment and examples intentionally use a placeholder.",
-        "operationId": "callbackWake",
-        "parameters": [
-          {
-            "description": "Opaque callback capability token. This is a secret and must not be exposed in examples.",
-            "in": "path",
-            "name": "callback_token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CallbackBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "CallbackToken": []
-          }
-        ],
-        "summary": "Callback wake ingress",
-        "tags": [
-          "callbacks"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/control": {
-      "post": {
-        "description": "Submit a lifecycle control action.",
-        "operationId": "controlAgent",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ControlRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Control agent lifecycle",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/create": {
-      "post": {
-        "description": "Create a public named agent, optionally from a template.",
-        "operationId": "createAgent",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateAgentRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Create named agent",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/current-run/abort": {
-      "post": {
-        "description": "Request abort for the current agent run.",
-        "operationId": "abortCurrentRun",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AbortCurrentRunRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Abort current run",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/debug-prompt": {
-      "post": {
-        "description": "Render a diagnostic prompt preview.",
-        "operationId": "debugPrompt",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DebugPromptRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Debug prompt",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/model": {
-      "post": {
-        "description": "Set an agent model override and optional reasoning effort.",
-        "operationId": "setAgentModel",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetAgentModelRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Set agent model override",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/model/clear": {
-      "post": {
-        "description": "Clear an agent model override.",
-        "operationId": "clearAgentModel",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClearAgentModelRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Clear agent model override",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/operator-bindings": {
-      "post": {
-        "description": "Create or update a remote operator transport binding.",
-        "operationId": "createOperatorTransportBinding",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OperatorTransportBindingRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Create operator binding",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/operator-ingress": {
-      "post": {
-        "description": "Deliver an authenticated remote operator prompt.",
-        "operationId": "operatorIngress",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OperatorIngressRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Operator ingress",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/prompt": {
-      "post": {
-        "description": "Submit a trusted operator prompt through the control plane.",
-        "operationId": "controlPrompt",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ControlPromptRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Submit operator prompt",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/skills/disable": {
-      "post": {
-        "description": "Disable a skill for an agent.",
-        "operationId": "disableSkill",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DisableSkillRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Disable agent skill",
-        "tags": [
-          "skills"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/skills/enable": {
-      "post": {
-        "description": "Enable a locally known skill for an agent.",
-        "operationId": "enableSkill",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EnableSkillRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Enable agent skill",
-        "tags": [
-          "skills"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/skills/install": {
-      "post": {
-        "description": "Compatibility alias for older agent skill install behavior.",
-        "operationId": "installSkill",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InstallSkillRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Install skill compatibility alias",
-        "tags": [
-          "skills"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/skills/uninstall": {
-      "post": {
-        "description": "Compatibility alias for disabling an agent skill.",
-        "operationId": "uninstallSkill",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UninstallSkillRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Uninstall skill compatibility alias",
-        "tags": [
-          "skills"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/tasks": {
-      "post": {
-        "description": "Schedule a command task for an agent.",
-        "operationId": "createCommandTask",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateCommandTaskRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Create command task",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/tasks/{task_id}/input": {
-      "post": {
-        "description": "Deliver text input to a managed task.",
-        "operationId": "taskInput",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Task id.",
-            "in": "path",
-            "name": "task_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TaskInputRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskInputResult"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Task input",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/tasks/{task_id}/stop": {
-      "post": {
-        "description": "Request cancellation for a managed task.",
-        "operationId": "taskStop",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Task id.",
-            "in": "path",
-            "name": "task_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TaskStopRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskStopResult"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Task stop",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/timers": {
-      "post": {
-        "description": "Schedule a timer for an agent.",
-        "operationId": "createTimer",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateTimerRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TimerRecord"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Create timer",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/timers/{timer_id}/cancel": {
-      "post": {
-        "description": "Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.",
-        "operationId": "cancelTimer",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Timer id.",
-            "in": "path",
-            "name": "timer_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CancelTimerRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TimerRecord"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Cancel timer",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/wake": {
-      "post": {
-        "description": "Submit a trusted wake hint.",
-        "operationId": "controlWake",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ControlWakeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Wake agent",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/work-items": {
-      "post": {
-        "description": "Create or enqueue a public work item objective.",
-        "operationId": "createWorkItem",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateWorkItemRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkItemRecord"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Create work item",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/work-items/{work_item_id}": {
-      "patch": {
-        "description": "Mutate work item objective, plan status, todo list, or blocker fields.",
-        "operationId": "updateWorkItem",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Work item id.",
-            "in": "path",
-            "name": "work_item_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateWorkItemRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkItemRecord"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Update work item",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/work-items/{work_item_id}/complete": {
-      "post": {
-        "description": "Mark an open work item completed.",
-        "operationId": "completeWorkItem",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Work item id.",
-            "in": "path",
-            "name": "work_item_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CompleteWorkItemRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkItemRecord"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Complete work item",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/work-items/{work_item_id}/pick": {
-      "post": {
-        "description": "Make an existing open work item the current focus for the agent.",
-        "operationId": "pickWorkItem",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Work item id.",
-            "in": "path",
-            "name": "work_item_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PickWorkItemRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PickWorkItemResponse"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Pick work item",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/workspace/attach": {
-      "post": {
-        "description": "Attach a workspace path to an agent.",
-        "operationId": "attachWorkspace",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AttachWorkspaceRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Attach workspace",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/workspace/detach": {
-      "post": {
-        "description": "Detach a workspace binding by workspace id.",
-        "operationId": "detachWorkspace",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DetachWorkspaceRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Detach workspace",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/agents/{agent_id}/workspace/exit": {
-      "post": {
-        "description": "Return an agent to its default AgentHome workspace.",
-        "operationId": "exitWorkspace",
-        "parameters": [
-          {
-            "description": "Agent id.",
-            "in": "path",
-            "name": "agent_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExitWorkspaceRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Exit workspace",
-        "tags": [
-          "control"
-        ]
-      }
-    },
-    "/control/runtime/config": {
-      "get": {
-        "description": "Return the daemon effective runtime configuration surface.",
-        "operationId": "runtimeConfig",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeConfigReadResponse"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Runtime config",
-        "tags": [
-          "runtime"
-        ]
-      },
-      "patch": {
-        "description": "Persist runtime-mutable config updates and classify their effect as restart/reload-required or rejected.",
-        "operationId": "runtimeConfigUpdate",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RuntimeConfigUpdateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeConfigUpdateResponse"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Update runtime config",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/control/runtime/credentials": {
-      "get": {
-        "description": "List credential profiles stored in the runtime credential store.",
-        "operationId": "runtimeCredentials",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Runtime credential profiles",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/control/runtime/credentials/{profile}": {
-      "delete": {
-        "description": "Remove a credential profile from the runtime credential store.",
-        "operationId": "deleteRuntimeCredential",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Delete runtime credential",
-        "tags": [
-          "runtime"
-        ]
-      },
-      "put": {
-        "description": "Set an API key credential profile in the runtime credential store.",
-        "operationId": "setRuntimeCredential",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetCredentialRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Set runtime credential",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/control/runtime/performance": {
-      "get": {
-        "description": "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.",
-        "operationId": "runtimePerformance",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PerformanceDiagnosticsSnapshot"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Runtime performance diagnostics",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/control/runtime/readiness": {
-      "get": {
-        "description": "Return daemon readiness metadata.",
-        "operationId": "runtimeReadiness",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Runtime readiness",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/control/runtime/shutdown": {
-      "post": {
-        "description": "Request graceful runtime shutdown.",
-        "operationId": "runtimeShutdown",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Runtime shutdown",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/control/runtime/status": {
-      "get": {
-        "description": "Return daemon status and runtime activity metadata.",
-        "operationId": "runtimeStatus",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Runtime status",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/enqueue": {
-      "post": {
-        "description": "Enqueue a public channel/webhook message for the default agent.",
-        "operationId": "enqueueDefault",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EnqueueRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Enqueue default agent message",
-        "tags": [
-          "ingress"
-        ]
-      }
-    },
-    "/events/stream": {
-      "get": {
-        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor.",
-        "operationId": "eventsStream",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Server-Sent Events stream. Each data frame contains a StreamEventEnvelope JSON object."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error before stream establishment."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Global event stream",
-        "tags": [
-          "events"
-        ]
-      }
-    },
-    "/handshake": {
-      "get": {
-        "description": "Return auth mode, protocol version, capabilities, and runtime hints.",
-        "operationId": "handshake",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Protocol handshake",
-        "tags": [
-          "discovery"
-        ]
-      }
-    },
-    "/memory/get": {
-      "post": {
-        "description": "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.",
-        "operationId": "runtimeMemoryGet",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MemoryGetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MemoryGetResult"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Fetch runtime memory source",
-        "tags": [
-          "search"
-        ]
-      }
-    },
-    "/models": {
-      "get": {
-        "description": "Return model catalog entries and runtime availability.",
-        "operationId": "models",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
-                }
-              }
-            },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "List available models",
-        "tags": [
-          "discovery"
-        ]
-      }
-    },
-    "/search": {
-      "post": {
-        "description": "Search the same memory v2 index used by the agent MemorySearch tool.",
-        "operationId": "runtimeSearch",
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SearchRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SearchResponse"
-                }
-              }
-            },
-            "description": "Successful JSON response using a stable DTO schema."
-          },
-          "4XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Client error JSON response."
-          },
-          "5XX": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Server error JSON response."
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "Search runtime memory",
-        "tags": [
-          "search"
-        ]
-      }
-    },
-    "/state": {
+    "/api/state": {
       "get": {
         "description": "Compatibility alias for the default agent state route.",
         "operationId": "defaultState",
@@ -9472,7 +9472,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/status": {
+    "/api/status": {
       "get": {
         "description": "Compatibility alias for the default agent status route.",
         "operationId": "defaultStatus",
@@ -9520,7 +9520,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/transcript": {
+    "/api/transcript": {
       "get": {
         "description": "Compatibility alias for the default agent transcript route. Query parameter: limit.",
         "operationId": "defaultTranscript",
@@ -9568,7 +9568,7 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
-    "/webhooks/generic/{agent_id}": {
+    "/api/webhooks/generic/{agent_id}": {
       "post": {
         "description": "Convert an arbitrary JSON webhook body into a trusted integration message.",
         "operationId": "genericWebhook",
@@ -9631,7 +9631,7 @@
         ]
       }
     },
-    "/workspaces/{workspace_id}/files": {
+    "/api/workspaces/{workspace_id}/files": {
       "get": {
         "description": "List directory entries at the workspace root. Query parameters: execution_root_id.",
         "operationId": "workspaceFilesRoot",
@@ -9679,7 +9679,7 @@
         ]
       }
     },
-    "/workspaces/{workspace_id}/files/{path}": {
+    "/api/workspaces/{workspace_id}/files/{path}": {
       "get": {
         "description": "List a directory or read a file by path. Supports content negotiation: Accept: application/json returns structured metadata + content, other Accept values return raw body. Query parameters: execution_root_id, download, meta.",
         "operationId": "workspaceFiles",
@@ -9727,7 +9727,7 @@
         ]
       }
     },
-    "/worktree-summary": {
+    "/api/worktree-summary": {
       "get": {
         "description": "Compatibility alias for the default agent worktree summary route.",
         "operationId": "defaultWorktreeSummary",

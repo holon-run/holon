@@ -78,10 +78,15 @@ fn render_live_inventory() -> String {
         .into_iter()
         .map(|mut route| {
             route.path = route.path.replace("{*", "{").replace(":path}", "}");
+            // All routes are nested under /api in the router, so prepend
+            // the prefix to match OpenAPI paths.
+            if !route.path.starts_with("/api") {
+                route.path = format!("/api{}", route.path);
+            }
             route
         })
         .collect();
-    assert_eq!(routes.len(), 87, "unexpected parsed HTTP route count");
+    assert_eq!(routes.len(), 86, "unexpected parsed HTTP route count");
 
     let openapi = holon::openapi::generate_openapi_json();
     let mut entries = Vec::new();

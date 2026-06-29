@@ -50,7 +50,7 @@ pub async fn workspace_enter_control_route_is_not_exposed() -> Result<()> {
     let response = unix_request(
         &socket_path,
         "POST",
-        "/control/agents/default/workspace/enter",
+        "/api/control/agents/default/workspace/enter",
         &[("Content-Type", "application/json")],
         Some(br#"{}"#),
     )
@@ -73,7 +73,9 @@ pub async fn detach_workspace_route_removes_stale_non_active_binding() -> Result
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{base}/control/agents/default/workspace/detach"))
+        .post(format!(
+            "{base}/api/control/agents/default/workspace/detach"
+        ))
         .json(&serde_json::json!({
             "workspace_id": stale_workspace.workspace_id.clone()
         }))
@@ -107,7 +109,9 @@ pub async fn detach_workspace_route_rejects_active_binding() -> Result<()> {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{base}/control/agents/default/workspace/detach"))
+        .post(format!(
+            "{base}/api/control/agents/default/workspace/detach"
+        ))
         .json(&serde_json::json!({
             "workspace_id": active_workspace_id.clone()
         }))
@@ -154,7 +158,7 @@ pub async fn worktree_summary_route_returns_reviewable_candidate_summary() -> Re
     .await?;
 
     let response = client
-        .get(format!("{base}/agents/default/worktree-summary"))
+        .get(format!("{base}/api/agents/default/worktree-summary"))
         .send()
         .await?;
     assert!(response.status().is_success());
@@ -176,7 +180,7 @@ pub async fn workspace_files_lists_directory() -> Result<()> {
 
     let workspace_id = "agent_home:default";
     let response = client
-        .get(format!("{base}/workspaces/{workspace_id}/files"))
+        .get(format!("{base}/api/workspaces/{workspace_id}/files"))
         .send()
         .await?;
     assert_eq!(response.status(), 200);
@@ -200,7 +204,7 @@ pub async fn workspace_files_reads_text_file() -> Result<()> {
 
     let workspace_id = "agent_home:default";
     let listing: serde_json::Value = client
-        .get(format!("{base}/workspaces/{workspace_id}/files"))
+        .get(format!("{base}/api/workspaces/{workspace_id}/files"))
         .send()
         .await?
         .json()
@@ -213,7 +217,9 @@ pub async fn workspace_files_reads_text_file() -> Result<()> {
     let filename = target["name"].as_str().unwrap();
 
     let response = client
-        .get(format!("{base}/workspaces/{workspace_id}/files/{filename}"))
+        .get(format!(
+            "{base}/api/workspaces/{workspace_id}/files/{filename}"
+        ))
         .header("Accept", "application/json")
         .send()
         .await?;
@@ -236,7 +242,7 @@ pub async fn workspace_files_path_traversal_rejected() -> Result<()> {
     let workspace_id = "agent_home:default";
     let response = client
         .get(format!(
-            "{base}/workspaces/{workspace_id}/files/../../../etc/passwd"
+            "{base}/api/workspaces/{workspace_id}/files/../../../etc/passwd"
         ))
         .send()
         .await?;
@@ -253,7 +259,7 @@ pub async fn workspace_files_returns_404_for_missing_file() -> Result<()> {
     let workspace_id = "agent_home:default";
     let response = client
         .get(format!(
-            "{base}/workspaces/{workspace_id}/files/nonexistent_file_12345.txt"
+            "{base}/api/workspaces/{workspace_id}/files/nonexistent_file_12345.txt"
         ))
         .send()
         .await?;
@@ -269,7 +275,7 @@ pub async fn workspace_files_metadata_only() -> Result<()> {
 
     let workspace_id = "agent_home:default";
     let listing: serde_json::Value = client
-        .get(format!("{base}/workspaces/{workspace_id}/files"))
+        .get(format!("{base}/api/workspaces/{workspace_id}/files"))
         .send()
         .await?
         .json()
@@ -283,7 +289,7 @@ pub async fn workspace_files_metadata_only() -> Result<()> {
 
     let response = client
         .get(format!(
-            "{base}/workspaces/{workspace_id}/files/{filename}?meta=true"
+            "{base}/api/workspaces/{workspace_id}/files/{filename}?meta=true"
         ))
         .send()
         .await?;
@@ -307,7 +313,7 @@ pub async fn workspace_files_unknown_workspace_404() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(format!("{base}/workspaces/ws_nonexistent_12345/files"))
+        .get(format!("{base}/api/workspaces/ws_nonexistent_12345/files"))
         .send()
         .await?;
     assert_eq!(response.status(), 404);
@@ -336,7 +342,7 @@ pub async fn workspace_files_symlink_escape_rejected() -> Result<()> {
 
     let response = client
         .get(format!(
-            "{base}/workspaces/{workspace_id}/files/escape_link"
+            "{base}/api/workspaces/{workspace_id}/files/escape_link"
         ))
         .send()
         .await?;
@@ -355,7 +361,7 @@ pub async fn workspace_files_execution_root_id_rejected() -> Result<()> {
     let workspace_id = "agent_home:default";
     let response = client
         .get(format!(
-            "{base}/workspaces/{workspace_id}/files?execution_root_id=git_worktree_root:ws-1"
+            "{base}/api/workspaces/{workspace_id}/files?execution_root_id=git_worktree_root:ws-1"
         ))
         .send()
         .await?;

@@ -727,9 +727,9 @@ pub fn callback_token(trigger_url: &str) -> &str {
 
 pub fn callback_path(trigger_url: &str) -> String {
     trigger_url
-        .split_once("/callbacks/")
+        .split_once("/api/callbacks/")
         .map(|(_, path)| path)
-        .map(|path| format!("/callbacks/{path}"))
+        .map(|path| format!("/api/callbacks/{path}"))
         .expect("callback url should contain /callbacks/")
 }
 
@@ -740,7 +740,9 @@ pub async fn create_operator_transport_binding(
     delivery_callback_url: &str,
 ) -> Result<serde_json::Value> {
     let response = client
-        .post(format!("{base}/control/agents/default/operator-bindings"))
+        .post(format!(
+            "{base}/api/control/agents/default/operator-bindings"
+        ))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "binding_id": binding_id,

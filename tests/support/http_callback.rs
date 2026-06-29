@@ -280,7 +280,7 @@ pub async fn unknown_callback_token_is_rejected() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/callbacks/enqueue/not-a-real-token"))
+        .post(format!("{base}/api/callbacks/enqueue/not-a-real-token"))
         .json(&serde_json::json!({ "hello": "world" }))
         .send()
         .await?;
@@ -307,7 +307,7 @@ pub async fn callback_mode_mismatch_is_rejected() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/callbacks/enqueue/{token}"))
+        .post(format!("{base}/api/callbacks/enqueue/{token}"))
         .json(&serde_json::json!({ "status": "checks_passed" }))
         .send()
         .await?;
