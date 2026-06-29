@@ -114,28 +114,28 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release adds Volcengine Anthropic-compatible providers with default transports, GPT-5.6 model entries, a Codex device OAuth job, a workspace file browser and resizable panels for the Web GUI, a Makefile build system for fresh clones, content sniffing for extensionless text files, and a non-blocking skill installer, alongside fixes for model provider settings, CORS serde defaults, stale workspace pruning, and max_output_tokens caps.
+          This release adds a Thinking/reasoning selector decoupled from the model picker, real-time work item updates with plan file browser links in the Web GUI, and unifies all HTTP routes under the /api prefix. It also introduces daemon restart recovery with an Interrupted queue status, whitespace-relaxed matching for ApplyPatch, a more generous fallback prompt budget, and several fixes for reasoning_effort, Anthropic server tool blocks, and memory search freshness. Legacy JSONL code paths are fully removed in favor of the mandatory RuntimeDb.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Add Volcengine Anthropic-compatible providers and default Volcengine transports to Anthropic-compatible ([#2016](https://github.com/holon-run/holon/pull/2016), [#2024](https://github.com/holon-run/holon/pull/2024)).
-          - Add GPT-5.6 Sol/Terra/Luna model catalog entries ([#2034](https://github.com/holon-run/holon/pull/2034)).
-          - Simplify model provider settings and fix device login flow ([#2026](https://github.com/holon-run/holon/pull/2026)).
-          - Add Codex device OAuth job ([#2021](https://github.com/holon-run/holon/pull/2021)).
-          - Add workspace file browser panel with directory navigation and file viewer ([#2018](https://github.com/holon-run/holon/pull/2018)).
-          - Add resizable right panel and file viewer as separate page ([#2019](https://github.com/holon-run/holon/pull/2019)).
-          - Add Makefile build system and fix build.rs for fresh clones ([#2035](https://github.com/holon-run/holon/pull/2035)).
-          - Add content sniff fallback for extensionless text files ([#2020](https://github.com/holon-run/holon/pull/2020)).
-          - Implement non-blocking skill install with localStorage job persistence ([#2015](https://github.com/holon-run/holon/pull/2015)).
-          - Refactor workspace module stabilization with API unification and test coverage ([#2027](https://github.com/holon-run/holon/pull/2027)).
-          - Remove web GUI dist from git tracking and build in CI ([#2025](https://github.com/holon-run/holon/pull/2025)).
-          - Fix CORS allowed_methods and allowed_headers serde defaults ([ccbb528](https://github.com/holon-run/holon/commit/ccbb5289)).
-          - Cap dashscope-token-plan and kimi-k2.7-code max_output_tokens ([#2023](https://github.com/holon-run/holon/pull/2023), [#2031](https://github.com/holon-run/holon/pull/2031)).
-          - Prune stale attached_workspaces when anchor paths become invalid ([#2032](https://github.com/holon-run/holon/pull/2032)).
-          - Preserve real error in wait condition row decoding ([#2017](https://github.com/holon-run/holon/pull/2017)).
-          - Fix skill catalog infinite loop on persistent fetch errors ([#2014](https://github.com/holon-run/holon/pull/2014)).
+          - Decouple Thinking/reasoning selector from model picker and improve layout ([#2054](https://github.com/holon-run/holon/pull/2054)).
+          - Add real-time work item updates and plan file browser links to Web GUI ([#2046](https://github.com/holon-run/holon/pull/2046)).
+          - Unify all HTTP routes under /api prefix, removing root-level routes ([d36dd27](https://github.com/holon-run/holon/commit/d36dd270)).
+          - Introduce Interrupted queue status for daemon restart recovery ([#2052](https://github.com/holon-run/holon/pull/2052)).
+          - Add whitespace-relaxed matching for ApplyPatch context_not_found ([#2050](https://github.com/holon-run/holon/pull/2050)).
+          - Clarify ApplyPatch path conventions and add absolute-path hint error ([#2049](https://github.com/holon-run/holon/pull/2049)).
+          - Increase fallback prompt budget and deduct non-trimmable tokens in degraded rounds ([#2048](https://github.com/holon-run/holon/pull/2048)).
+          - Preserve Anthropic server tool blocks and fold repeated tool calls ([#2051](https://github.com/holon-run/holon/pull/2051)).
+          - Unify reasoning_summaries and supports_reasoning into single field ([#2055](https://github.com/holon-run/holon/pull/2055)).
+          - Guard reasoning_effort by model-level supports_reasoning capability ([#2041](https://github.com/holon-run/holon/pull/2041)).
+          - Refresh memory index before search to prevent stale results ([5717c4a](https://github.com/holon-run/holon/commit/5717c4ad)).
+          - Make RuntimeDb mandatory and remove JSONL fallback from runtime read/write paths ([#2038](https://github.com/holon-run/holon/pull/2038)).
+          - Remove legacy JSONL module and complete JSONL cleanup ([#2045](https://github.com/holon-run/holon/pull/2045)).
+          - Migrate operator domains from JSONL to DB ([#2044](https://github.com/holon-run/holon/pull/2044)).
+          - Remove legacy_inline_plan field and from_legacy_anthropic_model dead code ([#2047](https://github.com/holon-run/holon/pull/2047)).
+          - Remove waiting_intents entirely ([#2043](https://github.com/holon-run/holon/pull/2043)).
 
           ## Install
 
