@@ -81,6 +81,18 @@ impl RuntimeIndexOutboxRepository<'_> {
             .map_err(Into::into)
     }
 
+    /// Return distinct agent ids that have at least one pending outbox row,
+    /// ordered for deterministic processing.
+    ///
+    /// Uses the `idx_runtime_index_outbox_agent_seq` index for efficiency.
+    pub fn agent_ids_with_pending(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection
+            .prepare("SELECT DISTINCT agent_id FROM runtime_index_outbox ORDER BY agent_id ASC")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
     pub fn high_watermark_for_agent(&self, agent_id: &str) -> Result<i64> {
         let connection = self.db.connection()?;
         connection

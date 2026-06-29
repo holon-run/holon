@@ -889,6 +889,23 @@ impl MemoryIndex {
             )?;
             transaction.commit()?;
         }
+
+        // Delete consumed outbox rows to keep the table bounded.  The cursor
+        // already advanced past every row we processed (including failures
+        // which are skipped), so deleting through `last_change_seq` is safe.
+        if last_change_seq > cursor {
+            if let Err(error) = runtime_db
+                .runtime_index_outbox()
+                .delete_through(&agent_id, last_change_seq)
+            {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    through_change_seq = last_change_seq,
+                    error = %error,
+                    "failed to delete consumed memory index outbox rows"
+                );
+            }
+        }
         self.last_outbox_consume_reached_limit = limit > 0 && row_count >= limit;
         Ok(())
     }
@@ -954,7 +971,7 @@ impl MemoryIndex {
         let high_watermark = runtime_db
             .runtime_index_outbox()
             .high_watermark_for_agent(agent_id)?;
-        let lag = high_watermark.saturating_sub(cursor);
+        let lag = (high_watermark - cursor).max(0);
         let freshness = if !memory_index_path(storage).exists() {
             "missing"
         } else if memory_index_is_dirty(storage)

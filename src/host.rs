@@ -11,7 +11,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use tokio::{
-    sync::RwLock,
+    sync::{Notify, RwLock},
     task::{spawn_blocking, JoinHandle},
 };
 use tracing::warn;
@@ -104,6 +104,7 @@ struct HostInner {
     registry: RuntimeRegistry,
     runtime_db: RuntimeDb,
     event_bus: EventBus,
+    memory_index_notify: Arc<Notify>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
     agents: RwLock<HashMap<String, AgentEntry>>,
@@ -202,6 +203,7 @@ impl RuntimeHost {
                 registry,
                 runtime_db,
                 event_bus: EventBus::new(1024),
+                memory_index_notify: Arc::new(Notify::new()),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider,
                 agents: RwLock::new(HashMap::new()),
@@ -256,7 +258,107 @@ impl RuntimeHost {
             self.runtime_db().clone(),
         )?;
         storage.enable_event_bus(self.inner.event_bus.clone())?;
+        storage.enable_memory_index_notify(self.inner.memory_index_notify.clone())?;
         Ok(storage)
+    }
+
+    /// Spawn a single daemon-level memory indexer that covers all agents.
+    ///
+    /// Replaces the previous per-`RuntimeHandle` indexer model where every
+    /// agent spawned its own indexer polling the shared runtime DB.  The
+    /// daemon indexer discovers work precisely via
+    /// `agent_ids_with_pending()`, processes each agent's outbox, and waits
+    /// on a shared `Notify` driven by evidence writes.
+    pub fn spawn_daemon_memory_indexer(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            tracing::debug!("daemon memory indexer not spawned: no Tokio runtime");
+            return;
+        }
+        let host = self.clone();
+        tokio::spawn(async move {
+            host.run_daemon_memory_indexer().await;
+        });
+    }
+
+    const DAEMON_INDEXER_BATCH: usize = 500;
+    const DAEMON_INDEXER_FALLBACK_POLL: Duration = Duration::from_secs(60);
+
+    async fn run_daemon_memory_indexer(self) {
+        use crate::memory::refresh_memory_index_bounded;
+        loop {
+            let agent_ids = match self
+                .inner
+                .runtime_db
+                .runtime_index_outbox()
+                .agent_ids_with_pending()
+            {
+                Ok(ids) => ids,
+                Err(error) => {
+                    tracing::warn!(error = %error, "daemon memory indexer: failed to query pending agents");
+                    self.wait_daemon_indexer_round().await;
+                    continue;
+                }
+            };
+
+            let mut did_work = false;
+            for agent_id in &agent_ids {
+                let storage = match self.agent_storage(agent_id) {
+                    Ok(storage) => storage,
+                    Err(error) => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            error = %error,
+                            "daemon memory indexer: failed to open storage"
+                        );
+                        continue;
+                    }
+                };
+                let result = tokio::task::spawn_blocking(move || {
+                    refresh_memory_index_bounded(&storage, None, Self::DAEMON_INDEXER_BATCH)
+                })
+                .await;
+                match result {
+                    Ok(Ok(status)) => {
+                        if status.lag > 0 || status.consumption_was_limited {
+                            did_work = true;
+                        }
+                        tracing::debug!(
+                            agent_id = %agent_id,
+                            freshness = %status.freshness,
+                            lag = status.lag,
+                            "daemon memory indexer: processed agent"
+                        );
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            error = %error,
+                            "daemon memory indexer: refresh failed"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            error = %error,
+                            "daemon memory indexer: task failed"
+                        );
+                    }
+                }
+            }
+
+            if did_work {
+                tokio::task::yield_now().await;
+            } else {
+                self.wait_daemon_indexer_round().await;
+            }
+        }
+    }
+
+    async fn wait_daemon_indexer_round(&self) {
+        tokio::select! {
+            _ = self.inner.memory_index_notify.notified() => {}
+            _ = tokio::time::sleep(Self::DAEMON_INDEXER_FALLBACK_POLL) => {}
+        }
     }
 
     pub(crate) fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<PublishedAuditEvent> {
@@ -1722,6 +1824,7 @@ impl RuntimeHost {
                 self.inner.event_bus.clone(),
             )?
         };
+        runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
         let runtime_task = tokio::spawn({
             let runtime = runtime.clone();
             async move {

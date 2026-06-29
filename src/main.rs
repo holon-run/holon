@@ -808,6 +808,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
 
     let host = RuntimeHost::new(config.clone())?;
     host.default_runtime().await?;
+    host.spawn_daemon_memory_indexer();
     let runtime_service = RuntimeServiceHandle::new(&config)?;
 
     let tcp_router = http::router(
