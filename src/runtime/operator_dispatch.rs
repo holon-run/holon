@@ -112,30 +112,19 @@ impl RuntimeHandle {
             );
             self.persist_brief(&brief).await?;
         } else {
-            if !outcome.terminal_delivery.suppress_normal_brief {
-                let mut brief =
-                    brief::make_result(&message.agent_id, message, outcome.final_text.clone());
-                brief.turn_index = Some(outcome.turn_index);
-                bind_brief_to_assistant_round(
-                    &mut brief,
-                    outcome.final_text_source_assistant_round_id.as_deref(),
-                );
-                self.persist_brief(&brief).await?;
-            }
-            for promotion in &outcome.terminal_delivery.promoted_completion_reports {
-                if outcome.terminal_delivery.suppress_normal_brief {
-                    self.inner.storage.append_event(&AuditEvent::new(
-                        "turn_terminal_brief_suppressed",
-                        serde_json::json!({
-                            "agent_id": message.agent_id.clone(),
-                            "message_id": message.id.clone(),
-                            "reason": "work_item_completion_report_promoted",
-                            "work_item_id": &promotion.work_item_id,
-                            "brief_id": &promotion.brief_id,
-                        }),
-                    ))?;
-                }
-            }
+            // Always generate the normal result brief (no longer suppressed for
+            // promoted completion reports). The same turn supports multiple briefs,
+            // and the normal brief and promoted completion reports serve different
+            // purposes — the former records the turn-level result, the latter records
+            // the work-item-level completion.
+            let mut brief =
+                brief::make_result(&message.agent_id, message, outcome.final_text.clone());
+            brief.turn_index = Some(outcome.turn_index);
+            bind_brief_to_assistant_round(
+                &mut brief,
+                outcome.final_text_source_assistant_round_id.as_deref(),
+            );
+            self.persist_brief(&brief).await?;
         }
         self.persist_turn_record(&outcome.terminal).await?;
         self.promote_turn_active_skills().await?;

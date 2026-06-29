@@ -35,7 +35,7 @@ use super::completion::{
     command_batch_preview_field, command_cost_field, command_display_field, command_preview_field,
     envelope_completes_work_item, exec_command_disposition_field, exec_command_exit_status_field,
     exec_command_task_handle_field, rejects_truncated_mutation_tool_call, result_work_item_id,
-    round_has_post_completion_non_completion_tool_call, truncated_mutation_recovery_hint,
+    truncated_mutation_recovery_hint,
 };
 use super::context_management::context_management_diagnostic;
 use super::projection::{
@@ -50,7 +50,7 @@ use super::reminders::{
 };
 use super::{
     append_follow_up_user_texts, render_operator_interjection_text, AgentLoopOutcome,
-    LoopControlOptions, TurnPromotedCompletionReport, TurnRoundRecord, TurnTerminalDelivery,
+    LoopControlOptions, TurnRoundRecord,
     MAX_OUTPUT_RECOVERY_ATTEMPTS, ROUND_TEXT_PREVIEW_LIMIT,
     WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS,
 };
@@ -101,7 +101,6 @@ impl RuntimeHandle {
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
-            terminal_delivery: TurnTerminalDelivery::normal(),
         }))
     }
 
@@ -268,7 +267,6 @@ impl RuntimeHandle {
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
             terminal_kind,
-            terminal_delivery: TurnTerminalDelivery::normal(),
         }))
     }
     pub(super) async fn complete_turn_with_abort(
@@ -491,8 +489,6 @@ impl TurnExecution<'_> {
         let mut completed_rounds = Vec::<TurnRoundRecord>::new();
         let turn_started_at = Instant::now();
         let mut sleep_duration_ms = None;
-        let mut promoted_completion_reports = Vec::<TurnPromotedCompletionReport>::new();
-        let mut post_completion_continuation_action = false;
         let mut completed_work_item_this_turn = false;
         let mut round = 0usize;
         let mut truncated_text_history = Vec::new();
@@ -583,7 +579,6 @@ impl TurnExecution<'_> {
                         sleep_duration_ms: None,
                         allow_sleep_runnable_work_override: false,
                         terminal_kind: TurnTerminalKind::Aborted,
-                        terminal_delivery: TurnTerminalDelivery::normal(),
                     });
                 }
             }
@@ -820,7 +815,6 @@ impl TurnExecution<'_> {
                             sleep_duration_ms: None,
                             allow_sleep_runnable_work_override: false,
                             terminal_kind: TurnTerminalKind::BaselineOverBudget,
-                            terminal_delivery: TurnTerminalDelivery::normal(),
                         });
                     }
                 };
@@ -1340,20 +1334,9 @@ impl TurnExecution<'_> {
                     sleep_duration_ms,
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
-                    terminal_delivery: if !promoted_completion_reports.is_empty() {
-                        TurnTerminalDelivery::completion_reports(
-                            promoted_completion_reports,
-                            !post_completion_continuation_action,
-                        )
-                    } else {
-                        TurnTerminalDelivery::normal()
-                    },
                 });
             }
 
-            if !promoted_completion_reports.is_empty() && !tool_calls.is_empty() {
-                post_completion_continuation_action = true;
-            }
             let round_tool_calls = tool_calls.clone();
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
@@ -1645,7 +1628,7 @@ impl TurnExecution<'_> {
                     }
                 }
             }
-            let completion_promotions = runtime
+            let _completion_promotions = runtime
                 .promote_round_completion_report_if_present(
                     agent_id,
                     round,
@@ -1660,13 +1643,6 @@ impl TurnExecution<'_> {
                 .any(envelope_completes_work_item)
             {
                 completed_work_item_this_turn = true;
-            }
-            if !completion_promotions.is_empty()
-                && round_has_post_completion_non_completion_tool_call(
-                    &completed_round_assistant_blocks,
-                )
-            {
-                post_completion_continuation_action = true;
             }
             // Build ref-backed tool result metadata for transcript
             use crate::types::{ToolResultData, ToolResultRef};
@@ -1703,11 +1679,6 @@ impl TurnExecution<'_> {
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
-            if (!promoted_completion_reports.is_empty() || !completion_promotions.is_empty())
-                && has_operator_interjections
-            {
-                post_completion_continuation_action = true;
-            }
             let round_record = TurnRoundRecord {
                 round,
                 estimated_tokens: build_round_estimated_tokens(
@@ -1735,12 +1706,6 @@ impl TurnExecution<'_> {
             }
             completed_rounds.push(round_record);
 
-            promoted_completion_reports.extend(completion_promotions.into_iter().map(
-                |promotion| TurnPromotedCompletionReport {
-                    work_item_id: promotion.record.id,
-                    brief_id: promotion.brief_id,
-                },
-            ));
 
             if all_tool_results_should_sleep && !has_operator_interjections {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
@@ -1761,14 +1726,6 @@ impl TurnExecution<'_> {
                     sleep_duration_ms: sleep_duration_ms.or(legacy_sleep_duration_ms),
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
-                    terminal_delivery: if !promoted_completion_reports.is_empty() {
-                        TurnTerminalDelivery::completion_reports(
-                            promoted_completion_reports,
-                            !post_completion_continuation_action,
-                        )
-                    } else {
-                        TurnTerminalDelivery::normal()
-                    },
                 });
             }
         }

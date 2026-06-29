@@ -2184,65 +2184,6 @@ fn completion_report_texts_empty_when_no_text_precedes() {
 }
 
 // -----------------------------------------------------------------------
-// round_has_post_completion_non_completion_tool_call tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn post_completion_false_when_no_tools() {
-    let blocks = vec![ModelBlock::Text {
-        text: "hello".to_string(),
-    }];
-    assert!(!round_has_post_completion_non_completion_tool_call(&blocks));
-}
-
-#[test]
-fn post_completion_false_when_only_complete_work_item() {
-    let blocks = vec![
-        ModelBlock::Text {
-            text: "report".to_string(),
-        },
-        ModelBlock::ToolUse {
-            id: "call_1".to_string(),
-            name: "CompleteWorkItem".to_string(),
-            input: serde_json::json!({}),
-        },
-    ];
-    assert!(!round_has_post_completion_non_completion_tool_call(&blocks));
-}
-
-#[test]
-fn post_completion_true_when_tool_after_complete() {
-    let blocks = vec![
-        ModelBlock::ToolUse {
-            id: "call_1".to_string(),
-            name: "CompleteWorkItem".to_string(),
-            input: serde_json::json!({}),
-        },
-        ModelBlock::ToolUse {
-            id: "call_2".to_string(),
-            name: "ExecCommand".to_string(),
-            input: serde_json::json!({"cmd": "echo hi"}),
-        },
-    ];
-    assert!(round_has_post_completion_non_completion_tool_call(&blocks));
-}
-
-#[test]
-fn post_completion_false_when_multiple_completes_no_other() {
-    let blocks = vec![
-        ModelBlock::ToolUse {
-            id: "call_1".to_string(),
-            name: "CompleteWorkItem".to_string(),
-            input: serde_json::json!({}),
-        },
-        ModelBlock::ToolUse {
-            id: "call_2".to_string(),
-            name: "CompleteWorkItem".to_string(),
-            input: serde_json::json!({}),
-        },
-    ];
-    assert!(!round_has_post_completion_non_completion_tool_call(&blocks));
-}
 
 // -----------------------------------------------------------------------
 // tool_result_invalidates_checkpoint_anchor tests

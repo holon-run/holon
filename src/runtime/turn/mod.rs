@@ -43,42 +43,8 @@ pub(crate) struct AgentLoopOutcome {
     pub(super) sleep_duration_ms: Option<u64>,
     pub(super) allow_sleep_runnable_work_override: bool,
     pub(super) terminal_kind: TurnTerminalKind,
-    pub(super) terminal_delivery: TurnTerminalDelivery,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct TurnTerminalDelivery {
-    /// Completion reports already promoted during this turn.
-    pub(super) promoted_completion_reports: Vec<TurnPromotedCompletionReport>,
-    /// Whether the terminal result brief should be suppressed because it would
-    /// only duplicate a promoted completion report.
-    pub(super) suppress_normal_brief: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct TurnPromotedCompletionReport {
-    pub(super) work_item_id: String,
-    pub(super) brief_id: String,
-}
-
-impl TurnTerminalDelivery {
-    fn normal() -> Self {
-        Self {
-            promoted_completion_reports: Vec::new(),
-            suppress_normal_brief: false,
-        }
-    }
-
-    fn completion_reports(
-        promoted_completion_reports: Vec<TurnPromotedCompletionReport>,
-        suppress_normal_brief: bool,
-    ) -> Self {
-        Self {
-            promoted_completion_reports,
-            suppress_normal_brief,
-        }
-    }
-}
 
 pub(crate) struct LoopControlOptions {
     pub(super) max_tool_rounds: Option<usize>,
