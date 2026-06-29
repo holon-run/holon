@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 
 use crate::{
     memory::index::enqueue_memory_index_upsert,
@@ -81,6 +81,8 @@ pub struct AppStorage {
     audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
     runtime_db: RuntimeDb,
     event_bus: Arc<Mutex<Option<EventBus>>>,
+    /// Optional shared notify for the daemon-level memory indexer.
+    memory_index_notify: Arc<Mutex<Option<Arc<Notify>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +241,7 @@ impl AppStorage {
             runtime_db,
             event_bus: Arc::new(Mutex::new(None)),
             data_dir,
+            memory_index_notify: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -273,6 +276,17 @@ impl AppStorage {
             .lock()
             .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?;
         *guard = Some(event_bus);
+        Ok(())
+    }
+
+    /// Attach a shared memory-index notify so the daemon-level indexer is
+    /// woken immediately after new evidence is enqueued for indexing.
+    pub(crate) fn enable_memory_index_notify(&self, notify: Arc<Notify>) -> Result<()> {
+        let mut guard = self
+            .memory_index_notify
+            .lock()
+            .map_err(|_| anyhow::anyhow!("memory index notify mutex poisoned"))?;
+        *guard = Some(notify);
         Ok(())
     }
 
@@ -1002,6 +1016,14 @@ impl AppStorage {
                     source_ref,
                     "failed to mark memory index dirty after enqueue failure"
                 );
+            }
+        }
+
+        // Wake the daemon-level memory indexer if one is attached so it can
+        // pick up the newly enqueued outbox rows without waiting for a poll.
+        if let Ok(guard) = self.memory_index_notify.lock() {
+            if let Some(notify) = guard.as_ref() {
+                notify.notify_one();
             }
         }
         Ok(())

@@ -209,6 +209,7 @@ pub async fn run_once(config: AppConfig, request: RunOnceRequest) -> Result<RunO
     std::fs::create_dir_all(config.agent_root_dir())?;
     std::fs::create_dir_all(config.run_dir())?;
     let host = RuntimeHost::new(config)?;
+    host.spawn_daemon_memory_indexer();
     run_once_with_host(host, request).await
 }
 

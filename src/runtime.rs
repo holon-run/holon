@@ -6,7 +6,6 @@ mod continuation;
 mod delivery;
 mod failure;
 mod lifecycle;
-mod memory_indexer;
 mod memory_refresh;
 mod message_dispatch;
 mod operator;

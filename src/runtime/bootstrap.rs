@@ -308,7 +308,6 @@ impl RuntimeHandle {
                 shutdown_requested: AtomicBool::new(false),
             }),
         };
-        runtime.spawn_background_memory_indexer();
         Ok(runtime)
     }
 
@@ -327,6 +326,12 @@ impl RuntimeHandle {
             guard.state.clone()
         };
         self.apply_patch_surface_for_state(&state)
+    }
+
+    /// Attach a shared memory-index notify so the daemon-level indexer is
+    /// woken when this runtime writes new evidence for indexing.
+    pub(crate) fn enable_memory_index_notify(&self, notify: Arc<tokio::sync::Notify>) {
+        let _ = self.inner.storage.enable_memory_index_notify(notify);
     }
 
     pub(crate) fn apply_patch_surface_for_state(&self, state: &AgentState) -> ApplyPatchSurface {
