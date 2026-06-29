@@ -614,6 +614,12 @@ impl RuntimeHandle {
         let storage = self.inner.storage.clone();
         let query = query.to_string();
         tokio::task::spawn_blocking(move || {
+            // Consume pending index entries so search results are not stale.
+            let _ = crate::memory::ensure_memory_indexes_fresh(
+                &storage,
+                active_workspace_id.as_deref(),
+                &[],
+            );
             crate::memory::search_memory_query(
                 &storage,
                 &query,
@@ -653,6 +659,13 @@ impl RuntimeHandle {
         let query = query.to_string();
         let agent_ids = agent_ids.to_vec();
         tokio::task::spawn_blocking(move || {
+            // Consume pending index entries from all relevant storages so that
+            // search results are not stale due to background indexer lag.
+            let _ = crate::memory::ensure_memory_indexes_fresh(
+                &storage,
+                active_workspace_id.as_deref(),
+                &agent_storages,
+            );
             crate::memory::search_memory_query_for_agent_storages(
                 &storage,
                 &query,
