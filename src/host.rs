@@ -4,7 +4,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -14,6 +14,7 @@ use tokio::{
     sync::{Notify, RwLock},
     task::{spawn_blocking, JoinHandle},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::{
@@ -105,6 +106,8 @@ struct HostInner {
     runtime_db: RuntimeDb,
     event_bus: EventBus,
     memory_index_notify: Arc<Notify>,
+    daemon_indexer_token: CancellationToken,
+    daemon_indexer_handle: Mutex<Option<JoinHandle<()>>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
     agents: RwLock<HashMap<String, AgentEntry>>,
@@ -204,6 +207,8 @@ impl RuntimeHost {
                 runtime_db,
                 event_bus: EventBus::new(1024),
                 memory_index_notify: Arc::new(Notify::new()),
+                daemon_indexer_token: CancellationToken::new(),
+                daemon_indexer_handle: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider,
                 agents: RwLock::new(HashMap::new()),
@@ -275,9 +280,22 @@ impl RuntimeHost {
             return;
         }
         let host = self.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             host.run_daemon_memory_indexer().await;
         });
+        *self.inner.daemon_indexer_handle.lock().unwrap() = Some(handle);
+    }
+
+    /// Signal the daemon memory indexer to stop and await its exit.
+    ///
+    /// Called during graceful shutdown so the indexer does not outlive the
+    /// process servers.
+    pub async fn shutdown_daemon_memory_indexer(&self) {
+        self.inner.daemon_indexer_token.cancel();
+        let handle = self.inner.daemon_indexer_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
     }
 
     const DAEMON_INDEXER_BATCH: usize = 500;
@@ -286,6 +304,9 @@ impl RuntimeHost {
     async fn run_daemon_memory_indexer(self) {
         use crate::memory::refresh_memory_index_bounded;
         loop {
+            if self.inner.daemon_indexer_token.is_cancelled() {
+                break;
+            }
             let agent_ids = match self
                 .inner
                 .runtime_db
@@ -356,6 +377,7 @@ impl RuntimeHost {
 
     async fn wait_daemon_indexer_round(&self) {
         tokio::select! {
+            _ = self.inner.daemon_indexer_token.cancelled() => {}
             _ = self.inner.memory_index_notify.notified() => {}
             _ = tokio::time::sleep(Self::DAEMON_INDEXER_FALLBACK_POLL) => {}
         }
