@@ -3630,6 +3630,57 @@ mod tests {
     }
 
     #[test]
+    fn consume_runtime_outbox_deletes_consumed_rows() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+
+        let changes: Vec<_> = (0..5)
+            .map(|i| RuntimeIndexChange {
+                agent_id: "default".into(),
+                source_kind: "brief".into(),
+                source_id: format!("test-{i}"),
+                source_ref: format!("brief:test-{i}"),
+                operation: RuntimeIndexOperation::Upsert,
+                source_updated_at: Some(Utc::now()),
+                reason: "test_consume_delete".into(),
+            })
+            .collect();
+        runtime_db
+            .runtime_index_outbox()
+            .append_changes(&changes)
+            .unwrap();
+
+        // Outbox has rows before consumption.
+        assert_eq!(
+            runtime_db
+                .runtime_index_outbox()
+                .high_watermark_for_agent("default")
+                .unwrap(),
+            5
+        );
+
+        // Consume all rows via the full refresh path.
+        let status = refresh_memory_index_bounded(&storage, None, 100).unwrap();
+        assert_eq!(status.lag, 0);
+        assert!(!status.consumption_was_limited);
+
+        // All consumed rows should have been deleted.
+        assert_eq!(
+            runtime_db
+                .runtime_index_outbox()
+                .high_watermark_for_agent("default")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn memory_get_hydrates_transcript_backed_brief_content() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
