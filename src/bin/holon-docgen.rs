@@ -119,7 +119,7 @@ and capabilities.
             model = m.model_ref.model,
             ctx = m.context_window_tokens.map_or("—".to_string(), format_tokens),
             max_out = m.default_max_output_tokens.map_or("—".to_string(), format_tokens),
-            reasoning = if m.capabilities.reasoning_summaries { "✅" } else { "—" },
+            reasoning = if m.capabilities.supports_reasoning { "✅" } else { "—" },
             image = if m.capabilities.image_input { "✅" } else { "—" },
         );
     }

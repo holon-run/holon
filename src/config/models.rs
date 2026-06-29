@@ -341,8 +341,8 @@ pub(crate) fn merged_model_capabilities(
         if let Some(value) = override_config.parallel_tool_calls {
             capabilities.parallel_tool_calls = value;
         }
-        if let Some(value) = override_config.reasoning_summaries {
-            capabilities.reasoning_summaries = value;
+        if let Some(value) = override_config.supports_reasoning {
+            capabilities.supports_reasoning = value;
         }
         if let Some(value) = override_config.image_input {
             capabilities.image_input = value;

@@ -32,8 +32,6 @@ pub struct ModelCapabilityFlags {
     #[serde(default)]
     pub parallel_tool_calls: bool,
     #[serde(default)]
-    pub reasoning_summaries: bool,
-    #[serde(default)]
     pub image_input: bool,
     #[serde(default)]
     pub supports_reasoning: bool,
@@ -46,8 +44,6 @@ pub struct ModelCapabilityOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_summaries: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_reasoning: Option<bool>,
@@ -58,7 +54,6 @@ pub struct ModelCapabilityOverride {
 impl ModelCapabilityOverride {
     pub fn is_empty(&self) -> bool {
         self.parallel_tool_calls.is_none()
-            && self.reasoning_summaries.is_none()
             && self.image_input.is_none()
             && self.supports_reasoning.is_none()
             && self.interactive_exec.is_none()
@@ -67,9 +62,6 @@ impl ModelCapabilityOverride {
     fn apply_to(&self, base: &mut ModelCapabilityFlags) {
         if let Some(value) = self.parallel_tool_calls {
             base.parallel_tool_calls = value;
-        }
-        if let Some(value) = self.reasoning_summaries {
-            base.reasoning_summaries = value;
         }
         if let Some(value) = self.image_input {
             base.image_input = value;
@@ -482,7 +474,7 @@ fn catalog_model(
     display_name: &str,
     context_window_tokens: usize,
     max_output_tokens: u32,
-    reasoning_summaries: bool,
+    supports_reasoning: bool,
     image_input: bool,
 ) -> BuiltInModelMetadata {
     let model_ref = ModelRef::new(provider_id(provider), model);
@@ -503,18 +495,11 @@ fn catalog_model(
         ),
         capabilities: ModelCapabilityFlags {
             image_input,
-            reasoning_summaries,
+            supports_reasoning,
             ..ModelCapabilityFlags::default()
         },
         source: ModelMetadataSource::BuiltInCatalog,
     }
-}
-
-/// Mark a built-in catalog entry as supporting reasoning/thinking parameters.
-/// Only models flagged here will receive reasoning_effort at the transport layer.
-fn with_reasoning(mut entry: BuiltInModelMetadata) -> BuiltInModelMetadata {
-    entry.capabilities.supports_reasoning = true;
-    entry
 }
 
 fn mirror_catalog_models(
@@ -589,7 +574,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
-                reasoning_summaries: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -609,7 +593,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
-                reasoning_summaries: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -629,7 +612,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
-                reasoning_summaries: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -649,7 +631,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
-                reasoning_summaries: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -669,7 +650,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
-                reasoning_summaries: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
@@ -688,7 +668,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
-                reasoning_summaries: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
@@ -707,7 +686,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
-                reasoning_summaries: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
@@ -724,7 +702,7 @@ fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
 
 fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
-        with_reasoning(catalog_model(
+        catalog_model(
             "anthropic",
             "claude-opus-4-7",
             "Claude Opus 4.7",
@@ -732,8 +710,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "anthropic",
             "claude-opus-4-6",
             "Claude Opus 4.6",
@@ -741,8 +719,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "anthropic",
             "claude-opus-4-5",
             "Claude Opus 4.5",
@@ -750,8 +728,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             64_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "anthropic",
             "claude-sonnet-4-5",
             "Claude Sonnet 4.5",
@@ -759,8 +737,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             64_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai-codex",
             "gpt-5.5",
             "GPT-5.5 (Codex)",
@@ -768,8 +746,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai-codex",
             "gpt-5.6-sol",
             "GPT-5.6 Sol (Codex)",
@@ -777,8 +755,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai-codex",
             "gpt-5.6-terra",
             "GPT-5.6 Terra (Codex)",
@@ -786,8 +764,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai-codex",
             "gpt-5.6-luna",
             "GPT-5.6 Luna (Codex)",
@@ -795,8 +773,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai-codex",
             "gpt-5.4-mini",
             "GPT-5.4 Mini (Codex)",
@@ -804,8 +782,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai-codex",
             "gpt-5.2",
             "GPT-5.2 (Codex)",
@@ -813,8 +791,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai",
             "gpt-5.6-sol",
             "GPT-5.6 Sol",
@@ -822,8 +800,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai",
             "gpt-5.6-terra",
             "GPT-5.6 Terra",
@@ -831,8 +809,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
-        with_reasoning(catalog_model(
+        ),
+        catalog_model(
             "openai",
             "gpt-5.6-luna",
             "GPT-5.6 Luna",
@@ -840,11 +818,11 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
+        ),
         // Standard OpenAI transport (OpenAiProvider) never sends reasoning params
-        // (its complete_turn hardcodes reasoning_effort: None), so with_reasoning()
-        // is intentionally omitted here. If that transport is ever wired to send
-        // reasoning, wrap these entries with with_reasoning().
+        // (its complete_turn hardcodes reasoning_effort: None). supports_reasoning
+        // is true but unused by this transport; catalog.rs only passes it to
+        // Anthropic and Codex transports.
         catalog_model("openai", "gpt-5.5", "GPT-5.5", 272_000, 128_000, true, true),
         catalog_model("openai", "gpt-5.2", "GPT-5.2", 272_000, 128_000, true, true),
         catalog_model(
@@ -1063,7 +1041,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        with_reasoning(catalog_model(
+        catalog_model(
             "litellm",
             "claude-opus-4-6",
             "Claude Opus 4.6",
@@ -1071,7 +1049,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             true,
             true,
-        )),
+        ),
         catalog_model(
             "minimax",
             "MiniMax-M3",
@@ -1457,7 +1435,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3.6-plus",
             1_000_000,
             65_536,
-            false,
+            true,
             true,
         ),
         catalog_model(
@@ -1655,7 +1633,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3.6-plus",
             1_000_000,
             65_536,
-            false,
+            true,
             true,
         ),
         catalog_model(
@@ -2747,7 +2725,7 @@ mod tests {
         assert_eq!(policy.context_window_tokens, Some(1_000_000));
         assert_eq!(policy.prompt_budget_estimated_tokens, 950_000);
         assert_eq!(policy.runtime_max_output_tokens, 384_000);
-        assert!(policy.capabilities.reasoning_summaries);
+        assert!(policy.capabilities.supports_reasoning);
         assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
 
         // GPT-5.6 family (Sol/Terra/Luna) added from the OpenAI limited preview.
@@ -2763,7 +2741,7 @@ mod tests {
         assert_eq!(sol.context_window_tokens, Some(272_000));
         assert_eq!(sol.runtime_max_output_tokens, 128_000);
         assert!(sol.capabilities.image_input);
-        assert!(sol.capabilities.reasoning_summaries);
+        assert!(sol.capabilities.supports_reasoning);
         assert_eq!(sol.source, ModelMetadataSource::BuiltInCatalog);
 
         assert!(catalog
@@ -2787,7 +2765,7 @@ mod tests {
         assert_eq!(nearai.display_name, "GLM 5.1 (NEAR AI Cloud TEE)");
         assert_eq!(nearai.context_window_tokens, Some(202_752));
         assert_eq!(nearai.runtime_max_output_tokens, 131_072);
-        assert!(nearai.capabilities.reasoning_summaries);
+        assert!(nearai.capabilities.supports_reasoning);
         assert_eq!(nearai.source, ModelMetadataSource::BuiltInCatalog);
     }
 
@@ -2819,7 +2797,7 @@ mod tests {
         assert_eq!(xiaomi.display_name, "Xiaomi MiMo V2.5 Pro");
         assert_eq!(xiaomi.context_window_tokens, Some(1_000_000));
         assert_eq!(xiaomi.runtime_max_output_tokens, 131_072);
-        assert!(xiaomi.capabilities.reasoning_summaries);
+        assert!(xiaomi.capabilities.supports_reasoning);
         assert_eq!(xiaomi.source, ModelMetadataSource::BuiltInCatalog);
 
         let xiaomi_ultraspeed = catalog.resolve_policy(
@@ -2836,7 +2814,7 @@ mod tests {
         );
         assert_eq!(xiaomi_ultraspeed.context_window_tokens, Some(1_000_000));
         assert_eq!(xiaomi_ultraspeed.runtime_max_output_tokens, 131_072);
-        assert!(xiaomi_ultraspeed.capabilities.reasoning_summaries);
+        assert!(xiaomi_ultraspeed.capabilities.supports_reasoning);
         assert_eq!(
             xiaomi_ultraspeed.source,
             ModelMetadataSource::BuiltInCatalog

@@ -144,7 +144,7 @@ The persisted runtime config should evolve toward this shape:
         "runtime_max_output_tokens": 8192,
         "capabilities": {
           "image_input": true,
-          "reasoning_summaries": true
+          "supports_reasoning": true
         }
       }
     }

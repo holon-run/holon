@@ -218,7 +218,7 @@ fn model_availability_row(entry: &ResolvedModelAvailability) -> ModelPickerRow {
 }
 
 fn supports_reasoning_effort(entry: &ResolvedModelAvailability) -> bool {
-    entry.policy.capabilities.reasoning_summaries
+    entry.policy.capabilities.supports_reasoning
         && entry.transport.as_deref() == Some("openai_codex_responses")
 }
 
@@ -253,7 +253,7 @@ mod tests {
             tool_output_truncation_estimated_tokens: 2_500,
             max_output_tokens_upper_limit: Some(128_000),
             capabilities: ModelCapabilityFlags {
-                reasoning_summaries: reasoning,
+                supports_reasoning: reasoning,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,

@@ -1,3 +1,6 @@
+   Compiling holon v0.23.0 (/home/jolestar/opensource/src/github.com/holon-run/holon)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.55s
+     Running `target/debug/holon-docgen models`
 ---
 title: Supported Models
 description: Complete reference of all built-in models and providers supported by Holon.
@@ -6,7 +9,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **39 providers** and **233 models**.
+Holon includes built-in configuration for **40 providers** and **248 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -55,8 +58,9 @@ running Holon.
 | `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
 | `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
 | `vllm` | OpenAI Chat Completions | `http://127.0.0.1:8000/v1` | `—` |
-| `volcengine` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/v3` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
-| `volcengine-coding` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/compatible` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine-agent` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/plan` | `VOLCENGINE_AGENT_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine-coding` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/coding` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
 | `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
 | `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
@@ -69,12 +73,12 @@ and capabilities.
 
 | Provider | Model | Usage | Context Window | Max Output | Reasoning | Image |
 |----------|-------|-------|----------------|------------|-----------|-------|
-| `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200000 | 32000 | — | ✅ |
+| `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200000 | 32000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-5` | `anthropic/claude-opus-4-5` | 200000 | 64000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-6` | `anthropic/claude-opus-4-6` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-7` | `anthropic/claude-opus-4-7` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-sonnet-4-5` | `anthropic/claude-sonnet-4-5` | 200000 | 64000 | ✅ | ✅ |
-| `anthropic` | `claude-sonnet-4-6` | `anthropic/claude-sonnet-4-6` | 200000 | 32000 | — | ✅ |
+| `anthropic` | `claude-sonnet-4-6` | `anthropic/claude-sonnet-4-6` | 200000 | 32000 | ✅ | ✅ |
 | `arcee` | `trinity-large-preview` | `arcee/trinity-large-preview` | 131072 | 16384 | — | — |
 | `arcee` | `trinity-large-thinking` | `arcee/trinity-large-thinking` | 262144 | 80000 | ✅ | — |
 | `arcee` | `trinity-mini` | `arcee/trinity-mini` | 131072 | 80000 | — | — |
@@ -120,7 +124,7 @@ and capabilities.
 | `dashscope` | `qwen3.5-flash` | `dashscope/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.5-plus` | `dashscope/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
 | `dashscope` | `qwen3.6-flash` | `dashscope/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
-| `dashscope` | `qwen3.6-plus` | `dashscope/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope` | `qwen3.6-plus` | `dashscope/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.7-max` | `dashscope/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-max-2026-05-20` | `dashscope/qwen3.7-max-2026-05-20` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-max-2026-06-08` | `dashscope/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
@@ -134,18 +138,18 @@ and capabilities.
 | `dashscope-coding-plan` | `qwen3-coder-plus` | `dashscope-coding-plan/qwen3-coder-plus` | 1000000 | 65536 | — | — |
 | `dashscope-coding-plan` | `qwen3-max-2026-01-23` | `dashscope-coding-plan/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
 | `dashscope-coding-plan` | `qwen3.5-plus` | `dashscope-coding-plan/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
-| `dashscope-coding-plan` | `qwen3.6-plus` | `dashscope-coding-plan/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope-coding-plan` | `qwen3.6-plus` | `dashscope-coding-plan/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope-coding-plan` | `qwen3.7-plus` | `dashscope-coding-plan/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope-token-plan` | `MiniMax-M2.5` | `dashscope-token-plan/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
 | `dashscope-token-plan` | `deepseek-v3.2` | `dashscope-token-plan/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
-| `dashscope-token-plan` | `deepseek-v4-flash` | `dashscope-token-plan/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
-| `dashscope-token-plan` | `deepseek-v4-pro` | `dashscope-token-plan/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `dashscope-token-plan` | `deepseek-v4-flash` | `dashscope-token-plan/deepseek-v4-flash` | 1000000 | 65536 | ✅ | — |
+| `dashscope-token-plan` | `deepseek-v4-pro` | `dashscope-token-plan/deepseek-v4-pro` | 1000000 | 65536 | ✅ | — |
 | `dashscope-token-plan` | `glm-5` | `dashscope-token-plan/glm-5` | 202752 | 16384 | ✅ | — |
-| `dashscope-token-plan` | `glm-5.1` | `dashscope-token-plan/glm-5.1` | 202752 | 131072 | ✅ | — |
-| `dashscope-token-plan` | `glm-5.2` | `dashscope-token-plan/glm-5.2` | 1000000 | 131072 | ✅ | — |
+| `dashscope-token-plan` | `glm-5.1` | `dashscope-token-plan/glm-5.1` | 202752 | 65536 | ✅ | — |
+| `dashscope-token-plan` | `glm-5.2` | `dashscope-token-plan/glm-5.2` | 1000000 | 65536 | ✅ | — |
 | `dashscope-token-plan` | `kimi-k2.5` | `dashscope-token-plan/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
-| `dashscope-token-plan` | `kimi-k2.6` | `dashscope-token-plan/kimi-k2.6` | 262144 | 98304 | ✅ | ✅ |
-| `dashscope-token-plan` | `kimi-k2.7-code` | `dashscope-token-plan/kimi-k2.7-code` | 262144 | 98304 | ✅ | ✅ |
+| `dashscope-token-plan` | `kimi-k2.6` | `dashscope-token-plan/kimi-k2.6` | 262144 | 65536 | ✅ | ✅ |
+| `dashscope-token-plan` | `kimi-k2.7-code` | `dashscope-token-plan/kimi-k2.7-code` | 262144 | 65536 | ✅ | ✅ |
 | `dashscope-token-plan` | `qwen3.6-flash` | `dashscope-token-plan/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope-token-plan` | `qwen3.6-plus` | `dashscope-token-plan/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope-token-plan` | `qwen3.7-max` | `dashscope-token-plan/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
@@ -197,12 +201,18 @@ and capabilities.
 | `openai` | `gpt-5.4` | `openai/gpt-5.4` | 272000 | — | ✅ | ✅ |
 | `openai` | `gpt-5.4-mini` | `openai/gpt-5.4-mini` | 128000 | — | ✅ | ✅ |
 | `openai` | `gpt-5.5` | `openai/gpt-5.5` | 272000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-5.6-luna` | `openai/gpt-5.6-luna` | 272000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-5.6-sol` | `openai/gpt-5.6-sol` | 272000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-5.6-terra` | `openai/gpt-5.6-terra` | 272000 | 128000 | ✅ | ✅ |
 | `openai-codex` | `gpt-5.2` | `openai-codex/gpt-5.2` | 272000 | 128000 | ✅ | ✅ |
 | `openai-codex` | `gpt-5.3-codex` | `openai-codex/gpt-5.3-codex` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-5.3-codex-spark` | `openai-codex/gpt-5.3-codex-spark` | 128000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-5.4` | `openai-codex/gpt-5.4` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-5.4-mini` | `openai-codex/gpt-5.4-mini` | 272000 | 128000 | ✅ | ✅ |
 | `openai-codex` | `gpt-5.5` | `openai-codex/gpt-5.5` | 272000 | 128000 | ✅ | ✅ |
+| `openai-codex` | `gpt-5.6-luna` | `openai-codex/gpt-5.6-luna` | 272000 | 128000 | ✅ | ✅ |
+| `openai-codex` | `gpt-5.6-sol` | `openai-codex/gpt-5.6-sol` | 272000 | 128000 | ✅ | ✅ |
+| `openai-codex` | `gpt-5.6-terra` | `openai-codex/gpt-5.6-terra` | 272000 | 128000 | ✅ | ✅ |
 | `opencode-go` | `deepseek-v4-flash` | `opencode-go/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4-pro` | `opencode-go/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `openrouter` | `auto` | `openrouter/auto` | 200000 | 8192 | — | ✅ |
@@ -257,6 +267,17 @@ and capabilities.
 | `volcengine` | `doubao-seed-2-0-lite-260215` | `volcengine/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | ✅ |
 | `volcengine` | `glm-4-7-251222` | `volcengine/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
+| `volcengine-agent` | `ark-code-latest` | `volcengine-agent/ark-code-latest` | 256000 | 65536 | ✅ | — |
+| `volcengine-agent` | `deepseek-v3-2-251201` | `volcengine-agent/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
+| `volcengine-agent` | `deepseek-v4-flash` | `volcengine-agent/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
+| `volcengine-agent` | `deepseek-v4-pro` | `volcengine-agent/deepseek-v4-pro` | 1000000 | 8192 | ✅ | — |
+| `volcengine-agent` | `doubao-seed-2-0-code-preview-260215` | `volcengine-agent/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | — |
+| `volcengine-agent` | `doubao-seed-2-0-lite-260215` | `volcengine-agent/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
+| `volcengine-agent` | `doubao-seed-2-0-pro-260215` | `volcengine-agent/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | — |
+| `volcengine-agent` | `glm-4-7-251222` | `volcengine-agent/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
+| `volcengine-agent` | `glm-5.2` | `volcengine-agent/glm-5.2` | 204800 | 131072 | ✅ | — |
+| `volcengine-agent` | `kimi-k2.6` | `volcengine-agent/kimi-k2.6` | 262144 | 32768 | ✅ | — |
+| `volcengine-agent` | `kimi-k2.7-code` | `volcengine-agent/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
 | `volcengine-coding` | `ark-code-latest` | `volcengine-coding/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `volcengine-coding` | `deepseek-v3-2-251201` | `volcengine-coding/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
 | `volcengine-coding` | `deepseek-v4-flash` | `volcengine-coding/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
@@ -267,7 +288,7 @@ and capabilities.
 | `volcengine-coding` | `glm-4-7-251222` | `volcengine-coding/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
 | `volcengine-coding` | `glm-5.2` | `volcengine-coding/glm-5.2` | 204800 | 131072 | ✅ | — |
 | `volcengine-coding` | `kimi-k2.6` | `volcengine-coding/kimi-k2.6` | 262144 | 32768 | ✅ | — |
-| `volcengine-coding` | `kimi-k2.7-code` | `volcengine-coding/kimi-k2.7-code` | 262144 | 65536 | ✅ | — |
+| `volcengine-coding` | `kimi-k2.7-code` | `volcengine-coding/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
 | `xai` | `grok-3` | `xai/grok-3` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-fast` | `xai/grok-3-fast` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-mini` | `xai/grok-3-mini` | 131072 | 8192 | ✅ | — |
@@ -300,3 +321,4 @@ and capabilities.
 | `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
+Generated model reference: 40 providers, 248 models.
