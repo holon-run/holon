@@ -1,3 +1,6 @@
+   Compiling holon v0.23.0 (/home/jolestar/opensource/src/github.com/holon-run/holon)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.55s
+     Running `target/debug/holon-docgen models`
 ---
 title: Supported Models
 description: Complete reference of all built-in models and providers supported by Holon.
@@ -70,12 +73,12 @@ and capabilities.
 
 | Provider | Model | Usage | Context Window | Max Output | Reasoning | Image |
 |----------|-------|-------|----------------|------------|-----------|-------|
-| `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200000 | 32000 | — | ✅ |
+| `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200000 | 32000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-5` | `anthropic/claude-opus-4-5` | 200000 | 64000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-6` | `anthropic/claude-opus-4-6` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-7` | `anthropic/claude-opus-4-7` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-sonnet-4-5` | `anthropic/claude-sonnet-4-5` | 200000 | 64000 | ✅ | ✅ |
-| `anthropic` | `claude-sonnet-4-6` | `anthropic/claude-sonnet-4-6` | 200000 | 32000 | — | ✅ |
+| `anthropic` | `claude-sonnet-4-6` | `anthropic/claude-sonnet-4-6` | 200000 | 32000 | ✅ | ✅ |
 | `arcee` | `trinity-large-preview` | `arcee/trinity-large-preview` | 131072 | 16384 | — | — |
 | `arcee` | `trinity-large-thinking` | `arcee/trinity-large-thinking` | 262144 | 80000 | ✅ | — |
 | `arcee` | `trinity-mini` | `arcee/trinity-mini` | 131072 | 80000 | — | — |
@@ -121,7 +124,7 @@ and capabilities.
 | `dashscope` | `qwen3.5-flash` | `dashscope/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.5-plus` | `dashscope/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
 | `dashscope` | `qwen3.6-flash` | `dashscope/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
-| `dashscope` | `qwen3.6-plus` | `dashscope/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope` | `qwen3.6-plus` | `dashscope/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.7-max` | `dashscope/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-max-2026-05-20` | `dashscope/qwen3.7-max-2026-05-20` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-max-2026-06-08` | `dashscope/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
@@ -135,7 +138,7 @@ and capabilities.
 | `dashscope-coding-plan` | `qwen3-coder-plus` | `dashscope-coding-plan/qwen3-coder-plus` | 1000000 | 65536 | — | — |
 | `dashscope-coding-plan` | `qwen3-max-2026-01-23` | `dashscope-coding-plan/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
 | `dashscope-coding-plan` | `qwen3.5-plus` | `dashscope-coding-plan/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
-| `dashscope-coding-plan` | `qwen3.6-plus` | `dashscope-coding-plan/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope-coding-plan` | `qwen3.6-plus` | `dashscope-coding-plan/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope-coding-plan` | `qwen3.7-plus` | `dashscope-coding-plan/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope-token-plan` | `MiniMax-M2.5` | `dashscope-token-plan/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
 | `dashscope-token-plan` | `deepseek-v3.2` | `dashscope-token-plan/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
@@ -318,3 +321,4 @@ and capabilities.
 | `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
+Generated model reference: 40 providers, 248 models.

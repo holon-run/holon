@@ -282,7 +282,7 @@ fn sample_model_availability(
             tool_output_truncation_estimated_tokens: 2_500,
             max_output_tokens_upper_limit: Some(64_000),
             capabilities: crate::model_catalog::ModelCapabilityFlags {
-                reasoning_summaries: reasoning,
+                supports_reasoning: reasoning,
                 ..crate::model_catalog::ModelCapabilityFlags::default()
             },
             source: crate::model_catalog::ModelMetadataSource::RemoteDiscovered,
