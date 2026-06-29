@@ -148,23 +148,6 @@ pub(super) fn completion_report_texts_by_tool_id(
     reports
 }
 
-pub(super) fn round_has_post_completion_non_completion_tool_call(
-    assistant_blocks: &[ModelBlock],
-) -> bool {
-    let mut saw_completion = false;
-    for block in assistant_blocks {
-        if let ModelBlock::ToolUse { name, .. } = block {
-            if saw_completion && name != "CompleteWorkItem" {
-                return true;
-            }
-            if name == "CompleteWorkItem" {
-                saw_completion = true;
-            }
-        }
-    }
-    false
-}
-
 pub(super) fn result_work_item_id(envelope: &ToolResultEnvelope) -> Option<String> {
     envelope
         .result

@@ -1980,12 +1980,15 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         .latest_delivery_summary(&work_item.id)
         .unwrap()
         .is_none());
+    // The normal result brief is no longer suppressed — it coexists with the
+    // promoted completion report brief.
+    let normal_brief = briefs.iter().find(|brief| {
+        brief.kind == BriefKind::Result
+            && brief.related_message_id.as_deref() == Some(message.id.as_str())
+    });
     assert!(
-        !briefs.iter().any(|brief| {
-            brief.kind == BriefKind::Result
-                && brief.related_message_id.as_deref() == Some(message.id.as_str())
-        }),
-        "normal terminal result brief should be suppressed after completion promotion"
+        normal_brief.is_some(),
+        "normal terminal result brief should exist"
     );
     let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
     let complete_tool = tools
@@ -2024,12 +2027,6 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         tool_result["result"]["completion_report_promoted"].as_bool(),
         Some(true)
     );
-    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "turn_terminal_brief_suppressed"
-            && event.data["reason"].as_str() == Some("work_item_completion_report_promoted")
-            && event.data["work_item_id"].as_str() == Some(work_item.id.as_str())
-    }));
 }
 
 #[tokio::test]
@@ -2504,13 +2501,6 @@ async fn multiple_complete_work_items_in_one_round_do_not_promote_or_short_circu
             })
             .count(),
         0
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.kind == "turn_terminal_brief_suppressed")
-            .count(),
-        2
     );
 }
 
