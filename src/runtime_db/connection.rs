@@ -48,6 +48,9 @@ pub(crate) fn configure_persistent_database(connection: &Connection) -> Result<(
     connection.execute_batch(
         r#"
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA wal_autocheckpoint = 10000;
+PRAGMA mmap_size = 268435456;
 "#,
     )?;
     Ok(())

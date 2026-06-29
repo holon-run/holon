@@ -505,6 +505,9 @@ impl MemoryIndex {
             r#"
             PRAGMA journal_mode = WAL;
             PRAGMA busy_timeout = 5000;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA wal_autocheckpoint = 10000;
+            PRAGMA mmap_size = 268435456;
             "#,
         )?;
         index.ensure_schema()?;
