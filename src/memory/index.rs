@@ -334,6 +334,15 @@ fn ensure_memory_index_current(
     ensure_memory_indexes_current(storage, active_workspace_id, &[])
 }
 
+pub(crate) fn ensure_memory_indexes_fresh(
+    storage: &AppStorage,
+    active_workspace_id: Option<&str>,
+    agent_storages: &[AppStorage],
+) -> Result<()> {
+    ensure_memory_indexes_current(storage, active_workspace_id, agent_storages)?;
+    Ok(())
+}
+
 fn ensure_memory_indexes_current(
     storage: &AppStorage,
     active_workspace_id: Option<&str>,

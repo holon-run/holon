@@ -4,6 +4,7 @@ pub(crate) mod refs;
 pub mod working;
 
 pub use episode::refresh_episode_memory;
+pub(crate) use index::ensure_memory_indexes_fresh;
 pub use index::{
     get_memory, rebuild_memory_index, refresh_memory_index_bounded, repair_memory_index_for_paths,
     request_memory_index_rebuild, search_memory, search_memory_query,
