@@ -363,12 +363,14 @@ interface RuntimeAvailableModelDto {
   capabilities?: {
     image_input?: boolean;
     reasoning_summaries?: boolean;
+    supports_reasoning?: boolean;
   };
   policy?: {
     supported_parameters?: string[];
     capabilities?: {
       image_input?: boolean;
       reasoning_summaries?: boolean;
+      supports_reasoning?: boolean;
     };
   };
   supported_parameters?: string[];
@@ -385,6 +387,7 @@ interface ModelAvailabilityDto {
     capabilities?: {
       image_input?: boolean;
       reasoning_summaries?: boolean;
+      supports_reasoning?: boolean;
     };
   };
 }
@@ -1748,7 +1751,9 @@ function supportsReasoningEffort(entry: ModelAvailabilityDto | RuntimeAvailableM
   return (
     entry.policy?.supported_parameters?.includes("reasoning_effort") ||
     ("supported_parameters" in entry && entry.supported_parameters?.includes("reasoning_effort")) ||
+    entry.policy?.capabilities?.supports_reasoning ||
     entry.policy?.capabilities?.reasoning_summaries ||
+    ("capabilities" in entry && entry.capabilities?.supports_reasoning) ||
     ("capabilities" in entry && entry.capabilities?.reasoning_summaries) ||
     false
   );

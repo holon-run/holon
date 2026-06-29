@@ -10,7 +10,7 @@ describe("projectModelOptions", () => {
           model: "openai-codex/gpt-5.5",
           provider: "openai-codex",
           capabilities: {
-            reasoning_summaries: true,
+            supports_reasoning: true,
           },
         },
       ],
