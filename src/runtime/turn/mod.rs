@@ -45,7 +45,6 @@ pub(crate) struct AgentLoopOutcome {
     pub(super) terminal_kind: TurnTerminalKind,
 }
 
-
 pub(crate) struct LoopControlOptions {
     pub(super) max_tool_rounds: Option<usize>,
 }

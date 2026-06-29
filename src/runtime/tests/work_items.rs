@@ -1986,7 +1986,10 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         brief.kind == BriefKind::Result
             && brief.related_message_id.as_deref() == Some(message.id.as_str())
     });
-    assert!(normal_brief.is_some(), "normal terminal result brief should exist");
+    assert!(
+        normal_brief.is_some(),
+        "normal terminal result brief should exist"
+    );
     let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
     let complete_tool = tools
         .iter()

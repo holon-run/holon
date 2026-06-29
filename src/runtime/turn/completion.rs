@@ -148,7 +148,6 @@ pub(super) fn completion_report_texts_by_tool_id(
     reports
 }
 
-
 pub(super) fn result_work_item_id(envelope: &ToolResultEnvelope) -> Option<String> {
     envelope
         .result

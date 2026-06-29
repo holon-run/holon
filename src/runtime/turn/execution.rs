@@ -50,8 +50,7 @@ use super::reminders::{
 };
 use super::{
     append_follow_up_user_texts, render_operator_interjection_text, AgentLoopOutcome,
-    LoopControlOptions, TurnRoundRecord,
-    MAX_OUTPUT_RECOVERY_ATTEMPTS, ROUND_TEXT_PREVIEW_LIMIT,
+    LoopControlOptions, TurnRoundRecord, MAX_OUTPUT_RECOVERY_ATTEMPTS, ROUND_TEXT_PREVIEW_LIMIT,
     WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS,
 };
 use super::{truncate_preview, CHECKPOINT_RESUME_PROMPT};
@@ -1705,7 +1704,6 @@ impl TurnExecution<'_> {
                 rounds_since_work_item_reminder = rounds_since_work_item_reminder.saturating_add(1);
             }
             completed_rounds.push(round_record);
-
 
             if all_tool_results_should_sleep && !has_operator_interjections {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
