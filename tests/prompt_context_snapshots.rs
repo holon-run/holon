@@ -353,7 +353,7 @@ fn sanitize_prompt_dump(rendered: &str) -> String {
     for token in rendered.split_inclusive(char::is_whitespace) {
         let token_body = token.trim_end_matches(char::is_whitespace);
         let trailing_whitespace = &token[token_body.len()..];
-        if token_body.contains("/callbacks/") {
+        if token_body.contains("/api/callbacks/") {
             sanitized.push_str("$CALLBACK_URL");
         } else {
             sanitized.push_str(token_body);
@@ -365,7 +365,7 @@ fn sanitize_prompt_dump(rendered: &str) -> String {
 
 #[test]
 fn sanitize_prompt_dump_preserves_formatting_and_redacts_callback_tokens() {
-    let rendered = "## default_external_ingress\n  - url: http://127.0.0.1:7878/callbacks/wake/wake-secret\n\t- enqueue: http://127.0.0.1:7878/callbacks/enqueue/enqueue-secret\n  - keep: http://127.0.0.1:7878/not-secret\n";
+    let rendered = "## default_external_ingress\n  - url: http://127.0.0.1:7878/api/callbacks/wake/wake-secret\n\t- enqueue: http://127.0.0.1:7878/api/callbacks/enqueue/enqueue-secret\n  - keep: http://127.0.0.1:7878/not-secret\n";
 
     let sanitized = sanitize_prompt_dump(rendered);
 

@@ -295,8 +295,8 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/briefs/{brief_id}", get(state::brief))
         .route("/agents/{agent_id}/state", get(state::agent_state))
         .route("/events/stream", get(events::global_events_stream))
-        .route("/api/jobs", post(jobs::create_job))
-        .route("/api/jobs/{job_id}", get(jobs::job_status))
+        .route("/jobs", post(jobs::create_job))
+        .route("/jobs/{job_id}", get(jobs::job_status))
         .route("/agents/{agent_id}/events", get(events::events))
         .route(
             "/agents/{agent_id}/events/stream",
@@ -475,32 +475,23 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/enqueue", post(state::enqueue_default))
         .route("/agents/{agent_id}/skills", get(skills::list_skills))
-        .route("/api/skills/catalog", get(skills::skills_catalog))
-        .route("/api/skills/catalog/{skill_id}", get(skills::skill_detail))
+        .route("/skills/catalog", get(skills::skills_catalog))
+        .route("/skills/catalog/{skill_id}", get(skills::skill_detail))
+        .route("/skills/catalog/add", post(skills::add_skill_to_catalog))
         .route(
-            "/api/skills/catalog/add",
-            post(skills::add_skill_to_catalog),
-        )
-        .route(
-            "/api/skills/catalog/remove",
+            "/skills/catalog/remove",
             post(skills::remove_skill_from_catalog),
         )
         .route(
-            "/api/skills/catalog/reconcile",
+            "/skills/catalog/reconcile",
             post(skills::reconcile_skill_catalog),
         )
         .route(
-            "/api/skills/catalog/refresh",
+            "/skills/catalog/refresh",
             post(skills::refresh_skill_catalog),
         )
-        .route(
-            "/api/skills/catalog/update",
-            post(skills::update_skill_catalog),
-        )
-        .route(
-            "/api/skills/catalog/check",
-            post(skills::check_skill_catalog),
-        )
+        .route("/skills/catalog/update", post(skills::update_skill_catalog))
+        .route("/skills/catalog/check", post(skills::check_skill_catalog))
         .route(
             "/control/agents/{agent_id}/skills/enable",
             post(skills::enable_skill),
@@ -532,16 +523,11 @@ pub fn router(state: AppState) -> Router {
             "/workspaces/{workspace_id}/files/{*path}",
             get(workspace_files::workspace_files),
         );
-    let root_routes = api_routes.clone().route(
-        "/search",
-        get(web::web_or_not_found_handler).post(agents::search),
-    );
     let api_routes = api_routes
         .route("/search", post(agents::search))
         .route("/memory/get", post(agents::memory_get));
 
     Router::new()
-        .merge(root_routes)
         .nest("/api", api_routes)
         .fallback(web::web_or_not_found_handler)
         .layer(api_cors_layer(&config.api_cors))

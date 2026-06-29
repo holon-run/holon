@@ -2812,7 +2812,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             print_json(&response)
         }
         SkillsCommands::Catalog => {
-            let response: serde_json::Value = get_json(config, "/api/skills/catalog").await?;
+            let response: serde_json::Value = get_json(config, "/skills/catalog").await?;
             print_json(&response)
         }
         SkillsCommands::Add {
@@ -2825,7 +2825,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             let kind = build_skill_add_kind(&source, builtin, remote, skill, copy)?;
             post_control_json(
                 config,
-                "/api/skills/catalog/add",
+                "/skills/catalog/add",
                 &holon::types::AddSkillRequest { kind },
             )
             .await
@@ -2833,7 +2833,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Remove { name } => {
             post_control_json(
                 config,
-                "/api/skills/catalog/remove",
+                "/skills/catalog/remove",
                 &holon::types::RemoveSkillRequest { name },
             )
             .await
@@ -2841,7 +2841,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Reconcile { name } => {
             post_control_json(
                 config,
-                "/api/skills/catalog/reconcile",
+                "/skills/catalog/reconcile",
                 &holon::types::ReconcileSkillRequest { name },
             )
             .await
@@ -2849,7 +2849,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Refresh => {
             post_control_json(
                 config,
-                "/api/skills/catalog/refresh",
+                "/skills/catalog/refresh",
                 &holon::types::RefreshCatalogRequest {},
             )
             .await
@@ -2857,7 +2857,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Update { name } => {
             post_control_json(
                 config,
-                "/api/skills/catalog/update",
+                "/skills/catalog/update",
                 &holon::types::UpdateSkillRequest { name },
             )
             .await
@@ -2865,7 +2865,7 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         SkillsCommands::Check { name } => {
             post_control_json(
                 config,
-                "/api/skills/catalog/check",
+                "/skills/catalog/check",
                 &holon::types::CheckSkillRequest { name },
             )
             .await

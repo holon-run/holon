@@ -216,8 +216,8 @@ The HTTP control plane separates library and agent operations:
 | `POST` | `/control/agents/:agent_id/skills/enable` | Enable for agent |
 | `POST` | `/control/agents/:agent_id/skills/disable` | Disable for agent |
 
-> **Deprecated:** `POST /control/agents/:agent_id/skills/install` and
-> `POST /control/agents/:agent_id/skills/uninstall` remain for
+> **Deprecated:** `POST /api/control/agents/:agent_id/skills/install` and
+> `POST /api/control/agents/:agent_id/skills/uninstall` remain for
 > compatibility but are superseded by enable/disable and
 > add/remove.
 

@@ -695,7 +695,7 @@ impl LocalClient {
     }
 
     pub async fn skills_catalog(&self) -> Result<Value> {
-        let path = api_path("/api/skills/catalog");
+        let path = api_path("/skills/catalog");
         let body = self.send(RequestSpec::get(&path), false).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
@@ -703,7 +703,7 @@ impl LocalClient {
 
     pub async fn add_skill(&self, kind: crate::types::SkillInstallKind) -> Result<Value> {
         self.post_control_json(
-            "/api/skills/catalog/add",
+            "/skills/catalog/add",
             &crate::types::AddSkillRequest { kind },
         )
         .await
@@ -711,7 +711,7 @@ impl LocalClient {
 
     pub async fn remove_skill(&self, name: &str) -> Result<Value> {
         self.post_control_json(
-            "/api/skills/catalog/remove",
+            "/skills/catalog/remove",
             &crate::types::RemoveSkillRequest {
                 name: name.to_string(),
             },

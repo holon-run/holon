@@ -43,7 +43,7 @@ pub async fn control_prompt_is_open_on_loopback_auto() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
@@ -59,7 +59,7 @@ pub async fn control_prompt_is_open_over_unix_socket_auto() -> Result<()> {
     let response = unix_request(
         &socket_path,
         "POST",
-        "/control/agents/default/prompt",
+        "/api/control/agents/default/prompt",
         &[("content-type", "application/json")],
         Some(br#"{ "text": "hello" }"#),
     )
@@ -75,14 +75,14 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "snapshot bootstrap" }))
         .send()
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
     let state_payload: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
+        .get(format!("{base}/api/agents/default/state"))
         .send()
         .await?
         .json()
@@ -131,7 +131,7 @@ pub async fn runtime_search_route_returns_memory_search_results() -> Result<()> 
     runtime.storage().append_message(&message)?;
 
     let response = client
-        .post(format!("{base}/search"))
+        .post(format!("{base}/api/search"))
         .json(&serde_json::json!({
             "query": "issue1879",
             "limit": 5
@@ -218,7 +218,7 @@ pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Resul
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/search"))
+        .post(format!("{base}/api/search"))
         .json(&serde_json::json!({
             "query": "agentfilter1879",
             "limit": 10,
@@ -235,7 +235,7 @@ pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Resul
     assert!(results.iter().all(|result| result["agent_id"] == "alpha"));
 
     let response = client
-        .post(format!("{base}/search"))
+        .post(format!("{base}/api/search"))
         .json(&serde_json::json!({
             "query": "agentfilter1879",
             "limit": 10,
@@ -255,7 +255,7 @@ pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Resul
     assert!(refs.contains(&"message:msg-http-search-beta"));
 
     let response = client
-        .post(format!("{base}/search"))
+        .post(format!("{base}/api/search"))
         .json(&serde_json::json!({
             "query": "agentfilter1879",
             "limit": 10
@@ -278,7 +278,7 @@ pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "brief detail route" }))
         .send()
         .await?;
@@ -300,7 +300,7 @@ pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
         .expect("brief should be persisted");
 
     let detail = client
-        .get(format!("{base}/agents/default/briefs/{}", brief.id))
+        .get(format!("{base}/api/agents/default/briefs/{}", brief.id))
         .send()
         .await?;
     assert_eq!(detail.status(), reqwest::StatusCode::OK);
@@ -331,13 +331,13 @@ pub async fn agent_state_route_scopes_work_items_to_requested_agent() -> Result<
     let client = reqwest::Client::new();
 
     let alpha_state: serde_json::Value = client
-        .get(format!("{base}/agents/alpha/state"))
+        .get(format!("{base}/api/agents/alpha/state"))
         .send()
         .await?
         .json()
         .await?;
     let beta_state: serde_json::Value = client
-        .get(format!("{base}/agents/beta/state"))
+        .get(format!("{base}/api/agents/beta/state"))
         .send()
         .await?
         .json()
@@ -386,7 +386,7 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "bootstrap contract prompt" }))
         .send()
         .await?;
@@ -443,7 +443,7 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     );
 
     let raw_snapshot: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
+        .get(format!("{base}/api/agents/default/state"))
         .send()
         .await?
         .json()
@@ -535,7 +535,7 @@ pub async fn list_skills_includes_all_agent_skill_roots() -> Result<()> {
     }
 
     let payload: serde_json::Value = Client::new()
-        .get(format!("{base}/agents/default/skills"))
+        .get(format!("{base}/api/agents/default/skills"))
         .send()
         .await?
         .json()
@@ -576,7 +576,7 @@ pub async fn agent_skills_endpoint_uses_effective_registry_snapshot() -> Result<
 
     let client = Client::new();
     let list_payload: serde_json::Value = client
-        .get(format!("{base}/agents/default/skills"))
+        .get(format!("{base}/api/agents/default/skills"))
         .send()
         .await?
         .json()
@@ -592,7 +592,7 @@ pub async fn agent_skills_endpoint_uses_effective_registry_snapshot() -> Result<
 
     std::fs::remove_dir_all(&agent_skill_dir)?;
     let list_payload: serde_json::Value = client
-        .get(format!("{base}/agents/default/skills"))
+        .get(format!("{base}/api/agents/default/skills"))
         .send()
         .await?
         .json()
@@ -632,7 +632,7 @@ pub async fn agent_skills_endpoint_does_not_leak_stale_roots_between_agents() ->
     let client = Client::new();
 
     let default_payload: serde_json::Value = client
-        .get(format!("{base}/agents/default/skills"))
+        .get(format!("{base}/api/agents/default/skills"))
         .send()
         .await?
         .json()
@@ -644,7 +644,7 @@ pub async fn agent_skills_endpoint_does_not_leak_stale_roots_between_agents() ->
         .any(|skill| skill["name"] == "default-only"));
 
     let alpha_payload: serde_json::Value = client
-        .get(format!("{base}/agents/alpha/skills"))
+        .get(format!("{base}/api/agents/alpha/skills"))
         .send()
         .await?
         .json()
@@ -812,14 +812,14 @@ pub async fn install_skill_existing_destination_returns_conflict() -> Result<()>
     });
 
     let first = client
-        .post(format!("{base}/control/agents/default/skills/install"))
+        .post(format!("{base}/api/control/agents/default/skills/install"))
         .json(&payload)
         .send()
         .await?;
     assert!(first.status().is_success());
 
     let second = client
-        .post(format!("{base}/control/agents/default/skills/install"))
+        .post(format!("{base}/api/control/agents/default/skills/install"))
         .json(&payload)
         .send()
         .await?;
@@ -1026,7 +1026,7 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
     assert!(!agent_skill_path.exists());
 
     let enable = client
-        .post(format!("{base}/control/agents/default/skills/enable"))
+        .post(format!("{base}/api/control/agents/default/skills/enable"))
         .json(&serde_json::json!({
             "name": skill_name
         }))
@@ -1036,7 +1036,7 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
     assert!(agent_skill_path.exists());
 
     let disable = client
-        .post(format!("{base}/control/agents/default/skills/disable"))
+        .post(format!("{base}/api/control/agents/default/skills/disable"))
         .json(&serde_json::json!({
             "name": skill_name
         }))
@@ -1140,7 +1140,7 @@ pub async fn control_agent_model_override_set_and_clear_updates_status() -> Resu
     let client = reqwest::Client::new();
 
     let set_response = client
-        .post(format!("{base}/control/agents/default/model"))
+        .post(format!("{base}/api/control/agents/default/model"))
         .json(&serde_json::json!({ "model": "anthropic/claude-haiku-4-5" }))
         .send()
         .await?;
@@ -1153,7 +1153,7 @@ pub async fn control_agent_model_override_set_and_clear_updates_status() -> Resu
     );
 
     let status_payload: serde_json::Value = client
-        .get(format!("{base}/agents/default/status"))
+        .get(format!("{base}/api/agents/default/status"))
         .send()
         .await?
         .json()
@@ -1165,7 +1165,7 @@ pub async fn control_agent_model_override_set_and_clear_updates_status() -> Resu
     );
 
     let clear_response = client
-        .post(format!("{base}/control/agents/default/model/clear"))
+        .post(format!("{base}/api/control/agents/default/model/clear"))
         .json(&serde_json::json!({}))
         .send()
         .await?;
@@ -1188,13 +1188,13 @@ pub async fn control_prompt_requires_bearer_token_when_required() -> Result<()> 
     let (_host, base, server) = spawn_server_with_config(config).await?;
     let client = reqwest::Client::new();
     let denied = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
     assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
     let allowed = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .bearer_auth("secret")
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
@@ -1232,7 +1232,14 @@ pub async fn control_runtime_status_is_open_over_unix_socket_when_auth_required(
         Ok::<_, anyhow::Error>(())
     });
 
-    let response = unix_request(&socket_path, "GET", "/control/runtime/status", &[], None).await?;
+    let response = unix_request(
+        &socket_path,
+        "GET",
+        "/api/control/runtime/status",
+        &[],
+        None,
+    )
+    .await?;
     assert_eq!(response.status, 200);
 
     server.abort();
@@ -1267,8 +1274,14 @@ pub async fn control_runtime_readiness_is_open_over_unix_socket_when_auth_requir
         Ok::<_, anyhow::Error>(())
     });
 
-    let response =
-        unix_request(&socket_path, "GET", "/control/runtime/readiness", &[], None).await?;
+    let response = unix_request(
+        &socket_path,
+        "GET",
+        "/api/control/runtime/readiness",
+        &[],
+        None,
+    )
+    .await?;
     assert_eq!(response.status, 200);
 
     server.abort();
@@ -1301,22 +1314,22 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     let client = reqwest::Client::new();
 
     for path in [
-        "/handshake",
-        "/",
-        "/control/runtime/status",
-        "/control/runtime/config",
-        "/agents/list",
-        "/agents/default/status",
-        "/agents/default/state",
-        "/agents/default/briefs",
-        "/agents/default/briefs/brief-test",
-        "/agents/default/transcript",
-        "/agents/default/tasks",
-        "/agents/default/timers",
-        "/agents/default/worktree-summary",
-        "/agents/default/skills",
-        "/agents/default/events",
-        "/agents/default/events/stream",
+        "/api/handshake",
+        "/api",
+        "/api/control/runtime/status",
+        "/api/control/runtime/config",
+        "/api/agents/list",
+        "/api/agents/default/status",
+        "/api/agents/default/state",
+        "/api/agents/default/briefs",
+        "/api/agents/default/briefs/brief-test",
+        "/api/agents/default/transcript",
+        "/api/agents/default/tasks",
+        "/api/agents/default/timers",
+        "/api/agents/default/worktree-summary",
+        "/api/agents/default/skills",
+        "/api/agents/default/events",
+        "/api/agents/default/events/stream",
     ] {
         let denied = client.get(format!("{base}{path}")).send().await?;
         assert_eq!(
@@ -1333,7 +1346,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     }
 
     let handshake: serde_json::Value = client
-        .get(format!("{base}/handshake"))
+        .get(format!("{base}/api/handshake"))
         .bearer_auth("secret")
         .send()
         .await?
@@ -1344,14 +1357,14 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     assert_eq!(handshake["runtime"]["default_agent"], "default");
 
     let agents = client
-        .get(format!("{base}/agents/list"))
+        .get(format!("{base}/api/agents/list"))
         .bearer_auth("secret")
         .send()
         .await?;
     assert!(agents.status().is_success());
 
     let removed_agents = client
-        .get(format!("{base}/agents"))
+        .get(format!("{base}/api/agents"))
         .bearer_auth("secret")
         .send()
         .await?;
@@ -1361,7 +1374,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     assert_eq!(removed_body["error"], "Not Found");
 
     let invalid_runtime_status = client
-        .get(format!("{base}/control/runtime/status"))
+        .get(format!("{base}/api/control/runtime/status"))
         .bearer_auth("wrong")
         .send()
         .await?;
@@ -1377,14 +1390,14 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         .contains("invalid control token"));
 
     let runtime_status = client
-        .get(format!("{base}/control/runtime/status"))
+        .get(format!("{base}/api/control/runtime/status"))
         .bearer_auth("secret")
         .send()
         .await?;
     assert!(runtime_status.status().is_success());
 
     let denied_enqueue = client
-        .post(format!("{base}/enqueue"))
+        .post(format!("{base}/api/enqueue"))
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
@@ -1393,7 +1406,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     assert_eq!(denied_enqueue_body["ok"], false);
     assert!(denied_enqueue_body["error"].is_string());
     let allowed_enqueue = client
-        .post(format!("{base}/enqueue"))
+        .post(format!("{base}/api/enqueue"))
         .bearer_auth("secret")
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
@@ -1419,7 +1432,7 @@ pub async fn control_wake_records_liveness_only_system_tick_on_loopback_auto() -
     .await?;
 
     let allowed = client
-        .post(format!("{base}/control/agents/default/wake"))
+        .post(format!("{base}/api/control/agents/default/wake"))
         .json(&serde_json::json!({
             "reason": "pr changed",
             "source": "github",
@@ -1461,14 +1474,14 @@ pub async fn control_prompt_requires_bearer_token_for_non_loopback_auto() -> Res
     let (_host, base, server) = spawn_server_with_config(config).await?;
     let client = reqwest::Client::new();
     let denied = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
     assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
 
     let allowed = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .bearer_auth("secret")
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
@@ -1485,7 +1498,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "hello" }))
         .send()
         .await?;
@@ -1520,7 +1533,7 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
     .await?;
 
     let state_response = client
-        .get(format!("{base}/agents/default/state"))
+        .get(format!("{base}/api/agents/default/state"))
         .send()
         .await?;
     assert!(state_response.status().is_success());
@@ -1547,7 +1560,7 @@ pub async fn control_prompt_rejects_stopped_agent_without_queueing() -> Result<(
     .await?;
 
     let response = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "hello after stop" }))
         .send()
         .await?;
@@ -1588,7 +1601,7 @@ pub async fn stopped_status_includes_lifecycle_start_guidance() -> Result<()> {
     .await?;
 
     let payload: serde_json::Value = client
-        .get(format!("{base}/agents/default/status"))
+        .get(format!("{base}/api/agents/default/status"))
         .send()
         .await?
         .json()
@@ -1631,7 +1644,7 @@ pub async fn control_wake_rejects_stopped_agent_with_start_guidance() -> Result<
     .await?;
 
     let response = client
-        .post(format!("{base}/control/agents/default/wake"))
+        .post(format!("{base}/api/control/agents/default/wake"))
         .json(&serde_json::json!({ "reason": "check if alive" }))
         .send()
         .await?;
@@ -1673,21 +1686,21 @@ pub async fn control_start_restores_live_runtime_loop_for_stopped_agent() -> Res
     .await?;
 
     let rejected = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "before start" }))
         .send()
         .await?;
     assert_eq!(rejected.status(), reqwest::StatusCode::CONFLICT);
 
     let started = client
-        .post(format!("{base}/control/agents/default/control"))
+        .post(format!("{base}/api/control/agents/default/control"))
         .json(&serde_json::json!({ "action": "start" }))
         .send()
         .await?;
     assert!(started.status().is_success());
 
     let accepted = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "after start" }))
         .send()
         .await?;
@@ -1737,7 +1750,7 @@ pub async fn daemon_shutdown_restart_preserves_public_agent_http_runnability() -
     let client = reqwest::Client::new();
 
     let first = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "before shutdown" }))
         .send()
         .await?;
@@ -1764,7 +1777,7 @@ pub async fn daemon_shutdown_restart_preserves_public_agent_http_runnability() -
     let (base2, server2) = spawn_server_for_host(host2.clone()).await?;
 
     let second = client
-        .post(format!("{base2}/control/agents/default/prompt"))
+        .post(format!("{base2}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "after restart" }))
         .send()
         .await?;
@@ -1814,7 +1827,7 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
 
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("http://{addr}/control/runtime/status"))
+        .get(format!("http://{addr}/api/control/runtime/status"))
         .bearer_auth("secret")
         .send()
         .await?;
@@ -1902,7 +1915,7 @@ pub async fn runtime_readiness_route_omits_activity_summary() -> Result<()> {
 
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("http://{addr}/control/runtime/readiness"))
+        .get(format!("http://{addr}/api/control/runtime/readiness"))
         .bearer_auth("secret")
         .send()
         .await?;
@@ -1945,7 +1958,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
 
     let client = reqwest::Client::new();
     let read_response = client
-        .get(format!("http://{addr}/control/runtime/config"))
+        .get(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .send()
         .await?;
@@ -1958,7 +1971,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     );
 
     let update_response = client
-        .patch(format!("http://{addr}/control/runtime/config"))
+        .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
@@ -1985,7 +1998,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(persisted.model.default, None);
 
     let valid_model_response = client
-        .patch(format!("http://{addr}/control/runtime/config"))
+        .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
@@ -2011,7 +2024,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
 
     let provider_config_response = client
-        .patch(format!("http://{addr}/control/runtime/config"))
+        .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
@@ -2047,7 +2060,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     );
 
     let provider_remove_response = client
-        .patch(format!("http://{addr}/control/runtime/config"))
+        .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
@@ -2081,7 +2094,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         .contains_key(&holon::config::ProviderId::parse("openai")?));
 
     let valid_cors_response = client
-        .patch(format!("http://{addr}/control/runtime/config"))
+        .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
@@ -2125,7 +2138,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(persisted.api.cors.max_age_seconds, Some(120));
 
     let valid_web_response = client
-        .patch(format!("http://{addr}/control/runtime/config"))
+        .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
@@ -2145,7 +2158,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(valid_web_payload["changed"], true);
 
     let invalid_web_response = client
-        .patch(format!("http://{addr}/control/runtime/config"))
+        .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
@@ -2207,7 +2220,7 @@ pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
         let allowed = client
             .request(
                 reqwest::Method::OPTIONS,
-                format!("http://{addr}/control/runtime/status"),
+                format!("http://{addr}/api/control/runtime/status"),
             )
             .header("origin", origin)
             .header("access-control-request-method", "GET")
@@ -2227,7 +2240,7 @@ pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
     let denied = client
         .request(
             reqwest::Method::OPTIONS,
-            format!("http://{addr}/control/runtime/status"),
+            format!("http://{addr}/api/control/runtime/status"),
         )
         .header("origin", "http://evil.example")
         .header("access-control-request-method", "GET")
@@ -2259,7 +2272,7 @@ pub async fn cors_preflight_allows_default_put_credentials_route() -> Result<()>
     let allowed = reqwest::Client::new()
         .request(
             reqwest::Method::OPTIONS,
-            format!("http://{addr}/control/runtime/credentials/test-profile"),
+            format!("http://{addr}/api/control/runtime/credentials/test-profile"),
         )
         .header("origin", "http://localhost:5173")
         .header("access-control-request-method", "PUT")
@@ -2313,7 +2326,7 @@ pub async fn cors_preflight_respects_configured_origin() -> Result<()> {
     let allowed = client
         .request(
             reqwest::Method::OPTIONS,
-            format!("http://{addr}/control/runtime/status"),
+            format!("http://{addr}/api/control/runtime/status"),
         )
         .header("origin", "http://192.168.1.10:5173")
         .header("access-control-request-method", "GET")
@@ -2339,7 +2352,7 @@ pub async fn cors_preflight_respects_configured_origin() -> Result<()> {
     let denied = client
         .request(
             reqwest::Method::OPTIONS,
-            format!("http://{addr}/control/runtime/status"),
+            format!("http://{addr}/api/control/runtime/status"),
         )
         .header("origin", "http://evil.example")
         .header("access-control-request-method", "GET")
@@ -2404,7 +2417,7 @@ pub async fn runtime_status_route_reports_waiting_activity_summary() -> Result<(
     }
 
     let response = client
-        .get(format!("http://{addr}/control/runtime/status"))
+        .get(format!("http://{addr}/api/control/runtime/status"))
         .bearer_auth("secret")
         .send()
         .await?;
@@ -2464,7 +2477,7 @@ pub async fn runtime_status_route_reports_last_runtime_failure_summary() -> Resu
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let response = client
-            .get(format!("http://{addr}/control/runtime/status"))
+            .get(format!("http://{addr}/api/control/runtime/status"))
             .bearer_auth("secret")
             .send()
             .await?;
@@ -2510,7 +2523,7 @@ pub async fn runtime_shutdown_route_requests_shutdown() -> Result<()> {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{addr}/control/runtime/shutdown"))
+        .post(format!("http://{addr}/api/control/runtime/shutdown"))
         .bearer_auth("secret")
         .json(&serde_json::json!({}))
         .send()

@@ -109,7 +109,7 @@ sidebar when a workspace is attached:
   a larger reading surface, accessible via the file tree context menu.
 
 The file browser uses the workspace file browsing API
-(`GET /workspaces/{id}/files` and `GET /workspaces/{id}/files/{path}`).
+(`GET /api/workspaces/{id}/files` and `GET /api/workspaces/{id}/files/{path}`).
 Path traversal and symlink escapes are blocked; file reads are capped
 at 1 MB.
 

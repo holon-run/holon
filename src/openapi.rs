@@ -91,18 +91,18 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List agent skills", "Return skills enabled/effective for an agent.", None, AuthKind::RemoteAccess),
-    route("get", "/api/skills/catalog", "skillsCatalog", "skills", "Skills catalog", "Return the global user Skill Library catalog. Query parameter: scope.", None, AuthKind::RemoteAccess),
-    route("get", "/api/skills/catalog/{skill_id}", "skillDetail", "skills", "Skill detail", "Return catalog metadata and SKILL.md content for a Global Skill Library skill.", None, AuthKind::RemoteAccess),
+    route("get", "/skills/catalog", "skillsCatalog", "skills", "Skills catalog", "Return the global user Skill Library catalog. Query parameter: scope.", None, AuthKind::RemoteAccess),
+    route("get", "/skills/catalog/{skill_id}", "skillDetail", "skills", "Skill detail", "Return catalog metadata and SKILL.md content for a Global Skill Library skill.", None, AuthKind::RemoteAccess),
     route("get", "/workspaces/{workspace_id}/files", "workspaceFilesRoot", "workspaces", "Browse workspace root", "List directory entries at the workspace root. Query parameters: execution_root_id.", None, AuthKind::RemoteAccess),
     route("get", "/workspaces/{workspace_id}/files/{path}", "workspaceFiles", "workspaces", "Browse workspace files", "List a directory or read a file by path. Supports content negotiation: Accept: application/json returns structured metadata + content, other Accept values return raw body. Query parameters: execution_root_id, download, meta.", None, AuthKind::RemoteAccess),
-    route_with_response("post", "/api/jobs", "createJob", "jobs", "Create job", "Create an asynchronous job. Currently supports kind=skill.install for Global Skill Library installation.", Some("CreateJobRequest"), "JobResponse", AuthKind::Control),
-    route_with_response("get", "/api/jobs/{job_id}", "jobStatus", "jobs", "Job status", "Return a generic asynchronous job snapshot by id.", None, "JobResponse", AuthKind::RemoteAccess),
-    route("post", "/api/skills/catalog/add", "addSkillToCatalog", "skills", "Add skill to library", "Add or import a skill into the local Skill Library.", Some("AddSkillRequest"), AuthKind::Control),
-    route("post", "/api/skills/catalog/remove", "removeSkillFromCatalog", "skills", "Remove skill from library", "Remove a skill from the local Skill Library.", Some("RemoveSkillRequest"), AuthKind::Control),
-    route("post", "/api/skills/catalog/reconcile", "reconcileSkillCatalog", "skills", "Reconcile skill library lock", "Reconcile local Skill Library contents with .skill-lock.json, then check consistency. This does not fetch remote updates.", Some("ReconcileSkillRequest"), AuthKind::Control),
-    route("post", "/api/skills/catalog/refresh", "refreshSkillCatalog", "skills", "Refresh runtime catalog", "Refresh runtime Skill Library catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates.", Some("RefreshCatalogRequest"), AuthKind::Control),
-    route("post", "/api/skills/catalog/update", "updateSkillCatalog", "skills", "Update skill library", "Fetch supported remote Skill Library entries described by .skill-lock.json and update changed skills. Returns per-skill status.", Some("UpdateSkillRequest"), AuthKind::Control),
-    route("post", "/api/skills/catalog/check", "checkSkillCatalog", "skills", "Check skill library", "Check Skill Library and lock-file consistency.", Some("CheckSkillRequest"), AuthKind::Control),
+    route_with_response("post", "/jobs", "createJob", "jobs", "Create job", "Create an asynchronous job. Currently supports kind=skill.install for Global Skill Library installation.", Some("CreateJobRequest"), "JobResponse", AuthKind::Control),
+    route_with_response("get", "/jobs/{job_id}", "jobStatus", "jobs", "Job status", "Return a generic asynchronous job snapshot by id.", None, "JobResponse", AuthKind::RemoteAccess),
+    route("post", "/skills/catalog/add", "addSkillToCatalog", "skills", "Add skill to library", "Add or import a skill into the local Skill Library.", Some("AddSkillRequest"), AuthKind::Control),
+    route("post", "/skills/catalog/remove", "removeSkillFromCatalog", "skills", "Remove skill from library", "Remove a skill from the local Skill Library.", Some("RemoveSkillRequest"), AuthKind::Control),
+    route("post", "/skills/catalog/reconcile", "reconcileSkillCatalog", "skills", "Reconcile skill library lock", "Reconcile local Skill Library contents with .skill-lock.json, then check consistency. This does not fetch remote updates.", Some("ReconcileSkillRequest"), AuthKind::Control),
+    route("post", "/skills/catalog/refresh", "refreshSkillCatalog", "skills", "Refresh runtime catalog", "Refresh runtime Skill Library catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates.", Some("RefreshCatalogRequest"), AuthKind::Control),
+    route("post", "/skills/catalog/update", "updateSkillCatalog", "skills", "Update skill library", "Fetch supported remote Skill Library entries described by .skill-lock.json and update changed skills. Returns per-skill status.", Some("UpdateSkillRequest"), AuthKind::Control),
+    route("post", "/skills/catalog/check", "checkSkillCatalog", "skills", "Check skill library", "Check Skill Library and lock-file consistency.", Some("CheckSkillRequest"), AuthKind::Control),
     route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime memory", "Search the same memory v2 index used by the agent MemorySearch tool.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
     route_with_response("post", "/memory/get", "runtimeMemoryGet", "search", "Fetch runtime memory source", "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.", Some("MemoryGetRequest"), "MemoryGetResult", AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
@@ -263,7 +263,7 @@ fn openapi_value() -> Value {
         .filter(|spec| spec.metadata_source == MetadataSource::Manual)
     {
         let entry = paths
-            .entry(spec.path.to_string())
+            .entry(format!("/api{}", spec.path))
             .or_insert_with(|| json!({}));
         entry[spec.method] = operation(spec);
     }
@@ -336,7 +336,7 @@ fn aide_route_paths() -> serde_json::Map<String, Value> {
         .filter(|spec| spec.metadata_source == MetadataSource::Aide)
     {
         router = router.api_route_docs(
-            spec.path,
+            &format!("/api{}", spec.path),
             ApiMethodDocs::new(spec.method, aide_operation(spec)),
         );
     }
@@ -714,15 +714,16 @@ mod tests {
             .flat_map(|path| path.as_object().into_iter().flat_map(|ops| ops.keys()))
             .count();
         assert!(operation_count >= 40, "expected baseline coverage");
-        assert!(paths["/events/stream"]["get"].is_object());
-        assert!(paths["/agents/{agent_id}/events/stream"]["get"].is_object());
-        assert!(paths["/callbacks/wake/{callback_token}"]["post"].is_object());
+        assert!(paths["/api/events/stream"]["get"].is_object());
+        assert!(paths["/api/agents/{agent_id}/events/stream"]["get"].is_object());
+        assert!(paths["/api/callbacks/wake/{callback_token}"]["post"].is_object());
         assert_eq!(
-            paths["/agents/{agent_id}/status"]["get"]["x-holon-openapi-source"],
+            paths["/api/agents/{agent_id}/status"]["get"]["x-holon-openapi-source"],
             "aide::axum::ApiRouter::api_route_docs"
         );
         assert!(
-            paths["/control/agents/{agent_id}/tasks"]["post"]["x-holon-openapi-source"].is_null()
+            paths["/api/control/agents/{agent_id}/tasks"]["post"]["x-holon-openapi-source"]
+                .is_null()
         );
     }
 

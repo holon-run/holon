@@ -24,7 +24,7 @@ pub(crate) fn build_callback_url(
         CallbackDeliveryMode::WakeHint => "wake",
     };
     format!(
-        "{}/callbacks/{}/{}",
+        "{}/api/callbacks/{}/{}",
         base_url.trim_end_matches('/'),
         mode,
         token

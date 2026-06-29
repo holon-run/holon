@@ -47,7 +47,7 @@ pub async fn generic_webhook_records_public_admission_fields() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/webhooks/generic/default"))
+        .post(format!("{base}/api/webhooks/generic/default"))
         .json(&serde_json::json!({ "status": "opened" }))
         .send()
         .await?;
@@ -85,7 +85,7 @@ pub async fn public_channel_enqueue_rejects_stopped_agent_without_queueing() -> 
     .await?;
 
     let response = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "channel_event",
             "text": "channel after stop",
@@ -134,7 +134,7 @@ pub async fn generic_webhook_rejects_stopped_public_agent_without_queueing() -> 
     .await?;
 
     let response = client
-        .post(format!("{base}/webhooks/generic/default"))
+        .post(format!("{base}/api/webhooks/generic/default"))
         .json(&serde_json::json!({ "status": "opened" }))
         .send()
         .await?;
@@ -161,14 +161,14 @@ pub async fn generic_webhook_and_multi_agent_listing_work() -> Result<()> {
     host.create_named_agent("alpha", None).await?;
 
     let response = client
-        .post(format!("{base}/webhooks/generic/alpha"))
+        .post(format!("{base}/api/webhooks/generic/alpha"))
         .json(&serde_json::json!({ "event": "push", "repo": "holon" }))
         .send()
         .await?;
     assert!(response.status().is_success());
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-    let agents = client.get(format!("{base}/agents/list")).send().await?;
+    let agents = client.get(format!("{base}/api/agents/list")).send().await?;
     let agents_json: serde_json::Value = agents.json().await?;
     assert!(agents_json
         .as_array()
@@ -196,7 +196,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     let client = reqwest::Client::new();
 
     let privileged_origin = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "task_result",
             "origin": {
@@ -210,7 +210,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     assert_eq!(privileged_origin.status(), reqwest::StatusCode::FORBIDDEN);
 
     let trust_override = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "webhook_event",
             "origin": {
@@ -225,7 +225,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     assert_eq!(trust_override.status(), reqwest::StatusCode::FORBIDDEN);
 
     let interject_override = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "webhook_event",
             "origin": {
@@ -240,7 +240,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     assert_eq!(interject_override.status(), reqwest::StatusCode::FORBIDDEN);
 
     let forged_system_tick = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "system_tick",
             "origin": {
@@ -254,7 +254,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     assert_eq!(forged_system_tick.status(), reqwest::StatusCode::FORBIDDEN);
 
     let forged_callback = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "callback_event",
             "origin": {
@@ -268,7 +268,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     assert_eq!(forged_callback.status(), reqwest::StatusCode::FORBIDDEN);
 
     let authority_override = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "webhook_event",
             "origin": {
@@ -283,7 +283,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     assert_eq!(authority_override.status(), reqwest::StatusCode::FORBIDDEN);
 
     let channel_evidence = client
-        .post(format!("{base}/agents/default/enqueue"))
+        .post(format!("{base}/api/agents/default/enqueue"))
         .json(&serde_json::json!({
             "kind": "channel_event",
             "origin": {
@@ -323,7 +323,7 @@ pub async fn generic_webhook_requires_bearer_token_when_configured() -> Result<(
     let client = reqwest::Client::new();
 
     let denied = client
-        .post(format!("{base}/webhooks/generic/default"))
+        .post(format!("{base}/api/webhooks/generic/default"))
         .json(&serde_json::json!({ "status": "opened" }))
         .send()
         .await?;
@@ -333,7 +333,7 @@ pub async fn generic_webhook_requires_bearer_token_when_configured() -> Result<(
     assert!(runtime.storage().read_recent_messages(10)?.is_empty());
 
     let allowed = client
-        .post(format!("{base}/webhooks/generic/default"))
+        .post(format!("{base}/api/webhooks/generic/default"))
         .bearer_auth("secret")
         .json(&serde_json::json!({ "status": "opened" }))
         .send()

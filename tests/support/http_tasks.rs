@@ -48,7 +48,7 @@ pub async fn create_command_task_route_rejects_legacy_kind_field() -> Result<()>
 
     for kind in ["subagent_task", "worktree_subagent_task"] {
         let response = client
-            .post(format!("{base}/control/agents/default/tasks"))
+            .post(format!("{base}/api/control/agents/default/tasks"))
             .json(&serde_json::json!({
                 "kind": kind,
                 "summary": "delegate through deprecated control task path",
@@ -71,7 +71,7 @@ pub async fn create_task_route_rejects_unknown_prompt_field() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "run route command",
             "cmd": "printf route_command_ok",
@@ -93,7 +93,7 @@ pub async fn create_command_task_route_rejects_continue_on_result_field() -> Res
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "run route command",
             "cmd": "printf route_command_ok",
@@ -115,7 +115,7 @@ pub async fn create_command_task_route_accepts_integration_authority() -> Result
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "integration can create task",
             "cmd": "printf integration_signal_ok",
@@ -145,7 +145,7 @@ pub async fn create_command_task_route_accepts_command_request() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "run route command",
             "cmd": "printf route_command_ok",
@@ -185,7 +185,7 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
 
     let create_task = |summary: &str, cmd: &str, yield_time_ms: u64| {
         client
-            .post(format!("{base}/control/agents/default/tasks"))
+            .post(format!("{base}/api/control/agents/default/tasks"))
             .json(&serde_json::json!({
                 "summary": summary,
                 "cmd": cmd,
@@ -229,7 +229,7 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
     .await?;
 
     let tasks: serde_json::Value = client
-        .get(format!("{base}/agents/default/tasks"))
+        .get(format!("{base}/api/agents/default/tasks"))
         .send()
         .await?
         .json()
@@ -244,7 +244,7 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
     assert!(task_ids.contains(&second_id.as_str()));
 
     let snapshot: serde_json::Value = client
-        .get(format!("{base}/agents/default/state"))
+        .get(format!("{base}/api/agents/default/state"))
         .send()
         .await?
         .json()
@@ -259,7 +259,7 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
 
     client
         .post(format!(
-            "{base}/control/agents/default/tasks/{first_id}/stop"
+            "{base}/api/control/agents/default/tasks/{first_id}/stop"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -267,7 +267,7 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
         .error_for_status()?;
     client
         .post(format!(
-            "{base}/control/agents/default/tasks/{second_id}/stop"
+            "{base}/api/control/agents/default/tasks/{second_id}/stop"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -283,7 +283,7 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "inspect task lifecycle",
             "cmd": "printf lifecycle_output",
@@ -307,7 +307,7 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
     .await?;
 
     let status: serde_json::Value = client
-        .get(format!("{base}/agents/default/tasks/{task_id}"))
+        .get(format!("{base}/api/agents/default/tasks/{task_id}"))
         .send()
         .await?
         .json()
@@ -318,7 +318,7 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
 
     let output: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/tasks/{task_id}/output?block=false"
+            "{base}/api/agents/default/tasks/{task_id}/output?block=false"
         ))
         .send()
         .await?
@@ -329,7 +329,7 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
     assert_eq!(output["task"]["output_preview"], "lifecycle_output");
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "inspect delayed task output",
             "cmd": "sleep 0.2; printf delayed_lifecycle_output",
@@ -347,7 +347,7 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
 
     let delayed_output: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/tasks/{delayed_task_id}/output?block=true"
+            "{base}/api/agents/default/tasks/{delayed_task_id}/output?block=true"
         ))
         .send()
         .await?
@@ -360,7 +360,7 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
     );
 
     let missing = client
-        .get(format!("{base}/agents/default/tasks/missing-task"))
+        .get(format!("{base}/api/agents/default/tasks/missing-task"))
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
@@ -374,7 +374,7 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/work-items"))
+        .post(format!("{base}/api/control/agents/default/work-items"))
         .json(&serde_json::json!({
             "objective": "follow up on queued runtime cleanup"
         }))
@@ -419,7 +419,7 @@ pub async fn task_input_and_stop_routes_manage_task_lifecycle() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "accept task input",
             "cmd": "cat",
@@ -438,7 +438,7 @@ pub async fn task_input_and_stop_routes_manage_task_lifecycle() -> Result<()> {
 
     let input: serde_json::Value = client
         .post(format!(
-            "{base}/control/agents/default/tasks/{input_task_id}/input"
+            "{base}/api/control/agents/default/tasks/{input_task_id}/input"
         ))
         .json(&serde_json::json!({
             "text": "managed input\n"
@@ -451,7 +451,7 @@ pub async fn task_input_and_stop_routes_manage_task_lifecycle() -> Result<()> {
     assert_eq!(input["accepted_input"], true);
 
     let response = client
-        .post(format!("{base}/control/agents/default/tasks"))
+        .post(format!("{base}/api/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "stop task through route",
             "cmd": "sleep 30",
@@ -469,7 +469,7 @@ pub async fn task_input_and_stop_routes_manage_task_lifecycle() -> Result<()> {
 
     let stop: serde_json::Value = client
         .post(format!(
-            "{base}/control/agents/default/tasks/{stop_task_id}/stop"
+            "{base}/api/control/agents/default/tasks/{stop_task_id}/stop"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -481,7 +481,7 @@ pub async fn task_input_and_stop_routes_manage_task_lifecycle() -> Result<()> {
 
     let missing = client
         .post(format!(
-            "{base}/control/agents/default/tasks/missing-task/stop"
+            "{base}/api/control/agents/default/tasks/missing-task/stop"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -497,7 +497,7 @@ pub async fn work_item_routes_list_and_return_work_item_detail() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/work-items"))
+        .post(format!("{base}/api/control/agents/default/work-items"))
         .json(&serde_json::json!({
             "objective": "inspect lifecycle work item"
         }))
@@ -511,7 +511,7 @@ pub async fn work_item_routes_list_and_return_work_item_detail() -> Result<()> {
         .to_string();
 
     let list: serde_json::Value = client
-        .get(format!("{base}/agents/default/work-items"))
+        .get(format!("{base}/api/agents/default/work-items"))
         .send()
         .await?
         .json()
@@ -523,7 +523,9 @@ pub async fn work_item_routes_list_and_return_work_item_detail() -> Result<()> {
         .any(|item| item["id"] == work_item_id));
 
     let detail: serde_json::Value = client
-        .get(format!("{base}/agents/default/work-items/{work_item_id}"))
+        .get(format!(
+            "{base}/api/agents/default/work-items/{work_item_id}"
+        ))
         .send()
         .await?
         .json()
@@ -532,7 +534,7 @@ pub async fn work_item_routes_list_and_return_work_item_detail() -> Result<()> {
     assert_eq!(detail["objective"], "inspect lifecycle work item");
 
     let missing = client
-        .get(format!("{base}/agents/default/work-items/missing-work"))
+        .get(format!("{base}/api/agents/default/work-items/missing-work"))
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
@@ -556,7 +558,7 @@ pub async fn create_work_item_route_does_not_replace_existing_active_item() -> R
     .await?;
 
     let response = client
-        .post(format!("{base}/control/agents/default/work-items"))
+        .post(format!("{base}/api/control/agents/default/work-items"))
         .json(&serde_json::json!({
             "objective": "queued follow-up after active work",
             "summary": "queued from route"
@@ -586,7 +588,7 @@ pub async fn create_work_item_route_rejects_empty_objective_with_bad_request() -
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/control/agents/default/work-items"))
+        .post(format!("{base}/api/control/agents/default/work-items"))
         .json(&serde_json::json!({
             "objective": "   ",
             "summary": "queued from control plane"
@@ -618,7 +620,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
 
     let pick: serde_json::Value = client
         .post(format!(
-            "{base}/control/agents/default/work-items/{second_id}/pick",
+            "{base}/api/control/agents/default/work-items/{second_id}/pick",
             second_id = second.id
         ))
         .json(&serde_json::json!({
@@ -638,7 +640,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
 
     let update: serde_json::Value = client
         .patch(format!(
-            "{base}/control/agents/default/work-items/{second_id}",
+            "{base}/api/control/agents/default/work-items/{second_id}",
             second_id = second.id
         ))
         .json(&serde_json::json!({
@@ -665,7 +667,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
 
     let complete: serde_json::Value = client
         .post(format!(
-            "{base}/control/agents/default/work-items/{second_id}/complete",
+            "{base}/api/control/agents/default/work-items/{second_id}/complete",
             second_id = second.id
         ))
         .json(&serde_json::json!({
@@ -714,7 +716,7 @@ pub async fn work_item_mutation_routes_validate_bad_requests() -> Result<()> {
 
     let empty_update = client
         .patch(format!(
-            "{base}/control/agents/default/work-items/{}",
+            "{base}/api/control/agents/default/work-items/{}",
             work.id
         ))
         .json(&serde_json::json!({}))
@@ -729,7 +731,7 @@ pub async fn work_item_mutation_routes_validate_bad_requests() -> Result<()> {
 
     let recheck_without_blocker = client
         .patch(format!(
-            "{base}/control/agents/default/work-items/{}",
+            "{base}/api/control/agents/default/work-items/{}",
             work.id
         ))
         .json(&serde_json::json!({
@@ -745,7 +747,7 @@ pub async fn work_item_mutation_routes_validate_bad_requests() -> Result<()> {
 
     let missing = client
         .post(format!(
-            "{base}/control/agents/default/work-items/missing-work/complete"
+            "{base}/api/control/agents/default/work-items/missing-work/complete"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -766,7 +768,7 @@ pub async fn timer_detail_route_returns_latest_timer_record() -> Result<()> {
         .await?;
 
     let detail: serde_json::Value = client
-        .get(format!("{base}/agents/default/timers/{}", timer.id))
+        .get(format!("{base}/api/agents/default/timers/{}", timer.id))
         .send()
         .await?
         .json()
@@ -776,7 +778,7 @@ pub async fn timer_detail_route_returns_latest_timer_record() -> Result<()> {
     assert_eq!(detail["summary"], "inspect lifecycle timer");
 
     let missing = client
-        .get(format!("{base}/agents/default/timers/missing-timer"))
+        .get(format!("{base}/api/agents/default/timers/missing-timer"))
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
@@ -796,7 +798,7 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
 
     let cancelled_response = client
         .post(format!(
-            "{base}/control/agents/default/timers/{}/cancel",
+            "{base}/api/control/agents/default/timers/{}/cancel",
             timer.id
         ))
         .json(&serde_json::json!({"authority_class": "integration_signal"}))
@@ -811,7 +813,7 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
 
     let idempotent: serde_json::Value = client
         .post(format!(
-            "{base}/control/agents/default/timers/{}/cancel",
+            "{base}/api/control/agents/default/timers/{}/cancel",
             timer.id
         ))
         .json(&serde_json::json!({}))
@@ -822,7 +824,7 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
     assert_eq!(idempotent["status"], "cancelled");
 
     let detail: serde_json::Value = client
-        .get(format!("{base}/agents/default/timers/{}", timer.id))
+        .get(format!("{base}/api/agents/default/timers/{}", timer.id))
         .send()
         .await?
         .json()
@@ -831,7 +833,7 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
 
     let missing = client
         .post(format!(
-            "{base}/control/agents/default/timers/missing-timer/cancel"
+            "{base}/api/control/agents/default/timers/missing-timer/cancel"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -851,7 +853,7 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
             let completed_id = completed_id.clone();
             async move {
                 let detail: serde_json::Value = client
-                    .get(format!("{base}/agents/default/timers/{completed_id}"))
+                    .get(format!("{base}/api/agents/default/timers/{completed_id}"))
                     .send()
                     .await?
                     .json()
@@ -863,7 +865,7 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
     .await?;
     let completed_cancel = client
         .post(format!(
-            "{base}/control/agents/default/timers/{}/cancel",
+            "{base}/api/control/agents/default/timers/{}/cancel",
             completed.id
         ))
         .json(&serde_json::json!({}))

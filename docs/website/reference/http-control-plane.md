@@ -37,10 +37,10 @@ trusting caller-supplied provenance fields.
 
 | Ingress class | Routes | Auth boundary | Origin/trust/authority | Priority | Supported posture |
 |---------------|--------|---------------|------------------------|----------|-------------------|
-| Public enqueue | `POST /enqueue`, `POST /agents/:id/enqueue` | Bearer token in bearer mode; local process boundary in local mode. | Caller may provide only channel or webhook origin. Caller-provided `trust` is rejected. Channel origins become untrusted external evidence; webhook origins become integration signals. Runtime-owned kinds such as `system_tick` and `callback_event` are rejected. | `next`, `normal`, or `background`; `interject` is rejected. | Candidate stable external ingress for non-operator evidence. |
+| Public enqueue | `POST /api/enqueue`, `POST /api/agents/:id/enqueue` | Bearer token in bearer mode; local process boundary in local mode. | Caller may provide only channel or webhook origin. Caller-provided `trust` is rejected. Channel origins become untrusted external evidence; webhook origins become integration signals. Runtime-owned kinds such as `system_tick` and `callback_event` are rejected. | `next`, `normal`, or `background`; `interject` is rejected. | Candidate stable external ingress for non-operator evidence. |
 | Callback capability | `POST /callbacks/wake/:callback_token`, `POST /callbacks/enqueue/:callback_token` | Capability token in the URL path resolves to an active external trigger and matching delivery mode. Do not log, repeat, or publish full callback URLs. | Delivery is admitted as an external-trigger capability and an integration signal. Wake callbacks enqueue runtime-owned inspection ticks; callback payload text is untrusted evidence for the agent to inspect. | Runtime-selected by delivery mode; callers do not choose queue priority. | Capability surface for durable external systems that need to wake or notify an agent. |
-| Operator transport binding | `POST /control/agents/:id/operator-bindings` | Control-plane auth. Delivery credentials are stored on the binding and redacted from audit events. | Creates or updates the binding that later authorizes remote operator ingress. | N/A. | Experimental operator adapter setup surface. |
-| Operator transport ingress | `POST /control/agents/:id/operator-ingress` | Control-plane auth plus active binding, matching target agent, matching operator actor, and matching provider when supplied. | Enqueues a `trusted_operator` `operator_prompt` with `operator_instruction` authority and remote-operator transport metadata. | Always `interject`. | Experimental authenticated operator adapter ingress. |
+| Operator transport binding | `POST /api/control/agents/:id/operator-bindings` | Control-plane auth. Delivery credentials are stored on the binding and redacted from audit events. | Creates or updates the binding that later authorizes remote operator ingress. | N/A. | Experimental operator adapter setup surface. |
+| Operator transport ingress | `POST /api/control/agents/:id/operator-ingress` | Control-plane auth plus active binding, matching target agent, matching operator actor, and matching provider when supplied. | Enqueues a `trusted_operator` `operator_prompt` with `operator_instruction` authority and remote-operator transport metadata. | Always `interject`. | Experimental authenticated operator adapter ingress. |
 | Generic webhook compatibility | `POST /webhooks/generic/:agent_id` | Bearer token in bearer mode; local process boundary in local mode. | Converts JSON payload into a trusted-integration webhook event with `generic_webhook` origin. Callers cannot set origin, trust, or priority through this route. | Always `normal`. | Internal/debug compatibility route; prefer public enqueue or a dedicated capability callback for new external integrations. |
 
 ## Endpoint reference
@@ -90,16 +90,16 @@ Returns model catalog and runtime availability.
 
 ### Agents
 
-**`GET /agents/list`** — List agent entries
+**`GET /api/agents/list`** — List agent entries
 
 Returns lightweight public agent entries for selection and navigation without
 loading full per-agent runtime summaries.
 
-**`GET /agents/:id/status`** — Single agent status
+**`GET /api/agents/:id/status`** — Single agent status
 
 Returns the same `AgentSummary` shape for the named agent.
 
-**`GET /agents/:id/state`** — Lightweight agent state bootstrap
+**`GET /api/agents/:id/state`** — Lightweight agent state bootstrap
 
 Returns a bounded bootstrap page: agent summary, session info (current run,
 pending count), active task summaries, recent timers, slim work items, waiting
@@ -107,19 +107,19 @@ intents, external triggers, and workspace occupancy. Operator notifications,
 execution details, task details, and full work item records are available from
 events or dedicated routes.
 
-**`GET /agents/:id/briefs`** — Recent briefs
+**`GET /api/agents/:id/briefs`** — Recent briefs
 
 Returns recent briefs (acknowledgements and results) for the agent.
 
-**`GET /agents/:id/tasks`** — Active tasks
+**`GET /api/agents/:id/tasks`** — Active tasks
 
 Returns active and recent tasks with status, kind, and timing metadata.
 
-**`GET /agents/:id/tasks/:task_id`** — Task status
+**`GET /api/agents/:id/tasks/:task_id`** — Task status
 
 Returns the structured task lifecycle snapshot for one managed task.
 
-**`GET /agents/:id/tasks/:task_id/output`** — Task output
+**`GET /api/agents/:id/tasks/:task_id/output`** — Task output
 
 Returns a bounded task output result. Query parameters:
 
@@ -128,16 +128,16 @@ Returns a bounded task output result. Query parameters:
 | `block` | Whether to wait for output/completion before returning |
 | `timeout_ms` | Optional bounded wait duration when `block=true` |
 
-**`GET /agents/:id/timers`** — Recent timers
+**`GET /api/agents/:id/timers`** — Recent timers
 
 Returns recent timer records.
 
-**`GET /agents/:id/timers/:timer_id`** — Timer detail
+**`GET /api/agents/:id/timers/:timer_id`** — Timer detail
 
 Returns a single timer record by id, or a shared error envelope when the timer
 is not found for the target agent.
 
-**`GET /agents/:id/events`** — Event log
+**`GET /api/agents/:id/events`** — Event log
 
 Returns recent runtime events (turn entries, system events). Query parameters:
 
@@ -165,7 +165,7 @@ page contains events where `after_seq < event_seq < before_seq`. Event pages are
 loaded from the durable event log, so an unknown cursor can yield an empty page
 rather than a cursor error.
 
-**`GET /agents/:id/events/stream`** — Server-sent events
+**`GET /api/agents/:id/events/stream`** — Server-sent events
 
 SSE stream of raw agent events. Supports `after_seq` and `limit` query params.
 The SSE `id` field is the per-agent durable `event_seq`, and the
@@ -209,17 +209,17 @@ Migration note:
   `/agents/:id/events?max_level=info`. Stream clients should keep subscribing
   to `/agents/:id/events/stream` and apply any presentation filtering locally.
 
-**`GET /agents/:id/transcript`** — Turn transcript
+**`GET /api/agents/:id/transcript`** — Turn transcript
 
 Returns the current turn transcript entries.
 
-**`GET /agents/:id/worktree-summary`** — Worktree summary
+**`GET /api/agents/:id/worktree-summary`** — Worktree summary
 
 Returns managed worktree entries for the agent's workspace.
 
 ### Enqueue (public ingress)
 
-**`POST /agents/:id/enqueue`** — Enqueue a message
+**`POST /api/agents/:id/enqueue`** — Enqueue a message
 
 Accepts external callers on the public HTTP surface. When the server is in
 **bearer mode**, this route calls `authorize_remote_access` and requires the
@@ -254,7 +254,7 @@ Response:
 { "ok": true, "agent_id": "main", "message_id": "msg-abc123" }
 ```
 
-**`POST /enqueue`** (no agent in path) — Enqueue to default agent.
+**`POST /api/enqueue`** (no agent in path) — Enqueue to default agent.
 
 **`POST /webhooks/generic/:agent_id`** — Generic webhook compatibility
 
@@ -272,7 +272,7 @@ needs a secret URL.
 All `/control/*` routes require a control token when the server is in bearer
 mode.
 
-**`POST /control/agents/:id/prompt`** — Send an operator prompt
+**`POST /api/control/agents/:id/prompt`** — Send an operator prompt
 
 Sends a prompt that enters the agent queue as an operator message with
 `trusted_operator` classification.
@@ -281,7 +281,7 @@ Sends a prompt that enters the agent queue as an operator message with
 { "text": "What is the current status?" }
 ```
 
-**`POST /control/agents/:id/wake`** — Explicit wake
+**`POST /api/control/agents/:id/wake`** — Explicit wake
 
 Wakes a sleeping agent with a control-plane wake hint.
 
@@ -295,7 +295,7 @@ Response:
 { "ok": true, "agent_id": "main", "disposition": "woken" }
 ```
 
-**`POST /control/agents/:id/control`** — Control action
+**`POST /api/control/agents/:id/control`** — Control action
 
 Sends a control action. Request body:
 
@@ -303,7 +303,7 @@ Sends a control action. Request body:
 { "action": "stop", "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/current-run/abort`** — Abort current run
+**`POST /api/control/agents/:id/current-run/abort`** — Abort current run
 
 Aborts the current agent run loop. New callers should use
 `mode: "stop_after_abort"`. The legacy `pause_after_abort` value is accepted as
@@ -313,7 +313,7 @@ a compatibility alias and is treated as `stop_after_abort`.
 { "mode": "stop_after_abort" }
 ```
 
-**`POST /control/agents/:id/create`** — Create agent
+**`POST /api/control/agents/:id/create`** — Create agent
 
 Creates a new agent managed by the host. The agent id comes from the URL path.
 
@@ -321,7 +321,7 @@ Creates a new agent managed by the host. The agent id comes from the URL path.
 { "template": null, "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/tasks`** — Create command task
+**`POST /api/control/agents/:id/tasks`** — Create command task
 
 Starts a background command task for the agent.
 
@@ -335,7 +335,7 @@ Starts a background command task for the agent.
 }
 ```
 
-**`POST /control/agents/:id/tasks/:task_id/input`** — Send task input
+**`POST /api/control/agents/:id/tasks/:task_id/input`** — Send task input
 
 Delivers text input to a managed task using trusted operator authority. Command
 tasks receive stdin or TTY text when they were created with interactive input
@@ -345,7 +345,7 @@ enabled; supervised child-agent tasks receive a follow-up input.
 { "text": "continue\n", "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/tasks/:task_id/stop`** — Stop task
+**`POST /api/control/agents/:id/tasks/:task_id/stop`** — Stop task
 
 Requests cancellation for a managed task and returns the structured task stop
 receipt.
@@ -354,7 +354,7 @@ receipt.
 { "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/work-items`** — Create work item
+**`POST /api/control/agents/:id/work-items`** — Create work item
 
 Creates a durable work item for the agent.
 
@@ -365,7 +365,7 @@ Creates a durable work item for the agent.
 }
 ```
 
-**`POST /control/agents/:id/work-items/:work_item_id/pick`** — Pick work item
+**`POST /api/control/agents/:id/work-items/:work_item_id/pick`** — Pick work item
 
 Makes an existing open work item the current focus for the agent. The response
 returns the previous focus, current focus, current work item id, and the
@@ -375,7 +375,7 @@ recorded focus transition.
 { "reason": "external scheduler selected next work", "authority_class": "integration_signal" }
 ```
 
-**`PATCH /control/agents/:id/work-items/:work_item_id`** — Update work item
+**`PATCH /api/control/agents/:id/work-items/:work_item_id`** — Update work item
 
 Mutates one or more WorkItem fields. Empty updates are rejected. `blocked_by`
 uses a nested optional shape: a string sets the blocker, `null` clears it, and
@@ -393,7 +393,7 @@ requires a non-empty blocker.
 }
 ```
 
-**`POST /control/agents/:id/work-items/:work_item_id/complete`** — Complete work item
+**`POST /api/control/agents/:id/work-items/:work_item_id/complete`** — Complete work item
 
 Marks an open work item completed and returns the updated `WorkItemRecord`.
 Cancel, close-without-completion, and delete are intentionally out of scope for
@@ -403,7 +403,7 @@ this lifecycle surface.
 { "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/timers`** — Create timer
+**`POST /api/control/agents/:id/timers`** — Create timer
 
 Creates a timer that will deliver a `TimerTick` to the agent.
 
@@ -416,7 +416,7 @@ Creates a timer that will deliver a `TimerTick` to the agent.
 }
 ```
 
-**`POST /control/agents/:id/timers/:timer_id/cancel`** — Cancel timer
+**`POST /api/control/agents/:id/timers/:timer_id/cancel`** — Cancel timer
 
 Cancels an active timer and returns the updated `TimerRecord`. Cancellation is
 idempotent for an already-cancelled timer. A missing timer returns a shared
@@ -428,7 +428,7 @@ projections and emits `timer_cancelled`.
 { "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/debug-prompt`** — Debug prompt
+**`POST /api/control/agents/:id/debug-prompt`** — Debug prompt
 
 Sends a debug-mode prompt (runtime-internal classification). Request body:
 
@@ -436,7 +436,7 @@ Sends a debug-mode prompt (runtime-internal classification). Request body:
 { "text": "debug instruction", "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/operator-bindings`** — Create operator transport binding
+**`POST /api/control/agents/:id/operator-bindings`** — Create operator transport binding
 
 Sets up a callback URL or transport binding for operator notifications.
 Request body:
@@ -456,7 +456,7 @@ Request body:
 }
 ```
 
-**`POST /control/agents/:id/operator-ingress`** — Operator ingress
+**`POST /api/control/agents/:id/operator-ingress`** — Operator ingress
 
 Direct ingress path for operator-origin messages through the control plane.
 Request body:
@@ -472,13 +472,13 @@ Request body:
 }
 ```
 
-**`POST /control/agents/:id/workspace/attach`** — Attach workspace
+**`POST /api/control/agents/:id/workspace/attach`** — Attach workspace
 
 ```json
 { "path": "/path/to/workspace" }
 ```
 
-**`POST /control/agents/:id/workspace/exit`** — Exit current workspace
+**`POST /api/control/agents/:id/workspace/exit`** — Exit current workspace
 
 Returns to the agent home workspace. Accepts an optional body:
 
@@ -486,7 +486,7 @@ Returns to the agent home workspace. Accepts an optional body:
 { "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/workspace/detach`** — Detach workspace
+**`POST /api/control/agents/:id/workspace/detach`** — Detach workspace
 
 Removes a workspace registration without switching. Request body:
 
@@ -494,13 +494,13 @@ Removes a workspace registration without switching. Request body:
 { "workspace_id": "ws-abc123", "authority_class": "operator_instruction" }
 ```
 
-**`POST /control/agents/:id/model`** — Set agent model
+**`POST /api/control/agents/:id/model`** — Set agent model
 
 ```json
 { "model": "claude-sonnet-4-20250514" }
 ```
 
-**`POST /control/agents/:id/model/clear`** — Clear model override
+**`POST /api/control/agents/:id/model/clear`** — Clear model override
 
 Reverts to the default model. Accepts an optional body:
 
@@ -510,17 +510,17 @@ Reverts to the default model. Accepts an optional body:
 
 ### Runtime management
 
-**`GET /control/runtime/status`** — Runtime status
+**`GET /api/control/runtime/status`** — Runtime status
 
 Returns daemon and runtime health info including configured models, control
 token status, and activity markers.
 
-**`GET /control/runtime/config`** — Runtime config
+**`GET /api/control/runtime/config`** — Runtime config
 
 Returns the daemon's current effective runtime configuration surface and the
 `config.json` path that backs persisted runtime-mutable settings.
 
-**`PATCH /control/runtime/config`** — Update runtime config
+**`PATCH /api/control/runtime/config`** — Update runtime config
 
 Persists runtime-mutable config key updates and classifies each attempted
 change. The current implementation writes supported keys to `config.json` and
@@ -557,7 +557,7 @@ keys return `rejected` with a reason.
 }
 ```
 
-**`POST /control/runtime/shutdown`** — Graceful shutdown
+**`POST /api/control/runtime/shutdown`** — Graceful shutdown
 
 Shuts down the runtime and daemon gracefully.
 
@@ -649,9 +649,9 @@ endpoint. A good integration should be able to ask:
 The following routes exist in `src/http.rs` but are not yet fully documented
 on this reference page:
 
-- `GET /agents/:id/skills`
-- `POST /control/agents/:id/skills/install`
-- `POST /control/agents/:id/skills/uninstall`
+- `GET /api/agents/:id/skills`
+- `POST /api/control/agents/:id/skills/install`
+- `POST /api/control/agents/:id/skills/uninstall`
 - Default-agent aliases: `/status`, `/briefs`, `/state`, `/transcript`,
   `/worktree-summary`
 

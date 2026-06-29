@@ -92,12 +92,17 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    let root: serde_json::Value = client.get(format!("{base}/")).send().await?.json().await?;
+    let root: serde_json::Value = client
+        .get(format!("{base}/api"))
+        .send()
+        .await?
+        .json()
+        .await?;
     assert_eq!(root["ok"], true, "discovery root should use ok envelope");
     assert_eq!(root["default_agent"], "default");
 
     let models: serde_json::Value = client
-        .get(format!("{base}/models"))
+        .get(format!("{base}/api/models"))
         .send()
         .await?
         .json()
@@ -109,7 +114,7 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
     assert!(models["available_models"].is_array());
 
     let agents: serde_json::Value = client
-        .get(format!("{base}/agents/list"))
+        .get(format!("{base}/api/agents/list"))
         .send()
         .await?
         .json()
@@ -120,7 +125,7 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
     );
 
     let prompt: serde_json::Value = client
-        .post(format!("{base}/control/agents/default/prompt"))
+        .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "success shape policy" }))
         .send()
         .await?
@@ -161,7 +166,7 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
     assert_eq!(callback["delivery_mode"], "wake_hint");
 
     let stream_response = client
-        .get(format!("{base}/agents/default/events/stream"))
+        .get(format!("{base}/api/agents/default/events/stream"))
         .header(reqwest::header::ACCEPT, "text/event-stream")
         .send()
         .await?;
@@ -204,7 +209,7 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
 
     let client = reqwest::Client::new();
     let payload: serde_json::Value = client
-        .get(format!("{base}/agents/list"))
+        .get(format!("{base}/api/agents/list"))
         .send()
         .await?
         .json()
@@ -246,7 +251,7 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
         );
     }
 
-    let removed_agents = client.get(format!("{base}/agents")).send().await?;
+    let removed_agents = client.get(format!("{base}/api/agents")).send().await?;
     assert_eq!(
         removed_agents.status(),
         reqwest::StatusCode::NOT_FOUND,
@@ -254,7 +259,7 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
     );
 
     let models_payload: serde_json::Value = client
-        .get(format!("{base}/models"))
+        .get(format!("{base}/api/models"))
         .send()
         .await?
         .json()
@@ -287,7 +292,7 @@ pub async fn json_responses_support_gzip_without_compressing_sse() -> Result<()>
     let client = reqwest::Client::builder().no_gzip().build()?;
 
     let response = client
-        .get(format!("{base}/agents/list"))
+        .get(format!("{base}/api/agents/list"))
         .header(reqwest::header::ACCEPT_ENCODING, "gzip")
         .send()
         .await?;
@@ -306,7 +311,7 @@ pub async fn json_responses_support_gzip_without_compressing_sse() -> Result<()>
     assert!(payload.as_array().is_some());
 
     let stream_response = client
-        .get(format!("{base}/agents/default/events/stream"))
+        .get(format!("{base}/api/agents/default/events/stream"))
         .header(reqwest::header::ACCEPT, "text/event-stream")
         .header(reqwest::header::ACCEPT_ENCODING, "gzip")
         .send()
@@ -364,7 +369,7 @@ pub async fn agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue(
     config.workspace_dir = tempdir()?.keep();
     let (_host, base, server) = spawn_server_with_config(config.clone()).await?;
     let response = reqwest::Client::new()
-        .get(format!("{base}/agents/list"))
+        .get(format!("{base}/api/agents/list"))
         .send()
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::OK);
@@ -435,7 +440,7 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .any(|event| event.event_type == "operator_notification_requested"));
 
     let raw_state: serde_json::Value = reqwest::Client::new()
-        .get(format!("{base}/agents/default/state"))
+        .get(format!("{base}/api/agents/default/state"))
         .send()
         .await?
         .json()
