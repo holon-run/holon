@@ -879,6 +879,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                 .context("runtime servers failed")
         };
         let _ = runtime_service.cleanup_state_files(&config);
+        host.shutdown_daemon_memory_indexer().await;
         return result;
     }
 
@@ -905,6 +906,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                 .context("HTTP server failed")?;
         }
         let _ = runtime_service.cleanup_state_files(&config);
+        host.shutdown_daemon_memory_indexer().await;
         Ok(())
     }
 }

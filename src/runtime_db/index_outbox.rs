@@ -84,7 +84,8 @@ impl RuntimeIndexOutboxRepository<'_> {
     /// Return distinct agent ids that have at least one pending outbox row,
     /// ordered for deterministic processing.
     ///
-    /// Uses the `idx_runtime_index_outbox_agent_seq` index for efficiency.
+    /// Can be served by the `idx_runtime_index_outbox_agent_seq` covering index,
+    /// though the planner ultimately decides the access path.
     pub fn agent_ids_with_pending(&self) -> Result<Vec<String>> {
         let connection = self.db.connection()?;
         let mut statement = connection
