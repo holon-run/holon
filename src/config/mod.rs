@@ -129,6 +129,19 @@ impl AppConfig {
         Ok(reloaded)
     }
 
+    /// Returns true when the default model provider has a usable credential,
+    /// indicating the agent can actually make model calls.
+    ///
+    /// Local providers with `CredentialSource::None` (e.g. vllm) are excluded
+    /// because their availability cannot be verified from config alone — they
+    /// exist in the builtin registry regardless of whether the service is running.
+    pub fn default_provider_ready(&self) -> bool {
+        self.providers
+            .get(&self.default_model.provider)
+            .map(provider_has_usable_auth)
+            .unwrap_or(false)
+    }
+
     fn load_with_home_and_mode(
         home_override: Option<PathBuf>,
         mode: ConfigLoadMode,

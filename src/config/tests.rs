@@ -2524,3 +2524,56 @@ fn provider_doc_entries_are_sorted_and_populated() {
         );
     }
 }
+
+#[test]
+fn default_provider_ready_with_configured_credential() {
+    let fixture = test_app_config("openai/gpt-4o", &[]);
+    assert!(
+        fixture.config.default_provider_ready(),
+        "openai with a configured credential should be ready"
+    );
+}
+
+#[test]
+fn default_provider_ready_false_for_credential_source_none() {
+    let mut fixture = test_app_config("openai/gpt-4o", &[]);
+    // Simulate a local provider (e.g. vllm) with CredentialSource::None.
+    let vllm = ProviderId::parse("vllm").unwrap();
+    fixture.config.providers.insert(
+        vllm.clone(),
+        ProviderRuntimeConfig {
+            id: vllm.clone(),
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::None,
+                kind: CredentialKind::None,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
+    fixture.config.default_model = ModelRef::parse("vllm/test-model").unwrap();
+    assert!(
+        !fixture.config.default_provider_ready(),
+        "CredentialSource::None providers should not be considered ready"
+    );
+}
+
+#[test]
+fn default_provider_ready_false_when_provider_missing() {
+    let mut fixture = test_app_config("openai/gpt-4o", &[]);
+    fixture.config.default_model = ModelRef::parse("nonexistent/model").unwrap();
+    assert!(
+        !fixture.config.default_provider_ready(),
+        "missing provider should not be ready"
+    );
+}
