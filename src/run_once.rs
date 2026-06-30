@@ -355,6 +355,8 @@ pub async fn run_once_with_host(
         tokio::time::sleep(Duration::from_millis(RUN_POLL_INTERVAL_MS)).await;
     };
     // Clear turn budget now that the run has ended.
+    // Errors are intentionally swallowed: the next run overwrites this field,
+    // and a failure here must not mask the actual run result.
     let _ = session
         .runtime
         .update_agent_state(|state| {

@@ -1312,12 +1312,13 @@ async fn run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<
 #[tokio::test]
 async fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<()> {
     // With max_turns=1, the single turn is the last allowed turn.
-    // The budget warning should be injected into the conversation.
+    // The budget warning is injected via the runtime_reminder projection path
+    // on round 2+ within that turn.
     let home_dir = tempdir()?.keep();
     let workspace_dir = tempdir()?.keep();
     let host = RuntimeHost::new_with_provider(
         test_config(workspace_dir, home_dir),
-        Arc::new(BudgetWarningCheckProvider),
+        Arc::new(BudgetWarningCheckProvider::new()),
     )?;
 
     let response = run_once_with_host(
@@ -1360,11 +1361,45 @@ async fn run_once_max_turns_respects_wait_for_command_tasks() -> Result<()> {
     Ok(())
 }
 
-struct BudgetWarningCheckProvider;
+struct BudgetWarningCheckProvider {
+    calls: Mutex<usize>,
+}
+
+impl BudgetWarningCheckProvider {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(0),
+        }
+    }
+}
 
 #[async_trait]
 impl AgentProvider for BudgetWarningCheckProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls == 1 {
+            // Round 1: make a no-op tool call so the budget warning is
+            // injected on round 2 via the runtime_reminder projection path.
+            return Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::ToolUse {
+                    id: "exec-1".into(),
+                    name: "ExecCommand".into(),
+                    input: json!({
+                        "cmd": "true",
+                        "yield_time_ms": 0,
+                    }),
+                }],
+                stop_reason: None,
+                input_tokens: 50,
+                output_tokens: 20,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            });
+        }
+        // Round 2+: the budget warning should be present via runtime_reminder.
         let has_warning = request.conversation.iter().any(|msg| match msg {
             ConversationMessage::UserText(text) => text.contains("turn budget warning"),
             _ => false,

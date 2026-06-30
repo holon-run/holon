@@ -11,8 +11,8 @@ use crate::config::ModelRef;
 use crate::prompt::EffectivePrompt;
 use crate::provider::{
     provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
-    ConversationMessage, ModelBlock, ProviderAttemptTimeline, ProviderTurnRequest,
-    ProviderTurnResponse, ToolResultBlock,
+    ModelBlock, ProviderAttemptTimeline, ProviderTurnRequest, ProviderTurnResponse,
+    ToolResultBlock,
 };
 use crate::runtime::provider_turn::{
     build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
@@ -605,42 +605,11 @@ impl TurnExecution<'_> {
                 provider_round_ms,
             ) = if round == 1 {
                 let request_build_started = std::time::Instant::now();
-                let mut request = build_provider_turn_request(
+                let request = build_provider_turn_request(
                     &effective_prompt,
                     available_tools.clone(),
                     native_web_search.clone(),
                 );
-                // Inject turn budget warning on the first round too so the
-                // agent can plan from the very first model call.
-                {
-                    let (turn_index, turn_budget) = {
-                        let guard = runtime.inner.agent.lock().await;
-                        (guard.state.turn_index, guard.state.turn_budget.clone())
-                    };
-                    if let Some(budget) = turn_budget.as_ref() {
-                        let turns_elapsed = turn_index.saturating_sub(budget.run_start_turn_index);
-                        if turns_elapsed >= budget.max_turns.saturating_sub(1) {
-                            let warning =
-                                build_turn_budget_warning(budget.max_turns, turns_elapsed);
-                            runtime.inner.storage.append_event(&AuditEvent::new(
-                                "turn_budget_warning_injected",
-                                serde_json::json!({
-                                    "agent_id": agent_id,
-                                    "round": round,
-                                    "max_turns": budget.max_turns,
-                                    "turns_elapsed": turns_elapsed,
-                                    "text_preview": truncate_preview(
-                                        &warning,
-                                        ROUND_TEXT_PREVIEW_LIMIT
-                                    ),
-                                }),
-                            ))?;
-                            request
-                                .conversation
-                                .push(ConversationMessage::UserText(warning));
-                        }
-                    }
-                }
                 crate::diagnostics::record_provider_request_build(request_build_started.elapsed());
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
