@@ -801,9 +801,17 @@ fn install_github_remote_skill(
     // Fallback: if the candidate path failed, search the full tree for the
     // actual skill directory. This handles non-flat catalog layouts where
     // SKILL.md lives deeper than `skills/<name>/`.
+    // Only fall back for 404 (path not found); transient failures (timeout,
+    // auth, rate limit) should propagate without an avoidable extra API call.
     let result = match result {
         Ok(()) => Ok(()),
         Err(original_error) => {
+            if !original_error
+                .downcast_ref::<RemoteSkillInstallFailed>()
+                .is_some_and(|e| e.status == Some(404))
+            {
+                return Err(original_error);
+            }
             let _ = fs::remove_dir_all(&tmp);
             fs::create_dir_all(&tmp)
                 .with_context(|| format!("failed to create {}", tmp.display()))?;
@@ -870,6 +878,25 @@ fn install_github_remote_skill_set(
         &source.path,
         package,
     )?;
+    // Deduplicate by skill name: first occurrence wins. Without this, two
+    // different subdirectories exposing the same leaf name would collide via
+    // SkillInstallConflict and abort the whole batch mid-install.
+    let mut seen = std::collections::HashSet::new();
+    let skills: Vec<_> = skills
+        .into_iter()
+        .filter(|(name, _)| {
+            if seen.insert(name.clone()) {
+                true
+            } else {
+                warn!(
+                    skill_name = %name,
+                    "duplicate skill name in remote skill set '{}'; keeping first match",
+                    package
+                );
+                false
+            }
+        })
+        .collect();
     if skills.is_empty() {
         bail!(
             "remote skill package '{}' did not contain any skill directories under {}",
@@ -921,8 +948,10 @@ struct GithubTreeResponse {
 }
 
 /// Resolve the effective Git reference for a remote skill source.
-/// If the reference is empty (unset by parse), queries the repository's
-/// default branch via `GET /repos/{owner}/{repo}`.
+/// If the reference is empty or `"main"` (the pre-fix hardcoded default),
+/// queries the repository's actual default branch via `GET /repos/{o}/{r}`.
+/// Treating `"main"` as a sentinel ensures legacy lock files benefit from the
+/// fix instead of 404-ing on master-default repos.
 fn resolve_effective_reference(
     client: &reqwest::blocking::Client,
     owner: &str,
@@ -930,7 +959,7 @@ fn resolve_effective_reference(
     reference: &str,
     package: &str,
 ) -> Result<String> {
-    if !reference.is_empty() {
+    if !reference.is_empty() && reference != "main" {
         return Ok(reference.to_string());
     }
     resolve_default_branch(client, owner, repo, package)
