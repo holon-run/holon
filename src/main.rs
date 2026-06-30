@@ -445,8 +445,15 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
             }
         },
     };
-    if let Some(url) = &advertise_url {
-        config.callback_base_url = url.clone();
+    // callback_base_url is the local address for same-host webhook callbacks.
+    // Always derive from the listen port unless explicitly overridden via env var.
+    if std::env::var_os("HOLON_CALLBACK_BASE_URL").is_none() {
+        let port = config
+            .http_addr
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+            .unwrap_or(7878);
+        config.callback_base_url = format!("http://127.0.0.1:{port}");
     }
     config.callback_base_url =
         validate_client_visible_url("callback base URL", &config.callback_base_url)?;
@@ -1012,7 +1019,7 @@ mod tests {
 
         assert_eq!(config.http_addr, "0.0.0.0:7878");
         assert_eq!(advertise.as_deref(), Some("http://lab.tailnet.ts.net:7878"));
-        assert_eq!(config.callback_base_url, "http://lab.tailnet.ts.net:7878");
+        assert_eq!(config.callback_base_url, "http://127.0.0.1:7878");
         assert_eq!(config.control_auth_mode, ControlAuthMode::Required);
     }
 
@@ -1036,7 +1043,7 @@ mod tests {
 
         assert_eq!(config.http_addr, "192.168.1.10:8787");
         assert_eq!(advertise.as_deref(), Some("http://192.168.1.10:8787"));
-        assert_eq!(config.callback_base_url, "http://192.168.1.10:8787");
+        assert_eq!(config.callback_base_url, "http://127.0.0.1:8787");
         assert_eq!(config.control_auth_mode, ControlAuthMode::Required);
     }
 
@@ -1456,7 +1463,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.http_addr, "192.168.1.11:8787");
-        assert_eq!(config.callback_base_url, "http://192.168.1.11:8787");
+        assert_eq!(config.callback_base_url, "http://127.0.0.1:8787");
         assert_eq!(config.control_token.as_deref(), Some("file-secret"));
         assert_eq!(
             launch.args,
@@ -1829,7 +1836,7 @@ mod tests {
 
         assert_eq!(config.http_addr, "0.0.0.0:7878");
         assert_eq!(advertise.as_deref(), Some("http://lab.example.test:7878"));
-        assert_eq!(config.callback_base_url, "http://lab.example.test:7878");
+        assert_eq!(config.callback_base_url, "http://127.0.0.1:7878");
         assert_eq!(config.control_auth_mode, ControlAuthMode::Required);
     }
 
@@ -1854,7 +1861,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(advertise, None);
-        assert_eq!(config.callback_base_url, "http://lab.example.test:7878");
+        // Without HOLON_CALLBACK_BASE_URL, callback_base_url is always derived
+        // from the listen port as localhost, ignoring any prior value.
+        assert_eq!(config.callback_base_url, "http://127.0.0.1:7878");
     }
 
     #[test]
