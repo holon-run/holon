@@ -256,13 +256,11 @@ pub async fn callback_wake_hint_rejects_stopped_public_agent_without_side_effect
         }))
         .send()
         .await?;
-    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
-    let payload: serde_json::Value = response.json().await?;
-    assert_eq!(payload["code"], "agent_stopped");
+    // After stop, the external trigger is revoked, so the token is no
+    // longer valid and the callback is rejected at the token level.
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
 
-    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
-    assert!(waiting.is_empty());
     assert_eq!(descriptors[0].delivery_count, 0);
 
     let events = runtime.storage().read_recent_events(20)?;
@@ -489,13 +487,9 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
         .json(&serde_json::json!({ "status": "still_works" }))
         .send()
         .await?;
-    assert_eq!(second.status(), reqwest::StatusCode::CONFLICT);
-    let second_payload: serde_json::Value = second.json().await?;
-    assert_eq!(second_payload["code"], "agent_stopped");
-    assert!(second_payload["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("start first"));
+    // After stop, the external trigger is revoked, so the token is no
+    // longer valid and the callback is rejected at the token level.
+    assert_eq!(second.status(), reqwest::StatusCode::FORBIDDEN);
 
     let runtime_for_wait = runtime2.clone();
     wait_until_async(move || {
@@ -513,10 +507,6 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
         }
     })
     .await?;
-
-    runtime2
-        .revoke_external_trigger(&capability.external_trigger_id)
-        .await?;
 
     server2.abort();
     Ok(())
