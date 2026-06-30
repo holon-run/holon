@@ -43,10 +43,10 @@ use super::projection::{
     normalize_provider_attempt_timing, provider_attempt_model_state, TurnLocalProjectionOutcome,
 };
 use super::reminders::{
-    build_work_item_stale_reminder, maybe_reset_work_item_stale_reminder_cooldown,
-    round_invalidates_checkpoint_anchor, round_updated_work_item, runtime_reminder_fits_baseline,
-    work_item_plan_status_label, work_item_stale_reminder_cooldown_rounds,
-    work_item_stale_reminder_rounds,
+    build_turn_budget_warning, build_work_item_stale_reminder,
+    maybe_reset_work_item_stale_reminder_cooldown, round_invalidates_checkpoint_anchor,
+    round_updated_work_item, runtime_reminder_fits_baseline, work_item_plan_status_label,
+    work_item_stale_reminder_cooldown_rounds, work_item_stale_reminder_rounds,
 };
 use super::{
     append_follow_up_user_texts, render_operator_interjection_text, AgentLoopOutcome,
@@ -683,9 +683,9 @@ impl TurnExecution<'_> {
                 }
             } else {
                 let context_config = runtime.current_context_config().await;
-                let turn_index = {
+                let (turn_index, turn_budget) = {
                     let guard = runtime.inner.agent.lock().await;
-                    guard.state.turn_index
+                    (guard.state.turn_index, guard.state.turn_budget.clone())
                 };
                 let checkpoint_request_id =
                     Some(format!("turn-{turn_index}-round-{round}-checkpoint"));
@@ -760,6 +760,39 @@ impl TurnExecution<'_> {
                     &mut rounds_since_work_item_reminder,
                     stale_work_item_reminder.is_some(),
                 );
+                let budget_warning = if let Some(budget) = turn_budget.as_ref() {
+                    let turns_elapsed = turn_index.saturating_sub(budget.run_start_turn_index);
+
+                    if turns_elapsed >= budget.max_turns.saturating_sub(1) {
+                        let warning = build_turn_budget_warning(budget.max_turns, turns_elapsed);
+                        runtime.inner.storage.append_event(&AuditEvent::new(
+                            "turn_budget_warning_injected",
+                            serde_json::json!({
+                                "agent_id": agent_id,
+                                "round": round,
+                                "max_turns": budget.max_turns,
+                                "turns_elapsed": turns_elapsed,
+                                "text_preview": truncate_preview(&warning, ROUND_TEXT_PREVIEW_LIMIT),
+                            }),
+                        ))?;
+                        Some(warning)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let runtime_reminder: Option<String> = match (
+                    stale_work_item_reminder
+                        .as_ref()
+                        .map(|(_, reminder)| reminder.as_str()),
+                    budget_warning.as_deref(),
+                ) {
+                    (Some(work_item), Some(budget)) => Some(format!("{work_item}\n\n{budget}")),
+                    (Some(reminder), None) => Some(reminder.to_string()),
+                    (None, Some(budget)) => Some(budget.to_string()),
+                    (None, None) => None,
+                };
                 let projection = match build_turn_local_projection_with_runtime_reminder(
                     &prompt_frame,
                     &completed_rounds,
@@ -768,9 +801,7 @@ impl TurnExecution<'_> {
                     checkpoint_request_id,
                     context_config.turn_projection_budget(),
                     context_config.compaction_keep_recent_estimated_tokens,
-                    stale_work_item_reminder
-                        .as_ref()
-                        .map(|(_, reminder)| reminder.as_str()),
+                    runtime_reminder.as_deref(),
                 ) {
                     TurnLocalProjectionOutcome::Projection(projection) => projection,
                     TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {

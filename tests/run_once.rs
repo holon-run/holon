@@ -6,7 +6,8 @@ use holon::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
     provider::{
-        AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse, StubProvider,
+        AgentProvider, ConversationMessage, ModelBlock, ProviderTurnRequest, ProviderTurnResponse,
+        StubProvider,
     },
     run_once::{run_once_with_host, RunFinalStatus, RunOnceRequest},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
@@ -1279,6 +1280,62 @@ async fn run_once_reports_completed_when_final_text_arrives_after_last_allowed_m
 }
 
 #[tokio::test]
+async fn run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<()> {
+    // TwoRoundProvider performs two model rounds within a single turn:
+    // round 1 issues a tool call, round 2 returns terminal text.
+    // With max_turns=1, this should complete because only one turn is
+    // consumed, regardless of the number of model rounds within that turn.
+    // Before the fix, the counter used total_model_rounds, which would
+    // incorrectly report MaxTurnsExceeded for this scenario.
+    let home_dir = tempdir()?.keep();
+    let workspace_dir = tempdir()?.keep();
+    let host = RuntimeHost::new_with_provider(
+        test_config(workspace_dir, home_dir),
+        Arc::new(TwoRoundProvider::new()),
+    )?;
+
+    let response = run_once_with_host(
+        host,
+        RunOnceRequest {
+            max_turns: Some(1),
+            ..run_request("two round prompt")
+        },
+    )
+    .await?;
+
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "two rounds complete");
+    assert_eq!(response.model_rounds, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<()> {
+    // With max_turns=1, the single turn is the last allowed turn.
+    // The budget warning is injected via the runtime_reminder projection path
+    // on round 2+ within that turn.
+    let home_dir = tempdir()?.keep();
+    let workspace_dir = tempdir()?.keep();
+    let host = RuntimeHost::new_with_provider(
+        test_config(workspace_dir, home_dir),
+        Arc::new(BudgetWarningCheckProvider::new()),
+    )?;
+
+    let response = run_once_with_host(
+        host,
+        RunOnceRequest {
+            max_turns: Some(1),
+            ..run_request("do something")
+        },
+    )
+    .await?;
+
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "budget warning received");
+    Ok(())
+}
+
+#[tokio::test]
 async fn run_once_max_turns_respects_wait_for_command_tasks() -> Result<()> {
     let home_dir = tempdir()?.keep();
     let workspace_dir = tempdir()?.keep();
@@ -1302,6 +1359,67 @@ async fn run_once_max_turns_respects_wait_for_command_tasks() -> Result<()> {
     assert_eq!(response.tasks[0].task.status, TaskStatus::Completed);
     assert_eq!(response.tasks[0].task.output_preview, "command_ok");
     Ok(())
+}
+
+struct BudgetWarningCheckProvider {
+    calls: Mutex<usize>,
+}
+
+impl BudgetWarningCheckProvider {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentProvider for BudgetWarningCheckProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls == 1 {
+            // Round 1: make a no-op tool call so the budget warning is
+            // injected on round 2 via the runtime_reminder projection path.
+            return Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::ToolUse {
+                    id: "exec-1".into(),
+                    name: "ExecCommand".into(),
+                    input: json!({
+                        "cmd": "true",
+                        "yield_time_ms": 0,
+                    }),
+                }],
+                stop_reason: None,
+                input_tokens: 50,
+                output_tokens: 20,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            });
+        }
+        // Round 2+: the budget warning should be present via runtime_reminder.
+        let has_warning = request.conversation.iter().any(|msg| match msg {
+            ConversationMessage::UserText(text) => text.contains("turn budget warning"),
+            _ => false,
+        });
+        let text = if has_warning {
+            "budget warning received"
+        } else {
+            "no budget warning"
+        };
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text { text: text.into() }],
+            stop_reason: None,
+            input_tokens: 50,
+            output_tokens: 20,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
 }
 
 struct WorktreeTaskProvider {

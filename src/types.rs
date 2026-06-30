@@ -1790,6 +1790,17 @@ pub struct AgentState {
     pub last_turn_terminal: Option<TurnTerminalRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_budget: Option<TurnBudget>,
+}
+
+/// Turn budget set by `run_once` to signal the maximum number of turns
+/// for the current run. The turn execution pipeline reads this to inject
+/// a budget warning when the agent is on the last allowed turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnBudget {
+    pub max_turns: u64,
+    pub run_start_turn_index: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1920,6 +1931,7 @@ impl AgentState {
             last_active_model: None,
             last_turn_terminal: None,
             last_runtime_failure: None,
+            turn_budget: None,
         }
     }
 }
