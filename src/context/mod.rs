@@ -54,6 +54,7 @@ pub struct ContextConfig {
     pub turn_projection_budget_ratio: f32,
     pub turn_projection_min_budget: usize,
     pub turn_projection_max_budget: usize,
+    pub callback_base_url: String,
 }
 
 impl Default for ContextConfig {
@@ -71,6 +72,7 @@ impl Default for ContextConfig {
             turn_projection_budget_ratio: 0.30,
             turn_projection_min_budget: 4096,
             turn_projection_max_budget: 64000,
+            callback_base_url: String::new(),
         }
     }
 }
@@ -178,7 +180,7 @@ pub fn build_context_with_default_external_ingress(
             &mut remaining_budget,
             section(
                 "default_external_ingress",
-                render_default_external_ingress(&default_ingress),
+                render_default_external_ingress(&config.callback_base_url, &default_ingress),
             ),
         );
     }
@@ -712,8 +714,16 @@ fn default_external_ingress(
         }))
 }
 
-fn render_default_external_ingress(record: &ExternalTriggerRecord) -> String {
-    let url = record.trigger_url.as_deref().unwrap_or("<unavailable>");
+fn render_default_external_ingress(
+    callback_base_url: &str,
+    record: &ExternalTriggerRecord,
+) -> String {
+    let url = record
+        .token
+        .as_ref()
+        .map_or("<unavailable>".to_string(), |token| {
+            crate::callbacks::build_callback_url(callback_base_url, &record.delivery_mode, token)
+        });
     format!(
         "Default external ingress:\n\
          - url: {url}\n\
@@ -3035,6 +3045,7 @@ mod tests {
             turn_projection_budget_ratio: 0.25,
             turn_projection_min_budget: 4_096,
             turn_projection_max_budget: 64_000,
+            callback_base_url: String::new(),
             ..ContextConfig::default()
         };
         assert_eq!(ratio.turn_projection_budget(), 5_000);
@@ -3044,6 +3055,7 @@ mod tests {
             turn_projection_budget_ratio: 0.30,
             turn_projection_min_budget: 4_096,
             turn_projection_max_budget: 64_000,
+            callback_base_url: String::new(),
             ..ContextConfig::default()
         };
         assert_eq!(floor.turn_projection_budget(), 4_096);
@@ -3053,6 +3065,7 @@ mod tests {
             turn_projection_budget_ratio: 0.30,
             turn_projection_min_budget: 4_096,
             turn_projection_max_budget: 64_000,
+            callback_base_url: String::new(),
             ..ContextConfig::default()
         };
         assert_eq!(ceiling.turn_projection_budget(), 64_000);
@@ -5601,7 +5614,7 @@ mod tests {
                 target_agent_id: "default".into(),
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
-                trigger_url: None,
+                token: None,
                 token_hash: "token-hash".into(),
                 status: ExternalTriggerStatus::Active,
                 created_at: now,
@@ -5973,7 +5986,7 @@ mod tests {
                 target_agent_id: "default".into(),
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
-                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),
+                token: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),
                 token_hash: "redacted-token-hash".into(),
                 status: ExternalTriggerStatus::Active,
                 created_at: chrono::Utc::now(),
@@ -6037,7 +6050,7 @@ mod tests {
                 target_agent_id: "default".into(),
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
-                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/old".into()),
+                token: Some("http://127.0.0.1:7878/callbacks/wake/old".into()),
                 token_hash: "redacted-old-token-hash".into(),
                 status: ExternalTriggerStatus::Revoked,
                 created_at: now - chrono::Duration::seconds(60),
@@ -6052,7 +6065,7 @@ mod tests {
                 target_agent_id: "default".into(),
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
-                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/new".into()),
+                token: Some("http://127.0.0.1:7878/callbacks/wake/new".into()),
                 token_hash: "redacted-new-token-hash".into(),
                 status: ExternalTriggerStatus::Active,
                 created_at: now,

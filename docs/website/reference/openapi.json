@@ -6898,6 +6898,64 @@
         ]
       }
     },
+    "/api/control/agents/{agent_id}/reset-callback": {
+      "post": {
+        "description": "Revoke the current external trigger and provision a fresh one with a new token.",
+        "operationId": "resetCallback",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Reset external trigger callback",
+        "tags": [
+          "control"
+        ]
+      }
+    },
     "/api/control/agents/{agent_id}/skills/disable": {
       "post": {
         "description": "Disable a skill for an agent.",

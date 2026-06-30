@@ -97,6 +97,20 @@
     "aliases": []
   },
   {
+    "path": "agent.reset-callback",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "agent.start",
     "positionals": [
       {

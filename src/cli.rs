@@ -590,6 +590,11 @@ pub enum AgentCommands {
         #[command(subcommand)]
         command: AgentModelCommands,
     },
+    /// Reset the external trigger callback for an agent (revoke old token + generate new)
+    ResetCallback {
+        #[arg(long)]
+        agent: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

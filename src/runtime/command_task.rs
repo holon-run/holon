@@ -540,8 +540,16 @@ impl RuntimeHandle {
                 (trigger.target_agent_id == agent_id
                     && trigger.scope == ExternalTriggerScope::Agent
                     && trigger.status == ExternalTriggerStatus::Active)
-                    .then_some(trigger.trigger_url)
-                    .flatten()
+                    .then_some(())
+                    .and_then(|_| {
+                        trigger.token.as_ref().map(|token| {
+                            crate::callbacks::build_callback_url(
+                                &self.inner.callback_base_url,
+                                &trigger.delivery_mode,
+                                token,
+                            )
+                        })
+                    })
             }))
     }
 
@@ -1616,7 +1624,7 @@ mod tests {
                 target_agent_id: "default".into(),
                 scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
-                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),
+                token: Some("token".into()),
                 token_hash: "token-hash".into(),
                 status: ExternalTriggerStatus::Active,
                 created_at: Utc::now(),
@@ -1632,7 +1640,7 @@ mod tests {
 
         assert_eq!(
             env.get("HOLON_EXTERNAL_TRIGGER_URL").map(String::as_str),
-            Some("http://127.0.0.1:7878/callbacks/wake/token")
+            Some("http://127.0.0.1:7878/api/callbacks/wake/token")
         );
     }
 

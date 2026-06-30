@@ -2518,8 +2518,8 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
         "INSERT INTO external_triggers (
             external_trigger_id, target_agent_id, trigger_url,
             token_hash, status, created_at, revoked_at, last_delivered_at,
-            delivery_count, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+           delivery_count, payload_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(external_trigger_id) DO UPDATE SET
             target_agent_id = excluded.target_agent_id,
             trigger_url = excluded.trigger_url,
@@ -2549,7 +2549,7 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
         params![
             record.external_trigger_id,
             record.target_agent_id,
-            record.trigger_url,
+           record.token,
             record.token_hash,
             status,
             timestamp(record.created_at),

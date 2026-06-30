@@ -215,7 +215,7 @@ mod tests {
             target_agent_id: agent_id.into(),
             scope: ExternalTriggerScope::Agent,
             delivery_mode: CallbackDeliveryMode::EnqueueMessage,
-            trigger_url: Some(format!("https://example.test/{id}")),
+            token: Some(format!("https://example.test/{id}")),
             token_hash: format!("hash-{id}"),
             status,
             created_at,

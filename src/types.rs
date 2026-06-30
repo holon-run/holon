@@ -2161,7 +2161,7 @@ pub struct ExternalTriggerRecord {
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_url: Option<String>,
+    pub token: Option<String>,
     pub token_hash: String,
     pub status: ExternalTriggerStatus,
     pub created_at: DateTime<Utc>,

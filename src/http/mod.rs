@@ -384,6 +384,10 @@ pub fn router(state: AppState) -> Router {
             post(control::create_agent),
         )
         .route(
+            "/control/agents/{agent_id}/reset-callback",
+            post(control::reset_callback),
+        )
+        .route(
             "/control/agents/{agent_id}/workspace/attach",
             post(control::attach_workspace),
         )

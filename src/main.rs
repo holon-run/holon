@@ -2852,6 +2852,15 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 }
             }
         }
+        Some(AgentCommands::ResetCallback { agent }) => {
+            let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            post_control_json(
+                config,
+                &format!("/control/agents/{agent_id}/reset-callback"),
+                &serde_json::json!({}),
+            )
+            .await
+        }
     }
 }
 

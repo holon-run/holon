@@ -672,6 +672,31 @@ pub async fn clear_agent_model(
     })))
 }
 
+pub async fn reset_callback(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let capability = runtime
+        .reset_external_trigger()
+        .await
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "external_trigger_id": capability.external_trigger_id,
+        "trigger_url": capability.trigger_url,
+        "delivery_mode": capability.delivery_mode,
+        "status": capability.status,
+    })))
+}
+
 pub async fn control_prompt(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
