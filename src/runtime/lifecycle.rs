@@ -259,6 +259,29 @@ impl RuntimeHandle {
                 .latest_active_task_records_for_agent(&agent_id, usize::MAX)?;
             self.interrupt_active_tasks_for_lifecycle_stop(active_tasks)
                 .await?;
+
+            // Revoke all active external triggers to prevent capability
+            // secret leakage and unexpected wake after the agent is stopped.
+            let triggers = self.latest_external_triggers().await?;
+            for trigger in triggers
+                .iter()
+                .filter(|t| t.status == ExternalTriggerStatus::Active)
+            {
+                match self
+                    .revoke_external_trigger(&trigger.external_trigger_id)
+                    .await
+                {
+                    Ok(_) => tracing::info!(
+                        external_trigger_id = %trigger.external_trigger_id,
+                        "revoked external trigger during agent stop"
+                    ),
+                    Err(err) => tracing::warn!(
+                        external_trigger_id = %trigger.external_trigger_id,
+                        error = %err,
+                        "failed to revoke external trigger during agent stop"
+                    ),
+                }
+            }
         }
         self.inner.storage.append_event(&AuditEvent::new(
             "control_applied",

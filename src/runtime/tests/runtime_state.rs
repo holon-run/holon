@@ -3340,3 +3340,48 @@ async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
         .unwrap();
     assert_eq!(first_record.status, WaitConditionStatus::Cancelled);
 }
+
+#[tokio::test]
+async fn stop_agent_revokes_active_external_triggers() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "unused",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // Create a default external trigger.
+    let capability = runtime
+        .default_external_trigger(CallbackDeliveryMode::WakeHint)
+        .await
+        .unwrap();
+    let triggers = runtime.latest_external_triggers().await.unwrap();
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(
+        triggers[0].status,
+        crate::types::ExternalTriggerStatus::Active
+    );
+
+    // Stop the agent — should revoke all active triggers.
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+
+    let triggers = runtime.latest_external_triggers().await.unwrap();
+    let revoked = triggers
+        .iter()
+        .find(|t| t.external_trigger_id == capability.external_trigger_id)
+        .expect("trigger should still exist");
+    assert_eq!(revoked.status, crate::types::ExternalTriggerStatus::Revoked);
+}
