@@ -127,6 +127,18 @@ fn coerce_string(s: &str) -> Option<Value> {
             return Some(Value::Number(serde_json::Number::from_f64(f)?));
         }
     }
+
+    // If the string looks like a JSON array or object, try parsing it.
+    // This recovers the common LLM mistake of serializing a structured
+    // field as a JSON string instead of inline JSON.
+    let trimmed = s.trim_start();
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+            if parsed.is_array() || parsed.is_object() {
+                return Some(parsed);
+            }
+        }
+    }
     None
 }
 
@@ -591,5 +603,49 @@ mod tests {
     fn coerce_string_scalars_returns_none_when_no_change() {
         let input = json!({"name": "test", "cmd": "echo"});
         assert!(coerce_string_scalars(&input).is_none());
+    }
+
+    #[test]
+    fn coerce_string_json_array() {
+        let s = r#"[{"text":"do something","state":"pending"}]"#;
+        let result = coerce_string(s).expect("should parse JSON array");
+        assert_eq!(
+            result,
+            json!([{"text": "do something", "state": "pending"}])
+        );
+    }
+
+    #[test]
+    fn coerce_string_json_object() {
+        let s = r#"{"key":"value","num":42}"#;
+        let result = coerce_string(s).expect("should parse JSON object");
+        assert_eq!(result, json!({"key": "value", "num": 42}));
+    }
+
+    #[test]
+    fn coerce_string_invalid_json_left_untouched() {
+        // Starts with [ but is not valid JSON — should return None.
+        assert_eq!(coerce_string("[invalid"), None);
+        assert_eq!(coerce_string("{not json"), None);
+    }
+
+    #[test]
+    fn coerce_string_plain_text_with_brace_untouched() {
+        // Text that merely starts with { or [ but is not JSON should be preserved.
+        assert_eq!(coerce_string("{placeholder}"), None);
+        assert_eq!(coerce_string("[link]"), None);
+    }
+
+    #[test]
+    fn coerce_string_scalars_json_string_field() {
+        // Simulates the LLM mistake: todo_list serialized as a JSON string.
+        let input = json!({
+            "todo_list": "[{\"text\":\"step 1\",\"state\":\"pending\"}]"
+        });
+        let result = coerce_string_scalars(&input).expect("should have coerced");
+        assert_eq!(
+            result,
+            json!({"todo_list": [{"text": "step 1", "state": "pending"}]})
+        );
     }
 }
