@@ -114,28 +114,22 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release adds a Thinking/reasoning selector decoupled from the model picker, real-time work item updates with plan file browser links in the Web GUI, and unifies all HTTP routes under the /api prefix. It also introduces daemon restart recovery with an Interrupted queue status, whitespace-relaxed matching for ApplyPatch, a more generous fallback prompt budget, and several fixes for reasoning_effort, Anthropic server tool blocks, and memory search freshness. Legacy JSONL code paths are fully removed in favor of the mandatory RuntimeDb.
+          This release adds a Bing Web Search provider with managed WebSearch tool kept alongside native search, an external trigger token-only storage model with reset-callback API, and trigger revocation on agent stop. It also fixes max_turns counting, coerce_string JSON-string parsing for tool arguments, callback_base_url/advertise_url decoupling, and skill install for non-flat catalog layouts. The memory indexer is redesigned as a single daemon with outbox cleanup, and SQLite connection init gains PRAGMA tuning for better performance.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Decouple Thinking/reasoning selector from model picker and improve layout ([#2054](https://github.com/holon-run/holon/pull/2054)).
-          - Add real-time work item updates and plan file browser links to Web GUI ([#2046](https://github.com/holon-run/holon/pull/2046)).
-          - Unify all HTTP routes under /api prefix, removing root-level routes ([d36dd27](https://github.com/holon-run/holon/commit/d36dd270)).
-          - Introduce Interrupted queue status for daemon restart recovery ([#2052](https://github.com/holon-run/holon/pull/2052)).
-          - Add whitespace-relaxed matching for ApplyPatch context_not_found ([#2050](https://github.com/holon-run/holon/pull/2050)).
-          - Clarify ApplyPatch path conventions and add absolute-path hint error ([#2049](https://github.com/holon-run/holon/pull/2049)).
-          - Increase fallback prompt budget and deduct non-trimmable tokens in degraded rounds ([#2048](https://github.com/holon-run/holon/pull/2048)).
-          - Preserve Anthropic server tool blocks and fold repeated tool calls ([#2051](https://github.com/holon-run/holon/pull/2051)).
-          - Unify reasoning_summaries and supports_reasoning into single field ([#2055](https://github.com/holon-run/holon/pull/2055)).
-          - Guard reasoning_effort by model-level supports_reasoning capability ([#2041](https://github.com/holon-run/holon/pull/2041)).
-          - Refresh memory index before search to prevent stale results ([5717c4a](https://github.com/holon-run/holon/commit/5717c4ad)).
-          - Make RuntimeDb mandatory and remove JSONL fallback from runtime read/write paths ([#2038](https://github.com/holon-run/holon/pull/2038)).
-          - Remove legacy JSONL module and complete JSONL cleanup ([#2045](https://github.com/holon-run/holon/pull/2045)).
-          - Migrate operator domains from JSONL to DB ([#2044](https://github.com/holon-run/holon/pull/2044)).
-          - Remove legacy_inline_plan field and from_legacy_anthropic_model dead code ([#2047](https://github.com/holon-run/holon/pull/2047)).
-          - Remove waiting_intents entirely ([#2043](https://github.com/holon-run/holon/pull/2043)).
+          - Add Bing Web Search provider and keep managed WebSearch alongside native search ([#2075](https://github.com/holon-run/holon/pull/2075)).
+          - Store external trigger token only, add reset-callback API ([#2072](https://github.com/holon-run/holon/pull/2072)).
+          - Revoke external triggers when agent is stopped ([#2074](https://github.com/holon-run/holon/pull/2074)).
+          - Parse JSON-string arrays/objects in coerce_string for tool arguments ([#2073](https://github.com/holon-run/holon/pull/2073)).
+          - Fix max_turns counter to use turn_index instead of total_model_rounds ([#2070](https://github.com/holon-run/holon/pull/2070)).
+          - Emit first-run intro when provider is configured ([#2069](https://github.com/holon-run/holon/pull/2069)).
+          - Decouple callback_base_url from advertise_url ([#2068](https://github.com/holon-run/holon/pull/2068)).
+          - Support non-flat catalog layouts and non-main default branches in skill install ([#2067](https://github.com/holon-run/holon/pull/2067)).
+          - Redesign memory indexer to single daemon with outbox cleanup ([#2061](https://github.com/holon-run/holon/pull/2061)).
+          - Add SQLite PRAGMA tuning to connection init for performance ([#2063](https://github.com/holon-run/holon/pull/2063)).
 
           ## Install
 
