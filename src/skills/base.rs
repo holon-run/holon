@@ -586,7 +586,7 @@ impl RemoteSkillSetSource {
         Ok(Self {
             owner: owner.to_string(),
             repo: repo.to_string(),
-            reference: "main".to_string(),
+            reference: String::new(),
             path: "skills".to_string(),
         })
     }
@@ -598,14 +598,12 @@ impl RemoteSkillSetSource {
         }
         let owner = parts[0].to_string();
         let repo = parts[1].trim_end_matches(".git").to_string();
-        let mut reference = "main".to_string();
+        let mut reference = String::new();
         let mut skill_path = "skills".to_string();
         if parts.get(2) == Some(&"tree") {
-            reference = parts
-                .get(3)
-                .filter(|part| !part.is_empty())
-                .unwrap_or(&"main")
-                .to_string();
+            if let Some(part) = parts.get(3).filter(|part| !part.is_empty()) {
+                reference = part.to_string();
+            }
             let tree_path = parts.get(4..).unwrap_or(&[]).join("/");
             if !tree_path.is_empty() {
                 skill_path = tree_path;
@@ -639,14 +637,12 @@ impl RemoteSkillSource {
         }
         let owner = parts[0].to_string();
         let repo = parts[1].trim_end_matches(".git").to_string();
-        let mut reference = "main".to_string();
+        let mut reference = String::new();
         let mut skill_path = String::new();
         if parts.get(2) == Some(&"tree") {
-            reference = parts
-                .get(3)
-                .filter(|part| !part.is_empty())
-                .unwrap_or(&"main")
-                .to_string();
+            if let Some(part) = parts.get(3).filter(|part| !part.is_empty()) {
+                reference = part.to_string();
+            }
             skill_path = parts.get(4..).unwrap_or(&[]).join("/");
         }
         if let Some(skill) = skill {
@@ -698,7 +694,7 @@ impl RemoteSkillSource {
         Ok(Self {
             owner: owner.to_string(),
             repo: repo.to_string(),
-            reference: "main".to_string(),
+            reference: String::new(),
             path: format!("skills/{skill_name}"),
             skill_name,
         })
@@ -720,6 +716,36 @@ fn remote_package_ref_installs_all_skills(package: &str) -> bool {
         return path.split('/').nth(2) != Some("tree");
     }
     true
+}
+
+/// Download a remote skill directory and finalize the installation.
+/// Downloads to `tmp`, verifies `SKILL_ENTRYPOINT` exists, records install
+/// metadata, then renames to `destination`.
+fn finalize_remote_skill_download(
+    client: &reqwest::blocking::Client,
+    source: &RemoteSkillSource,
+    skill_path: &str,
+    tmp: &Path,
+    destination: &Path,
+    package: &str,
+) -> Result<()> {
+    download_github_directory(client, source, skill_path, tmp)?;
+    if !tmp.join(SKILL_ENTRYPOINT).is_file() {
+        bail!(
+            "remote skill '{}' did not contain {} at {}",
+            package,
+            SKILL_ENTRYPOINT,
+            skill_path
+        );
+    }
+    record_install_metadata(tmp, "remote")?;
+    fs::rename(tmp, destination).with_context(|| {
+        format!(
+            "failed to install remote skill {} -> {}",
+            package,
+            destination.display()
+        )
+    })
 }
 
 fn install_github_remote_skill(
@@ -750,24 +776,65 @@ fn install_github_remote_skill(
         .build()
         .context("failed to create remote skill HTTP client")?;
 
-    let result = download_github_directory(&client, source, &source.path, &tmp).and_then(|()| {
-        if !tmp.join(SKILL_ENTRYPOINT).is_file() {
-            bail!(
-                "remote skill '{}' did not contain {} at {}",
+    let effective_ref = resolve_effective_reference(
+        &client,
+        &source.owner,
+        &source.repo,
+        &source.reference,
+        package,
+    )?;
+    let resolved_source = RemoteSkillSource {
+        reference: effective_ref.clone(),
+        ..source.clone()
+    };
+
+    // Try the candidate path first (e.g. `skills/my-skill`).
+    let result = finalize_remote_skill_download(
+        &client,
+        &resolved_source,
+        &source.path,
+        &tmp,
+        &destination,
+        package,
+    );
+
+    // Fallback: if the candidate path failed, search the full tree for the
+    // actual skill directory. This handles non-flat catalog layouts where
+    // SKILL.md lives deeper than `skills/<name>/`.
+    let result = match result {
+        Ok(()) => Ok(()),
+        Err(original_error) => {
+            let _ = fs::remove_dir_all(&tmp);
+            fs::create_dir_all(&tmp)
+                .with_context(|| format!("failed to create {}", tmp.display()))?;
+            match discover_skills_via_tree(
+                &client,
+                &source.owner,
+                &source.repo,
+                &effective_ref,
+                "",
                 package,
-                SKILL_ENTRYPOINT,
-                source.path
-            );
+            ) {
+                Ok(skills) => match skills
+                    .iter()
+                    .find(|(name, _)| name == &source.skill_name)
+                    .map(|(_, path)| path.clone())
+                    .filter(|path| path != &source.path)
+                {
+                    Some(found_path) => finalize_remote_skill_download(
+                        &client,
+                        &resolved_source,
+                        &found_path,
+                        &tmp,
+                        &destination,
+                        package,
+                    ),
+                    None => Err(original_error),
+                },
+                Err(_) => Err(original_error),
+            }
         }
-        record_install_metadata(&tmp, "remote")?;
-        fs::rename(&tmp, &destination).with_context(|| {
-            format!(
-                "failed to install remote skill {} -> {}",
-                package,
-                destination.display()
-            )
-        })
-    });
+    };
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -788,7 +855,21 @@ fn install_github_remote_skill_set(
         .default_headers(github_auth_headers())
         .build()
         .context("failed to create remote skill HTTP client")?;
-    let skills = list_github_skill_dirs(&client, source, package)?;
+    let effective_ref = resolve_effective_reference(
+        &client,
+        &source.owner,
+        &source.repo,
+        &source.reference,
+        package,
+    )?;
+    let skills = discover_skills_via_tree(
+        &client,
+        &source.owner,
+        &source.repo,
+        &effective_ref,
+        &source.path,
+        package,
+    )?;
     if skills.is_empty() {
         bail!(
             "remote skill package '{}' did not contain any skill directories under {}",
@@ -798,12 +879,12 @@ fn install_github_remote_skill_set(
     }
 
     let mut installed = Vec::new();
-    for skill_name in skills {
+    for (skill_name, skill_path) in skills {
         let source = RemoteSkillSource {
             owner: source.owner.clone(),
             repo: source.repo.clone(),
-            reference: source.reference.clone(),
-            path: format!("{}/{}", source.path.trim_end_matches('/'), skill_name),
+            reference: effective_ref.clone(),
+            path: skill_path,
             skill_name,
         };
         install_github_remote_skill(user_home, package, &source)?;
@@ -821,15 +902,53 @@ struct GithubContentEntry {
     download_url: Option<String>,
 }
 
-fn list_github_skill_dirs(
+#[derive(Debug, Deserialize)]
+struct GithubRepoInfo {
+    default_branch: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubTreeResponse {
+    tree: Vec<GithubTreeEntry>,
+    truncated: bool,
+}
+
+/// Resolve the effective Git reference for a remote skill source.
+/// If the reference is empty (unset by parse), queries the repository's
+/// default branch via `GET /repos/{owner}/{repo}`.
+fn resolve_effective_reference(
     client: &reqwest::blocking::Client,
-    source: &RemoteSkillSetSource,
+    owner: &str,
+    repo: &str,
+    reference: &str,
     package: &str,
-) -> Result<Vec<String>> {
-    let url =
-        github_contents_url_parts(&source.owner, &source.repo, &source.reference, &source.path);
+) -> Result<String> {
+    if !reference.is_empty() {
+        return Ok(reference.to_string());
+    }
+    resolve_default_branch(client, owner, repo, package)
+}
+
+fn resolve_default_branch(
+    client: &reqwest::blocking::Client,
+    owner: &str,
+    repo: &str,
+    package: &str,
+) -> Result<String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}",
+        utf8_percent_encode(owner, NON_ALPHANUMERIC),
+        utf8_percent_encode(repo, NON_ALPHANUMERIC),
+    );
     let response = remote_skill_request(client.get(&url).send(), package, || {
-        format!("failed to fetch remote skill directory {url}")
+        format!("failed to fetch repository metadata for {url}")
     })?;
     if !response.status().is_success() {
         return Err(RemoteSkillInstallFailed {
@@ -840,17 +959,76 @@ fn list_github_skill_dirs(
         }
         .into());
     }
-    let entries: Vec<GithubContentEntry> = response
+    let info: GithubRepoInfo = response
         .json()
-        .with_context(|| format!("failed to parse GitHub contents response for {url}"))?;
-    entries
-        .into_iter()
-        .filter(|entry| entry.kind == "dir")
-        .map(|entry| {
-            validate_skill_name(&entry.name)?;
-            Ok(entry.name)
-        })
-        .collect()
+        .with_context(|| format!("failed to parse repository metadata for {url}"))?;
+    Ok(info.default_branch)
+}
+
+/// Discover all skill directories (paths containing `SKILL.md`) via the Git
+/// Trees API. Returns `(skill_name, skill_dir_path)` pairs filtered by
+/// `path_prefix`.
+fn discover_skills_via_tree(
+    client: &reqwest::blocking::Client,
+    owner: &str,
+    repo: &str,
+    reference: &str,
+    path_prefix: &str,
+    package: &str,
+) -> Result<Vec<(String, String)>> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+        utf8_percent_encode(owner, NON_ALPHANUMERIC),
+        utf8_percent_encode(repo, NON_ALPHANUMERIC),
+        utf8_percent_encode(reference, NON_ALPHANUMERIC),
+    );
+    let response = remote_skill_request(client.get(&url).send(), package, || {
+        format!("failed to fetch repository tree for {url}")
+    })?;
+    if !response.status().is_success() {
+        return Err(RemoteSkillInstallFailed {
+            package: package.to_string(),
+            status: Some(response.status().as_u16().into()),
+            stdout: String::new(),
+            stderr: response.text().unwrap_or_default(),
+        }
+        .into());
+    }
+    let tree_data: GithubTreeResponse = response
+        .json()
+        .with_context(|| format!("failed to parse GitHub tree response for {url}"))?;
+    if tree_data.truncated {
+        bail!(
+            "repository tree for '{}' is too large for recursive skill discovery; \
+             specify skill paths explicitly via GitHub tree URLs",
+            package
+        );
+    }
+    let prefix = if path_prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", path_prefix.trim_end_matches('/'))
+    };
+    let mut skills = Vec::new();
+    for entry in tree_data.tree {
+        if entry.kind != "blob" {
+            continue;
+        }
+        let Some(dir) = entry.path.strip_suffix("/SKILL.md") else {
+            continue;
+        };
+        if !prefix.is_empty() && !dir.starts_with(&prefix) {
+            continue;
+        }
+        let Some(name) = dir.rsplit('/').next() else {
+            continue;
+        };
+        if validate_skill_name(name).is_err() {
+            continue;
+        }
+        skills.push((name.to_string(), dir.to_string()));
+    }
+    Ok(skills)
 }
 
 fn github_auth_headers() -> HeaderMap {
@@ -1668,12 +1846,20 @@ impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
             .default_headers(github_auth_headers())
             .build()
             .context("failed to create remote skill HTTP client")?;
+        let package = format!("{}/{}", source.owner, source.repo);
+        let effective_ref = resolve_effective_reference(
+            &client,
+            &source.owner,
+            &source.repo,
+            &source.reference,
+            &package,
+        )?;
         download_github_directory(
             &client,
             &RemoteSkillSource {
                 owner: source.owner.clone(),
                 repo: source.repo.clone(),
-                reference: source.reference.clone(),
+                reference: effective_ref,
                 path: source.skill_path.clone(),
                 skill_name: source.skill_name.clone(),
             },
@@ -1813,7 +1999,7 @@ impl LockedRemoteSkillSource {
             .get("ref")
             .and_then(|value| value.as_str())
             .filter(|reference| !reference.is_empty())
-            .unwrap_or("main")
+            .unwrap_or("")
             .to_string();
         let (owner, repo) = object
             .get("sourceUrl")
@@ -2366,7 +2552,7 @@ mod tests {
             "sourceUrl": "https://github.com/vercel-labs/agent-skills",
             "skillPath": format!("skills/{name}"),
             "skillFolderHash": hash,
-            "ref": "main",
+            "ref": "",
             "installedAt": "2026-01-01T00:00:00Z",
             "updatedAt": "2026-01-01T00:00:00Z"
         });
@@ -3149,7 +3335,7 @@ mod tests {
 
         assert_eq!(source.owner, "vercel-labs");
         assert_eq!(source.repo, "agent-skills");
-        assert_eq!(source.reference, "main");
+        assert_eq!(source.reference, "");
         assert_eq!(source.path, "skills/pr-review");
         assert_eq!(source.skill_name, "pr-review");
     }
