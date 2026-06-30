@@ -82,6 +82,7 @@ pub(crate) fn continuation_ready_context_config(
         turn_projection_budget_ratio: 1.0,
         turn_projection_min_budget: 0,
         turn_projection_max_budget: prompt_budget_estimated_tokens,
+        callback_base_url: String::new(),
         ..context_config()
     }
 }

@@ -441,6 +441,7 @@ impl BuiltInModelCatalog {
             turn_projection_budget_ratio: base_context_config.turn_projection_budget_ratio,
             turn_projection_min_budget: base_context_config.turn_projection_min_budget,
             turn_projection_max_budget: base_context_config.turn_projection_max_budget,
+            callback_base_url: String::new(),
         };
         (context_config, policy)
     }

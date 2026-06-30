@@ -3354,7 +3354,7 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
             target_agent_id: "default".into(),
             scope: ExternalTriggerScope::Agent,
             delivery_mode: CallbackDeliveryMode::WakeHint,
-            trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/ci".into()),
+            token: Some("http://127.0.0.1:7878/callbacks/wake/ci".into()),
             token_hash: "token-hash".into(),
             status: ExternalTriggerStatus::Active,
             created_at: now,
@@ -3569,7 +3569,7 @@ async fn default_external_ingress_ignores_legacy_active_trigger_without_url() {
             target_agent_id: "default".into(),
             scope: ExternalTriggerScope::Agent,
             delivery_mode: CallbackDeliveryMode::WakeHint,
-            trigger_url: None,
+            token: None,
             token_hash: "legacy-token-hash".into(),
             status: ExternalTriggerStatus::Active,
             created_at: now,
@@ -3591,12 +3591,54 @@ async fn default_external_ingress_ignores_legacy_active_trigger_without_url() {
     assert!(descriptors.iter().any(|record| {
         record.external_trigger_id == legacy_trigger_id
             && record.status == ExternalTriggerStatus::Revoked
-            && record.trigger_url.is_none()
+            && record.token.is_none()
     }));
     assert!(descriptors.iter().any(|record| {
         record.external_trigger_id == capability.external_trigger_id
             && record.status == ExternalTriggerStatus::Active
-            && record.trigger_url.as_deref() == Some(capability.trigger_url.as_str())
+            && record.token.is_some()
+    }));
+}
+
+#[tokio::test]
+async fn reset_external_trigger_revokes_old_and_creates_new() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // Provision the initial default trigger.
+    let first = runtime
+        .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        .await
+        .unwrap();
+    assert!(first.trigger_url.contains("/callbacks/wake/"));
+
+    // Reset: old trigger should be revoked, new trigger created.
+    let second = runtime.reset_external_trigger().await.unwrap();
+    assert_ne!(first.external_trigger_id, second.external_trigger_id);
+    assert_eq!(second.status, ExternalTriggerStatus::Active);
+    assert!(second.trigger_url.contains("/callbacks/wake/"));
+
+    let descriptors = runtime.latest_external_triggers().await.unwrap();
+    // Old trigger is revoked.
+    assert!(descriptors.iter().any(|r| {
+        r.external_trigger_id == first.external_trigger_id
+            && r.status == ExternalTriggerStatus::Revoked
+    }));
+    // New trigger is active with a token.
+    assert!(descriptors.iter().any(|r| {
+        r.external_trigger_id == second.external_trigger_id
+            && r.status == ExternalTriggerStatus::Active
+            && r.token.is_some()
     }));
 }
 

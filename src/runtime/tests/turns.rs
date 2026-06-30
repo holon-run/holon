@@ -533,6 +533,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
             turn_projection_budget_ratio: 1.0,
             turn_projection_min_budget: 0,
             turn_projection_max_budget: prompt_budget_estimated_tokens,
+            callback_base_url: String::new(),
             ..context_config()
         },
     )
@@ -766,6 +767,7 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
             turn_projection_budget_ratio: 1.0,
             turn_projection_min_budget: 0,
             turn_projection_max_budget: prompt_budget_estimated_tokens,
+            callback_base_url: String::new(),
             ..context_config()
         },
     )
