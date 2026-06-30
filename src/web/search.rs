@@ -525,6 +525,9 @@ async fn search_configured_provider(
         WebProviderKind::Brave => {
             brave_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
+        WebProviderKind::Bing => {
+            bing_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
         WebProviderKind::Tavily => {
             tavily_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
@@ -966,6 +969,108 @@ async fn brave_search(
         return Err(search_error(
             "parse_failed",
             "Brave Search returned no parseable search results",
+            provider_id,
+            "try a different query or check the API subscription",
+        ));
+    }
+    Ok(results)
+}
+
+async fn bing_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let api_key = &provider.api_key;
+    if api_key.is_empty() {
+        return Err(search_error(
+            "provider_unavailable",
+            "Bing Search requires an API key (set credential_profile on the provider)",
+            provider_id,
+            "add a credential_profile with an api_key in the credential store",
+        ));
+    }
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.bing.microsoft.com");
+    let url = format!(
+        "{}/v7.0/search?q={}&count={}",
+        base_url.trim_end_matches('/'),
+        form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>(),
+        max_results.min(50),
+    );
+    let response = client
+        .get(&url)
+        .header("Ocp-Apim-Subscription-Key", api_key.as_str())
+        .send()
+        .await
+        .map_err(|error| {
+            search_error(
+                "network_failed",
+                format!("Bing Search request failed: {error}"),
+                provider_id,
+                "retry later or check the API key",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED {
+            "provider_unavailable"
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("Bing Search returned HTTP {status}"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("Bing Search returned invalid JSON: {error}"),
+            provider_id,
+            "check the API key or retry later",
+        )
+    })?;
+    let results = payload
+        .get("webPages")
+        .and_then(|web| web.get("value"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let title = entry.get("name")?.as_str()?.trim().to_string();
+            let url = entry.get("url")?.as_str()?.trim().to_string();
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            Some(WebSearchResult {
+                title,
+                url,
+                snippet: entry
+                    .get("snippet")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty()),
+                source: provider_id.to_string(),
+                published_at: None,
+            })
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "Bing Search returned no parseable search results",
             provider_id,
             "try a different query or check the API subscription",
         ));
@@ -2330,6 +2435,29 @@ mod tests {
         })
     }
 
+    fn bing_results_json() -> serde_json::Value {
+        serde_json::json!({
+            "webPages": {
+                "value": [
+                    {
+                        "name": "Bing Search",
+                        "url": "https://www.bing.com",
+                        "snippet": "Bing search engine by Microsoft"
+                    },
+                    {
+                        "name": "Bing Webmaster Tools",
+                        "url": "https://www.bing.com/webmasters",
+                        "snippet": "Tools for website owners"
+                    }
+                ]
+            }
+        })
+    }
+
+    fn empty_bing_results_json() -> serde_json::Value {
+        serde_json::json!({ "webPages": { "value": [] } })
+    }
+
     fn tavily_results_json() -> serde_json::Value {
         serde_json::json!({
             "results": [
@@ -2907,6 +3035,122 @@ mod tests {
             limits: Default::default(),
         };
         let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "provider_unavailable");
+        assert!(
+            format!("{err}").contains("API key"),
+            "expected API key error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bing_search_integration_success() {
+        let router = axum::Router::new().route(
+            "/v7.0/search",
+            axum::routing::get(|| async { axum::Json(bing_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Bing, &base_url);
+        let results = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Bing Search");
+        assert_eq!(results[0].url, "https://www.bing.com");
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("Bing search engine by Microsoft")
+        );
+        assert_eq!(results[0].source, "bing_test");
+        assert_eq!(results[1].title, "Bing Webmaster Tools");
+    }
+
+    #[tokio::test]
+    async fn bing_search_empty_results_is_error() {
+        let router = axum::Router::new().route(
+            "/v7.0/search",
+            axum::routing::get(|| async { axum::Json(empty_bing_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Bing, &base_url);
+        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("no parseable search results"),
+            "expected empty results error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bing_search_http_401_is_error() {
+        let router = axum::Router::new().route(
+            "/v7.0/search",
+            axum::routing::get(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Bing, &base_url);
+        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("HTTP 401"),
+            "expected HTTP 401 error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bing_search_http_429_is_error() {
+        let router = axum::Router::new().route(
+            "/v7.0/search",
+            axum::routing::get(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Bing, &base_url);
+        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn bing_search_missing_api_key_is_error() {
+        let provider = WebProviderConfig {
+            kind: WebProviderKind::Bing,
+            base_url: Some("http://localhost:1".to_string()),
+            api_key: String::new(),
+            command: None,
+            output: None,
+            limits: Default::default(),
+        };
+        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
         let tool_error = ToolError::from_anyhow(&err);

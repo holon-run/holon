@@ -393,12 +393,13 @@ impl RuntimeHandle {
 }
 
 fn filter_native_web_search_tools(
-    mut tools: Vec<ToolSpec>,
+    tools: Vec<ToolSpec>,
     native_search_configured: bool,
 ) -> Vec<ToolSpec> {
-    if native_search_configured {
-        tools.retain(|tool| tool.name != crate::tool::tools::web_search::NAME);
-    }
+    // Managed WebSearch is always available alongside native search tools.
+    // Native search uses different tool names (e.g. web_search_preview), so
+    // there is no conflict — the agent can choose which search surface to use.
+    let _ = native_search_configured;
     tools
 }
 
@@ -819,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_web_search_tool_is_hidden_when_builtin_search_selected() {
+    fn managed_web_search_tool_stays_visible_when_builtin_search_selected() {
         let tools = filter_native_web_search_tools(
             vec![
                 tool_spec(crate::tool::tools::web_search::NAME),
@@ -828,7 +829,7 @@ mod tests {
             true,
         );
 
-        assert!(!tools
+        assert!(tools
             .iter()
             .any(|tool| tool.name == crate::tool::tools::web_search::NAME));
         assert!(tools.iter().any(|tool| tool.name == "read_file"));
