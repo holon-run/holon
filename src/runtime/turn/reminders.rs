@@ -165,6 +165,21 @@ pub(super) fn maybe_reset_work_item_stale_reminder_cooldown(
     }
 }
 
+/// Build a turn budget warning injected when the agent is on the last
+/// allowed turn of a run. This is a cooperative hint, not enforcement;
+/// the scheduling layer enforces max_turns independently.
+pub(super) fn build_turn_budget_warning(max_turns: u64, turns_elapsed: u64) -> String {
+    [
+        "[Runtime-generated turn budget warning]".to_string(),
+        format!(
+            "Turn budget: this is turn {turns_elapsed} of {max_turns} maximum turns for this run."
+        ),
+        "Please wrap up your work now: deliver results, write summaries, and complete any open work items. After the last allowed turn, the runtime will stop scheduling new turns.".to_string(),
+    ]
+    .join("
+")
+}
+
 pub(super) fn truncate_reminder_to_token_budget(reminder: &str, max_tokens: usize) -> String {
     if estimate_text_tokens(reminder) <= max_tokens {
         return reminder.to_string();

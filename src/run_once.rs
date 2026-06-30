@@ -20,7 +20,7 @@ use crate::{
         AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, ClosureOutcome, ControlAction,
         FailureArtifact, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
         MessageOrigin, Priority, TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage,
-        ToolExecutionRecord, ToolExecutionStatus, WaitingReason,
+        ToolExecutionRecord, ToolExecutionStatus, TurnBudget, WaitingReason,
     },
 };
 
@@ -238,11 +238,28 @@ pub async fn run_once_with_host(
         correlation_id: None,
         causation_id: None,
     };
+    // Set turn budget before enqueueing the message so the turn execution
+    // pipeline can inject a budget warning on the last allowed turn.
+    if let Some(max_turns) = request.max_turns {
+        let run_start_turn_index = baseline.turn_index;
+        session
+            .runtime
+            .update_agent_state(|state| {
+                state.turn_budget = Some(TurnBudget {
+                    max_turns,
+                    run_start_turn_index,
+                });
+                Ok(())
+            })
+            .await?;
+    }
+
     let message = inbound.into_message();
     let queued_message = session.runtime.enqueue(message).await?;
 
     let mut candidate_completion: Option<CandidateCompletion> = None;
     let mut observed_new_task_ids = HashSet::<String>::new();
+
     let final_candidate = loop {
         let state = session.runtime.agent_state().await?;
         let storage_marker = session.runtime.poll_activity_marker()?;
@@ -253,18 +270,9 @@ pub async fn run_once_with_host(
         let active_new_task_ids =
             active_new_task_ids(&session.runtime, &poll_view.new_task_ids).await?;
         let foreground_idle = state.current_run_id.is_none() && state.pending == 0;
-        let max_turns_hit = request.max_turns.is_some_and(|max| {
-            state
-                .total_model_rounds
-                .saturating_sub(baseline.total_model_rounds)
-                >= max
-        });
-        let terminal_within_max_turns = request.max_turns.is_none_or(|max| {
-            state
-                .total_model_rounds
-                .saturating_sub(baseline.total_model_rounds)
-                <= max
-        });
+        let turns_elapsed = state.turn_index.saturating_sub(baseline.turn_index);
+        let max_turns_hit = request.max_turns.is_some_and(|max| turns_elapsed >= max);
+        let terminal_within_max_turns = request.max_turns.is_none_or(|max| turns_elapsed <= max);
 
         let terminal_status = if foreground_idle && poll_view.turn_terminal_observed {
             session.runtime.current_closure().await?.map(|closure| {
@@ -346,6 +354,15 @@ pub async fn run_once_with_host(
 
         tokio::time::sleep(Duration::from_millis(RUN_POLL_INTERVAL_MS)).await;
     };
+    // Clear turn budget now that the run has ended.
+    let _ = session
+        .runtime
+        .update_agent_state(|state| {
+            state.turn_budget = None;
+            Ok(())
+        })
+        .await;
+
     let final_status = final_candidate.state;
     let waiting_reason = final_candidate.waiting_reason;
     let mut final_state = session.runtime.agent_state().await?;
