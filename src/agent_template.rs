@@ -121,6 +121,8 @@ pub struct TemplateProvenanceRecord {
     pub selector: String,
     pub source: TemplateProvenanceSource,
     pub applied_at: DateTime<Utc>,
+    #[serde(default)]
+    pub schema_version: Option<String>,
 }
 
 /// File-format skill reference as defined in `skills.toml`.
@@ -268,6 +270,7 @@ struct ResolvedTemplate {
     provenance: TemplateProvenanceSource,
     agents_md: String,
     skill_refs: Vec<TemplateSkillRef>,
+    schema_version: Option<String>,
 }
 
 pub fn template_provenance_path(agent_home: &Path) -> PathBuf {
@@ -404,7 +407,14 @@ async fn initialize_agent_home_from_template_with_home_and_catalog(
             selector: template.to_string(),
             source: resolved.provenance,
             applied_at: Utc::now(),
+            schema_version: resolved.schema_version,
         };
+        tracing::info!(
+            template = %record.selector,
+            schema_version = ?record.schema_version,
+            agent_home = %agent_home.display(),
+            "template_applied: agent initialized from template"
+        );
         let content = serde_json::to_vec_pretty(&record)?;
         fs::write(template_provenance_path(&agent_home), content).with_context(|| {
             format!(
@@ -496,7 +506,14 @@ async fn ensure_agent_home_agents_md_from_template_with_home_and_catalog(
             selector: template.to_string(),
             source: resolved.provenance,
             applied_at: Utc::now(),
+            schema_version: resolved.schema_version,
         };
+        tracing::info!(
+            template = %record.selector,
+            schema_version = ?record.schema_version,
+            agent_home = %agent_home.display(),
+            "template_applied: agent initialized from template"
+        );
         let content = serde_json::to_vec_pretty(&record)?;
         write_file_atomically(&template_provenance_path(&agent_home), &content)?;
         Ok(record)
@@ -1060,6 +1077,7 @@ fn resolve_builtin_template(template_id: &str, home_dir: &Path) -> Result<Resolv
         },
         agents_md: builtin.agents_md.to_string(),
         skill_refs,
+        schema_version: parse_template_manifest(builtin.template_toml).map(|m| m.schema),
     })
 }
 
@@ -1110,7 +1128,14 @@ fn resolve_local_template(
         provenance,
         agents_md,
         skill_refs,
+        schema_version: read_template_schema_version(&path),
     })
+}
+
+fn read_template_schema_version(template_dir: &Path) -> Option<String> {
+    let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
+    let content = fs::read_to_string(&manifest_path).ok()?;
+    parse_template_manifest(&content).map(|m| m.schema)
 }
 
 fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
@@ -1355,6 +1380,12 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
             }
             None => Vec::new(),
         };
+        let manifest_path = format!("{template_path}/{TEMPLATE_MANIFEST_FILENAME}");
+        let manifest_content = fetch_github_file(&owner, &repo, &git_ref, &manifest_path).await?;
+        let schema_version = manifest_content
+            .as_deref()
+            .and_then(parse_template_manifest)
+            .map(|m| m.schema);
         return Ok(ResolvedTemplate {
             provenance: TemplateProvenanceSource::GitHubUrl {
                 url: template.to_string(),
@@ -1365,6 +1396,7 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
             },
             agents_md,
             skill_refs,
+            schema_version,
         });
     }
 
@@ -2582,7 +2614,7 @@ package = "owner/repo@../bad"
         let seen_paths_clone = seen_paths.clone();
 
         thread::spawn(move || {
-            for stream in listener.incoming().take(2) {
+            for stream in listener.incoming().take(3) {
                 let mut stream = stream.unwrap();
                 let mut buffer = [0_u8; 2048];
                 let count = stream.read(&mut buffer).unwrap();
@@ -2638,6 +2670,7 @@ package = "owner/repo@../bad"
             &[
                 "/repos/owner/repo/contents/templates/reviewer/AGENTS.md?ref=main",
                 "/repos/owner/repo/contents/templates/reviewer/skills.toml?ref=main",
+                "/repos/owner/repo/contents/templates/reviewer/template.toml?ref=main",
             ]
         );
     }
@@ -3163,5 +3196,118 @@ name = "Worker"
             entries[0].source_url.as_deref(),
             Some("https://github.com/owner/repo/tree/main/agent_templates/worker")
         );
+    }
+    #[tokio::test]
+    async fn provenance_records_schema_version_from_template_toml() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root().unwrap();
+        let template_dir = templates.join("versioned");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "versioned template").unwrap();
+        fs::write(
+            template_dir.join(TEMPLATE_MANIFEST_FILENAME),
+            r#"schema = "holon.agent_template.v1"
+id = "versioned"
+name = "Versioned"
+"#,
+        )
+        .unwrap();
+
+        let agent_home = home.path().join("agent-versioned");
+        let provenance = initialize_agent_home_from_template(&agent_home, "versioned")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provenance.schema_version.as_deref(),
+            Some("holon.agent_template.v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn provenance_schema_version_none_when_no_template_toml() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root().unwrap();
+        let template_dir = templates.join("bare");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "bare template").unwrap();
+
+        let agent_home = home.path().join("agent-bare");
+        let provenance = initialize_agent_home_from_template(&agent_home, "bare")
+            .await
+            .unwrap();
+
+        assert!(provenance.schema_version.is_none());
+    }
+
+    #[tokio::test]
+    async fn provenance_builtin_template_has_schema_version() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        seed_builtin_templates().unwrap();
+
+        let agent_home = home.path().join("agent-builtin");
+        let provenance = initialize_agent_home_from_template(&agent_home, "holon-default")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provenance.schema_version.as_deref(),
+            Some("holon.agent_template.v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn template_modification_after_init_does_not_change_agent() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root().unwrap();
+        let template_dir = templates.join("mutable");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "original instructions").unwrap();
+
+        let agent_home = home.path().join("agent-mutable");
+        initialize_agent_home_from_template(&agent_home, "mutable")
+            .await
+            .unwrap();
+
+        // Modify the template source after agent initialization.
+        fs::write(
+            template_dir.join("AGENTS.md"),
+            "modified instructions that should not propagate",
+        )
+        .unwrap();
+
+        let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
+        assert!(agents_md.contains("original instructions"));
+        assert!(!agents_md.contains("modified instructions"));
+    }
+
+    #[tokio::test]
+    async fn re_applying_template_to_existing_agent_fails() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root().unwrap();
+        let template_dir = templates.join("reapply");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "reapply template").unwrap();
+
+        let agent_home = home.path().join("agent-reapply");
+        initialize_agent_home_from_template(&agent_home, "reapply")
+            .await
+            .unwrap();
+
+        // Second initialization on the now-populated agent home must fail.
+        let err = initialize_agent_home_from_template(&agent_home, "reapply")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
     }
 }
