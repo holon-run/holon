@@ -3435,7 +3435,6 @@ name = "Worker"
             Some("https://github.com/owner/repo/tree/main/agent_templates/worker")
         );
     }
-D
     #[tokio::test]
     async fn provenance_records_schema_version_from_template_toml() {
         let _lock = crate::test_env::lock_env();
@@ -3548,8 +3547,9 @@ name = "Versioned"
             .await
             .unwrap_err();
         assert!(err.to_string().contains("already exists"));
+    }
 
-#[test]
+    #[test]
     fn parsed_github_template_url_parses_tree_url() {
         let url = ParsedGithubTemplateUrl::parse(
             "https://github.com/holon-run/templates/tree/main/my-template",
@@ -3606,10 +3606,7 @@ name = "Versioned"
         let err = remove_user_template(tmp.path(), "my-test-template").unwrap_err();
         assert!(!template_dir.exists());
 
-D
-        assert!(err.to_string().contains("not found"));    }
-
-assert!(err.to_string().contains("not found"));
+        assert!(err.to_string().contains("not found"));
     }
 
     #[cfg(unix)]
@@ -3639,4 +3636,5 @@ assert!(err.to_string().contains("not found"));
         assert_eq!(result, "owner/repo/tree/main/templates/dev");
 
         assert!(validate_github_template_url("https://gitlab.com/owner/repo").is_err());
-    }}
+    }
+}
