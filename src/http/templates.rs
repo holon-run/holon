@@ -71,9 +71,34 @@ pub async fn check_template(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
+    // Handle github_url validation (URL format check only, no download).
+    if let Some(url) = request.github_url.as_deref().filter(|s| !s.is_empty()) {
+        let url_owned = url.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            let canonical = crate::agent_template::validate_github_template_url(&url_owned)?;
+            Ok::<_, anyhow::Error>(TemplateCheckResult {
+                valid: true,
+                errors: vec![],
+                warnings: vec![format!("URL validated as: {canonical}")],
+                manifest: None,
+            })
+        })
+        .await
+        .map_err(|err| error_response(anyhow!("check worker failed: {err}")))?
+        .map_err(error_response)?;
+
+        return Ok(Json(json!({
+            "ok": true,
+            "valid": result.valid,
+            "errors": result.errors,
+            "warnings": result.warnings,
+            "manifest": result.manifest,
+        })));
+    }
+
     let Some(path_str) = request.path.as_deref().filter(|s| !s.is_empty()) else {
         return Err(error_response(anyhow!(
-            "path is required (github_url validation is not yet supported)"
+            "either path or github_url is required"
         )));
     };
 

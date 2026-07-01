@@ -1928,11 +1928,16 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
         "https://api.github.com/repos/{}/{}/tarball/{}",
         source.owner, source.repo, source.reference
     );
-    let response = client
+    // Forward GITHUB_TOKEN / GH_TOKEN when available so private repos work and
+    // the 60 req/hr unauthenticated rate limit is avoided.
+    let mut request = client
         .get(&tarball_url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .context("failed to request GitHub tarball")?;
+        .header("Accept", "application/vnd.github+json");
+    if let Ok(token) = env::var("GITHUB_TOKEN").or_else(|_| env::var("GH_TOKEN")) {
+        request = request.bearer_auth(&token);
+    }
+
+    let response = request.send().context("failed to request GitHub tarball")?;
     if !response.status().is_success() {
         bail!("GitHub tarball download failed: HTTP {}", response.status());
     }
@@ -2056,19 +2061,42 @@ fn extract_tarball(tarball_path: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Validate a GitHub template URL format without downloading anything.
+/// Returns a canonical path string (owner/repo/tree/ref[/path]).
+pub fn validate_github_template_url(url: &str) -> Result<String> {
+    let parsed = ParsedGithubTemplateUrl::parse(url)?;
+    Ok(format!(
+        "{}/{}/tree/{}{}",
+        parsed.owner,
+        parsed.repo,
+        parsed.reference,
+        if parsed.path.is_empty() {
+            String::new()
+        } else {
+            format!("/{}", parsed.path)
+        }
+    ))
+}
+
 fn copy_template_dir(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if from.is_dir() {
+        if file_type.is_dir() {
             if from.file_name().is_some_and(|n| n == ".git") {
                 continue;
             }
             copy_template_dir(&from, &to)?;
-        } else if from.is_file() {
+        } else if file_type.is_file() {
             fs::copy(&from, &to)?;
+        } else {
+            bail!(
+                "template contains unsupported file type (e.g. symlink): {}",
+                from.display()
+            );
         }
     }
     Ok(())
@@ -3577,5 +3605,37 @@ name = "Versioned"
         let err = remove_user_template(tmp.path(), "my-test-template").unwrap_err();
         assert!(!template_dir.exists());
 
+D
         assert!(err.to_string().contains("not found"));    }
-}
+
+assert!(err.to_string().contains("not found"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_template_dir_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("AGENTS.md"), "# test").unwrap();
+        // Create a symlink pointing outside the template directory.
+        symlink("/etc/hostname", src.join("evil")).unwrap();
+
+        let err = copy_template_dir(&src, &dst).unwrap_err();
+        assert!(
+            err.to_string().contains("symlink"),
+            "expected symlink rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_github_template_url_parses_and_reports() {
+        let result =
+            validate_github_template_url("https://github.com/owner/repo/tree/main/templates/dev")
+                .unwrap();
+        assert_eq!(result, "owner/repo/tree/main/templates/dev");
+
+        assert!(validate_github_template_url("https://gitlab.com/owner/repo").is_err());
+    }}
