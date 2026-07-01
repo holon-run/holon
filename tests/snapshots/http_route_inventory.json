@@ -734,6 +734,38 @@
   },
   {
     "method": "get",
+    "path": "/api/templates/catalog",
+    "handler": "templates_catalog",
+    "operation_id": "templatesCatalog",
+    "tag": "templates",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/templates/catalog/{catalog_id}",
+    "handler": "template_detail",
+    "operation_id": "templateDetail",
+    "tag": "templates",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/transcript",
     "handler": "transcript_default",
     "operation_id": "defaultTranscript",
@@ -1580,6 +1612,38 @@
   },
   {
     "method": "post",
+    "path": "/api/control/templates/install",
+    "handler": "install_template",
+    "operation_id": "installTemplate",
+    "tag": "templates",
+    "parameters": [],
+    "request_schema": "InstallTemplateRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/control/templates/remove",
+    "handler": "remove_template",
+    "operation_id": "removeTemplate",
+    "tag": "templates",
+    "parameters": [],
+    "request_schema": "RemoveTemplateRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/enqueue",
     "handler": "enqueue_default",
     "operation_id": "enqueueDefault",
@@ -1731,6 +1795,22 @@
     "parameters": [],
     "request_schema": "UpdateSkillRequest",
     "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/templates/catalog/check",
+    "handler": "check_template",
+    "operation_id": "checkTemplate",
+    "tag": "templates",
+    "parameters": [],
+    "request_schema": "CheckTemplateRequest",
+    "request_strict": false,
     "response_content_types": [
       "application/json"
     ],

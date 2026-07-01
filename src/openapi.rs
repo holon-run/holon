@@ -103,6 +103,11 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/skills/catalog/refresh", "refreshSkillCatalog", "skills", "Refresh runtime catalog", "Refresh runtime Skill Library catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates.", Some("RefreshCatalogRequest"), AuthKind::Control),
     route("post", "/skills/catalog/update", "updateSkillCatalog", "skills", "Update skill library", "Fetch supported remote Skill Library entries described by .skill-lock.json and update changed skills. Returns per-skill status.", Some("UpdateSkillRequest"), AuthKind::Control),
     route("post", "/skills/catalog/check", "checkSkillCatalog", "skills", "Check skill library", "Check Skill Library and lock-file consistency.", Some("CheckSkillRequest"), AuthKind::Control),
+    route("get", "/templates/catalog", "templatesCatalog", "templates", "Template catalog", "Return the global AgentTemplate catalog (builtin + user global library).", None, AuthKind::RemoteAccess),
+    route("get", "/templates/catalog/{catalog_id}", "templateDetail", "templates", "Template detail", "Return template detail with full AGENTS.md content, manifest, and skill dependencies.", None, AuthKind::RemoteAccess),
+    route("post", "/templates/catalog/check", "checkTemplate", "templates", "Check template", "Validate a local template directory without applying it.", Some("CheckTemplateRequest"), AuthKind::RemoteAccess),
+    route("post", "/control/templates/install", "installTemplate", "templates", "Install template", "Install a template package from a GitHub tree URL into the user global library.", Some("InstallTemplateRequest"), AuthKind::Control),
+    route("post", "/control/templates/remove", "removeTemplate", "templates", "Remove template", "Remove a template from the user global library.", Some("RemoveTemplateRequest"), AuthKind::Control),
     route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime memory", "Search the same memory v2 index used by the agent MemorySearch tool.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
     route_with_response("post", "/memory/get", "runtimeMemoryGet", "search", "Fetch runtime memory source", "Fetch exact bounded memory content by source_ref, matching the agent MemoryGet tool contract.", Some("MemoryGetRequest"), "MemoryGetResult", AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
@@ -290,6 +295,7 @@ fn openapi_value() -> Value {
             { "name": "work-items" },
             { "name": "timers" },
             { "name": "skills" },
+            { "name": "templates" },
             { "name": "jobs" },
             { "name": "search" },
             { "name": "callbacks", "description": "Capability-token callback ingress. Never publish real callback_token values." },
@@ -682,6 +688,9 @@ fn component_schemas() -> Value {
         "DisableSkillRequest",
         "InstallSkillRequest",
         "UninstallSkillRequest",
+        "CheckTemplateRequest",
+        "InstallTemplateRequest",
+        "RemoveTemplateRequest",
     ] {
         schemas.insert(name.into(), request_schema.clone());
     }

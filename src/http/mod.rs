@@ -96,6 +96,7 @@ mod jobs;
 mod skills;
 mod state;
 mod tasks;
+mod templates;
 mod types;
 mod web;
 mod workspace_files;
@@ -496,6 +497,20 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/skills/catalog/update", post(skills::update_skill_catalog))
         .route("/skills/catalog/check", post(skills::check_skill_catalog))
+        .route("/templates/catalog", get(templates::templates_catalog))
+        .route(
+            "/templates/catalog/{catalog_id}",
+            get(templates::template_detail),
+        )
+        .route("/templates/catalog/check", post(templates::check_template))
+        .route(
+            "/control/templates/install",
+            post(templates::install_template),
+        )
+        .route(
+            "/control/templates/remove",
+            post(templates::remove_template),
+        )
         .route(
             "/control/agents/{agent_id}/skills/enable",
             post(skills::enable_skill),
