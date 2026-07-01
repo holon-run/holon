@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 
+import { parseSkillMarkdown } from "./parseSkillMarkdown";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardHeader } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -38,7 +39,6 @@ export function SkillsPage({
   const [addSource, setAddSource] = useState("");
   const [addSkillName, setAddSkillName] = useState("");
   const [addMode, setAddMode] = useState<SkillInstallMode>("linked");
-  const [message, setMessage] = useState<string>();
   const stats = useMemo(() => skillStats(skills), [skills]);
   const libraryRoots = useMemo(() => summarizeLibraryRoots(skills), [skills]);
   const visibleSkills = useMemo(() => {
@@ -62,13 +62,11 @@ export function SkillsPage({
     if (ok) {
       setAddSource("");
       setAddSkillName("");
-      setMessage(`Installing ${source}…`);
     }
   }
 
   async function removeSkill(name: string) {
-    const ok = await onRemoveSkill(name);
-    if (ok) setMessage(`Removed ${name} from the Global Skill Library.`);
+    await onRemoveSkill(name);
   }
 
   return (
@@ -104,12 +102,6 @@ export function SkillsPage({
           <span>{error}</span>
         </div>
       ) : null}
-      {message && !error ? (
-        <div className="skills-message" role="status">
-          {message}
-        </div>
-      ) : null}
-
       {installJobs.length > 0 ? (
         <div className="skills-install-jobs" role="status" aria-label="Skill install jobs">
           {installJobs.map((job) => (
@@ -294,22 +286,43 @@ export function SkillDetailPage({
   const skill = detail?.skill;
   return (
     <section className="page skill-detail-route" aria-label="Skill detail">
+      <nav className="skill-detail-breadcrumb" aria-label="Breadcrumb">
+        <button type="button" className="breadcrumb-back" onClick={onBack}>
+          ← Skills
+        </button>
+        <span className="breadcrumb-sep" aria-hidden="true">/</span>
+        <span className="breadcrumb-current">{skill?.name ?? skillId}</span>
+      </nav>
       <div className="skills-inner skill-detail-page scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
           <span className="eyebrow">Skill detail</span>
           <h1>{skill?.name ?? skillId}</h1>
-          <p>{skill?.description || "Read-only SKILL.md content resolved through the Global Skill Library catalog."}</p>
+          {skill?.description ? <p>{skill.description}</p> : null}
         </div>
         <div className="skills-actions" aria-label="Skill detail actions">
-          <Button type="button" variant="outline" onClick={onBack}>
-            Back to skills
-          </Button>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? "Refreshing…" : "Refresh"}
           </Button>
         </div>
       </section>
+
+      {skill ? (
+        <dl className="skills-detail-meta">
+          <div className="skills-detail-meta-item">
+            <dt>Scope</dt>
+            <dd><code>{skill.scope}</code></dd>
+          </div>
+          <div className="skills-detail-meta-item">
+            <dt>Skill directory</dt>
+            <dd><code>{skill.skillDir}</code></dd>
+          </div>
+          <div className="skills-detail-meta-item">
+            <dt>Path</dt>
+            <dd><code>{collapseHome(skill.path)}</code></dd>
+          </div>
+        </dl>
+      ) : null}
 
       {error || detail?.error ? (
         <div className="skills-error" role="alert">
@@ -317,34 +330,10 @@ export function SkillDetailPage({
           <span>{error ?? detail?.error}</span>
         </div>
       ) : null}
-
       {skill ? (
-        <Card className="skills-library-card skill-detail-card">
-          <CardHeader className="skills-library-head">
-            <div>
-              <h2>{skill.name}</h2>
-              <p>{skill.rootId ? `Root ${skill.rootId}` : "Root metadata unavailable"}</p>
-            </div>
-            <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
-              {skillScopeLabel(skill.scope)}
-            </StatusBadge>
-          </CardHeader>
-          <CardContent className="skill-detail-content">
-            <dl className="skills-detail-meta">
-              <div>
-                <dt>Skill directory</dt>
-                <dd>{skill.skillDir || "unknown"}</dd>
-              </div>
-              <div>
-                <dt>Path</dt>
-                <dd>{collapseHome(skill.path)}</dd>
-              </div>
-            </dl>
-            <div className="skill-detail-markdown">
-              <MarkdownContent text={detail?.content ?? ""} />
-            </div>
-          </CardContent>
-        </Card>
+        <div className="skill-detail-card">
+          <MarkdownContent text={parseSkillMarkdown(detail?.content ?? "")} />
+        </div>
       ) : (
         <EmptyState
           icon="◇"

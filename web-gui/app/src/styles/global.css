@@ -3195,34 +3195,46 @@ code {
   min-width: 190px;
 }
 
+.skill-detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 22px 0;
+  font-size: 13px;
+}
+
+.breadcrumb-back {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: inherit;
+  font-weight: 560;
+  padding: 2px 0;
+}
+
 .skill-detail-card {
+  --card-br: var(--radius);
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--card-br) var(--card-br);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  padding: 20px;
   min-width: 0;
   overflow: hidden;
-}
-
-.skill-detail-card .skills-library-head {
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid var(--line);
-}
-
-.skill-detail-content {
-  min-width: 0;
-  padding: 18px 20px 22px;
 }
 
 .skill-detail-markdown {
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--page) 44%, var(--surface));
 }
 
 .skills-detail-meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  padding: 0;
   gap: 10px;
   margin: 0 0 16px;
 }
