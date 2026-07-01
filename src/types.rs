@@ -1098,6 +1098,28 @@ pub struct UninstallSkillRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckTemplateRequest {
+    /// Local filesystem path to a template directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// GitHub tree URL for a template package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstallTemplateRequest {
+    /// GitHub tree URL for the template package to install.
+    pub github_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoveTemplateRequest {
+    /// Template id within the user global library.
+    pub template_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillOperationResponse {
     pub ok: bool,
     pub agent_id: String,

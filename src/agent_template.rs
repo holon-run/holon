@@ -1864,6 +1864,216 @@ fn create_directory_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(src, dst)
 }
 
+// ---------------------------------------------------------------------------
+// Public API helpers for HTTP handlers
+// ---------------------------------------------------------------------------
+
+/// Parse `template.toml` from a local template directory and return it as a
+/// JSON value for API responses.
+pub fn parse_template_manifest_for_api(template_dir: &Path) -> Option<serde_json::Value> {
+    parse_local_template_manifest(template_dir).map(|manifest| {
+        serde_json::json!({
+            "schema": manifest.schema,
+            "id": manifest.id,
+            "name": manifest.name,
+            "summary": manifest.summary,
+        })
+    })
+}
+
+/// Remove a template from the user global library.
+pub fn remove_user_template(user_home: &Path, template_id: &str) -> Result<()> {
+    validate_template_id(template_id)?;
+    let templates_root = templates_root_for_home(user_home);
+    let target = templates_root.join(template_id);
+    if !target.is_dir() {
+        bail!(
+            "template '{}' not found in user global library at {}",
+            template_id,
+            templates_root.display()
+        );
+    }
+    fs::remove_dir_all(&target)
+        .with_context(|| format!("failed to remove {}", target.display()))?;
+    tracing::info!(template_id, "removed user global template");
+    Ok(())
+}
+
+/// Install a template package from a GitHub tree URL into the user global
+/// library.
+///
+/// Expected URL: `https://github.com/<owner>/<repo>/tree/<ref>[/<path>]`
+pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Result<String> {
+    let source = ParsedGithubTemplateUrl::parse(github_url)?;
+    let templates_root = templates_root_for_home(user_home);
+    fs::create_dir_all(&templates_root)
+        .with_context(|| format!("failed to create {}", templates_root.display()))?;
+
+    let tmp = templates_root.join(format!(
+        ".tmp-holon-template-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _guard = TmpDirGuard(&tmp);
+
+    fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to create HTTP client for template install")?;
+
+    let tarball_url = format!(
+        "https://api.github.com/repos/{}/{}/tarball/{}",
+        source.owner, source.repo, source.reference
+    );
+    let response = client
+        .get(&tarball_url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .context("failed to request GitHub tarball")?;
+    if !response.status().is_success() {
+        bail!("GitHub tarball download failed: HTTP {}", response.status());
+    }
+    let bytes = response
+        .bytes()
+        .context("failed to read GitHub tarball body")?;
+    let tarball_path = tmp.join("archive.tar.gz");
+    fs::write(&tarball_path, &bytes)
+        .with_context(|| format!("failed to write tarball to {}", tarball_path.display()))?;
+
+    let extract_dir = tmp.join("extracted");
+    fs::create_dir_all(&extract_dir)?;
+    extract_tarball(&tarball_path, &extract_dir)?;
+
+    // GitHub tarballs contain a single top-level directory.
+    let mut search_dir = extract_dir.clone();
+    let entries: Vec<_> = fs::read_dir(&search_dir)?.collect::<Result<_, _>>()?;
+    if entries.len() == 1 && entries[0].path().is_dir() {
+        search_dir = entries[0].path();
+    }
+    if !source.path.is_empty() {
+        search_dir = search_dir.join(&source.path);
+    }
+    if !search_dir.is_dir() {
+        bail!(
+            "template directory not found at '{}' in the downloaded archive",
+            source.path
+        );
+    }
+
+    if !search_dir.join(TEMPLATE_MANIFEST_FILENAME).exists()
+        && !search_dir.join("AGENTS.md").exists()
+    {
+        bail!(
+            "the specified path does not contain template.toml or AGENTS.md; \
+             not a valid template directory"
+        );
+    }
+
+    let template_id = parse_local_template_manifest(&search_dir)
+        .map(|m| m.id)
+        .unwrap_or_else(|| {
+            search_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("imported")
+                .to_string()
+        });
+    validate_template_id(&template_id)?;
+
+    let destination = templates_root.join(&template_id);
+    if destination.exists() {
+        fs::remove_dir_all(&destination)
+            .with_context(|| format!("failed to clear existing {}", destination.display()))?;
+    }
+    copy_template_dir(&search_dir, &destination)?;
+
+    tracing::info!(template_id = %template_id, "installed user global template from GitHub");
+    Ok(template_id)
+}
+
+struct TmpDirGuard<'a>(&'a Path);
+impl Drop for TmpDirGuard<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(self.0);
+    }
+}
+
+struct ParsedGithubTemplateUrl {
+    owner: String,
+    repo: String,
+    reference: String,
+    path: String,
+}
+
+impl ParsedGithubTemplateUrl {
+    fn parse(url: &str) -> Result<Self> {
+        let url = url.trim();
+        let rest = url
+            .strip_prefix("https://github.com/")
+            .or_else(|| url.strip_prefix("http://github.com/"))
+            .ok_or_else(|| anyhow!("github_url must be a https://github.com/ URL"))?;
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() < 2 {
+            bail!("invalid GitHub URL: expected owner/repo/tree/ref[/path]");
+        }
+        let owner = parts[0].to_string();
+        let repo = parts[1].trim_end_matches(".git").to_string();
+        if parts.len() < 4 || parts[2] != "tree" {
+            bail!("invalid GitHub URL: expected .../tree/<ref>[/<path>]");
+        }
+        let reference = parts[3].to_string();
+        let path = if parts.len() > 4 {
+            parts[4..].join("/")
+        } else {
+            String::new()
+        };
+        Ok(Self {
+            owner,
+            repo,
+            reference,
+            path,
+        })
+    }
+}
+
+fn extract_tarball(tarball_path: &Path, dest: &Path) -> Result<()> {
+    let output = std::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(tarball_path)
+        .arg("-C")
+        .arg(dest)
+        .output()
+        .context("failed to run tar")?;
+    if !output.status.success() {
+        bail!(
+            "tar extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn copy_template_dir(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            if from.file_name().is_some_and(|n| n == ".git") {
+                continue;
+            }
+            copy_template_dir(&from, &to)?;
+        } else if from.is_file() {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3197,6 +3407,7 @@ name = "Worker"
             Some("https://github.com/owner/repo/tree/main/agent_templates/worker")
         );
     }
+D
     #[tokio::test]
     async fn provenance_records_schema_version_from_template_toml() {
         let _lock = crate::test_env::lock_env();
@@ -3309,5 +3520,62 @@ name = "Versioned"
             .await
             .unwrap_err();
         assert!(err.to_string().contains("already exists"));
+
+#[test]
+    fn parsed_github_template_url_parses_tree_url() {
+        let url = ParsedGithubTemplateUrl::parse(
+            "https://github.com/holon-run/templates/tree/main/my-template",
+        )
+        .unwrap();
+        assert_eq!(url.owner, "holon-run");
+        assert_eq!(url.repo, "templates");
+        assert_eq!(url.reference, "main");
+        assert_eq!(url.path, "my-template");
     }
+
+    #[test]
+    fn parsed_github_template_url_parses_nested_path() {
+        let url = ParsedGithubTemplateUrl::parse(
+            "https://github.com/owner/repo/tree/v1.0.0/nested/path/to/template",
+        )
+        .unwrap();
+        assert_eq!(url.owner, "owner");
+        assert_eq!(url.repo, "repo");
+        assert_eq!(url.reference, "v1.0.0");
+        assert_eq!(url.path, "nested/path/to/template");
+    }
+
+    #[test]
+    fn parsed_github_template_url_parses_without_subpath() {
+        let url =
+            ParsedGithubTemplateUrl::parse("https://github.com/owner/repo/tree/main").unwrap();
+        assert_eq!(url.owner, "owner");
+        assert_eq!(url.repo, "repo");
+        assert_eq!(url.reference, "main");
+        assert!(url.path.is_empty());
+    }
+
+    #[test]
+    fn parsed_github_template_url_rejects_non_github_url() {
+        assert!(ParsedGithubTemplateUrl::parse("https://gitlab.com/owner/repo").is_err());
+        assert!(ParsedGithubTemplateUrl::parse("not-a-url").is_err());
+    }
+
+    #[test]
+    fn parsed_github_template_url_rejects_missing_tree_segment() {
+        assert!(ParsedGithubTemplateUrl::parse("https://github.com/owner/repo").is_err());
+    }
+
+    #[test]
+    fn remove_user_template_removes_existing_and_reports_missing() {
+        let tmp = tempdir().unwrap();
+        let templates_root = templates_root_for_home(tmp.path());
+        let template_dir = templates_root.join("my-test-template");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "# test").unwrap();
+
+        let err = remove_user_template(tmp.path(), "my-test-template").unwrap_err();
+        assert!(!template_dir.exists());
+
+        assert!(err.to_string().contains("not found"));    }
 }
