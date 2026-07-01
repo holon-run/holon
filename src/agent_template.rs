@@ -722,8 +722,11 @@ fn parse_local_template_manifest(template_dir: &Path) -> Option<TemplateManifest
 
 /// Resolve a catalog entry into a detailed template view.
 ///
-/// Reads AGENTS.md content and skill dependencies for the template,
-/// suitable for GUI or daemon API detail responses.
+/// Reads AGENTS.md content and skill dependencies for the template, suitable
+/// for GUI or daemon API detail responses.
+///
+/// `Remote` templates are not yet supported; resolution is deferred to the
+/// GitHub library discovery work in #1984.
 #[allow(dead_code)]
 pub(crate) fn resolve_agent_template_detail(
     entry: &AgentTemplateCatalogEntry,
@@ -745,7 +748,19 @@ pub(crate) fn resolve_agent_template_detail(
         }
         AgentTemplateSourceKind::UserGlobal | AgentTemplateSourceKind::AgentHome => {
             let path = entry.path.as_ref()?;
-            let agents_md = fs::read_to_string(path.join(TEMPLATE_AGENTS_FILENAME)).ok()?;
+            let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
+            let agents_md = match fs::read_to_string(&agents_md_path) {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(error) => {
+                    tracing::warn!(
+                        template_path = %agents_md_path.display(),
+                        %error,
+                        "failed to read AGENTS.md for template detail"
+                    );
+                    return None;
+                }
+            };
             let skills = parse_skill_refs(path.join(TEMPLATE_SKILLS_FILENAME))
                 .unwrap_or_default()
                 .into_iter()
