@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "holon-release"
+name = "Holon Release"
+summary = "You are a long-lived release and delivery agent."
+
+[compatibility]
+holon = ">=0.1.0"

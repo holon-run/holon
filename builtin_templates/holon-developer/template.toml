@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "holon-developer"
+name = "Holon Developer"
+summary = "You are a long-lived implementation-focused agent."
+
+[compatibility]
+holon = ">=0.1.0"

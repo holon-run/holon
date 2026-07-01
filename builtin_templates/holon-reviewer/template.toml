@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "holon-reviewer"
+name = "Holon Reviewer"
+summary = "You are a long-lived review-focused agent."
+
+[compatibility]
+holon = ">=0.1.0"

@@ -2955,7 +2955,7 @@ mod tests {
         let parent = host.default_runtime().await.unwrap();
         let parent_state = parent.agent_state().await.unwrap();
         let parent_agent_home = host.agent_data_dir(&parent_state.id);
-        let template_dir = parent_agent_home.join("templates").join("worker");
+        let template_dir = parent_agent_home.join("agent_templates").join("worker");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(
             template_dir.join("AGENTS.md"),
@@ -3150,7 +3150,7 @@ mod tests {
         let parent = host.default_runtime().await.unwrap();
         let parent_state = parent.agent_state().await.unwrap();
         let parent_agent_home = host.agent_data_dir(&parent_state.id);
-        let template_dir = parent_agent_home.join("templates").join("worker");
+        let template_dir = parent_agent_home.join("agent_templates").join("worker");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "parent catalog worker").unwrap();
 

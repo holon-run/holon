@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "holon-default"
+name = "Holon Default Agent"
+summary = "This file is the long-lived role contract for the default Holon agent."
+
+[compatibility]
+holon = ">=0.1.0"
