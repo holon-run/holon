@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::types::{
-    AgentTemplateCatalogEntry, AgentTemplateSourceKind, SkillInstallKind, SkillInstallMode,
+    AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
+    AgentTemplateSourceKind, SkillInstallKind, SkillInstallMode,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -158,14 +159,25 @@ impl From<TemplateSkillFileRef> for TemplateSkillRef {
 }
 
 /// Parsed `template.toml` manifest providing template metadata.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 struct TemplateManifest {
     schema: String,
+    #[allow(dead_code)]
     id: String,
     name: String,
     #[serde(default)]
     summary: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    compatibility: TemplateCompatibility,
+}
+
+/// Parsed `[compatibility]` section from `template.toml`.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TemplateCompatibility {
+    #[serde(default)]
+    #[allow(dead_code)]
+    holon: Option<String>,
 }
 
 struct BuiltinSkill {
@@ -542,13 +554,23 @@ pub(crate) fn discover_agent_templates_catalog(
 }
 
 fn builtin_template_catalog_entry(builtin: &BuiltinTemplate) -> AgentTemplateCatalogEntry {
+    let manifest = parse_template_manifest(builtin.template_toml);
     AgentTemplateCatalogEntry {
         catalog_id: format!("builtin:{}", builtin.template_id),
         template: builtin.template_id.to_string(),
         template_id: builtin.template_id.to_string(),
         source: AgentTemplateSourceKind::Builtin,
         path: None,
-        description: template_description(builtin.agents_md),
+        name: manifest
+            .as_ref()
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| builtin.template_id.to_string()),
+        schema_version: manifest.as_ref().map(|m| m.schema.clone()),
+        description: manifest
+            .as_ref()
+            .map(|m| m.summary.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| template_description(builtin.agents_md)),
         included_skills: builtin_template_skills(builtin),
     }
 }
@@ -590,13 +612,23 @@ fn discover_local_templates(
         } else {
             template_id.to_string()
         };
+        let manifest = parse_local_template_manifest(&path);
         entries.push(AgentTemplateCatalogEntry {
             catalog_id: format!("{}:{}", source.label(), template_id),
             template,
             template_id: template_id.to_string(),
             source,
             path: Some(path.clone()),
-            description: template_description(&agents_md),
+            name: manifest
+                .as_ref()
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| template_id.to_string()),
+            schema_version: manifest.as_ref().map(|m| m.schema.clone()),
+            description: manifest
+                .as_ref()
+                .map(|m| m.summary.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| template_description(&agents_md)),
             included_skills: local_template_skills(&path),
         });
     }
@@ -669,6 +701,100 @@ fn trim_leading_html_comments<'a>(mut trimmed: &'a str, in_comment: &mut bool) -
         };
         trimmed = after_start[end + 3..].trim_start();
     }
+}
+
+/// Parse a `template.toml` manifest string (e.g., from a builtin template).
+fn parse_template_manifest(content: &str) -> Option<TemplateManifest> {
+    toml::from_str(content)
+        .map_err(|error| {
+            tracing::warn!(%error, "failed to parse template.toml manifest");
+        })
+        .ok()
+}
+
+/// Parse `template.toml` from a local template directory.
+fn parse_local_template_manifest(template_dir: &Path) -> Option<TemplateManifest> {
+    let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
+    fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|content| parse_template_manifest(&content))
+}
+
+/// Resolve a catalog entry into a detailed template view.
+///
+/// Reads AGENTS.md content and skill dependencies for the template, suitable
+/// for GUI or daemon API detail responses.
+///
+/// `Remote` templates are not yet supported; resolution is deferred to the
+/// GitHub library discovery work in #1984.
+#[allow(dead_code)]
+pub(crate) fn resolve_agent_template_detail(
+    entry: &AgentTemplateCatalogEntry,
+) -> Option<AgentTemplateDetail> {
+    let (agents_md, skills) = match entry.source {
+        AgentTemplateSourceKind::Builtin => {
+            let builtin = BUILTIN_TEMPLATES
+                .iter()
+                .find(|t| t.template_id == entry.template_id)?;
+            let skills = builtin
+                .skill_names
+                .iter()
+                .map(|&name| AgentTemplateSkillDependency {
+                    kind: "builtin".to_string(),
+                    reference: name.to_string(),
+                })
+                .collect::<Vec<_>>();
+            (builtin.agents_md.to_string(), skills)
+        }
+        AgentTemplateSourceKind::UserGlobal | AgentTemplateSourceKind::AgentHome => {
+            let path = entry.path.as_ref()?;
+            let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
+            let agents_md = match fs::read_to_string(&agents_md_path) {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(error) => {
+                    tracing::warn!(
+                        template_path = %agents_md_path.display(),
+                        %error,
+                        "failed to read AGENTS.md for template detail"
+                    );
+                    return None;
+                }
+            };
+            let skills = parse_skill_refs(path.join(TEMPLATE_SKILLS_FILENAME))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|skill_ref| match skill_ref {
+                    TemplateSkillRef::Local { path } => AgentTemplateSkillDependency {
+                        kind: "local".to_string(),
+                        reference: path.display().to_string(),
+                    },
+                    TemplateSkillRef::Github { package } => AgentTemplateSkillDependency {
+                        kind: "github".to_string(),
+                        reference: package,
+                    },
+                    TemplateSkillRef::Builtin { name } => AgentTemplateSkillDependency {
+                        kind: "builtin".to_string(),
+                        reference: name,
+                    },
+                })
+                .collect::<Vec<_>>();
+            (agents_md, skills)
+        }
+        AgentTemplateSourceKind::Remote => return None,
+    };
+    Some(AgentTemplateDetail {
+        catalog_id: entry.catalog_id.clone(),
+        template: entry.template.clone(),
+        template_id: entry.template_id.clone(),
+        source: entry.source,
+        source_location: entry.path.as_ref().map(|p| p.display().to_string()),
+        name: entry.name.clone(),
+        summary: entry.description.clone(),
+        schema_version: entry.schema_version.clone(),
+        agents_md,
+        skills,
+    })
 }
 
 fn local_template_skills(path: &Path) -> Vec<String> {
@@ -826,6 +952,7 @@ fn resolve_prefixed_template_catalog_entry(
             .iter()
             .find(|template| template.template_id == template_id)
             .map(builtin_template_catalog_entry),
+        AgentTemplateSourceKind::Remote => None,
         AgentTemplateSourceKind::UserGlobal => discover_local_templates(
             &templates_root_for_home(home_dir),
             AgentTemplateSourceKind::UserGlobal,
@@ -849,6 +976,9 @@ async fn resolve_catalog_template(
 ) -> Result<ResolvedTemplate> {
     match entry.source {
         AgentTemplateSourceKind::Builtin => resolve_builtin_template(&entry.template_id, home_dir),
+        AgentTemplateSourceKind::Remote => {
+            Err(anyhow!("remote template resolution is not yet implemented"))
+        }
         AgentTemplateSourceKind::UserGlobal | AgentTemplateSourceKind::AgentHome => {
             let path = entry.path.clone().ok_or_else(|| {
                 anyhow!(
@@ -2259,5 +2389,110 @@ package = "owner/repo@../bad"
                 "/repos/owner/repo/contents/templates/reviewer/skills.toml?ref=main",
             ]
         );
+    }
+
+    #[test]
+    fn agent_template_source_kind_remote_label_roundtrip() {
+        assert_eq!(AgentTemplateSourceKind::Remote.label(), "remote");
+        assert_eq!(
+            AgentTemplateSourceKind::from_label("remote"),
+            Some(AgentTemplateSourceKind::Remote)
+        );
+    }
+
+    #[test]
+    fn catalog_entry_has_name_and_schema_from_template_toml() {
+        let entry = builtin_template_catalog_entry(
+            BUILTIN_TEMPLATES
+                .iter()
+                .find(|t| t.template_id == "holon-default")
+                .unwrap(),
+        );
+        assert_eq!(entry.name, "Holon Default Agent");
+        assert_eq!(
+            entry.schema_version.as_deref(),
+            Some("holon.agent_template.v1")
+        );
+        assert!(!entry.description.is_empty());
+    }
+
+    #[test]
+    fn local_catalog_entry_has_name_and_schema_from_template_toml() {
+        let home = tempdir().unwrap();
+        let templates = templates_root_for_home(home.path());
+        let worker = templates.join("worker");
+        fs::create_dir_all(&worker).unwrap();
+        fs::write(
+            worker.join(TEMPLATE_AGENTS_FILENAME),
+            "# Worker\n\nDoes worker things\n",
+        )
+        .unwrap();
+        fs::write(
+            worker.join(TEMPLATE_MANIFEST_FILENAME),
+            "schema = \"holon.agent_template.v1\"\nid = \"worker\"\nname = \"Worker Agent\"\nsummary = \"A worker agent\"\n",
+        )
+        .unwrap();
+
+        let entries =
+            discover_local_templates(&templates, AgentTemplateSourceKind::UserGlobal, false);
+        let entry = entries.iter().find(|e| e.template_id == "worker").unwrap();
+        assert_eq!(entry.name, "Worker Agent");
+        assert_eq!(
+            entry.schema_version.as_deref(),
+            Some("holon.agent_template.v1")
+        );
+        assert_eq!(entry.description, "A worker agent");
+    }
+
+    #[test]
+    fn resolve_agent_template_detail_builtin() {
+        let catalog = discover_agent_templates_catalog(None, std::path::Path::new("/nonexistent"));
+        let entry = catalog
+            .iter()
+            .find(|e| e.catalog_id == "builtin:holon-default")
+            .unwrap();
+        let detail = resolve_agent_template_detail(entry).unwrap();
+        assert_eq!(detail.template_id, "holon-default");
+        assert_eq!(detail.source, AgentTemplateSourceKind::Builtin);
+        assert!(!detail.agents_md.is_empty());
+        assert!(detail.skills.is_empty());
+        assert_eq!(detail.name, "Holon Default Agent");
+        assert_eq!(
+            detail.schema_version.as_deref(),
+            Some("holon.agent_template.v1")
+        );
+    }
+
+    #[test]
+    fn resolve_agent_template_detail_local_with_skills() {
+        let home = tempdir().unwrap();
+        let templates = templates_root_for_home(home.path());
+        let worker = templates.join("worker");
+        fs::create_dir_all(&worker).unwrap();
+        fs::write(
+            worker.join(TEMPLATE_AGENTS_FILENAME),
+            "# Worker\n\nDoes worker things\n",
+        )
+        .unwrap();
+        let skill_dir = home.path().join("my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# My Skill\n").unwrap();
+        fs::write(
+            worker.join(TEMPLATE_SKILLS_FILENAME),
+            format!(
+                "[[skills]]\nkind = \"local\"\npath = \"{}\"\n",
+                skill_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let entries =
+            discover_local_templates(&templates, AgentTemplateSourceKind::UserGlobal, false);
+        let entry = entries.iter().find(|e| e.template_id == "worker").unwrap();
+        let detail = resolve_agent_template_detail(entry).unwrap();
+        assert!(!detail.agents_md.is_empty());
+        assert_eq!(detail.skills.len(), 1);
+        assert_eq!(detail.skills[0].kind, "local");
+        assert_eq!(detail.skills[0].reference, skill_dir.display().to_string());
     }
 }
