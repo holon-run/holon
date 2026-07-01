@@ -325,12 +325,19 @@ pub fn build_context_with_default_external_ingress(
                     .as_ref()
                     .map(|path| format!(" path={}", path.display()))
                     .unwrap_or_default();
+                let display = if entry.name.is_empty() || entry.name == entry.description {
+                    entry.description.clone()
+                } else if entry.description.is_empty() {
+                    entry.name.clone()
+                } else {
+                    format!("{} - {}", entry.name, entry.description)
+                };
                 format!(
                     "- [{}] {} template={} :: {}{} ({skills})",
                     entry.source.label(),
                     entry.catalog_id,
                     entry.template,
-                    entry.description,
+                    display,
                     path
                 )
             })
@@ -5080,6 +5087,8 @@ mod tests {
                 template_id: "demo".into(),
                 source: crate::types::AgentTemplateSourceKind::Builtin,
                 path: None,
+                name: "Demo".into(),
+                schema_version: Some("holon.agent_template.v1".into()),
                 description: "demo template summary".into(),
                 included_skills: vec!["ghx".into()],
             }],
