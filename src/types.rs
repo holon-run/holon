@@ -748,6 +748,11 @@ pub struct AgentTemplateCatalogEntry {
     /// Skill names declared by the template manifest, if any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub included_skills: Vec<String>,
+    /// Full template tree URL for Remote templates (e.g.
+    /// `https://github.com/owner/repo/tree/ref/agent_templates/worker`).
+    /// `None` for local and builtin sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// Detailed template information for a single catalog entry.
