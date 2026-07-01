@@ -5091,6 +5091,7 @@ mod tests {
                 schema_version: Some("holon.agent_template.v1".into()),
                 description: "demo template summary".into(),
                 included_skills: vec!["ghx".into()],
+                source_url: None,
             }],
             ..SkillsRuntimeView::default()
         };

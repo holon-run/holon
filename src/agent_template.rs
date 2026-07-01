@@ -237,6 +237,32 @@ struct GitHubContentsFileResponse {
     encoding: Option<String>,
 }
 
+/// Entry in a GitHub Contents API directory listing response.
+#[derive(Debug, Deserialize)]
+struct GitHubContentsDirEntry {
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+/// Parsed `holon-index.toml` manifest at a repository root.
+///
+/// Optional file that overrides default collection directory names.
+/// When absent, discovery falls back to `agent_templates/`.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct HolonIndexManifest {
+    schema: String,
+    #[serde(default)]
+    collections: HolonIndexCollections,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HolonIndexCollections {
+    #[serde(default)]
+    agent_templates: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct ResolvedTemplate {
     provenance: TemplateProvenanceSource,
@@ -572,6 +598,7 @@ fn builtin_template_catalog_entry(builtin: &BuiltinTemplate) -> AgentTemplateCat
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| template_description(builtin.agents_md)),
         included_skills: builtin_template_skills(builtin),
+        source_url: None,
     }
 }
 
@@ -630,6 +657,7 @@ fn discover_local_templates(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| template_description(&agents_md)),
             included_skills: local_template_skills(&path),
+            source_url: None,
         });
     }
     entries
@@ -977,7 +1005,10 @@ async fn resolve_catalog_template(
     match entry.source {
         AgentTemplateSourceKind::Builtin => resolve_builtin_template(&entry.template_id, home_dir),
         AgentTemplateSourceKind::Remote => {
-            Err(anyhow!("remote template resolution is not yet implemented"))
+            let source_url = entry
+                .source_url
+                .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
+            resolve_github_template(&source_url).await
         }
         AgentTemplateSourceKind::UserGlobal | AgentTemplateSourceKind::AgentHome => {
             let path = entry.path.clone().ok_or_else(|| {
@@ -1396,6 +1427,226 @@ async fn fetch_github_file(
     String::from_utf8(decoded)
         .context("GitHub template file is not valid UTF-8")
         .map(Some)
+}
+
+/// Parsed components from a GitHub repository URL.
+#[derive(Debug)]
+struct ParsedGithubRepoUrl {
+    owner: String,
+    repo: String,
+    git_ref: Option<String>,
+}
+
+/// Parse a GitHub repository URL into owner, repo, and ref.
+///
+/// Accepts:
+/// - `https://github.com/<owner>/<repo>` (ref left as `None` — resolved later)
+/// - `https://github.com/<owner>/<repo>/tree/<ref>` (explicit ref)
+///
+/// Rejects URLs with additional path segments beyond the ref (those are
+/// individual template tree URLs handled by `is_github_tree_url`).
+fn parse_github_repo_url(url: &str) -> Result<ParsedGithubRepoUrl> {
+    let parsed = reqwest::Url::parse(url).with_context(|| format!("invalid GitHub URL: {url}"))?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("github.com") {
+        bail!("not a github.com HTTPS URL: {url}");
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        bail!("GitHub repo URL must not include a query string or fragment");
+    }
+    let segments = parsed
+        .path_segments()
+        .ok_or_else(|| anyhow!("GitHub repo URL is missing path segments: {url}"))?
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [owner, repo] if !owner.is_empty() && !repo.is_empty() => Ok(ParsedGithubRepoUrl {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            git_ref: None,
+        }),
+        [owner, repo, "tree", git_ref] if !git_ref.is_empty() => Ok(ParsedGithubRepoUrl {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            git_ref: Some(git_ref.to_string()),
+        }),
+        _ => bail!(
+            "GitHub repo URL must be https://github.com/<owner>/<repo> or https://github.com/<owner>/<repo>/tree/<ref>: {url}"
+        ),
+    }
+}
+
+/// List directory entries at a GitHub path via the Contents API.
+///
+/// Returns `Ok(None)` for a 404 (directory not found).
+async fn fetch_github_dir(
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+    path: &str,
+) -> Result<Option<Vec<GitHubContentsDirEntry>>> {
+    let base = env::var("HOLON_TEMPLATE_GITHUB_API_BASE")
+        .unwrap_or_else(|_| "https://api.github.com".to_string());
+    let mut url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}/contents/{path}"))
+        .with_context(|| format!("failed to build GitHub dir URL for {owner}/{repo}:{path}"))?;
+    url.query_pairs_mut().append_pair("ref", git_ref);
+
+    let client = reqwest::Client::builder()
+        .build()
+        .context("failed to build GitHub template client")?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "holon-template-resolver")
+        .send()
+        .await
+        .with_context(|| {
+            format!("failed to list GitHub directory {owner}/{repo}:{path}@{git_ref}")
+        })?;
+
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        bail!(
+            "GitHub directory listing failed for {owner}/{repo}:{path}@{git_ref} with status {status}: {body}"
+        );
+    }
+    let entries = response
+        .json::<Vec<GitHubContentsDirEntry>>()
+        .await
+        .with_context(|| {
+            format!("failed to decode GitHub directory listing for {owner}/{repo}:{path}@{git_ref}")
+        })?;
+    Ok(Some(entries))
+}
+
+const DEFAULT_REMOTE_TEMPLATE_DIR: &str = "agent_templates";
+
+/// Subset of the GitHub `GET /repos/{owner}/{repo}` response we care about.
+#[derive(Debug, Deserialize)]
+struct GitHubRepoInfo {
+    default_branch: String,
+}
+
+/// Resolve the default branch of a GitHub repository via the REST API.
+///
+/// Used when a repo URL omits `/tree/<ref>` — avoids hardcoding `main` so
+/// repositories on `master`, `develop`, etc. are handled correctly.
+async fn fetch_default_branch(owner: &str, repo: &str) -> Result<String> {
+    let base = env::var("HOLON_TEMPLATE_GITHUB_API_BASE")
+        .unwrap_or_else(|_| "https://api.github.com".to_string());
+    let url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}"))
+        .with_context(|| format!("failed to build GitHub repo URL for {owner}/{repo}"))?;
+    let client = reqwest::Client::builder()
+        .build()
+        .context("failed to build GitHub template client")?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "holon-template-resolver")
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch repo info for {owner}/{repo}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        bail!("GitHub repo info fetch failed for {owner}/{repo} with status {status}: {body}");
+    }
+    response
+        .json::<GitHubRepoInfo>()
+        .await
+        .map(|info| info.default_branch)
+        .with_context(|| format!("failed to decode repo info for {owner}/{repo}"))
+}
+
+/// Discover all AgentTemplates under a GitHub repository's template collection.
+///
+/// Fetches `holon-index.toml` from the repo root to determine the template
+/// directory. If absent, falls back to `agent_templates/`. Lists subdirectories
+/// and fetches each template's `template.toml` manifest. Individual template
+/// failures are logged as warnings and skipped rather than failing the whole
+/// catalog.
+pub(crate) async fn discover_github_repo_templates(
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+) -> Result<Vec<AgentTemplateCatalogEntry>> {
+    // Resolve template directory from holon-index.toml or default.
+    let template_dir = match fetch_github_file(owner, repo, git_ref, "holon-index.toml").await? {
+        Some(content) => {
+            let index: HolonIndexManifest = toml::from_str(&content).with_context(|| {
+                format!("failed to parse holon-index.toml for {owner}/{repo}@{git_ref}")
+            })?;
+            index
+                .collections
+                .agent_templates
+                .unwrap_or_else(|| DEFAULT_REMOTE_TEMPLATE_DIR.to_string())
+        }
+        None => DEFAULT_REMOTE_TEMPLATE_DIR.to_string(),
+    };
+
+    // List subdirectories under the template collection.
+    let entries = match fetch_github_dir(owner, repo, git_ref, &template_dir).await? {
+        Some(entries) => entries,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut catalog_entries = Vec::new();
+    for entry in entries {
+        if entry.kind != "dir" {
+            continue;
+        }
+        let template_id = entry.name;
+        let manifest_path = format!("{template_dir}/{template_id}/{TEMPLATE_MANIFEST_FILENAME}");
+        let manifest = match fetch_github_file(owner, repo, git_ref, &manifest_path).await {
+            Ok(Some(content)) => parse_template_manifest(&content),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    template = %template_id,
+                    %error,
+                    "skipping remote template: failed to fetch template.toml"
+                );
+                continue;
+            }
+        };
+        let manifest = match manifest {
+            Some(m) => m,
+            None => {
+                tracing::warn!(template = %template_id, "skipping remote template: invalid or missing template.toml");
+                continue;
+            }
+        };
+        catalog_entries.push(AgentTemplateCatalogEntry {
+            catalog_id: format!("remote:{owner}/{repo}/{template_id}"),
+            template: format!("remote:{owner}/{repo}#{template_id}"),
+            template_id: template_id.clone(),
+            source: AgentTemplateSourceKind::Remote,
+            path: None,
+            name: manifest.name,
+            schema_version: Some(manifest.schema),
+            description: manifest.summary,
+            included_skills: Vec::new(),
+            source_url: Some(format!(
+                "https://github.com/{owner}/{repo}/tree/{git_ref}/{template_dir}/{template_id}"
+            )),
+        });
+    }
+    Ok(catalog_entries)
+}
+
+/// Discover AgentTemplates from a GitHub repository URL.
+///
+/// Parses the URL with [`parse_github_repo_url`], resolves the default branch
+/// via the GitHub API when no `/tree/<ref>` is specified, and delegates to
+/// [`discover_github_repo_templates`]. This is the primary entry point for
+/// browsing a remote template library from a repo URL.
+pub async fn discover_remote_templates(url: &str) -> Result<Vec<AgentTemplateCatalogEntry>> {
+    let parsed = parse_github_repo_url(url)?;
+    let git_ref = match parsed.git_ref {
+        Some(r) => r,
+        None => fetch_default_branch(&parsed.owner, &parsed.repo).await?,
+    };
+    discover_github_repo_templates(&parsed.owner, &parsed.repo, &git_ref).await
 }
 
 async fn materialize_template(agent_home: &Path, template: &ResolvedTemplate) -> Result<()> {
@@ -2494,5 +2745,423 @@ package = "owner/repo@../bad"
         assert_eq!(detail.skills.len(), 1);
         assert_eq!(detail.skills[0].kind, "local");
         assert_eq!(detail.skills[0].reference, skill_dir.display().to_string());
+    }
+
+    // ---- #1984: GitHub repo discovery tests ----
+
+    #[test]
+    fn parse_github_repo_url_basic() {
+        let parsed = parse_github_repo_url("https://github.com/owner/repo").unwrap();
+        assert_eq!(parsed.owner, "owner");
+        assert_eq!(parsed.repo, "repo");
+        assert_eq!(parsed.git_ref, None);
+    }
+
+    #[test]
+    fn parse_github_repo_url_with_ref() {
+        let parsed = parse_github_repo_url("https://github.com/owner/repo/tree/dev").unwrap();
+        assert_eq!(parsed.owner, "owner");
+        assert_eq!(parsed.repo, "repo");
+        assert_eq!(parsed.git_ref.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn parse_github_repo_url_rejects_template_tree_url() {
+        let err =
+            parse_github_repo_url("https://github.com/owner/repo/tree/main/templates/reviewer")
+                .unwrap_err();
+        assert!(err.to_string().contains("must be"));
+    }
+
+    #[test]
+    fn parse_github_repo_url_rejects_non_github() {
+        assert!(parse_github_repo_url("https://gitlab.com/owner/repo").is_err());
+        assert!(parse_github_repo_url("https://example.com/owner/repo").is_err());
+    }
+
+    #[test]
+    fn parse_github_repo_url_rejects_query_and_fragment() {
+        assert!(parse_github_repo_url("https://github.com/owner/repo?foo=bar").is_err());
+        assert!(parse_github_repo_url("https://github.com/owner/repo#section").is_err());
+    }
+
+    #[test]
+    fn holon_index_manifest_parses_collections() {
+        let toml_str = r#"schema = "holon.repository.v1"
+[collections]
+skills = "my-skills"
+agent_templates = "my-templates"
+"#;
+        let index: HolonIndexManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            index.collections.agent_templates.as_deref(),
+            Some("my-templates")
+        );
+    }
+
+    #[test]
+    fn holon_index_manifest_missing_collections_defaults() {
+        let toml_str = r#"schema = "holon.repository.v1""#;
+        let index: HolonIndexManifest = toml::from_str(toml_str).unwrap();
+        assert!(index.collections.agent_templates.is_none());
+    }
+
+    /// Build a mock GitHub API server that serves configured responses.
+    struct MockGithubServer {
+        addr: std::net::SocketAddr,
+        _handle: thread::JoinHandle<()>,
+    }
+
+    impl MockGithubServer {
+        /// Start a server that responds to paths matching the given closures.
+        /// Each request consumes one entry; extra requests block.
+        fn start(responses: Vec<(&'static str, u16, String)>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                for stream in listener.incoming().take(responses.len()) {
+                    let mut stream = stream.unwrap();
+                    let mut buffer = [0_u8; 4096];
+                    let _ = stream.read(&mut buffer);
+                    let request = String::from_utf8_lossy(&buffer);
+                    let request_line = request.lines().next().unwrap_or("");
+                    let req_path = request_line.split_whitespace().nth(1).unwrap_or("");
+
+                    // Strip query for matching.
+                    let match_path = req_path.split('?').next().unwrap_or("");
+                    let matched = responses.iter().find(|(p, _, _)| match_path == *p);
+                    let (status_code, body) = match matched {
+                        Some((_, code, body)) => (*code, body.clone()),
+                        None => (404, "{\"message\":\"not found\"}".to_string()),
+                    };
+                    let status_text = if status_code == 200 {
+                        "200 OK"
+                    } else {
+                        "404 Not Found"
+                    };
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                }
+            });
+            Self {
+                addr,
+                _handle: handle,
+            }
+        }
+    }
+
+    fn github_file_response(content: &str) -> String {
+        serde_json::json!({
+            "type": "file",
+            "encoding": "base64",
+            "content": BASE64_STANDARD.encode(content)
+        })
+        .to_string()
+    }
+
+    fn github_dir_response(entries: &[(&str, &str)]) -> String {
+        let arr: Vec<_> = entries
+            .iter()
+            .map(|(name, kind)| serde_json::json!({ "name": name, "type": kind }))
+            .collect();
+        serde_json::Value::Array(arr).to_string()
+    }
+
+    #[tokio::test]
+    async fn discover_github_repo_templates_with_index() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![
+            // holon-index.toml at repo root
+            (
+                "/repos/owner/repo/contents/holon-index.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.repository.v1"
+[collections]
+agent_templates = "custom-templates"
+"#,
+                ),
+            ),
+            // Directory listing of custom-templates/
+            (
+                "/repos/owner/repo/contents/custom-templates",
+                200,
+                github_dir_response(&[
+                    ("worker", "dir"),
+                    ("reviewer", "dir"),
+                    ("README.md", "file"),
+                ]),
+            ),
+            // worker/template.toml
+            (
+                "/repos/owner/repo/contents/custom-templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+summary = "Implementation agent"
+"#,
+                ),
+            ),
+            // reviewer/template.toml
+            (
+                "/repos/owner/repo/contents/custom-templates/reviewer/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "reviewer"
+name = "Reviewer"
+"#,
+                ),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+
+        let entries = discover_github_repo_templates("owner", "repo", "main")
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        let worker = entries.iter().find(|e| e.template_id == "worker").unwrap();
+        assert_eq!(worker.name, "Worker");
+        assert_eq!(worker.source, AgentTemplateSourceKind::Remote);
+        assert_eq!(worker.catalog_id, "remote:owner/repo/worker");
+        assert_eq!(worker.template, "remote:owner/repo#worker");
+        let reviewer = entries
+            .iter()
+            .find(|e| e.template_id == "reviewer")
+            .unwrap();
+        assert_eq!(reviewer.name, "Reviewer");
+    }
+
+    #[tokio::test]
+    async fn discover_github_repo_templates_fallback_default_dir() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![
+            // No holon-index.toml → 404
+            (
+                "/repos/owner/repo/contents/holon-index.toml",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+            // Default agent_templates/ directory listing
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                200,
+                github_dir_response(&[("simple", "dir")]),
+            ),
+            // simple/template.toml
+            (
+                "/repos/owner/repo/contents/agent_templates/simple/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "simple"
+name = "Simple"
+"#,
+                ),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+
+        let entries = discover_github_repo_templates("owner", "repo", "main")
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].template_id, "simple");
+    }
+
+    #[tokio::test]
+    async fn discover_github_repo_templates_skips_invalid_template() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![
+            // No holon-index.toml
+            (
+                "/repos/owner/repo/contents/holon-index.toml",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+            // Directory with two templates
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                200,
+                github_dir_response(&[("good", "dir"), ("bad", "dir")]),
+            ),
+            // good/template.toml - valid
+            (
+                "/repos/owner/repo/contents/agent_templates/good/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "good"
+name = "Good"
+"#,
+                ),
+            ),
+            // bad/template.toml - missing (404)
+            (
+                "/repos/owner/repo/contents/agent_templates/bad/template.toml",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+
+        let entries = discover_github_repo_templates("owner", "repo", "main")
+            .await
+            .unwrap();
+        // Only "good" should be discovered; "bad" is skipped silently.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].template_id, "good");
+    }
+
+    #[tokio::test]
+    async fn discover_github_repo_templates_empty_when_no_dir() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![
+            // No holon-index.toml
+            (
+                "/repos/owner/repo/contents/holon-index.toml",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+            // No agent_templates/ directory either
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+
+        let entries = discover_github_repo_templates("owner", "repo", "main")
+            .await
+            .unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn discover_remote_templates_stores_source_url() {
+        let _lock = crate::test_env::lock_env();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let server = MockGithubServer::start(vec![
+            (
+                "/repos/owner/repo/contents/holon-index.toml",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                200,
+                github_dir_response(&[("worker", "dir")]),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                ),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+
+        let entries = rt
+            .block_on(discover_github_repo_templates("owner", "repo", "dev"))
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].source_url.as_deref(),
+            Some("https://github.com/owner/repo/tree/dev/agent_templates/worker")
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_default_branch_resolves_repo_info() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![(
+            "/repos/owner/repo",
+            200,
+            serde_json::json!({"default_branch": "develop"}).to_string(),
+        )]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+
+        let branch = fetch_default_branch("owner", "repo").await.unwrap();
+        assert_eq!(branch, "develop");
+    }
+
+    #[tokio::test]
+    async fn discover_remote_templates_chains_url_to_discovery() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![
+            // Default branch lookup
+            (
+                "/repos/owner/repo",
+                200,
+                serde_json::json!({"default_branch": "main"}).to_string(),
+            ),
+            // No holon-index.toml
+            (
+                "/repos/owner/repo/contents/holon-index.toml",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+            // Directory listing
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                200,
+                github_dir_response(&[("worker", "dir")]),
+            ),
+            // worker/template.toml
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                ),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+
+        let entries = discover_remote_templates("https://github.com/owner/repo")
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].template_id, "worker");
+        assert_eq!(entries[0].source, AgentTemplateSourceKind::Remote);
+        assert_eq!(
+            entries[0].source_url.as_deref(),
+            Some("https://github.com/owner/repo/tree/main/agent_templates/worker")
+        );
     }
 }
