@@ -2955,7 +2955,7 @@ mod tests {
         let parent = host.default_runtime().await.unwrap();
         let parent_state = parent.agent_state().await.unwrap();
         let parent_agent_home = host.agent_data_dir(&parent_state.id);
-        let template_dir = parent_agent_home.join("templates").join("worker");
+        let template_dir = parent_agent_home.join("agent_templates").join("worker");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(
             template_dir.join("AGENTS.md"),
@@ -3150,7 +3150,7 @@ mod tests {
         let parent = host.default_runtime().await.unwrap();
         let parent_state = parent.agent_state().await.unwrap();
         let parent_agent_home = host.agent_data_dir(&parent_state.id);
-        let template_dir = parent_agent_home.join("templates").join("worker");
+        let template_dir = parent_agent_home.join("agent_templates").join("worker");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "parent catalog worker").unwrap();
 
@@ -3557,6 +3557,35 @@ mod tests {
                 summary: Some("verification".into()),
                 detail: None,
                 recovery: None,
+            })
+            .unwrap();
+
+        // Also add an active Task wait condition so the lifecycle blocker
+        // persists through recovery. The orphaned command task above is
+        // interrupted by the child's own bootstrap_recovery, but a wait
+        // condition survives restart, keeping the parent monitor running
+        // deterministically rather than racing with task cleanup.
+        let now = chrono::Utc::now();
+        child_storage
+            .append_wait_condition(&crate::types::WaitConditionRecord {
+                id: "wait-child-command".into(),
+                agent_id: "child_recover_active_task".into(),
+                work_item_id: None,
+                status: crate::types::WaitConditionStatus::Active,
+                kind: crate::types::WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some("child-command-still-running".into()),
+                waiting_for: "command result".into(),
+                wake_sources: vec![crate::types::WakeSource::TaskResult {
+                    task_id: "child-command-still-running".into(),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
             })
             .unwrap();
 

@@ -14,7 +14,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 const TEMPLATE_AGENTS_FILENAME: &str = "AGENTS.md";
-const TEMPLATE_SKILLS_FILENAME: &str = "skills.json";
+const TEMPLATE_SKILLS_FILENAME: &str = "skills.toml";
+const TEMPLATE_MANIFEST_FILENAME: &str = "template.toml";
 const TEMPLATE_PROVENANCE_FILENAME: &str = "template-provenance.json";
 const BUILTIN_TEMPLATE_STATE_FILENAME: &str = ".holon-builtin-template.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
@@ -42,33 +43,41 @@ const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
         template_id: "holon-default",
         version: 1,
         agents_md: include_str!("../builtin_templates/holon-default/AGENTS.md"),
-        skills_json: None,
+        template_toml: include_str!("../builtin_templates/holon-default/template.toml"),
+        skill_names: &[],
     },
     BuiltinTemplate {
         template_id: "holon-developer",
         version: 1,
         agents_md: include_str!("../builtin_templates/holon-developer/AGENTS.md"),
-        skills_json: None,
+        template_toml: include_str!("../builtin_templates/holon-developer/template.toml"),
+        skill_names: &[],
     },
     BuiltinTemplate {
         template_id: "holon-reviewer",
         version: 1,
         agents_md: include_str!("../builtin_templates/holon-reviewer/AGENTS.md"),
-        skills_json: None,
+        template_toml: include_str!("../builtin_templates/holon-reviewer/template.toml"),
+        skill_names: &[],
     },
     BuiltinTemplate {
         template_id: "holon-release",
         version: 1,
         agents_md: include_str!("../builtin_templates/holon-release/AGENTS.md"),
-        skills_json: None,
+        template_toml: include_str!("../builtin_templates/holon-release/template.toml"),
+        skill_names: &[],
     },
     BuiltinTemplate {
         template_id: "holon-github-solve",
         version: 1,
         agents_md: include_str!("../builtin_templates/holon-github-solve/AGENTS.md"),
-        skills_json: Some(include_str!(
-            "../builtin_templates/holon-github-solve/skills.json"
-        )),
+        template_toml: include_str!("../builtin_templates/holon-github-solve/template.toml"),
+        skill_names: &[
+            "ghx",
+            "github-issue-solve",
+            "github-pr-fix",
+            "github-review",
+        ],
     },
 ];
 
@@ -76,7 +85,8 @@ struct BuiltinTemplate {
     template_id: &'static str,
     version: u32,
     agents_md: &'static str,
-    skills_json: Option<&'static str>,
+    template_toml: &'static str,
+    skill_names: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,19 +122,50 @@ pub struct TemplateProvenanceRecord {
     pub applied_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TemplateSkillsManifest {
-    #[serde(default)]
-    skill_refs: Vec<TemplateSkillRef>,
-}
-
+/// File-format skill reference as defined in `skills.toml`.
+/// Only `local` and `github` are valid in the on-disk format.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+enum TemplateSkillFileRef {
+    Local { path: PathBuf },
+    Github { package: String },
+}
+
+/// Parsed `skills.toml` manifest.
+#[derive(Debug, Deserialize)]
+struct TemplateSkillsManifest {
+    #[serde(default)]
+    skills: Vec<TemplateSkillFileRef>,
+}
+
+/// Internal skill reference used throughout template resolution and materialization.
+/// The `Builtin` variant exists only for compiled-in skills referenced via
+/// `BuiltinTemplate::skill_names`, not in the on-disk `skills.toml` format.
+#[derive(Debug, Clone)]
 enum TemplateSkillRef {
     Local { path: PathBuf },
     Github { package: String },
     Builtin { name: String },
+}
+
+impl From<TemplateSkillFileRef> for TemplateSkillRef {
+    fn from(file_ref: TemplateSkillFileRef) -> Self {
+        match file_ref {
+            TemplateSkillFileRef::Local { path } => TemplateSkillRef::Local { path },
+            TemplateSkillFileRef::Github { package } => TemplateSkillRef::Github { package },
+        }
+    }
+}
+
+/// Parsed `template.toml` manifest providing template metadata.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+struct TemplateManifest {
+    schema: String,
+    id: String,
+    name: String,
+    #[serde(default)]
+    summary: String,
 }
 
 struct BuiltinSkill {
@@ -443,7 +484,7 @@ fn templates_root() -> Result<PathBuf> {
 }
 
 fn templates_root_for_home(home_dir: &Path) -> PathBuf {
-    home_dir.join(".agents").join("templates")
+    home_dir.join(".agents").join("agent_templates")
 }
 
 pub(crate) fn discover_agent_templates_catalog(
@@ -457,7 +498,7 @@ pub(crate) fn discover_agent_templates_catalog(
         Vec::new()
     };
     let agent_home_entries = discover_local_templates(
-        &agent_home.join("templates"),
+        &agent_home.join("agent_templates"),
         AgentTemplateSourceKind::AgentHome,
         true,
     );
@@ -645,12 +686,14 @@ fn local_template_skills(path: &Path) -> Vec<String> {
 }
 
 fn builtin_template_skills(builtin: &BuiltinTemplate) -> Vec<String> {
-    let Some(skills_json) = builtin.skills_json else {
-        return Vec::new();
-    };
-    serde_json::from_str::<TemplateSkillsManifest>(skills_json)
-        .map(|manifest| skill_ref_names(manifest.skill_refs))
-        .unwrap_or_default()
+    let mut names: Vec<String> = builtin
+        .skill_names
+        .iter()
+        .map(|&name| name.to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn skill_ref_names(skill_refs: Vec<TemplateSkillRef>) -> Vec<String> {
@@ -687,7 +730,7 @@ pub(crate) fn user_home_dir() -> Result<PathBuf> {
                 Some(combined)
             }
         })
-        .ok_or_else(|| anyhow!("HOME is not set; cannot resolve ~/.agents/templates"))
+        .ok_or_else(|| anyhow!("HOME is not set; cannot resolve ~/.agents/agent_templates"))
 }
 
 async fn resolve_template(
@@ -791,7 +834,7 @@ fn resolve_prefixed_template_catalog_entry(
         .into_iter()
         .find(|entry| entry.template_id == template_id),
         AgentTemplateSourceKind::AgentHome => discover_local_templates(
-            &catalog_agent_home.join("templates"),
+            &catalog_agent_home.join("agent_templates"),
             AgentTemplateSourceKind::AgentHome,
             true,
         )
@@ -813,13 +856,26 @@ async fn resolve_catalog_template(
                     entry.catalog_id
                 )
             })?;
-            resolve_local_template(
+            let mut resolved = resolve_local_template(
                 path.clone(),
                 TemplateProvenanceSource::TemplateId {
-                    template_id: entry.template_id,
+                    template_id: entry.template_id.clone(),
                     path,
                 },
-            )
+            )?;
+            // Seeded builtin templates carry compiled-in skills that cannot be
+            // expressed in skills.toml. Merge them so they are materialized.
+            if let Some(builtin) = BUILTIN_TEMPLATES
+                .iter()
+                .find(|t| t.template_id == entry.template_id)
+            {
+                for &name in builtin.skill_names {
+                    resolved.skill_refs.push(TemplateSkillRef::Builtin {
+                        name: name.to_string(),
+                    });
+                }
+            }
+            Ok(resolved)
         }
     }
 }
@@ -829,13 +885,13 @@ fn resolve_builtin_template(template_id: &str, home_dir: &Path) -> Result<Resolv
         .iter()
         .find(|builtin| builtin.template_id == template_id)
         .ok_or_else(|| anyhow!("unknown builtin template id {template_id}"))?;
-    let skill_refs = builtin
-        .skills_json
-        .map(serde_json::from_str::<TemplateSkillsManifest>)
-        .transpose()
-        .with_context(|| format!("failed to parse builtin template {template_id} skills.json"))?
-        .map(|manifest| manifest.skill_refs)
-        .unwrap_or_default();
+    let skill_refs: Vec<TemplateSkillRef> = builtin
+        .skill_names
+        .iter()
+        .map(|&name| TemplateSkillRef::Builtin {
+            name: name.to_string(),
+        })
+        .collect();
     Ok(ResolvedTemplate {
         provenance: TemplateProvenanceSource::TemplateId {
             template_id: template_id.to_string(),
@@ -902,9 +958,10 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     }
     let content =
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let manifest: TemplateSkillsManifest = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    for skill_ref in &manifest.skill_refs {
+    let manifest: TemplateSkillsManifest =
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    let skill_refs: Vec<TemplateSkillRef> = manifest.skills.into_iter().map(Into::into).collect();
+    for skill_ref in &skill_refs {
         match skill_ref {
             TemplateSkillRef::Github { package } => {
                 template_github_skill_install_kind(package)?;
@@ -917,7 +974,7 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
             TemplateSkillRef::Local { .. } => {}
         }
     }
-    Ok(manifest.skill_refs)
+    Ok(skill_refs)
 }
 
 fn template_github_skill_install_kind(package: &str) -> Result<SkillInstallKind> {
@@ -998,19 +1055,22 @@ fn builtin_template_content_hash(template: &BuiltinTemplate) -> String {
     hasher.update(TEMPLATE_AGENTS_FILENAME.as_bytes());
     hasher.update(b"\n");
     hasher.update(template.agents_md.as_bytes());
-    if let Some(skills_json) = template.skills_json {
+    hasher.update(b"\n");
+    hasher.update(TEMPLATE_MANIFEST_FILENAME.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(template.template_toml.as_bytes());
+    if !template.skill_names.is_empty() {
         hasher.update(b"\n");
-        hasher.update(TEMPLATE_SKILLS_FILENAME.as_bytes());
-        hasher.update(b"\n");
-        hasher.update(skills_json.as_bytes());
+        hasher.update(b"skill_names\n");
+        for &name in template.skill_names {
+            hasher.update(name.as_bytes());
+            hasher.update(b"\n");
+        }
     }
     format!("{:x}", hasher.finalize())
 }
 
-fn current_builtin_template_content_hash(
-    template_dir: &Path,
-    expect_skills_json: bool,
-) -> Result<String> {
+fn current_builtin_template_content_hash(template_dir: &Path) -> Result<String> {
     use sha2::{Digest as _, Sha256};
 
     let agents_md_path = template_dir.join(TEMPLATE_AGENTS_FILENAME);
@@ -1020,21 +1080,20 @@ fn current_builtin_template_content_hash(
     hasher.update(TEMPLATE_AGENTS_FILENAME.as_bytes());
     hasher.update(b"\n");
     hasher.update(agents_md.as_bytes());
-    let skills_path = template_dir.join(TEMPLATE_SKILLS_FILENAME);
-    if expect_skills_json {
-        let skills_json = fs::read_to_string(&skills_path)
-            .with_context(|| format!("failed to read {}", skills_path.display()))?;
+    let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
+    if manifest_path.exists() {
+        let manifest = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
         hasher.update(b"\n");
-        hasher.update(TEMPLATE_SKILLS_FILENAME.as_bytes());
+        hasher.update(TEMPLATE_MANIFEST_FILENAME.as_bytes());
         hasher.update(b"\n");
-        hasher.update(skills_json.as_bytes());
+        hasher.update(manifest.as_bytes());
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn builtin_template_is_managed(template_dir: &Path, state: &BuiltinTemplateState) -> Result<bool> {
-    let expect_skills_json = template_dir.join(TEMPLATE_SKILLS_FILENAME).exists();
-    let current_hash = current_builtin_template_content_hash(template_dir, expect_skills_json)?;
+    let current_hash = current_builtin_template_content_hash(template_dir)?;
     Ok(current_hash == state.content_hash)
 }
 
@@ -1043,12 +1102,12 @@ fn write_builtin_template(template_dir: &Path, builtin: &BuiltinTemplate) -> Res
         .with_context(|| format!("failed to create {}", template_dir.display()))?;
     let agents_md_path = template_dir.join(TEMPLATE_AGENTS_FILENAME);
     write_file_atomically(&agents_md_path, builtin.agents_md.as_bytes())?;
-    let skills_path = template_dir.join(TEMPLATE_SKILLS_FILENAME);
-    match builtin.skills_json {
-        Some(content) => write_file_atomically(&skills_path, content.as_bytes())?,
-        None if skills_path.exists() => fs::remove_file(&skills_path)
-            .with_context(|| format!("failed to remove {}", skills_path.display()))?,
-        None => {}
+    let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
+    write_file_atomically(&manifest_path, builtin.template_toml.as_bytes())?;
+    // Remove any leftover skills.json from the old format.
+    let old_skills_path = template_dir.join("skills.json");
+    if old_skills_path.exists() {
+        let _ = fs::remove_file(&old_skills_path);
     }
     let state = BuiltinTemplateState {
         template_id: builtin.template_id.to_string(),
@@ -1124,14 +1183,14 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
             bail!("GitHub template {template} resolved to an empty AGENTS.md");
         }
         let skills_path = format!("{template_path}/{TEMPLATE_SKILLS_FILENAME}");
-        let skills_json = fetch_github_file(&owner, &repo, &git_ref, &skills_path).await?;
-        let skill_refs = match skills_json {
+        let skills_toml = fetch_github_file(&owner, &repo, &git_ref, &skills_path).await?;
+        let skill_refs = match skills_toml {
             Some(content) => {
-                let manifest: TemplateSkillsManifest = serde_json::from_str(&content)
-                    .with_context(|| {
+                let manifest: TemplateSkillsManifest =
+                    toml::from_str(&content).with_context(|| {
                         format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
                     })?;
-                manifest.skill_refs
+                manifest.skills.into_iter().map(Into::into).collect()
             }
             None => Vec::new(),
         };
@@ -1504,9 +1563,20 @@ mod tests {
             "# Worker\n\nDoes worker things\n",
         )
         .unwrap();
+        let source_skill = user_home.path().join("source-skill");
+        fs::create_dir_all(&source_skill).unwrap();
+        fs::write(
+            source_skill.join("SKILL.md"),
+            "# Source
+",
+        )
+        .unwrap();
         fs::write(
             worker.join(TEMPLATE_SKILLS_FILENAME),
-            r#"{"skill_refs":[{"kind":"builtin","name":"ghx"}]}"#,
+            format!(
+                "[[skills]]\nkind = \"local\"\npath = \"{}\"\n",
+                source_skill.display()
+            ),
         )
         .unwrap();
 
@@ -1518,7 +1588,10 @@ mod tests {
         )
         .unwrap();
 
-        let local = agent_home.path().join("templates").join("local-agent");
+        let local = agent_home
+            .path()
+            .join("agent_templates")
+            .join("local-agent");
         fs::create_dir_all(&local).unwrap();
         fs::write(
             local.join(TEMPLATE_AGENTS_FILENAME),
@@ -1549,7 +1622,10 @@ mod tests {
         assert_eq!(worker_entry.source, AgentTemplateSourceKind::UserGlobal);
         assert_eq!(worker_entry.path.as_deref(), Some(worker.as_path()));
         assert_eq!(worker_entry.description, "Does worker things");
-        assert_eq!(worker_entry.included_skills, vec!["ghx"]);
+        assert_eq!(
+            worker_entry.included_skills,
+            vec![source_skill.display().to_string()]
+        );
 
         let local_entry = catalog
             .iter()
@@ -1574,7 +1650,7 @@ mod tests {
         )
         .unwrap();
 
-        let agent_templates = agent_home.path().join("templates");
+        let agent_templates = agent_home.path().join("agent_templates");
         let agent_worker = agent_templates.join("worker");
         fs::create_dir_all(&agent_worker).unwrap();
         fs::write(
@@ -1616,7 +1692,10 @@ mod tests {
         let user_templates = templates_root_for_home(user_home.path());
         seed_builtin_templates_for_home(user_home.path()).unwrap();
 
-        let agent_default = agent_home.path().join("templates").join("holon-default");
+        let agent_default = agent_home
+            .path()
+            .join("agent_templates")
+            .join("holon-default");
         fs::create_dir_all(&agent_default).unwrap();
         fs::write(
             agent_default.join(TEMPLATE_AGENTS_FILENAME),
@@ -1632,7 +1711,7 @@ mod tests {
         )
         .unwrap();
 
-        let agent_worker = agent_home.path().join("templates").join("worker");
+        let agent_worker = agent_home.path().join("agent_templates").join("worker");
         fs::create_dir_all(&agent_worker).unwrap();
         fs::write(
             agent_worker.join(TEMPLATE_AGENTS_FILENAME),
@@ -1667,14 +1746,14 @@ mod tests {
     }
 
     #[test]
-    fn builtin_template_is_managed_accounts_for_skills_json() {
+    fn builtin_template_is_managed_accounts_for_template_manifest() {
         let home = tempdir().unwrap();
         let template_dir = home.path().join("template");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join(TEMPLATE_AGENTS_FILENAME), "agents").unwrap();
         fs::write(
-            template_dir.join(TEMPLATE_SKILLS_FILENAME),
-            r#"{"skill_refs":[]}"#,
+            template_dir.join(TEMPLATE_MANIFEST_FILENAME),
+            "schema = \"holon.agent_template.v1\"\nid = \"test\"\nname = \"Test\"\nsummary = \"test\"\n",
         )
         .unwrap();
 
@@ -1682,7 +1761,8 @@ mod tests {
             template_id: "holon-test",
             version: 1,
             agents_md: "agents",
-            skills_json: Some(r#"{"skill_refs":[]}"#),
+            template_toml: "schema = \"holon.agent_template.v1\"\nid = \"test\"\nname = \"Test\"\nsummary = \"test\"\n",
+            skill_names: &[],
         };
         let state = BuiltinTemplateState {
             template_id: builtin.template_id.to_string(),
@@ -1744,13 +1824,11 @@ mod tests {
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "worker instructions").unwrap();
         fs::write(
-            template_dir.join("skills.json"),
-            serde_json::json!({
-                "skill_refs": [
-                    { "kind": "local", "path": source_skill }
-                ]
-            })
-            .to_string(),
+            template_dir.join(TEMPLATE_SKILLS_FILENAME),
+            format!(
+                "[[skills]]\nkind = \"local\"\npath = \"{}\"\n",
+                source_skill.display()
+            ),
         )
         .unwrap();
 
@@ -1783,7 +1861,10 @@ mod tests {
     async fn catalog_id_initializes_from_agent_home_catalog() {
         let home = tempdir().unwrap();
         let catalog_agent_home = tempdir().unwrap();
-        let template_dir = catalog_agent_home.path().join("templates").join("worker");
+        let template_dir = catalog_agent_home
+            .path()
+            .join("agent_templates")
+            .join("worker");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(
             template_dir.join("AGENTS.md"),
@@ -1831,7 +1912,10 @@ mod tests {
     async fn template_catalog_selector_error_lists_known_ids() {
         let home = tempdir().unwrap();
         let catalog_agent_home = tempdir().unwrap();
-        let template_dir = catalog_agent_home.path().join("templates").join("worker");
+        let template_dir = catalog_agent_home
+            .path()
+            .join("agent_templates")
+            .join("worker");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(
             template_dir.join("AGENTS.md"),
@@ -1948,14 +2032,11 @@ mod tests {
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "broken").unwrap();
         fs::write(
-            template_dir.join("skills.json"),
-            serde_json::json!({
-                "skill_refs": [
-                    {"kind": "local", "path": valid_skill},
-                    {"kind": "local", "path": "relative/path"}
-                ]
-            })
-            .to_string(),
+            template_dir.join(TEMPLATE_SKILLS_FILENAME),
+            format!(
+                "[[skills]]\nkind = \"local\"\npath = \"{}\"\n[[skills]]\nkind = \"local\"\npath = \"relative/path\"\n",
+                valid_skill.display()
+            ),
         )
         .unwrap();
 
@@ -1986,8 +2067,11 @@ mod tests {
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "broken").unwrap();
         fs::write(
-            template_dir.join("skills.json"),
-            r#"{"skill_refs":[{"kind":"local","path":"relative/path"}]}"#,
+            template_dir.join(TEMPLATE_SKILLS_FILENAME),
+            r#"[[skills]]
+kind = "local"
+path = "relative/path"
+"#,
         )
         .unwrap();
 
@@ -2011,8 +2095,11 @@ mod tests {
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "broken").unwrap();
         fs::write(
-            template_dir.join("skills.json"),
-            r#"{"skill_refs":[{"kind":"local","path":"relative/path"}]}"#,
+            template_dir.join(TEMPLATE_SKILLS_FILENAME),
+            r#"[[skills]]
+kind = "local"
+path = "relative/path"
+"#,
         )
         .unwrap();
 
@@ -2031,10 +2118,17 @@ mod tests {
     #[test]
     fn parse_skill_refs_accepts_github_skill_refs() {
         let home = tempdir().unwrap();
-        let manifest_path = home.path().join("skills.json");
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
         fs::write(
             &manifest_path,
-            r#"{"skill_refs":[{"kind":"github","package":"owner/repo@skill"},{"kind":"github","package":"@scope/package"}]}"#,
+            r#"[[skills]]
+kind = "github"
+package = "owner/repo@skill"
+
+[[skills]]
+kind = "github"
+package = "@scope/package"
+"#,
         )
         .unwrap();
 
@@ -2074,10 +2168,13 @@ mod tests {
     #[test]
     fn parse_skill_refs_rejects_invalid_github_skill_refs() {
         let home = tempdir().unwrap();
-        let manifest_path = home.path().join("skills.json");
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
         fs::write(
             &manifest_path,
-            r#"{"skill_refs":[{"kind":"github","package":"owner/repo@../bad"}]}"#,
+            r#"[[skills]]
+kind = "github"
+package = "owner/repo@../bad"
+"#,
         )
         .unwrap();
         let err = parse_skill_refs(manifest_path).unwrap_err();
@@ -2159,7 +2256,7 @@ mod tests {
             seen_paths.lock().unwrap().as_slice(),
             &[
                 "/repos/owner/repo/contents/templates/reviewer/AGENTS.md?ref=main",
-                "/repos/owner/repo/contents/templates/reviewer/skills.json?ref=main",
+                "/repos/owner/repo/contents/templates/reviewer/skills.toml?ref=main",
             ]
         );
     }

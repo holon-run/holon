@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "holon-github-solve"
+name = "Holon GitHub Solve"
+summary = "You are a GitHub task agent created by `holon solve`."
+
+[compatibility]
+holon = ">=0.1.0"
