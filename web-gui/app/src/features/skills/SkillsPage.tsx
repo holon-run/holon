@@ -66,7 +66,7 @@ export function SkillsPage({
   }
 
   async function removeSkill(name: string) {
-    const ok = await onRemoveSkill(name);
+    await onRemoveSkill(name);
   }
 
   return (
@@ -301,24 +301,27 @@ export function SkillDetailPage({
           {skill?.description ? <p>{skill.description}</p> : null}
         </div>
         <div className="skills-actions" aria-label="Skill detail actions">
+          <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
+            {loading ? "Refreshing…" : "Refresh"}
+          </Button>
         </div>
       </section>
 
       {skill ? (
-        <div className="skills-detail-meta">
-          <div>
+        <dl className="skills-detail-meta">
+          <div className="skills-detail-meta-item">
             <dt>Scope</dt>
             <dd><code>{skill.scope}</code></dd>
           </div>
-          <div>
+          <div className="skills-detail-meta-item">
             <dt>Skill directory</dt>
             <dd><code>{skill.skillDir}</code></dd>
           </div>
-          <div>
+          <div className="skills-detail-meta-item">
             <dt>Path</dt>
-            <dd><code>{skill.path}</code></dd>
+            <dd><code>{collapseHome(skill.path)}</code></dd>
           </div>
-        </div>
+        </dl>
       ) : null}
 
       {error || detail?.error ? (

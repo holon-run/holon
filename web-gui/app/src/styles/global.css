@@ -3234,6 +3234,7 @@ code {
 .skills-detail-meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  padding: 0;
   gap: 10px;
   margin: 0 0 16px;
 }
