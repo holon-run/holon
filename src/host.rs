@@ -3560,6 +3560,35 @@ mod tests {
             })
             .unwrap();
 
+        // Also add an active Task wait condition so the lifecycle blocker
+        // persists through recovery. The orphaned command task above is
+        // interrupted by the child's own bootstrap_recovery, but a wait
+        // condition survives restart, keeping the parent monitor running
+        // deterministically rather than racing with task cleanup.
+        let now = chrono::Utc::now();
+        child_storage
+            .append_wait_condition(&crate::types::WaitConditionRecord {
+                id: "wait-child-command".into(),
+                agent_id: "child_recover_active_task".into(),
+                work_item_id: None,
+                status: crate::types::WaitConditionStatus::Active,
+                kind: crate::types::WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some("child-command-still-running".into()),
+                waiting_for: "command result".into(),
+                wake_sources: vec![crate::types::WakeSource::TaskResult {
+                    task_id: "child-command-still-running".into(),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+            })
+            .unwrap();
+
         drop(host);
 
         let restarted =
