@@ -3602,6 +3602,7 @@ name = "Versioned"
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(template_dir.join("AGENTS.md"), "# test").unwrap();
 
+        remove_user_template(tmp.path(), "my-test-template").unwrap();
         let err = remove_user_template(tmp.path(), "my-test-template").unwrap_err();
         assert!(!template_dir.exists());
 
