@@ -12,6 +12,7 @@ interface FileBrowserPanelProps {
   executionRootId?: string;
   initialFilePath?: string;
   initialPath?: string;
+  onClose?: () => void;
 }
 
 interface SelectedFile {
@@ -131,7 +132,7 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
   return highlighted;
 }
 
-export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath }: FileBrowserPanelProps) {
+export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, onClose }: FileBrowserPanelProps) {
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
   const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
@@ -201,6 +202,10 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   };
 
   const openEntry = async (entry: WorkspaceFileEntry) => {
+    if (entry.name === "..") {
+      void loadDir(parentPath);
+      return;
+    }
     if (entry.type === "directory") {
       const dirPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
       void loadDir(dirPath);
@@ -239,6 +244,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
   };
 
+  const parentPath = currentPath.split("/").filter(Boolean).slice(0, -1).join("/");
+  const atRoot = !currentPath;
+
   const markdownComponents: Components = {
     a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
   };
@@ -250,6 +258,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const dirs = visibleEntries.filter((e) => e.type === "directory" || e.type === "symlink");
   const files = visibleEntries.filter((e) => e.type === "file");
   const sortedEntries = [...dirs, ...files];
+  if (!atRoot) {
+    sortedEntries.unshift({ name: "..", type: "directory" as const, size: 0, mimeType: undefined });
+  }
 
   return (
     <div className="file-browser">
@@ -306,6 +317,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               <button
                 type="button"
                 className="file-browser-entry"
+                data-parent-dir={entry.name === ".." ? true : undefined}
                 data-selected={selectedFile?.path === (currentPath ? `${currentPath}/${entry.name}` : entry.name)}
                 onClick={() => void openEntry(entry)}
               >
@@ -343,7 +355,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                   </button>
                 </div>
               ) : null}
-              <button type="button" aria-label="Back to directory listing" onClick={() => setSelectedFile(null)}>← Back</button>
+              <button type="button" aria-label="Back to previous page" onClick={() => onClose?.()}>← Back</button>
             </div>
           </div>
           {selectedFile.loading ? (
