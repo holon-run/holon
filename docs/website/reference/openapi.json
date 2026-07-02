@@ -9711,7 +9711,7 @@
     },
     "/api/templates/catalog": {
       "get": {
-        "description": "Return the global AgentTemplate catalog (builtin + user global library).",
+        "description": "Return the global AgentTemplate catalog (builtin + user global library + synced remote sources).",
         "operationId": "templatesCatalog",
         "parameters": [],
         "responses": {
@@ -9858,6 +9858,64 @@
           }
         ],
         "summary": "Template detail",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/templates/remote-sources/sync": {
+      "post": {
+        "description": "Queue a daemon job that synchronizes configured AgentTemplate remote sources.",
+        "operationId": "syncTemplateRemoteSources",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncTemplateRemoteSourcesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Sync remote template sources",
         "tags": [
           "templates"
         ]
