@@ -207,6 +207,7 @@ export function TemplatesPage({
                 <option value="all">All sources</option>
                 <option value="builtin">Builtin</option>
                 <option value="user_global">Global</option>
+                <option value="user">User</option>
                 <option value="remote">Remote</option>
                 <option value="agent">Agent</option>
               </select>

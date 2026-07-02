@@ -50,20 +50,20 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
   return { route: "dashboard" };
 }
 
-export function pathForRoute(route: RouteKey, agentId?: string, query?: Record<string, string | number | undefined>): string {
+export function pathForRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>): string {
   const queryString = query ? new URLSearchParams(Object.entries(query).flatMap(([key, value]) => (value == null ? [] : [[key, String(value)]]))).toString() : "";
   if (route === "search") return "/search";
   if (route === "skills") return "/skills";
   if (route === "skillDetail" && agentId) return `/skills/${encodeURIComponent(agentId)}`;
   if (route === "templates") return "/templates";
-  if (route === "templateDetail" && agentId) return `/templates/${encodeURIComponent(agentId)}`;
+  if (route === "templateDetail" && templateId) return `/templates/${encodeURIComponent(templateId)}`;
   if (route === "settings") return "/settings";
   if (route === "agent" && agentId) return `/agents/${encodeURIComponent(agentId)}/conversation${queryString ? `?${queryString}` : ""}`;
   return "/";
 }
 
-export function pushBrowserRoute(route: RouteKey, agentId?: string, query?: Record<string, string | number | undefined>): void {
-  const nextPath = pathForRoute(route, agentId, query);
+export function pushBrowserRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>): void {
+  const nextPath = pathForRoute(route, agentId, templateId, query);
   if (`${window.location.pathname}${window.location.search}` === nextPath) return;
   window.history.pushState(null, "", nextPath);
 }

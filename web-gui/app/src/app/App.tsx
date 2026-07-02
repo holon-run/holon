@@ -286,12 +286,12 @@ export function App() {
 
   function navigateTemplate(catalogId: string) {
     openTemplate(catalogId);
-    pushBrowserRoute("templateDetail", catalogId);
+    pushBrowserRoute("templateDetail", undefined, catalogId);
   }
 
   function navigateAgent(agentId: string, eventSeq?: number) {
     openAgent(agentId, eventSeq);
-    pushBrowserRoute("agent", agentId, eventSeq == null ? undefined : { event_seq: eventSeq });
+    pushBrowserRoute("agent", agentId, undefined, eventSeq == null ? undefined : { event_seq: eventSeq });
   }
 
   async function handleCreateAgentSubmit(): Promise<void> {
@@ -321,13 +321,13 @@ export function App() {
       const configValue = JSON.stringify({ url, ref: gitRef ?? null });
       const result = await updateRuntimeConfig([{ key: `agent_templates.remote_sources.${sourceId}`, value: configValue }]);
       if (result) {
-        void refreshRuntimeConfig();
-        void syncTemplateRemoteSources();
-        void refreshTemplateCatalog();
+        await refreshRuntimeConfig();
+        await syncTemplateRemoteSources();
+        await refreshTemplateCatalog();
         return true;
       }
       return false;
-    } catch {
+    } catch (error) {
       return false;
     }
   }
@@ -336,8 +336,8 @@ export function App() {
     try {
       const result = await updateRuntimeConfig([{ key: `agent_templates.remote_sources.${sourceId}`, unset: true }]);
       if (result) {
-        void refreshRuntimeConfig();
-        void refreshTemplateCatalog();
+        await refreshRuntimeConfig();
+        await refreshTemplateCatalog();
         return true;
       }
       return false;
