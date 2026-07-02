@@ -430,7 +430,12 @@ export function App() {
               type="button"
               aria-label="Create agent from template"
               title="Create agent from template"
-              onClick={() => setShowCreateAgentModal(true)}
+              onClick={async () => {
+                if (templateCatalog.source === "fixture" && !templateCatalogLoading) {
+                  await refreshTemplateCatalog();
+                }
+                setShowCreateAgentModal(true);
+              }}
             >
               +
             </button>

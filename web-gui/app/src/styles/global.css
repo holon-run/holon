@@ -509,6 +509,7 @@ button {
 
 .side-heading strong {
   color: var(--muted);
+  margin-left: 6px;
   font-size: 11px;
 }
 
