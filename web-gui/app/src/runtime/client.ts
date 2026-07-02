@@ -4,6 +4,12 @@ import type {
   AddSkillInput,
   AgentDetail,
   AgentSummary,
+  AgentTemplateCatalogDiagnostic,
+  AgentTemplateCatalogEntry,
+  AgentTemplateCatalogState,
+  AgentTemplateDetail,
+  AgentTemplateDetailState,
+  AgentTemplateRemoteSource,
   CredentialProfileStatus,
   CredentialStoreState,
   CodexDeviceLoginResponse,
@@ -562,6 +568,62 @@ interface SkillDetailResponseDto {
   content?: string;
 }
 
+interface AgentTemplateCatalogEntryDto {
+  catalog_id?: string;
+  template?: string;
+  template_id?: string;
+  source?: AgentTemplateCatalogEntry["source"];
+  path?: string;
+  name?: string;
+  schema_version?: string;
+  description?: string;
+  included_skills?: string[];
+  source_id?: string;
+  resolved_ref?: string;
+  resolved_revision?: string;
+  source_url?: string;
+}
+
+interface AgentTemplateRemoteSourceDto {
+  source_id?: string;
+  kind?: string;
+  enabled?: boolean;
+  status?: string;
+  url?: string;
+  resolved_ref?: string;
+  resolved_revision?: string | null;
+  last_synced_at?: string;
+}
+
+interface AgentTemplateCatalogDiagnosticDto {
+  level?: string;
+  message?: string;
+  source_id?: string;
+}
+
+interface AgentTemplateCatalogResponseDto {
+  catalog?: AgentTemplateCatalogEntryDto[];
+  sources?: AgentTemplateRemoteSourceDto[];
+  diagnostics?: AgentTemplateCatalogDiagnosticDto[];
+}
+
+interface AgentTemplateDetailDto {
+  catalog_id?: string;
+  template?: string;
+  template_id?: string;
+  source?: AgentTemplateCatalogEntry["source"];
+  source_location?: string;
+  name?: string;
+  summary?: string;
+  schema_version?: string;
+  agents_md?: string;
+  skills?: Array<{ kind?: string; reference?: string }>;
+}
+
+interface AgentTemplateDetailResponseDto {
+  detail?: AgentTemplateDetailDto;
+}
+
 interface AgentSkillsResponseDto {
   skills?: SkillCatalogEntryDto[];
 }
@@ -774,6 +836,58 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         skill: response.skill ? projectSkillCatalogEntry(response.skill) : undefined,
         content: response.content ?? "",
       };
+    },
+    async getTemplateCatalog(): Promise<AgentTemplateCatalogState> {
+      if (!baseUrl) {
+        return { source: "fixture", catalog: [], sources: [], diagnostics: [] };
+      }
+      const response = await getJson<AgentTemplateCatalogResponseDto>(fetchImpl, baseUrl, "/templates/catalog", { headers: requestHeaders });
+      return projectTemplateCatalog(response);
+    },
+    async getTemplateDetail(catalogId: string): Promise<AgentTemplateDetailState> {
+      if (!baseUrl) {
+        return { source: "fixture", error: "Holon API base URL is not configured." };
+      }
+      const response = await getJson<AgentTemplateDetailResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/templates/catalog/${encodeURIComponent(catalogId)}`,
+        { headers: requestHeaders },
+      );
+      return {
+        source: "http",
+        detail: response.detail ? projectTemplateDetail(response.detail) : undefined,
+      };
+    },
+    async installTemplate(githubUrl: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/control/templates/install", { github_url: githubUrl }, requestHeaders);
+    },
+    async removeTemplate(templateId: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/control/templates/remove", { template_id: templateId }, requestHeaders);
+    },
+    async syncTemplateRemoteSources(): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, "/templates/remote-sources/sync", {}, requestHeaders);
+    },
+    async createAgentFromTemplate(agentId: string, template: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/create`,
+        { template },
+        requestHeaders,
+      );
     },
     async addSkillToCatalog(input: AddSkillInput): Promise<string> {
       if (!baseUrl) {
@@ -1314,6 +1428,76 @@ function projectSkillCatalogEntry(entry: SkillCatalogEntryDto) {
     description: entry.description ?? "",
     path: entry.path ?? "",
     scope: entry.scope ?? "user",
+  };
+}
+
+function projectTemplateCatalog(response: AgentTemplateCatalogResponseDto): AgentTemplateCatalogState {
+  return {
+    source: "http",
+    catalog: (response.catalog ?? [])
+      .filter((entry) => Boolean(entry.catalog_id || entry.template))
+      .map(projectTemplateCatalogEntry),
+    sources: (response.sources ?? []).map(projectTemplateRemoteSource),
+    diagnostics: (response.diagnostics ?? []).map(projectTemplateDiagnostic),
+  };
+}
+
+function projectTemplateCatalogEntry(entry: AgentTemplateCatalogEntryDto): AgentTemplateCatalogEntry {
+  const catalogId = entry.catalog_id ?? entry.template ?? entry.template_id ?? "unknown";
+  return {
+    catalogId,
+    template: entry.template ?? catalogId,
+    templateId: entry.template_id ?? entry.template ?? catalogId,
+    source: entry.source ?? "builtin",
+    path: entry.path,
+    name: entry.name ?? entry.template_id ?? catalogId,
+    schemaVersion: entry.schema_version,
+    description: entry.description ?? "",
+    includedSkills: entry.included_skills ?? [],
+    sourceId: entry.source_id,
+    resolvedRef: entry.resolved_ref,
+    resolvedRevision: entry.resolved_revision,
+    sourceUrl: entry.source_url,
+  };
+}
+
+function projectTemplateRemoteSource(source: AgentTemplateRemoteSourceDto): AgentTemplateRemoteSource {
+  return {
+    sourceId: source.source_id ?? "unknown",
+    kind: source.kind ?? "unknown",
+    enabled: source.enabled ?? false,
+    status: source.status,
+    url: source.url,
+    resolvedRef: source.resolved_ref,
+    resolvedRevision: source.resolved_revision ?? undefined,
+    lastSyncedAt: source.last_synced_at,
+  };
+}
+
+function projectTemplateDiagnostic(diagnostic: AgentTemplateCatalogDiagnosticDto): AgentTemplateCatalogDiagnostic {
+  return {
+    level: diagnostic.level,
+    message: diagnostic.message ?? "Template catalog diagnostic",
+    sourceId: diagnostic.source_id,
+  };
+}
+
+function projectTemplateDetail(detail: AgentTemplateDetailDto): AgentTemplateDetail {
+  const catalogId = detail.catalog_id ?? detail.template ?? detail.template_id ?? "unknown";
+  return {
+    catalogId,
+    template: detail.template ?? catalogId,
+    templateId: detail.template_id ?? detail.template ?? catalogId,
+    source: detail.source ?? "builtin",
+    sourceLocation: detail.source_location,
+    name: detail.name ?? detail.template_id ?? catalogId,
+    summary: detail.summary ?? "",
+    schemaVersion: detail.schema_version,
+    agentsMd: detail.agents_md ?? "",
+    skills: (detail.skills ?? []).map((skill) => ({
+      kind: skill.kind ?? "unknown",
+      reference: skill.reference ?? "",
+    })),
   };
 }
 

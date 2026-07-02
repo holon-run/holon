@@ -11,6 +11,7 @@ import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
+import { TemplateDetailPage, TemplatesPage } from "../features/templates/TemplatesPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
@@ -23,6 +24,7 @@ const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
   { key: "dashboard", label: "Dashboard", icon: "◎" },
   { key: "search", label: "Search", icon: "⌕" },
   { key: "skills", label: "Skills", icon: "◇" },
+  { key: "templates", label: "Agent Templates", icon: "▣" },
   { key: "settings", label: "Settings", icon: "⚙" },
 ];
 
@@ -30,9 +32,15 @@ const APP_WINDOW_TITLE = "Holon";
 
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
+  const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
+  const [createAgentId, setCreateAgentId] = useState("");
+  const [createAgentTemplate, setCreateAgentTemplate] = useState("");
+  const [createAgentError, setCreateAgentError] = useState<string | undefined>();
+  const [createAgentBusy, setCreateAgentBusy] = useState(false);
   const route = useRuntimeStore((state) => state.route);
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
   const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
+  const selectedTemplateId = useRuntimeStore((state) => state.selectedTemplateId);
   const displayLevel = useRuntimeStore((state) =>
     state.displayLevelsByAgentId[selectedAgentId] ?? "info",
   );
@@ -42,6 +50,7 @@ export function App() {
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
   const openSkill = useRuntimeStore((state) => state.openSkill);
+  const openTemplate = useRuntimeStore((state) => state.openTemplate);
   const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
@@ -85,6 +94,18 @@ export function App() {
   const skillDetailError = useRuntimeStore((state) =>
     selectedSkillId ? state.skillDetailErrorById[selectedSkillId] : undefined,
   );
+  const templateCatalog = useRuntimeStore((state) => state.templateCatalog);
+  const templateCatalogLoading = useRuntimeStore((state) => state.templateCatalogLoading);
+  const templateCatalogError = useRuntimeStore((state) => state.templateCatalogError);
+  const templateDetail = useRuntimeStore((state) =>
+    selectedTemplateId ? state.templateDetailById[selectedTemplateId] : undefined,
+  );
+  const templateDetailLoading = useRuntimeStore((state) =>
+    selectedTemplateId ? state.templateDetailLoadingById[selectedTemplateId] ?? false : false,
+  );
+  const templateDetailError = useRuntimeStore((state) =>
+    selectedTemplateId ? state.templateDetailErrorById[selectedTemplateId] : undefined,
+  );
   const addSkillToCatalog = useRuntimeStore((state) => state.addSkillToCatalog);
   const removeSkillFromCatalog = useRuntimeStore((state) => state.removeSkillFromCatalog);
   const skillInstallJobs = useRuntimeStore((state) => state.skillInstallJobs);
@@ -101,6 +122,12 @@ export function App() {
   const loadSearchResultContent = useRuntimeStore((state) => state.loadSearchResultContent);
   const refreshSkillCatalog = useRuntimeStore((state) => state.refreshSkillCatalog);
   const refreshSkillDetail = useRuntimeStore((state) => state.refreshSkillDetail);
+  const refreshTemplateCatalog = useRuntimeStore((state) => state.refreshTemplateCatalog);
+  const refreshTemplateDetail = useRuntimeStore((state) => state.refreshTemplateDetail);
+  const installTemplate = useRuntimeStore((state) => state.installTemplate);
+  const removeTemplate = useRuntimeStore((state) => state.removeTemplate);
+  const syncTemplateRemoteSources = useRuntimeStore((state) => state.syncTemplateRemoteSources);
+  const createAgentFromTemplate = useRuntimeStore((state) => state.createAgentFromTemplate);
   const refreshAgentSkillCatalog = useRuntimeStore((state) => state.refreshAgentSkillCatalog);
   const enableAgentSkill = useRuntimeStore((state) => state.enableAgentSkill);
   const disableAgentSkill = useRuntimeStore((state) => state.disableAgentSkill);
@@ -196,13 +223,17 @@ export function App() {
         openSkill(nextRoute.skillId);
         return;
       }
+      if (nextRoute.route === "templateDetail" && nextRoute.templateId) {
+        openTemplate(nextRoute.templateId);
+        return;
+      }
       setRoute(nextRoute.route);
     };
 
     applyBrowserRoute();
     window.addEventListener("popstate", applyBrowserRoute);
     return () => window.removeEventListener("popstate", applyBrowserRoute);
-  }, [openAgent, openSkill, setRoute]);
+  }, [openAgent, openSkill, openTemplate, setRoute]);
 
   useEffect(() => {
     if ((route !== "agent" && route !== "settings") || modelCatalogLoading || modelCatalog.options.length > 0) return;
@@ -225,6 +256,16 @@ export function App() {
   }, [refreshSkillDetail, route, selectedSkillId, skillDetail, skillDetailLoading]);
 
   useEffect(() => {
+    if ((route !== "templates" && route !== "templateDetail") || templateCatalogLoading || templateCatalog.source !== "fixture") return;
+    void refreshTemplateCatalog();
+  }, [refreshTemplateCatalog, route, templateCatalog.source, templateCatalogLoading]);
+
+  useEffect(() => {
+    if (route !== "templateDetail" || !selectedTemplateId || templateDetailLoading || templateDetail) return;
+    void refreshTemplateDetail(selectedTemplateId);
+  }, [refreshTemplateDetail, route, selectedTemplateId, templateDetail, templateDetailLoading]);
+
+  useEffect(() => {
     if (!sidePanelAgentId || agentSkillCatalogLoading || agentSkillCatalog) return;
     void refreshAgentSkillCatalog(sidePanelAgentId);
   }, [agentSkillCatalog, agentSkillCatalogLoading, refreshAgentSkillCatalog, sidePanelAgentId]);
@@ -243,9 +284,72 @@ export function App() {
     pushBrowserRoute("skillDetail", skillId);
   }
 
+  function navigateTemplate(catalogId: string) {
+    openTemplate(catalogId);
+    pushBrowserRoute("templateDetail", catalogId);
+  }
+
   function navigateAgent(agentId: string, eventSeq?: number) {
     openAgent(agentId, eventSeq);
     pushBrowserRoute("agent", agentId, eventSeq == null ? undefined : { event_seq: eventSeq });
+  }
+
+  async function handleCreateAgentSubmit(): Promise<void> {
+    const id = createAgentId.trim();
+    const tmpl = createAgentTemplate.trim();
+    if (!id || !tmpl) return;
+    setCreateAgentBusy(true);
+    setCreateAgentError(undefined);
+    try {
+      const ok = await createTemplateAgent(id, tmpl);
+      if (ok) {
+        setCreateAgentId("");
+        setCreateAgentTemplate("");
+        setShowCreateAgentModal(false);
+      } else {
+        setCreateAgentError("Failed to create agent.");
+      }
+    } catch (error) {
+      setCreateAgentError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreateAgentBusy(false);
+    }
+  }
+
+  async function addTemplateRemoteSource(sourceId: string, url: string, gitRef?: string): Promise<boolean> {
+    try {
+      const configValue = JSON.stringify({ url, ref: gitRef ?? null });
+      const result = await updateRuntimeConfig([{ key: `agent_templates.remote_sources.${sourceId}`, value: configValue }]);
+      if (result) {
+        void refreshRuntimeConfig();
+        void syncTemplateRemoteSources();
+        void refreshTemplateCatalog();
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  async function removeTemplateRemoteSource(sourceId: string): Promise<boolean> {
+    try {
+      const result = await updateRuntimeConfig([{ key: `agent_templates.remote_sources.${sourceId}`, unset: true }]);
+      if (result) {
+        void refreshRuntimeConfig();
+        void refreshTemplateCatalog();
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  async function createTemplateAgent(agentId: string, template: string): Promise<boolean> {
+    const ok = await createAgentFromTemplate(agentId, template);
+    if (ok) navigateAgent(agentId);
+    return ok;
   }
 
   if (isInitialBootstrapping) {
@@ -321,6 +425,20 @@ export function App() {
           <div className="side-heading">
             <span>Active agents</span>
             <strong>{bootstrap.agents.length}</strong>
+            <button
+              className="side-heading-add"
+              type="button"
+              aria-label="Create agent from template"
+              title="Create agent from template"
+              onClick={async () => {
+                if (templateCatalog.source === "fixture" && !templateCatalogLoading) {
+                  await refreshTemplateCatalog();
+                }
+                setShowCreateAgentModal(true);
+              }}
+            >
+              +
+            </button>
           </div>
           {bootstrap.agents.length === 0 ? (
             <div className="agent-list-state" role="status">
@@ -491,6 +609,31 @@ export function App() {
             onRefresh={() => refreshSkillDetail(selectedSkillId)}
           />
         ) : null}
+        {route === "templates" ? (
+          <TemplatesPage
+            catalog={templateCatalog}
+            loading={templateCatalogLoading}
+            error={templateCatalogError}
+            onRefresh={refreshTemplateCatalog}
+            onSyncSources={syncTemplateRemoteSources}
+            onInstallTemplate={installTemplate}
+            onRemoveTemplate={removeTemplate}
+            onOpenTemplate={navigateTemplate}
+            onAddRemoteSource={addTemplateRemoteSource}
+            onRemoveRemoteSource={removeTemplateRemoteSource}
+          />
+        ) : null}
+        {route === "templateDetail" ? (
+          <TemplateDetailPage
+            catalogId={selectedTemplateId}
+            detail={templateDetail}
+            loading={templateDetailLoading}
+            error={templateDetailError}
+            onBack={() => navigateRoute("templates")}
+            onRefresh={() => refreshTemplateDetail(selectedTemplateId)}
+            onRemoveTemplate={removeTemplate}
+          />
+        ) : null}
         {route === "settings" ? (
           <SettingsPage
             connection={bootstrap.connection}
@@ -558,6 +701,53 @@ export function App() {
           }}
           onClose={() => setRightPanelOpen(false)}
         />
+      ) : null}
+
+      {showCreateAgentModal ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Create agent from template" onClick={(e) => { if (e.target === e.currentTarget) setShowCreateAgentModal(false); }}>
+          <div className="modal-card">
+            <div className="modal-head">
+              <strong>Create agent from template</strong>
+              <button type="button" className="modal-close" aria-label="Close" onClick={() => setShowCreateAgentModal(false)}>×</button>
+            </div>
+            <form className="modal-body" onSubmit={(e) => { e.preventDefault(); void handleCreateAgentSubmit(); }}>
+              <label>
+                <span>Agent ID</span>
+                <input
+                  value={createAgentId}
+                  onChange={(e) => setCreateAgentId(e.target.value)}
+                  placeholder="new-agent-id"
+                  autoFocus
+                  disabled={createAgentBusy}
+                />
+              </label>
+              <label>
+                <span>Template</span>
+                <select
+                  value={createAgentTemplate}
+                  onChange={(e) => setCreateAgentTemplate(e.target.value)}
+                  disabled={createAgentBusy}
+                >
+                  <option value="">Choose a template…</option>
+                  {templateCatalog.catalog.map((t) => (
+                    <option key={t.catalogId} value={t.template}>
+                      {t.name} ({t.source})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {createAgentError ? <span className="connection-error" role="alert">{createAgentError}</span> : null}
+              <div className="modal-actions">
+                <Button type="button" variant="outline" disabled={createAgentBusy} onClick={() => setShowCreateAgentModal(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" variant="accent" disabled={createAgentBusy || !createAgentId.trim() || !createAgentTemplate.trim()}>
+                  {createAgentBusy ? "Creating…" : "Create"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
       ) : null}
     </div>
   );
@@ -857,6 +1047,7 @@ function agentStatusIcon(tone: string): string {
 function pageTitle(route: RouteKey): string {
   if (route === "search") return "Search";
   if (route === "skills" || route === "skillDetail") return "Skills";
+  if (route === "templates" || route === "templateDetail") return "Agent Templates";
   if (route === "settings") return "Settings";
   return "Dashboard";
 }
@@ -864,6 +1055,7 @@ function pageTitle(route: RouteKey): string {
 function pageSubtitle(route: RouteKey, attentionCount: number, agentCount: number): string {
   if (route === "search") return "cross-agent lookup · messages · briefs · work evidence";
   if (route === "skills" || route === "skillDetail") return "global library · catalog · daemon-managed skills";
+  if (route === "templates" || route === "templateDetail") return "agent templates · remote sources · catalog";
   if (route === "settings") return "local connection · providers · model defaults";
   return attentionCount > 0 ? `${agentCount} agents · ${attentionCount} need attention` : `${agentCount} agents · all clear`;
 }

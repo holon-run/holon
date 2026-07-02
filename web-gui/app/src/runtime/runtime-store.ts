@@ -20,6 +20,8 @@ import type {
   AddSkillInput,
   AgentDetail,
   AgentSummary,
+  AgentTemplateCatalogState,
+  AgentTemplateDetailState,
   AgentTimelineActivity,
   AgentTimelineItem,
   DisplayLevel,
@@ -163,6 +165,7 @@ export interface RuntimeStoreState {
   route: RouteKey;
   selectedAgentId: string;
   selectedSkillId: string;
+  selectedTemplateId: string;
   displayLevel: DisplayLevel;
   displayLevelsByAgentId: Record<string, DisplayLevel>;
   rightPanelViewStack: RightPanelView[];
@@ -186,6 +189,12 @@ export interface RuntimeStoreState {
   skillDetailById: Record<string, SkillDetailState>;
   skillDetailLoadingById: Record<string, boolean>;
   skillDetailErrorById: Record<string, string | undefined>;
+  templateCatalog: AgentTemplateCatalogState;
+  templateCatalogLoading: boolean;
+  templateCatalogError?: string;
+  templateDetailById: Record<string, AgentTemplateDetailState>;
+  templateDetailLoadingById: Record<string, boolean>;
+  templateDetailErrorById: Record<string, string | undefined>;
   agentSkillCatalogByAgentId: Record<string, SkillCatalogState>;
   agentSkillCatalogLoadingByAgentId: Record<string, boolean>;
   agentSkillCatalogErrorByAgentId: Record<string, string | undefined>;
@@ -206,6 +215,7 @@ export interface RuntimeStoreState {
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string, targetEventSeq?: number) => void;
   openSkill: (skillId: string) => void;
+  openTemplate: (catalogId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
@@ -226,6 +236,12 @@ export interface RuntimeStoreState {
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   refreshSkillCatalog: () => Promise<void>;
   refreshSkillDetail: (skillId: string | undefined) => Promise<void>;
+  refreshTemplateCatalog: () => Promise<void>;
+  refreshTemplateDetail: (catalogId: string | undefined) => Promise<void>;
+  installTemplate: (githubUrl: string) => Promise<boolean>;
+  removeTemplate: (templateId: string) => Promise<boolean>;
+  syncTemplateRemoteSources: () => Promise<boolean>;
+  createAgentFromTemplate: (agentId: string, template: string) => Promise<boolean>;
   addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
   removeSkillFromCatalog: (name: string) => Promise<boolean>;
   updateSkillCatalog: (name?: string) => Promise<boolean>;
@@ -614,6 +630,13 @@ const emptySkillCatalog: SkillCatalogState = {
   catalog: [],
 };
 
+const emptyTemplateCatalog: AgentTemplateCatalogState = {
+  source: "fixture",
+  catalog: [],
+  sources: [],
+  diagnostics: [],
+};
+
 /**
  * Initialize session cache for the current remote and hydrate any cached
  * sessions into the store. Called on initial load and remote switch.
@@ -654,6 +677,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
   selectedSkillId: "",
+  selectedTemplateId: "",
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
   rightPanelOpen: true,
@@ -673,6 +697,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   skillDetailById: {},
   skillDetailLoadingById: {},
   skillDetailErrorById: {},
+  templateCatalog: emptyTemplateCatalog,
+  templateCatalogLoading: false,
+  templateCatalogError: undefined,
+  templateDetailById: {},
+  templateDetailLoadingById: {},
+  templateDetailErrorById: {},
   agentSkillCatalogByAgentId: {},
   agentSkillCatalogLoadingByAgentId: {},
   agentSkillCatalogErrorByAgentId: {},
@@ -691,6 +721,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   setRoute: (route) => set({ route }),
   openSkill: (skillId) => set({ route: "skillDetail", selectedSkillId: skillId }),
+  openTemplate: (catalogId) => set({ route: "templateDetail", selectedTemplateId: catalogId }),
   openAgent: (agentId, targetEventSeq) =>
     set((state) => {
       const currentSession = state.sessionsByAgentId[agentId];
@@ -869,6 +900,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       skillDetailById: {},
       skillDetailLoadingById: {},
       skillDetailErrorById: {},
+      templateCatalog: emptyTemplateCatalog,
+      templateCatalogLoading: false,
+      templateCatalogError: undefined,
+      templateDetailById: {},
+      templateDetailLoadingById: {},
+      templateDetailErrorById: {},
       agentSkillCatalogByAgentId: {},
       agentSkillCatalogLoadingByAgentId: {},
       agentSkillCatalogErrorByAgentId: {},
@@ -882,6 +919,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
       selectedAgentId: "",
       selectedSkillId: "",
+      selectedTemplateId: "",
       route: "dashboard",
     });
     await get().refreshBootstrap();
@@ -1041,6 +1079,114 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: false },
         skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: message },
       }));
+    }
+  },
+
+  refreshTemplateCatalog: async () => {
+    set({ templateCatalogLoading: true, templateCatalogError: undefined });
+    try {
+      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        templateCatalog: { ...state.templateCatalog, source: "http", error: message },
+        templateCatalogLoading: false,
+        templateCatalogError: message,
+      }));
+    }
+  },
+
+  refreshTemplateDetail: async (catalogId) => {
+    if (!catalogId) return;
+    set((state) => ({
+      templateDetailLoadingById: { ...state.templateDetailLoadingById, [catalogId]: true },
+      templateDetailErrorById: { ...state.templateDetailErrorById, [catalogId]: undefined },
+    }));
+    try {
+      const detail = await runtimeClient.getTemplateDetail(catalogId);
+      set((state) => ({
+        templateDetailById: { ...state.templateDetailById, [catalogId]: detail },
+        templateDetailLoadingById: { ...state.templateDetailLoadingById, [catalogId]: false },
+        templateDetailErrorById: { ...state.templateDetailErrorById, [catalogId]: detail.error },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        templateDetailById: {
+          ...state.templateDetailById,
+          [catalogId]: { source: "http", error: message },
+        },
+        templateDetailLoadingById: { ...state.templateDetailLoadingById, [catalogId]: false },
+        templateDetailErrorById: { ...state.templateDetailErrorById, [catalogId]: message },
+      }));
+    }
+  },
+
+  installTemplate: async (githubUrl) => {
+    set({ templateCatalogLoading: true, templateCatalogError: undefined });
+    try {
+      await runtimeClient.installTemplate(githubUrl);
+      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        templateCatalog: { ...state.templateCatalog, error: message },
+        templateCatalogLoading: false,
+        templateCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  removeTemplate: async (templateId) => {
+    set({ templateCatalogLoading: true, templateCatalogError: undefined });
+    try {
+      await runtimeClient.removeTemplate(templateId);
+      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        templateCatalog: { ...state.templateCatalog, error: message },
+        templateCatalogLoading: false,
+        templateCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  syncTemplateRemoteSources: async () => {
+    set({ templateCatalogLoading: true, templateCatalogError: undefined });
+    try {
+      await runtimeClient.syncTemplateRemoteSources();
+      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        templateCatalog: { ...state.templateCatalog, error: message },
+        templateCatalogLoading: false,
+        templateCatalogError: message,
+      }));
+      return false;
+    }
+  },
+
+  createAgentFromTemplate: async (agentId, template) => {
+    set({ templateCatalogError: undefined });
+    try {
+      await runtimeClient.createAgentFromTemplate(agentId, template);
+      await get().refreshBootstrap({ background: true });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set({ templateCatalogError: message });
+      return false;
     }
   },
 

@@ -1,6 +1,6 @@
 export type DisplayLevel = "info" | "verbose" | "debug";
 
-export type RouteKey = "dashboard" | "agent" | "search" | "skills" | "skillDetail" | "settings";
+export type RouteKey = "dashboard" | "agent" | "search" | "skills" | "skillDetail" | "templates" | "templateDetail" | "settings";
 
 export interface RuntimeConnection {
   mode: "local" | "remote";
@@ -46,6 +46,73 @@ export interface SkillCatalogState {
   source: "http" | "fixture";
   agentId?: string;
   catalog: SkillCatalogEntry[];
+  error?: string;
+}
+
+export type AgentTemplateSourceKind = "builtin" | "user" | "user_global" | "agent" | "remote";
+
+export interface AgentTemplateCatalogEntry {
+  catalogId: string;
+  template: string;
+  templateId: string;
+  source: AgentTemplateSourceKind;
+  path?: string;
+  name: string;
+  schemaVersion?: string;
+  description: string;
+  includedSkills: string[];
+  sourceId?: string;
+  resolvedRef?: string;
+  resolvedRevision?: string;
+  sourceUrl?: string;
+}
+
+export interface AgentTemplateRemoteSource {
+  sourceId: string;
+  kind: string;
+  enabled: boolean;
+  status?: string;
+  url?: string;
+  resolvedRef?: string;
+  resolvedRevision?: string;
+  lastSyncedAt?: string;
+}
+
+export interface AgentTemplateCatalogDiagnostic {
+  level?: string;
+  message: string;
+  sourceId?: string;
+}
+
+export interface AgentTemplateCatalogState {
+  source: "http" | "fixture";
+  catalog: AgentTemplateCatalogEntry[];
+  sources: AgentTemplateRemoteSource[];
+  diagnostics: AgentTemplateCatalogDiagnostic[];
+  error?: string;
+}
+
+export interface AgentTemplateSkillDependency {
+  kind: string;
+  reference: string;
+}
+
+export interface AgentTemplateDetail {
+  catalogId: string;
+  template: string;
+  templateId: string;
+  source: AgentTemplateSourceKind;
+  sourceLocation?: string;
+  name: string;
+  summary: string;
+  schemaVersion?: string;
+  agentsMd: string;
+  skills: AgentTemplateSkillDependency[];
+}
+
+export interface AgentTemplateDetailState {
+  source: "http" | "fixture";
+  detail?: AgentTemplateDetail;
   error?: string;
 }
 
