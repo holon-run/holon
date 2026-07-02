@@ -3440,7 +3440,7 @@ code {
   grid-template-rows: minmax(0, 1fr);
 }
 
-.file-browser:has(> .file-browser-viewer) > :not(.file-browser-viewer) {
+.file-browser:has(> .file-browser-viewer) > .file-browser-list {
   display: none;
 }
 
@@ -3449,6 +3449,16 @@ code {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.file-browser-back-btn {
+  background: none;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  line-height: 1;
 }
 
 .file-browser-breadcrumb {
@@ -3658,6 +3668,16 @@ code {
   border-radius: 5px;
   overflow: hidden;
   font-size: 0.75rem;
+  line-height: 1;
+}
+
+.file-browser-close-btn {
+  background: none;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 4px 10px;
   line-height: 1;
 }
 

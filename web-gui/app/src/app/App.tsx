@@ -49,6 +49,7 @@ export function App() {
   const showWorkItemDetail = useRuntimeStore((state) => state.showWorkItemDetail);
   const showTaskDetail = useRuntimeStore((state) => state.showTaskDetail);
   const showFileBrowser = useRuntimeStore((state) => state.showFileBrowser);
+  const navigateBack = useRuntimeStore((state) => state.navigateBack);
   const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
@@ -548,6 +549,7 @@ export function App() {
           }}
           onOpenSkill={navigateSkill}
           onShowAgentOverview={showAgentOverview}
+          onNavigateBack={navigateBack}
           onBrowseFiles={(workspaceId: string, executionRootId?: string) => {
             showFileBrowser(selectedAgent.id, workspaceId, undefined, executionRootId);
           }}
