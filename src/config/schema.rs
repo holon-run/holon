@@ -996,6 +996,34 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             let provider = web_provider_config_mut(config, key, ".limits.max_output_bytes")?;
             provider.limits.max_output_bytes = Some(parse_positive_usize_key(key, raw_value)?);
         }
+        "agent_templates.remote_sources" => {
+            let sources: std::collections::BTreeMap<
+                String,
+                crate::config::file::AgentTemplateRemoteSourceConfigFile,
+            > = serde_json::from_str(raw_value).with_context(|| {
+                format!("invalid agent_templates.remote_sources JSON: {}", raw_value)
+            })?;
+            config.agent_templates.remote_sources = sources;
+        }
+        key if key.starts_with("agent_templates.remote_sources.") => {
+            let source_id = key.strip_prefix("agent_templates.remote_sources.").unwrap();
+            if source_id.is_empty() {
+                return Err(anyhow!(
+                    "agent_templates.remote_sources.<id> requires a non-empty source id"
+                ));
+            }
+            let source: crate::config::file::AgentTemplateRemoteSourceConfigFile =
+                serde_json::from_str(raw_value).with_context(|| {
+                    format!(
+                        "invalid agent template source config for {}: {}",
+                        source_id, raw_value
+                    )
+                })?;
+            config
+                .agent_templates
+                .remote_sources
+                .insert(source_id.to_string(), source);
+        }
         _ => return Err(unknown_config_key(key)),
     }
     validate_api_cors_config(&config.api.cors)?;
@@ -1139,6 +1167,18 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
                 return Err(anyhow!("web provider {name} not found"));
             }
             return Ok(());
+        }
+        "agent_templates.remote_sources" => {
+            config.agent_templates.remote_sources.clear();
+        }
+        key if key.starts_with("agent_templates.remote_sources.") => {
+            let source_id = key.strip_prefix("agent_templates.remote_sources.").unwrap();
+            if source_id.is_empty() {
+                return Err(anyhow!(
+                    "agent_templates.remote_sources.<id> requires a non-empty source id"
+                ));
+            }
+            config.agent_templates.remote_sources.remove(source_id);
         }
         _ => return Err(unknown_config_key(key)),
     }

@@ -20,8 +20,9 @@ interface TemplatesPageProps {
   onSyncSources: () => Promise<boolean>;
   onInstallTemplate: (githubUrl: string) => Promise<boolean>;
   onRemoveTemplate: (templateId: string) => Promise<boolean>;
-  onCreateAgent: (agentId: string, template: string) => Promise<boolean>;
   onOpenTemplate: (catalogId: string) => void;
+  onAddRemoteSource: (sourceId: string, url: string, gitRef?: string) => Promise<boolean>;
+  onRemoveRemoteSource: (sourceId: string) => Promise<boolean>;
 }
 
 interface TemplateDetailPageProps {
@@ -31,7 +32,6 @@ interface TemplateDetailPageProps {
   error?: string;
   onBack: () => void;
   onRefresh: () => void;
-  onCreateAgent: (agentId: string, template: string) => Promise<boolean>;
   onRemoveTemplate: (templateId: string) => Promise<boolean>;
 }
 
@@ -43,15 +43,19 @@ export function TemplatesPage({
   onSyncSources,
   onInstallTemplate,
   onRemoveTemplate,
-  onCreateAgent,
   onOpenTemplate,
+  onAddRemoteSource,
+  onRemoveRemoteSource,
 }: TemplatesPageProps) {
   const templates = catalog.catalog;
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | AgentTemplateSourceKind>("all");
   const [githubUrl, setGithubUrl] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [createTemplate, setCreateTemplate] = useState("");
+  const [newSourceId, setNewSourceId] = useState("");
+  const [newSourceUrl, setNewSourceUrl] = useState("");
+  const [newSourceRef, setNewSourceRef] = useState("");
+  const [sourceFormError, setSourceFormError] = useState<string | undefined>();
+  const [sourceFormBusy, setSourceFormBusy] = useState(false);
   const stats = useMemo(() => templateStats(templates), [templates]);
   const visibleTemplates = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -81,21 +85,36 @@ export function TemplatesPage({
     if (ok) setGithubUrl("");
   }
 
-  async function handleCreate(event: FormEvent<HTMLFormElement>) {
+
+  async function handleAddSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const id = agentId.trim();
-    const template = createTemplate.trim();
-    if (!id || !template) return;
-    const ok = await onCreateAgent(id, template);
-    if (ok) setAgentId("");
+    const id = newSourceId.trim();
+    const url = newSourceUrl.trim();
+    if (!id || !url) return;
+    setSourceFormBusy(true);
+    setSourceFormError(undefined);
+    try {
+      const ok = await onAddRemoteSource(id, url, newSourceRef.trim() || undefined);
+      if (ok) {
+        setNewSourceId("");
+        setNewSourceUrl("");
+        setNewSourceRef("");
+      } else {
+        setSourceFormError("Failed to add remote source.");
+      }
+    } catch (error) {
+      setSourceFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSourceFormBusy(false);
+    }
   }
 
   return (
     <div className="templates-inner skills-inner scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
-          <span className="eyebrow">AgentTemplate Library</span>
-          <h1>Templates</h1>
+          <span className="eyebrow">Agent Template Library</span>
+          <h1>Agent Templates</h1>
           <p>
             Browse read-only AgentTemplate definitions from builtin, global, and remote sources. Install/remove user templates
             through daemon APIs; source configuration can follow in a later settings phase.
@@ -150,31 +169,6 @@ export function TemplatesPage({
         </CardHeader>
         <CardContent>
           <div className="template-actions-grid">
-            <form className="skills-add-form" onSubmit={(event) => void handleCreate(event)}>
-              <label>
-                <span>Create agent</span>
-                <input
-                  value={agentId}
-                  placeholder="new-agent-id"
-                  onChange={(event) => setAgentId(event.target.value)}
-                  disabled={loading}
-                />
-              </label>
-              <label className="skills-add-source">
-                <span>Template</span>
-                <select value={createTemplate} onChange={(event) => setCreateTemplate(event.target.value)} disabled={loading}>
-                  <option value="">Choose template</option>
-                  {templates.map((template) => (
-                    <option key={template.catalogId} value={template.template}>
-                      {template.name} · {template.template}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <Button type="submit" variant="accent" disabled={loading || !agentId.trim() || !createTemplate.trim()}>
-                +
-              </Button>
-            </form>
 
             <form className="skills-add-form" onSubmit={(event) => void handleInstall(event)}>
               <label className="skills-add-source">
@@ -192,8 +186,7 @@ export function TemplatesPage({
             </form>
           </div>
           <p className="skills-add-help">
-            Template content is read-only in the Web GUI. Removal targets user/global templates; builtin and remote entries remain
-            owned by their source.
+            Template content is read-only. Use the + button in Active Agents to create an agent from a template. Removal targets user/global templates; builtin and remote entries remain owned by their source.
           </p>
 
           <div className="skills-toolbar" role="search">
@@ -227,7 +220,6 @@ export function TemplatesPage({
                   key={template.catalogId}
                   template={template}
                   loading={loading}
-                  onUse={(selectedTemplate) => setCreateTemplate(selectedTemplate.template)}
                   onOpen={onOpenTemplate}
                   onRemove={onRemoveTemplate}
                 />
@@ -250,10 +242,45 @@ export function TemplatesPage({
       <Card className="skills-library-card">
         <CardHeader className="skills-library-head">
           <div>
-            <p>Template sources</p>
+            <p>Remote sources</p>
           </div>
+          <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </CardHeader>
         <CardContent>
+          <form className="skills-add-form" onSubmit={(event) => void handleAddSource(event)}>
+            <label>
+              <span>Source ID</span>
+              <input
+                value={newSourceId}
+                placeholder="my-templates"
+                onChange={(event) => setNewSourceId(event.target.value)}
+                disabled={sourceFormBusy}
+              />
+            </label>
+            <label className="skills-add-source">
+              <span>GitHub URL</span>
+              <input
+                value={newSourceUrl}
+                placeholder="https://github.com/org/repo/tree/main/agent_templates"
+                onChange={(event) => setNewSourceUrl(event.target.value)}
+                disabled={sourceFormBusy}
+              />
+            </label>
+            <label>
+              <span>Ref (optional)</span>
+              <input
+                value={newSourceRef}
+                placeholder="main"
+                onChange={(event) => setNewSourceRef(event.target.value)}
+                disabled={sourceFormBusy}
+              />
+            </label>
+            <Button type="submit" variant="accent" disabled={sourceFormBusy || !newSourceId.trim() || !newSourceUrl.trim()}>
+              Add
+            </Button>
+          </form>
+          {sourceFormError ? <span className="connection-error" role="alert">{sourceFormError}</span> : null}
+
           {catalog.sources.length ? (
             <ul className="skills-list">
               {catalog.sources.map((source) => (
@@ -269,11 +296,16 @@ export function TemplatesPage({
                       {source.lastSyncedAt ? <span>synced {source.lastSyncedAt}</span> : null}
                     </span>
                   </div>
+                  <div className="skills-row-actions">
+                    <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void onRemoveRemoteSource(source.sourceId)}>
+                      Remove
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>
           ) : (
-            <EmptyState icon="⇄" title="No configured remote template sources" description="Source configuration will be added in a later phase." />
+            <EmptyState icon="⇄" title="No configured remote template sources" description="Add a GitHub remote source above to sync agent templates." />
           )}
         </CardContent>
       </Card>
@@ -288,26 +320,17 @@ export function TemplateDetailPage({
   error,
   onBack,
   onRefresh,
-  onCreateAgent,
   onRemoveTemplate,
 }: TemplateDetailPageProps) {
   const template = detail?.detail;
-  const [agentId, setAgentId] = useState("");
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
-
-  async function handleCreate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!template || !agentId.trim()) return;
-    const ok = await onCreateAgent(agentId.trim(), template.template);
-    if (ok) setAgentId("");
-  }
 
   return (
     <div className="skills-inner scroll-surface">
       <section className="skill-detail-hero context-card">
         <div>
           <button className="text-button" type="button" onClick={onBack}>
-            ← Templates
+            ← Agent Templates
           </button>
           <span className="eyebrow">AgentTemplate</span>
           <h1>{template?.name ?? catalogId}</h1>
@@ -342,20 +365,6 @@ export function TemplateDetailPage({
               <StatusBadge className="state-chip" kind="connection" value={template.source} />
             </CardHeader>
             <CardContent>
-              <form className="skills-add-form" onSubmit={(event) => void handleCreate(event)}>
-                <label className="skills-add-source">
-                  <span>Create agent from this template</span>
-                  <input
-                    value={agentId}
-                    placeholder="new-agent-id"
-                    onChange={(event) => setAgentId(event.target.value)}
-                    disabled={loading}
-                  />
-                </label>
-                <Button type="submit" variant="accent" disabled={loading || !agentId.trim()}>
-                  +
-                </Button>
-              </form>
               <dl className="skills-detail-meta">
                 <div>
                   <dt>Catalog id</dt>
@@ -442,13 +451,11 @@ export function TemplateDetailPage({
 function TemplateRow({
   template,
   loading,
-  onUse,
   onOpen,
   onRemove,
 }: {
   template: AgentTemplateCatalogEntry;
   loading: boolean;
-  onUse: (template: AgentTemplateCatalogEntry) => void;
   onOpen: (catalogId: string) => void;
   onRemove: (templateId: string) => Promise<boolean>;
 }) {
@@ -468,9 +475,7 @@ function TemplateRow({
         </span>
       </button>
       <div className="skills-row-actions">
-        <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => onUse(template)}>
-          Use
-        </Button>
+
         {canRemove ? (
           <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void onRemove(template.templateId)}>
             Remove
