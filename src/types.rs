@@ -1815,8 +1815,6 @@ pub struct AgentState {
     pub last_brief_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub working_memory: WorkingMemoryState,
-    pub context_summary: Option<String>,
-    pub compacted_message_count: usize,
     pub total_message_count: usize,
     #[serde(default)]
     pub total_input_tokens: u64,
@@ -1981,8 +1979,6 @@ impl AgentState {
             last_wake_reason: None,
             last_brief_at: None,
             working_memory: WorkingMemoryState::default(),
-            context_summary: None,
-            compacted_message_count: 0,
             total_message_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -5030,7 +5026,6 @@ mod tests {
         state.current_turn_id = Some("turn-42".into());
         state.current_turn_work_item_id = Some("turn-work".into());
         state.current_work_item_id = Some("work-current".into());
-        state.context_summary = Some("large summary that must stay out of the event".into());
         state.working_memory.archived_episode_count = 9;
         state.attached_workspaces = vec!["ws-a".into(), "ws-b".into()];
         state.active_workspace_entry = Some(ActiveWorkspaceEntry {

@@ -7,9 +7,8 @@ use budget::{estimate_text_tokens, reserve_current_input_budget, truncate_sectio
 #[cfg(test)]
 use render::trust_label;
 use render::{
-    body_preview, bounded_inline, enum_label, estimate_message_tokens, include_in_prompt_context,
-    indent_block, message_body_text, message_header, push_budgeted_section, sanitize_inline,
-    section, turn_section,
+    body_preview, bounded_inline, enum_label, indent_block, message_body_text, message_header,
+    push_budgeted_section, sanitize_inline, section, turn_section,
 };
 
 use std::cmp::Ordering;
@@ -32,7 +31,7 @@ use crate::{
         ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
         TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord, WorkItemRecord,
-        WorkItemRefStatus, WorkingMemorySnapshot,
+        WorkItemRefStatus,
     },
 };
 
@@ -128,20 +127,11 @@ pub fn build_context_with_default_external_ingress(
     agent_home: &Path,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<BuiltContext> {
-    let mut messages =
-        storage.read_messages_from(agent.compacted_message_count, config.recent_messages)?;
+    let mut messages = Vec::new();
     let continuation_anchor_messages = storage.read_all_messages()?;
     let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
-    let mut turn_records = storage.read_recent_turns(config.recent_messages)?;
-    if turn_records.is_empty() {
-        turn_records = synthesize_legacy_recent_turn_records(
-            &messages,
-            &briefs,
-            &tools,
-            config.recent_messages,
-        );
-    }
+    let turn_records = storage.read_recent_turns(config.recent_messages)?;
     hydrate_recent_turn_references(
         storage,
         &turn_records,
@@ -209,19 +199,6 @@ pub fn build_context_with_default_external_ingress(
                 render_active_tasks(&active_tasks, active_task_count),
             ),
         );
-    }
-
-    if let Some(summary) = &agent.context_summary {
-        if !summary.trim().is_empty() {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
-                section(
-                    "compacted_summary",
-                    format!("Compacted agent summary:\n{summary}"),
-                ),
-            );
-        }
     }
 
     if let Some(work_item) = current_work_item {
@@ -601,106 +578,6 @@ fn hydrate_recent_turn_references(
     Ok(())
 }
 
-fn synthesize_legacy_recent_turn_records(
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    limit: usize,
-) -> Vec<TurnRecord> {
-    let mut records = messages
-        .iter()
-        .filter(|message| !matches!(message.kind, MessageKind::SystemTick))
-        .filter_map(|message| {
-            let message_turn_id = message.turn_id.as_deref().map(str::trim);
-            let message_seq = message.message_seq.filter(|seq| *seq != 0);
-            let produced_brief_ids = briefs
-                .iter()
-                .filter(|brief| {
-                    legacy_brief_matches_message(brief, message, message_turn_id, message_seq)
-                })
-                .map(|brief| brief.id.clone())
-                .collect::<Vec<_>>();
-
-            let tool_execution_ids = tools
-                .iter()
-                .filter(|tool| legacy_tool_matches_message(tool, message_turn_id, message_seq))
-                .map(|tool| tool.id.clone())
-                .collect::<Vec<_>>();
-
-            if produced_brief_ids.is_empty() && tool_execution_ids.is_empty() {
-                return None;
-            }
-
-            let turn_index = message_seq.unwrap_or(0);
-            let turn_id = message_seq
-                .map(|seq| format!("legacy-message-seq-{seq}"))
-                .or_else(|| {
-                    message_turn_id
-                        .filter(|turn_id| !turn_id.is_empty())
-                        .map(|turn_id| format!("legacy-turn-id-{turn_id}"))
-                })
-                .unwrap_or_else(|| format!("legacy-message-{}", message.id));
-            let mut record = TurnRecord::new(&message.agent_id, turn_id, turn_index);
-            record.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
-            record.input_message_ids = vec![message.id.clone()];
-            record.produced_brief_ids = produced_brief_ids;
-            record.tool_execution_ids = tool_execution_ids;
-            record.created_at = message.created_at;
-            Some(record)
-        })
-        .collect::<Vec<_>>();
-
-    if records.len() > limit {
-        records = records.split_off(records.len() - limit);
-    }
-    records
-}
-
-fn legacy_brief_matches_message(
-    brief: &BriefRecord,
-    message: &MessageEnvelope,
-    message_turn_id: Option<&str>,
-    message_seq: Option<u64>,
-) -> bool {
-    brief.related_message_id.as_deref() == Some(message.id.as_str())
-        || legacy_turn_identity_matches(
-            brief.turn_id.as_deref(),
-            brief.turn_index,
-            message_turn_id,
-            message_seq,
-        )
-}
-
-fn legacy_tool_matches_message(
-    tool: &ToolExecutionRecord,
-    message_turn_id: Option<&str>,
-    message_seq: Option<u64>,
-) -> bool {
-    legacy_turn_identity_matches(
-        tool.turn_id.as_deref(),
-        Some(tool.turn_index),
-        message_turn_id,
-        message_seq,
-    )
-}
-
-fn legacy_turn_identity_matches(
-    evidence_turn_id: Option<&str>,
-    evidence_turn_index: Option<u64>,
-    message_turn_id: Option<&str>,
-    message_seq: Option<u64>,
-) -> bool {
-    evidence_turn_id
-        .map(str::trim)
-        .filter(|turn_id| !turn_id.is_empty())
-        .zip(message_turn_id.filter(|turn_id| !turn_id.is_empty()))
-        .is_some_and(|(evidence_turn_id, message_turn_id)| evidence_turn_id == message_turn_id)
-        || evidence_turn_index
-            .filter(|turn_index| *turn_index != 0)
-            .zip(message_seq)
-            .is_some_and(|(evidence_turn_index, message_seq)| evidence_turn_index == message_seq)
-}
-
 fn default_external_ingress(
     storage: &AppStorage,
     agent_id: &str,
@@ -743,80 +620,11 @@ fn render_default_external_ingress(
     )
 }
 
-pub fn maybe_compact_agent(
-    storage: &AppStorage,
-    agent: &mut AgentState,
-    config: &ContextConfig,
-) -> Result<bool> {
-    let all_messages = storage.read_all_messages()?;
+pub fn sync_agent_message_count(storage: &AppStorage, agent: &mut AgentState) -> Result<bool> {
+    let total_message_count = storage.count_messages()?;
     let previous_total_message_count = agent.total_message_count;
-    agent.total_message_count = all_messages.len();
-    let mut changed = agent.total_message_count != previous_total_message_count;
-    let has_working_memory = !working_memory_is_empty(&agent.working_memory.current_working_memory);
-    if has_working_memory && agent.context_summary.is_some() {
-        agent.context_summary = None;
-        changed = true;
-    }
-    let visible_messages = all_messages
-        .iter()
-        .filter(|message| include_in_prompt_context(message))
-        .collect::<Vec<_>>();
-    let visible_estimated_tokens = visible_messages
-        .iter()
-        .map(|message| estimate_message_tokens(message))
-        .sum::<usize>();
-    if visible_estimated_tokens <= config.compaction_trigger_estimated_tokens {
-        return Ok(changed);
-    }
-
-    let mut split_at = all_messages.len();
-    let mut kept_visible_messages = 0usize;
-    let mut kept_estimated_tokens = 0usize;
-    for (idx, message) in all_messages.iter().enumerate().rev() {
-        if !include_in_prompt_context(message) {
-            continue;
-        }
-        let message_tokens = estimate_message_tokens(message);
-        if kept_visible_messages >= config.compaction_keep_recent_messages
-            && kept_estimated_tokens + message_tokens
-                > config.compaction_keep_recent_estimated_tokens
-        {
-            split_at = idx + 1;
-            break;
-        }
-        kept_visible_messages += 1;
-        kept_estimated_tokens += message_tokens;
-        split_at = idx;
-    }
-
-    if split_at == 0 || split_at <= agent.compacted_message_count {
-        return Ok(changed);
-    }
-
-    if has_working_memory {
-        agent.context_summary = None;
-    } else {
-        let compacted_slice = &all_messages[..split_at];
-        let summary = compacted_slice
-            .iter()
-            .filter(|message| include_in_prompt_context(message))
-            .map(|message| {
-                format!(
-                    "- {} {}",
-                    message_header(message),
-                    body_preview(&message.body)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        agent.context_summary = Some(summary);
-    }
-    agent.compacted_message_count = split_at;
-    if !has_working_memory {
-        agent.working_memory.compression_epoch =
-            agent.working_memory.compression_epoch.saturating_add(1);
-    }
-    Ok(true)
+    agent.total_message_count = total_message_count;
+    Ok(agent.total_message_count != previous_total_message_count)
 }
 
 fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
@@ -1355,10 +1163,6 @@ fn render_work_item_plan_ref(
     crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None)
         .ok()
         .map(|artifact| format!("Plan ref: {}", artifact.path.display()))
-}
-
-fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
-    snapshot == &WorkingMemorySnapshot::default()
 }
 
 fn scope_label(scope: &crate::types::SkillScope) -> &'static str {
@@ -2037,7 +1841,6 @@ fn render_turn_record_projection(
     mode: RecentTurnProjectionMode,
     budget: usize,
 ) -> Option<String> {
-    let is_legacy_synthetic_record = record.turn_id.starts_with("legacy-");
     let trigger_message = record
         .input_message_ids
         .iter()
@@ -2051,17 +1854,13 @@ fn render_turn_record_projection(
         });
     let mut lines = vec![format!(
         "- Turn {}:",
-        if is_legacy_synthetic_record && record.turn_index != 0 {
-            format!("message_seq {}", record.turn_index)
-        } else if record.turn_index != 0 {
+        if record.turn_index != 0 {
             format!("turn_index {}", record.turn_index)
         } else {
             record.turn_id.clone()
         }
     )];
-    if !is_legacy_synthetic_record {
-        lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
-    }
+    lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
     if let Some(trigger_message) = trigger_message {
         lines.push(format!(
             "  - trigger: {}",
@@ -2190,9 +1989,7 @@ fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -
             if turn_id == record.turn_id.trim() {
                 return true;
             }
-            if !record.turn_id.starts_with("legacy-") {
-                return false;
-            }
+            return false;
         }
     }
 
@@ -2973,7 +2770,7 @@ mod tests {
             MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
             ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
             WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemRef, WorkItemRefKind,
-            WorkItemRefStatus, WorkItemState,
+            WorkItemRefStatus, WorkItemState, WorkingMemorySnapshot,
         },
     };
 
@@ -3549,7 +3346,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_adds_summary_when_message_count_exceeds_threshold() {
+    fn sync_agent_message_count_updates_total_without_compaction() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for idx in 0..6 {
@@ -3567,70 +3364,10 @@ mod tests {
         }
 
         let mut session = AgentState::new("default");
-        let changed = maybe_compact_agent(
-            &storage,
-            &mut session,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 4,
-                compaction_keep_recent_messages: 2,
-                compaction_trigger_estimated_tokens: 4,
-                compaction_keep_recent_estimated_tokens: 2,
-                ..ContextConfig::default()
-            },
-        )
-        .unwrap();
+        let changed = sync_agent_message_count(&storage, &mut session).unwrap();
         assert!(changed);
-        assert!(session.context_summary.unwrap().contains("message-0"));
-        assert_eq!(session.working_memory.compression_epoch, 1);
-    }
-
-    #[test]
-    fn structured_working_memory_keeps_compression_epoch_stable_during_legacy_compaction() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        for idx in 0..6 {
-            let msg = MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
-                AuthorityClass::OperatorInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: format!("message-{idx}"),
-                },
-            );
-            storage.append_message(&msg).unwrap();
-        }
-
-        let mut session = AgentState::new("default");
-        session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            objective: Some("ship working memory".into()),
-            plan: Some(vec!["[InProgress] keep cache identity stable"].join("\n")),
-            ..WorkingMemorySnapshot::default()
-        };
-        session.working_memory.compression_epoch = 7;
-
-        let changed = maybe_compact_agent(
-            &storage,
-            &mut session,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 4,
-                compaction_keep_recent_messages: 2,
-                compaction_trigger_estimated_tokens: 4,
-                compaction_keep_recent_estimated_tokens: 2,
-                ..ContextConfig::default()
-            },
-        )
-        .unwrap();
-
-        assert!(changed);
-        assert_eq!(session.context_summary, None);
-        assert_eq!(session.compacted_message_count, 4);
-        assert_eq!(session.working_memory.compression_epoch, 7);
+        assert_eq!(session.total_message_count, 6);
+        assert_eq!(session.working_memory.compression_epoch, 0);
     }
 
     #[test]
@@ -3691,7 +3428,7 @@ mod tests {
             delegated_from_task_id: None,
         };
 
-        maybe_compact_agent(&storage, &mut session, &config).unwrap();
+        sync_agent_message_count(&storage, &mut session).unwrap();
         let first_prompt = build_effective_prompt(
             &storage,
             &session,
@@ -3709,21 +3446,20 @@ mod tests {
         )
         .unwrap();
 
-        storage
-            .append_message(&MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
-                AuthorityClass::OperatorInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: "message-6".into(),
-                },
-            ))
-            .unwrap();
+        let new_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "message-6".into(),
+            },
+        );
+        storage.append_message(&new_message).unwrap();
+        append_turn_for_message(&storage, &new_message, "turn-message-6", 7);
 
-        let previous_compacted_message_count = session.compacted_message_count;
-        maybe_compact_agent(&storage, &mut session, &config).unwrap();
+        sync_agent_message_count(&storage, &mut session).unwrap();
         let second_prompt = build_effective_prompt(
             &storage,
             &session,
@@ -3741,12 +3477,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(session.context_summary, None);
-        assert_ne!(
-            session.compacted_message_count,
-            previous_compacted_message_count
-        );
-        assert_eq!(session.compacted_message_count, 5);
         assert_eq!(
             first_prompt.cache_identity.agent_id,
             second_prompt.cache_identity.agent_id
@@ -4587,7 +4317,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_skips_messages_covered_by_compacted_summary() {
+    fn build_context_uses_turn_records_without_legacy_message_fallback() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         for idx in 0..20 {
@@ -4611,6 +4341,17 @@ mod tests {
                 );
             }
         }
+        let legacy_without_turn = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "legacy-message-without-turn-record".to_string(),
+            },
+        );
+        storage.append_message(&legacy_without_turn).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -4622,10 +4363,7 @@ mod tests {
                 text: "continue".to_string(),
             },
         );
-        let mut session = AgentState::new("default");
-        session.compacted_message_count = 12;
-        session.context_summary =
-            Some("Compacted messages include message-8 and message-11".into());
+        let session = AgentState::new("default");
 
         let built = build_context(
             &storage,
@@ -4649,14 +4387,21 @@ mod tests {
             .iter()
             .find(|section| section.name == "recent_turns")
             .expect("recent_turns section should be present");
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "compacted_summary"));
         assert!(!recent_turns.content.contains("message-8"));
         assert!(!recent_turns.content.contains("message-11"));
         assert!(recent_turns.content.contains("message-12"));
         assert!(recent_turns.content.contains("message-19"));
+        assert!(!recent_turns
+            .content
+            .contains("legacy-message-without-turn-record"));
     }
 
     #[test]
-    fn maybe_compact_agent_persists_message_count_without_compaction() {
+    fn sync_agent_message_count_persists_message_count_without_compaction() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
@@ -4673,62 +4418,10 @@ mod tests {
             .unwrap();
 
         let mut session = AgentState::new("default");
-        let changed = maybe_compact_agent(
-            &storage,
-            &mut session,
-            &ContextConfig {
-                compaction_trigger_estimated_tokens: 10_000,
-                ..ContextConfig::default()
-            },
-        )
-        .unwrap();
+        let changed = sync_agent_message_count(&storage, &mut session).unwrap();
 
         assert!(changed);
         assert_eq!(session.total_message_count, 1);
-        assert_eq!(session.context_summary, None);
-        assert_eq!(session.compacted_message_count, 0);
-    }
-
-    #[test]
-    fn maybe_compact_agent_clears_legacy_summary_when_working_memory_is_active() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        for idx in 0..6 {
-            storage
-                .append_message(&MessageEnvelope::new(
-                    "default",
-                    MessageKind::OperatorPrompt,
-                    MessageOrigin::Operator { actor_id: None },
-                    AuthorityClass::OperatorInstruction,
-                    Priority::Normal,
-                    MessageBody::Text {
-                        text: format!("message-{idx}"),
-                    },
-                ))
-                .unwrap();
-        }
-
-        let mut session = AgentState::new("default");
-        session.context_summary = Some("stale compacted summary".into());
-        session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            objective: Some("active work".into()),
-            ..WorkingMemorySnapshot::default()
-        };
-        let changed = maybe_compact_agent(
-            &storage,
-            &mut session,
-            &ContextConfig {
-                compaction_trigger_estimated_tokens: 4,
-                compaction_keep_recent_messages: 2,
-                compaction_keep_recent_estimated_tokens: 2,
-                ..ContextConfig::default()
-            },
-        )
-        .unwrap();
-
-        assert!(changed);
-        assert_eq!(session.context_summary, None);
-        assert!(session.compacted_message_count > 0);
     }
 
     #[test]
@@ -4748,7 +4441,6 @@ mod tests {
         );
 
         let mut session = AgentState::new("default");
-        session.context_summary = Some("legacy summary".into());
         session.working_memory.current_working_memory = WorkingMemorySnapshot {
             objective: Some("ship working memory".into()),
             plan: Some(vec!["[InProgress] wire post-turn refresh"].join("\n")),
@@ -4781,7 +4473,7 @@ mod tests {
             .sections
             .iter()
             .any(|section| section.name == "working_memory_delta"));
-        assert!(built
+        assert!(!built
             .sections
             .iter()
             .any(|section| section.name == "compacted_summary"));
@@ -6682,8 +6374,7 @@ mod tests {
         );
         recovery.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
 
-        let mut session = AgentState::new("default");
-        session.compacted_message_count = 4;
+        let session = AgentState::new("default");
         let built = build_context(
             &storage,
             &session,

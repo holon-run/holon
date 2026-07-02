@@ -513,7 +513,6 @@ fn prompt_context_fingerprint(
 ) -> String {
     let payload = json!({
         "agent_id": session.id,
-        "compacted_message_count": session.compacted_message_count,
         "compression_epoch": session.working_memory.compression_epoch,
         "execution_semantics": execution_semantic_cache_payload(execution),
         "system_sections": system_sections,

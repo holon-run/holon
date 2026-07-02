@@ -321,11 +321,6 @@ fn slim_state_agent_summary(agent: &mut AgentSummary) {
     agent.active_wait_conditions.clear();
     agent.active_external_triggers.clear();
     agent.recent_operator_notifications.clear();
-    agent.agent.context_summary = agent
-        .agent
-        .context_summary
-        .take()
-        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
     agent.agent.tool_latency.clear();
     agent.agent.working_memory.active_episode_builder = None;
     agent.agent.active_skills.clear();

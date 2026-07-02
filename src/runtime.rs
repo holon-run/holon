@@ -59,7 +59,7 @@ use crate::{
     agents_md::load_agents_md,
     brief,
     config::RuntimeModelCatalog,
-    context::{maybe_compact_agent, ContextConfig},
+    context::{sync_agent_message_count, ContextConfig},
     host::RuntimeHostBridge,
     ingress::WakeDisposition,
     memory::{refresh_episode_memory, refresh_working_memory},

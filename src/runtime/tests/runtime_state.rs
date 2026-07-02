@@ -74,7 +74,6 @@ fn append_state_changed_events_emits_single_lightweight_agent_event() {
     state.status = AgentStatus::AwakeRunning;
     state.current_run_id = Some("run-1".into());
     state.pending = 2;
-    state.context_summary = Some("large summary must not be copied".into());
     state.working_memory.archived_episode_count = 4;
 
     runtime.append_state_changed_events(&state).unwrap();

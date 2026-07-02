@@ -153,8 +153,6 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         )
         .await?;
 
-    assert!(prompt.cache_identity.compression_epoch > 0);
-
     let active_section = prompt
         .context_sections
         .iter()
@@ -275,7 +273,6 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
 
     let requests = provider.captured_requests().await;
     let task_rejoin = &requests[1];
-    assert!(task_rejoin.compression_epoch > 0);
     assert!(task_rejoin
         .prompt_text
         .contains("Close the compaction regression gap"));
@@ -400,7 +397,6 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
 
     let requests = provider.captured_requests().await;
     let wake_follow_up = &requests[1];
-    assert!(wake_follow_up.compression_epoch > 0);
     assert!(wake_follow_up
         .prompt_text
         .contains("Keep active compaction work in focus"));
@@ -482,7 +478,6 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
 
     let requests = provider.captured_requests().await;
     let queued_follow_up = &requests[1];
-    assert!(queued_follow_up.compression_epoch > 0);
     assert!(queued_follow_up
         .prompt_text
         .contains("Resume queued compaction validation"));

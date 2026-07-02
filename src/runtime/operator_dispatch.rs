@@ -34,8 +34,7 @@ impl RuntimeHandle {
 
         let built = {
             let mut guard = self.inner.agent.lock().await;
-            let agent_changed =
-                maybe_compact_agent(&self.inner.storage, &mut guard.state, &context_config)?;
+            let agent_changed = sync_agent_message_count(&self.inner.storage, &mut guard.state)?;
             if agent_changed {
                 guard.persist_state(&self.inner.storage)?;
             }
@@ -192,8 +191,7 @@ impl RuntimeHandle {
             AdmissionContext::LocalProcess,
         );
         let mut agent = self.agent_state().await?;
-        let context_config = self.current_context_config().await;
-        let _ = maybe_compact_agent(&self.inner.storage, &mut agent, &context_config)?;
+        let _ = sync_agent_message_count(&self.inner.storage, &mut agent)?;
         let prior_closure = self.current_closure_decision().await?;
         let continuation = ContinuationTrigger::from_message(&message, None)
             .map(|trigger| resolve_continuation(&prior_closure, &trigger, None));
@@ -215,6 +213,7 @@ impl RuntimeHandle {
         let skills = self
             .skills_runtime_view_for_state(&agent, &identity)
             .await?;
+        let context_config = self.current_context_config().await;
         build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
             &self.inner.storage,
             &agent,
