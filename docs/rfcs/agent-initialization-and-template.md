@@ -274,11 +274,26 @@ agent_templates/
 collisions with prompt templates, UI templates, workflow templates, and other
 future template-like assets.
 
-Template discovery uses convention over configuration: implementations scan the
-default `agent_templates/` directory. There is no repository index file; the
-directory layout itself is the capability declaration. This keeps the repository
-layout simple and makes it suitable as a public standard rather than a
-tool-specific format.
+A repository may optionally include a small repository index:
+
+```text
+holon-index.toml
+```
+
+Example:
+
+```toml
+schema = "holon.repository.v1"
+
+[collections]
+skills = "skills"
+agent_templates = "agent_templates"
+```
+
+The index is an optimization and capability declaration, not the source of the
+template body. The source of truth remains the per-template directory.
+Implementations may scan the default `skills/` and `agent_templates/`
+directories when `holon-index.toml` is absent.
 
 ### GitHub URL format
 
