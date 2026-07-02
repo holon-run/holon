@@ -84,16 +84,27 @@ pub enum CreateJobRequest {
     SkillInstall {
         params: crate::types::AddSkillRequest,
     },
+    #[serde(rename = "agent_template.remote_sources.sync")]
+    AgentTemplateRemoteSourcesSync {
+        params: crate::types::SyncTemplateRemoteSourcesRequest,
+    },
 }
 
 pub async fn create_job(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(request): Json<CreateJobRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     match request {
-        CreateJobRequest::SkillInstall { params } => create_skill_install_job(state, params).await,
+        CreateJobRequest::SkillInstall { params } => create_skill_install_job(state, params)
+            .await
+            .map(IntoResponse::into_response),
+        CreateJobRequest::AgentTemplateRemoteSourcesSync { params } => {
+            create_template_remote_source_sync_job(state, params)
+                .await
+                .map(IntoResponse::into_response)
+        }
     }
 }
 
@@ -115,7 +126,7 @@ pub async fn job_status(
 async fn create_skill_install_job(
     state: Arc<AppState>,
     request: crate::types::AddSkillRequest,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     let id = format!("job_{}", Uuid::new_v4().simple());
     let now = Utc::now();
     let job = JobSnapshot {
@@ -228,13 +239,194 @@ async fn create_skill_install_job(
         }
     });
 
-    Ok((
+    Ok(((
         StatusCode::ACCEPTED,
         Json(json!({
             "ok": true,
             "job": job,
         })),
     ))
+        .into_response())
+}
+
+pub(super) async fn create_template_remote_source_sync_job(
+    state: Arc<AppState>,
+    request: crate::types::SyncTemplateRemoteSourcesRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "agent_template.remote_sources.sync".into(),
+        status: JobStatus::Queued,
+        phase: "queued".into(),
+        progress: JobProgress::default(),
+        summary: "Queued agent template remote source sync job".into(),
+        items: Vec::new(),
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job.clone());
+
+    let jobs = state.jobs.clone();
+    let sync_jobs = state.template_remote_source_sync_jobs.clone();
+    let db = state.host.runtime_db().clone();
+    let configured_sources = state
+        .host
+        .config()
+        .stored_config
+        .agent_templates
+        .remote_sources
+        .clone();
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        let selected_sources = configured_sources
+            .iter()
+            .filter(|(source_id, config)| {
+                request
+                    .source_id
+                    .as_ref()
+                    .is_none_or(|requested| requested == *source_id)
+                    && config.enabled()
+            })
+            .map(|(source_id, config)| (source_id.clone(), config.clone()))
+            .collect::<Vec<_>>();
+
+        if request.source_id.is_some() && selected_sources.is_empty() {
+            let message = format!(
+                "agent template remote source {} was not found or is disabled",
+                request.source_id.as_deref().unwrap_or_default()
+            );
+            jobs.update(&job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.phase = "failed".into();
+                job.summary = "Remote source sync failed".into();
+                job.error = Some(message.clone());
+                job.items = vec![JobItem {
+                    id: request.source_id.clone().unwrap_or_default(),
+                    status: JobStatus::Failed,
+                    summary: "Remote source was not found or is disabled".into(),
+                    error: Some(message),
+                }];
+            });
+            return;
+        }
+
+        jobs.update(&job_id, |job| {
+            job.status = JobStatus::Running;
+            job.phase = "syncing".into();
+            job.summary = "Synchronizing agent template remote sources".into();
+            job.progress.total = selected_sources.len();
+            job.items = selected_sources
+                .iter()
+                .map(|(source_id, _)| JobItem {
+                    id: source_id.clone(),
+                    status: JobStatus::Queued,
+                    summary: format!("Queued sync for {source_id}"),
+                    error: None,
+                })
+                .collect();
+        });
+
+        let permit = match sync_jobs.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let message = format!("remote source sync queue closed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Remote source sync queue closed".into();
+                    job.error = Some(message.clone());
+                    for item in &mut job.items {
+                        item.status = JobStatus::Failed;
+                        item.error = Some(message.clone());
+                    }
+                });
+                return;
+            }
+        };
+        let _permit = permit;
+
+        let mut completed = 0usize;
+        let mut failed = 0usize;
+        let mut source_results = Vec::new();
+        for (source_id, config) in selected_sources {
+            jobs.update(&job_id, |job| {
+                if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
+                    item.status = JobStatus::Running;
+                    item.summary = format!("Syncing {source_id}");
+                    item.error = None;
+                }
+            });
+            match crate::agent_template::sync_agent_template_remote_source(&db, &source_id, &config)
+                .await
+            {
+                Ok(status) => {
+                    completed += 1;
+                    source_results.push(json!(status));
+                    jobs.update(&job_id, |job| {
+                        job.progress.current = completed + failed;
+                        if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
+                            item.status = JobStatus::Completed;
+                            item.summary = format!("Synced {source_id}");
+                            item.error = None;
+                        }
+                    });
+                }
+                Err(error) => {
+                    failed += 1;
+                    let mut message = error.to_string();
+                    if let Err(record_error) =
+                        crate::agent_template::record_agent_template_remote_source_sync_failure(
+                            &db, &source_id, &config, &message,
+                        )
+                    {
+                        message = format!(
+                            "{message}; additionally failed to persist sync failure: {record_error}"
+                        );
+                    }
+                    jobs.update(&job_id, |job| {
+                        job.progress.current = completed + failed;
+                        if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
+                            item.status = JobStatus::Failed;
+                            item.summary = format!("Failed to sync {source_id}");
+                            item.error = Some(message.clone());
+                        }
+                    });
+                }
+            }
+        }
+
+        jobs.update(&job_id, |job| {
+            if failed == 0 {
+                job.status = JobStatus::Completed;
+                job.phase = "completed".into();
+                job.summary = format!("Synced {completed} agent template remote source(s)");
+            } else {
+                job.status = JobStatus::Failed;
+                job.phase = "failed".into();
+                job.summary =
+                    format!("Synced {completed} agent template remote source(s), {failed} failed");
+                job.error = Some(job.summary.clone());
+            }
+            job.result = Some(json!({
+                "sources": source_results,
+                "completed": completed,
+                "failed": failed,
+            }));
+        });
+    });
+
+    Ok(((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "ok": true,
+            "job": job,
+        })),
+    ))
+        .into_response())
 }
 
 pub(super) fn create_codex_device_login_job(
