@@ -37,8 +37,7 @@ jobs:
           trigger: auto
           auto_review: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
           auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
-          model: bigmodel/glm-5.2
+          model: dashscope-token-plan/qwen-3.7
           github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
-          bigmodel_api_key: ${{ secrets.bigmodel_api_key || secrets.BIGMODEL_API_KEY }}
         env:
-          BIGMODEL_API_KEY: ${{ secrets.bigmodel_api_key || secrets.BIGMODEL_API_KEY }}
+          DASHSCOPE_TOKEN_PLAN_API_KEY: ${{ secrets.DASHSCOPE_TOKEN_PLAN_API_KEY }}
