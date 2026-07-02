@@ -27,12 +27,8 @@ pub fn refresh_working_memory(
     if scrubbed_legacy_fields || previous_snapshot != next_snapshot {
         agent.working_memory.current_working_memory = next_snapshot.clone();
     }
-    let cleared_stale_summary =
-        !working_memory_snapshot_is_empty(&next_snapshot) && agent.context_summary.take().is_some();
-
-    let working_memory_updated = cleared_stale_summary
-        || scrubbed_legacy_fields
-        || agent.working_memory.current_working_memory != previous_snapshot;
+    let working_memory_updated =
+        scrubbed_legacy_fields || agent.working_memory.current_working_memory != previous_snapshot;
 
     Ok(WorkingMemoryRefresh {
         previous_snapshot,
@@ -45,10 +41,6 @@ fn normalize_working_memory_snapshot(mut snapshot: WorkingMemorySnapshot) -> Wor
     snapshot.scope_hints.clear();
     snapshot.recent_decisions.clear();
     snapshot
-}
-
-fn working_memory_snapshot_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
-    snapshot == &WorkingMemorySnapshot::default()
 }
 
 pub fn derive_working_memory_snapshot(

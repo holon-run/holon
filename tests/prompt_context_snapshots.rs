@@ -17,7 +17,8 @@ use holon::{
         ContinuationClass, ContinuationResolution, ContinuationTriggerKind, LoadedAgentMemory,
         LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
         MessageOrigin, Priority, SkillsRuntimeView, TodoItem, TodoItemState, ToolExecutionRecord,
-        ToolExecutionStatus, WaitingReason, WorkItemRecord, WorkItemState, WorkingMemorySnapshot,
+        ToolExecutionStatus, TurnRecord, TurnTriggerSummary, WaitingReason, WorkItemRecord,
+        WorkItemState, WorkingMemorySnapshot,
     },
 };
 use serde_json::{json, Value};
@@ -389,6 +390,19 @@ fn append_work_item_todo(
     Ok(())
 }
 
+fn append_turn_for_message(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    turn_id: &str,
+    turn_index: u64,
+) -> Result<TurnRecord> {
+    let mut turn = TurnRecord::new(&message.agent_id, turn_id, turn_index);
+    turn.input_message_ids = vec![message.id.clone()];
+    turn.trigger = Some(TurnTriggerSummary::from_message(message));
+    storage.append_turn(&turn)?;
+    Ok(turn)
+}
+
 #[test]
 fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
     let dir = tempdir()?;
@@ -421,6 +435,9 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
     );
     result_brief.id = "brief_focused_prompt_projection".into();
     storage.append_brief(&result_brief)?;
+    let mut turn = append_turn_for_message(&storage, &previous_operator, "turn-focused-prompt", 1)?;
+    turn.produced_brief_ids = vec![result_brief.id.clone()];
+    storage.append_turn(&turn)?;
 
     let current_message = MessageEnvelope::new(
         "default",
@@ -466,7 +483,8 @@ Current input relation: current_input is the latest trusted operator input.
 
 ## recent_turns
 Recent turns:
-- Turn message_seq 1:
+- Turn turn_index 1:
+  - turn_id: turn-focused-prompt
   - trigger: trusted operator input
   - operator input full: Run the focused prompt projection test. message_ref=message:msg_focused_prompt_projection
   - produced briefs:
@@ -535,6 +553,11 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         summary: "Run command: cargo test runtime_flow".into(),
         invocation_surface: Some("commentary".into()),
     })?;
+    let mut turn =
+        append_turn_for_message(&storage, &operator_message_with_turn, "turn_op_test", 1)?;
+    turn.produced_brief_ids = vec![turn_index_brief.id.clone()];
+    turn.tool_execution_ids = vec!["tool_exec_1".into()];
+    storage.append_turn(&turn)?;
 
     let mut work_item = WorkItemRecord::new("default", "Track\nruntime flow", WorkItemState::Open);
     work_item.id = "work_runtime_flow".into();
@@ -606,7 +629,8 @@ Current input relation: current_input is a task-result continuation, not a new o
 
 ## recent_turns
 Recent turns:
-- Turn message_seq 1:
+- Turn turn_index 1:
+  - turn_id: turn_op_test
   - trigger: trusted operator input
   - continues input: message_seq 1
   - continuation trigger: a task-result continuation
@@ -1685,13 +1709,15 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         AdmissionContext::LocalProcess,
     );
     storage.append_message(&first_operator)?;
-    storage.append_brief(&BriefRecord::new(
+    let mut first_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
         "Started deterministic fixture construction.",
         Some(first_operator.id.clone()),
         None,
-    ))?;
+    );
+    first_brief.id = "brief_context_eval_started".into();
+    storage.append_brief(&first_brief)?;
 
     storage.append_tool_execution(&ToolExecutionRecord {
         id: "tool_context_eval".into(),
@@ -1710,6 +1736,10 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         summary: "Run command: cargo test -q --test prompt_context_snapshots".into(),
         invocation_surface: Some("commentary".into()),
     })?;
+    let mut first_turn =
+        append_turn_for_message(&storage, &first_operator, "turn_context_eval_start", 1)?;
+    first_turn.produced_brief_ids = vec![first_brief.id.clone()];
+    storage.append_turn(&first_turn)?;
 
     let task_result = MessageEnvelope::new(
         "default",
@@ -1728,13 +1758,20 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         AdmissionContext::RuntimeOwned,
     );
     storage.append_message(&task_result)?;
-    storage.append_brief(&BriefRecord::new(
+    let mut task_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
         "Diagnostics helper reports stable section sizes.",
         Some(task_result.id.clone()),
         Some("task_context_eval".into()),
-    ))?;
+    );
+    task_brief.id = "brief_context_eval_diagnostics".into();
+    storage.append_brief(&task_brief)?;
+    let mut task_turn =
+        append_turn_for_message(&storage, &task_result, "turn_context_eval_tool", 2)?;
+    task_turn.produced_brief_ids = vec![task_brief.id.clone()];
+    task_turn.tool_execution_ids = vec!["tool_context_eval".into()];
+    storage.append_turn(&task_turn)?;
 
     let current_message = MessageEnvelope::new(
         "default",
@@ -1899,13 +1936,20 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         summary: "Inspected prompt projection and produced a five-item issue list.".into(),
         invocation_surface: Some("commentary".into()),
     })?;
-    storage.append_brief(&BriefRecord::new(
+    let mut first_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
         "Initial issue list was promoted into the active work item and working memory.",
         Some(first_operator.id.clone()),
         None,
-    ))?;
+    );
+    first_brief.id = "brief_issue_list_initial".into();
+    storage.append_brief(&first_brief)?;
+    let mut first_turn =
+        append_turn_for_message(&storage, &first_operator, "turn_issue_list_analysis", 1)?;
+    first_turn.produced_brief_ids = vec![first_brief.id.clone()];
+    first_turn.tool_execution_ids = vec!["tool_issue_list_analysis".into()];
+    storage.append_turn(&first_turn)?;
 
     for (turn_index, (prompt, result)) in [
         (
@@ -1950,6 +1994,14 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         );
         brief.turn_index = Some((turn_index + 2) as u64);
         storage.append_brief(&brief)?;
+        let mut turn = append_turn_for_message(
+            &storage,
+            &operator,
+            &format!("turn_issue_list_discussion_{}", turn_index + 1),
+            (turn_index + 2) as u64,
+        )?;
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        storage.append_turn(&turn)?;
     }
 
     let current_message = MessageEnvelope::new(
@@ -2044,13 +2096,15 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         AdmissionContext::LocalProcess,
     );
     storage.append_message(&stale_operator)?;
-    storage.append_brief(&BriefRecord::new(
+    let mut stale_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
         "Compaction summary should carry only the preserved budget decision.",
         Some(stale_operator.id.clone()),
         None,
-    ))?;
+    );
+    stale_brief.id = "brief_stale_compaction".into();
+    storage.append_brief(&stale_brief)?;
 
     let recent_operator = MessageEnvelope::new(
         "default",
@@ -2069,13 +2123,19 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         AdmissionContext::LocalProcess,
     );
     storage.append_message(&recent_operator)?;
-    storage.append_brief(&BriefRecord::new(
+    let mut recent_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
         "Active work resumed after compaction.",
         Some(recent_operator.id.clone()),
         None,
-    ))?;
+    );
+    recent_brief.id = "brief_active_resume".into();
+    storage.append_brief(&recent_brief)?;
+    let mut recent_turn =
+        append_turn_for_message(&storage, &recent_operator, "turn_active_resume", 2)?;
+    recent_turn.produced_brief_ids = vec![recent_brief.id.clone()];
+    storage.append_turn(&recent_turn)?;
 
     let mut active_work = WorkItemRecord::new(
         "default",
@@ -2139,9 +2199,6 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
     );
 
     let mut session = AgentState::new("default");
-    session.compacted_message_count = 1;
-    session.context_summary =
-        Some("Compacted summary: preserved budget decision and fact omega.".into());
     session.current_work_item_id = Some(active_work.id.clone());
 
     let rendered = render_context_snapshot_named(
@@ -2152,8 +2209,6 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         Some("multi_turn_context_compacted_interleaving"),
     )?;
     let diagnostics = analyze_context(&rendered);
-    let compacted_summary =
-        section_content(&rendered, "compacted_summary").expect("compacted summary section");
     let current_work_item =
         section_content(&rendered, "current_work_item").expect("current work section");
     let queued_blocked =
@@ -2161,7 +2216,7 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
     let recent_turns = section_content(&rendered, "recent_turns").expect("recent turns section");
     let current_input = section_content(&rendered, "current_input").expect("current input");
 
-    assert!(compacted_summary.contains("preserved budget decision and fact omega"));
+    assert!(section_content(&rendered, "compacted_summary").is_none());
     assert!(current_work_item.contains("work_active_eval"));
     assert!(current_work_item.contains("Ship compacted interleaving eval"));
     assert!(queued_blocked.contains("work_queued_eval"));

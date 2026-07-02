@@ -4,10 +4,10 @@ use crate::prompt::{PromptSection, PromptStability};
 use crate::tool::helpers::truncate_text;
 use crate::types::{
     AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageEnvelope,
-    MessageKind, MessageOrigin,
+    MessageOrigin,
 };
 
-use super::budget::{estimate_section_tokens, estimate_text_tokens};
+use super::budget::estimate_section_tokens;
 
 /// Create a section with `AgentScoped` stability.
 pub(super) fn section(name: &'static str, content: String) -> PromptSection {
@@ -93,20 +93,6 @@ pub(super) fn message_body_text(body: &MessageBody) -> String {
         MessageBody::Json { value } => value.to_string(),
         MessageBody::Brief { text, .. } => text.clone(),
     }
-}
-
-/// Render a message as a single-line bullet with header and body preview.
-pub(super) fn render_message(message: &MessageEnvelope) -> String {
-    format!(
-        "- {} {}",
-        message_header(message),
-        body_preview(&message.body)
-    )
-}
-
-/// Estimate token count for a single message by rendering it first.
-pub(super) fn estimate_message_tokens(message: &MessageEnvelope) -> usize {
-    estimate_text_tokens(&render_message(message))
 }
 
 /// Build the bracketed header label for a message (origin, surface, trust, etc.).
@@ -209,9 +195,4 @@ pub(super) fn enum_label<T: serde::Serialize + std::fmt::Debug>(value: &T) -> St
         .ok()
         .and_then(|value| value.as_str().map(ToString::to_string))
         .unwrap_or_else(|| format!("{value:?}"))
-}
-
-/// Filter: include messages eligible for prompt context.
-pub(super) fn include_in_prompt_context(message: &MessageEnvelope) -> bool {
-    !matches!(message.kind, MessageKind::SystemTick)
 }
