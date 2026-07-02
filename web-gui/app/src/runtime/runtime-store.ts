@@ -165,6 +165,7 @@ export interface RuntimeStoreState {
   selectedSkillId: string;
   displayLevel: DisplayLevel;
   displayLevelsByAgentId: Record<string, DisplayLevel>;
+  rightPanelViewStack: RightPanelView[];
   rightPanelOpen: boolean;
   rightPanelView?: RightPanelView;
   navCollapsed: boolean;
@@ -214,6 +215,7 @@ export interface RuntimeStoreState {
   showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
   readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
+  navigateBack: () => void;
   workspaceFileUrl: (workspaceId: string, path: string, download?: boolean, executionRootId?: string) => string;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
@@ -656,6 +658,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   displayLevelsByAgentId: readStoredDisplayLevels(),
   rightPanelOpen: true,
   rightPanelView: undefined,
+  rightPanelViewStack: [],
   navCollapsed: false,
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
@@ -731,35 +734,70 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }),
   setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
   showAgentOverview: (agentId) =>
-    set((state) => ({
+    set((state) => {
+      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+      return {
+      rightPanelViewStack: stack,
       rightPanelOpen: true,
       rightPanelView: { kind: "agent_overview", agentId: agentId ?? state.selectedAgentId },
-    })),
+      };
+    }),
   showWorkItemDetail: (agentId, workItem) =>
-    set({
+    set((state) => {
+      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+      return {
+      rightPanelViewStack: stack,
       rightPanelOpen: true,
       rightPanelView: { kind: "work_item_detail", agentId, workItem },
+      };
     }),
   showTaskDetail: (agentId, task) =>
-    set({
+    set((state) => {
+      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+      return {
+      rightPanelViewStack: stack,
       rightPanelOpen: true,
       rightPanelView: { kind: "task_detail", agentId, task },
+      };
     }),
   showFileBrowser: (agentId, workspaceId, initialPath, executionRootId, initialFilePath) =>
-    set({
+    set((state) => {
+      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+      return {
+      rightPanelViewStack: stack,
       rightPanelOpen: true,
       rightPanelView: { kind: "file_browser", agentId, workspaceId, initialPath, executionRootId, initialFilePath },
+      };
     }),
   browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
   readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
   workspaceFileUrl: (workspaceId, path, download, executionRootId) => runtimeClient.workspaceFileUrl(workspaceId, path, download, executionRootId),
   inspectActivity: (agentId, activity) => {
-    set({
+    set((state) => {
+      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+      return {
+      rightPanelViewStack: stack,
       rightPanelOpen: true,
       rightPanelView: { kind: "activity_inspector", agentId, activity },
+      };
     });
     hydrateInspectorActivityDetail(get, set, agentId, activity);
   },
+  navigateBack: () =>
+    set((state) => {
+      if (state.rightPanelViewStack.length === 0) {
+        return {
+          rightPanelView: { kind: "agent_overview", agentId: state.selectedAgentId },
+          rightPanelViewStack: [],
+        };
+      }
+      const newStack = [...state.rightPanelViewStack];
+      const previous = newStack.pop()!;
+      return {
+        rightPanelView: previous,
+        rightPanelViewStack: newStack,
+      };
+    }),
   toggleRightPanel: () => set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 

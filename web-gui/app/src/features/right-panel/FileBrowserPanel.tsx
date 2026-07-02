@@ -180,6 +180,34 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     [workspaceId, executionRootId, browseWorkspaceDir],
   );
 
+  const reloadFile = useCallback(async () => {
+    if (!selectedFile?.path) return;
+    const filePath = selectedFile.path;
+    if (isImageFile(selectedFile.mimeType)) {
+      // Image files are served via URL, force re-render by re-setting state
+      setSelectedFile({ path: filePath, loading: false, mimeType: selectedFile.mimeType });
+      return;
+    }
+    setSelectedFile({ path: filePath, loading: true });
+    try {
+      const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      setSelectedFile({
+        path: filePath,
+        content: content.content,
+        mimeType: content.mimeType,
+        truncated: content.truncated,
+        totalSize: content.totalSize ?? content.size,
+        loading: false,
+      });
+    } catch (err) {
+      setSelectedFile({
+        path: filePath,
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [selectedFile, workspaceId, executionRootId, readWorkspaceFile]);
+
   useEffect(() => {
     void loadDir(effectiveInitialPath);
   }, [loadDir, effectiveInitialPath]);
@@ -265,6 +293,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   return (
     <div className="file-browser">
       <div className="file-browser-toolbar">
+        <button type="button" className="file-browser-back-btn" onClick={() => onClose?.()}>← Back</button>
         <nav className="file-browser-breadcrumb" aria-label="Path breadcrumb">
           <button
             type="button"
@@ -286,6 +315,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             </span>
           ))}
         </nav>
+        {!selectedFile ? (
         <label className="file-browser-hidden-toggle">
           <input
             type="checkbox"
@@ -294,11 +324,12 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
           />
           <small>hidden</small>
         </label>
+        ) : null}
         <button
           type="button"
           className="file-browser-refresh"
-          aria-label="Refresh directory"
-          onClick={() => void loadDir(currentPath)}
+          aria-label={selectedFile ? "Refresh file content" : "Refresh directory"}
+          onClick={() => void (selectedFile ? reloadFile() : loadDir(currentPath))}
         >
           ↻
         </button>
@@ -355,7 +386,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                   </button>
                 </div>
               ) : null}
-              <button type="button" aria-label="Back to previous page" onClick={() => onClose?.()}>← Back</button>
+              <button type="button" className="file-browser-close-btn" aria-label="Close file" onClick={() => setSelectedFile(null)}>× Close</button>
             </div>
           </div>
           {selectedFile.loading ? (
