@@ -3022,6 +3022,36 @@ code {
   line-height: 1.45;
 }
 
+.template-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.template-actions-grid .skills-add-form {
+  grid-template-columns: minmax(140px, 0.6fr) minmax(180px, 1fr) auto;
+}
+
+.template-row-title,
+.template-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.template-row-description {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.template-row-meta {
+  color: var(--faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .skills-add-form label,
 .skills-search,
 .skills-scope-filter {

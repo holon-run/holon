@@ -4,6 +4,7 @@ interface BrowserRoute {
   route: RouteKey;
   agentId?: string;
   skillId?: string;
+  templateId?: string;
   eventSeq?: number;
 }
 
@@ -27,6 +28,14 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
       skillId: safeDecodeURIComponent(skillMatch[1]),
     };
   }
+  if (path === "/templates") return { route: "templates" };
+  const templateMatch = path.match(/^\/templates\/([^/]+)$/);
+  if (templateMatch) {
+    return {
+      route: "templateDetail",
+      templateId: safeDecodeURIComponent(templateMatch[1]),
+    };
+  }
   if (path === "/settings") return { route: "settings" };
 
   const agentMatch = path.match(/^\/agents\/([^/]+)(?:\/conversation)?$/);
@@ -46,6 +55,8 @@ export function pathForRoute(route: RouteKey, agentId?: string, query?: Record<s
   if (route === "search") return "/search";
   if (route === "skills") return "/skills";
   if (route === "skillDetail" && agentId) return `/skills/${encodeURIComponent(agentId)}`;
+  if (route === "templates") return "/templates";
+  if (route === "templateDetail" && agentId) return `/templates/${encodeURIComponent(agentId)}`;
   if (route === "settings") return "/settings";
   if (route === "agent" && agentId) return `/agents/${encodeURIComponent(agentId)}/conversation${queryString ? `?${queryString}` : ""}`;
   return "/";
