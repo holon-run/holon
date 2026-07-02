@@ -4715,10 +4715,12 @@ fn classify_openai_streaming_error(
             kind: ProviderFailureKind::RateLimited,
             disposition: RetryDisposition::Retryable,
         },
-        Some("server_is_overloaded" | "slow_down") => ProviderFailureClassification {
-            kind: ProviderFailureKind::ServerError,
-            disposition: RetryDisposition::Retryable,
-        },
+        Some("server_error" | "service_unavailable" | "server_is_overloaded" | "slow_down") => {
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::ServerError,
+                disposition: RetryDisposition::Retryable,
+            }
+        }
         Some("insufficient_quota") => ProviderFailureClassification {
             kind: ProviderFailureKind::AuthError,
             disposition: RetryDisposition::FailFast,
@@ -4948,7 +4950,7 @@ fn unsupported_streaming_transport_error(provider_name: &str) -> anyhow::Error {
 mod tests {
     use super::{
         build_openai_responses_request, chat_completions_url, choose_openai_codex_credential,
-        incremental_diagnostics, latest_openai_compaction_index,
+        consume_openai_sse_event, incremental_diagnostics, latest_openai_compaction_index,
         openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
         openai_provider_window_compaction_candidate, plan_openai_responses_request,
         resolve_openai_codex_credential, CredentialStoreRefreshLock, OpenAiCodexProvider,
@@ -4961,6 +4963,7 @@ mod tests {
         CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderId,
         ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
     };
+    use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
     use crate::provider::{
         ConversationMessage, ProviderJsonSchemaResponseFormat, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest, ProviderResponseFormatRequest, ProviderTurnRequest,
@@ -5348,6 +5351,55 @@ mod tests {
 
         drop(lock);
         assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn openai_streaming_error_event_classifies_transient_server_codes_as_retryable() {
+        for code in [
+            "server_error",
+            "service_unavailable",
+            "server_is_overloaded",
+            "slow_down",
+        ] {
+            let mut data_lines = vec![json!({
+                "type": "error",
+                "error": {
+                    "code": code,
+                    "message": "temporary server failure"
+                }
+            })
+            .to_string()];
+
+            let error = match consume_openai_sse_event(&mut data_lines) {
+                Ok(_) => panic!("transient streaming error event should produce a provider error"),
+                Err(error) => error,
+            };
+            let classification = classify_provider_error(&error);
+
+            assert_eq!(classification.kind, ProviderFailureKind::ServerError);
+            assert_eq!(classification.disposition, RetryDisposition::Retryable);
+        }
+    }
+
+    #[test]
+    fn openai_streaming_error_event_keeps_unknown_codes_fail_fast_contract() {
+        let mut data_lines = vec![json!({
+            "type": "error",
+            "error": {
+                "code": "unexpected_protocol_state",
+                "message": "unexpected stream shape"
+            }
+        })
+        .to_string()];
+
+        let error = match consume_openai_sse_event(&mut data_lines) {
+            Ok(_) => panic!("unknown streaming error event should produce a provider error"),
+            Err(error) => error,
+        };
+        let classification = classify_provider_error(&error);
+
+        assert_eq!(classification.kind, ProviderFailureKind::ContractError);
+        assert_eq!(classification.disposition, RetryDisposition::FailFast);
     }
 
     #[test]
