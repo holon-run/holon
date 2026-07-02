@@ -5092,6 +5092,9 @@ mod tests {
                 description: "demo template summary".into(),
                 included_skills: vec!["ghx".into()],
                 source_url: None,
+                source_id: None,
+                resolved_ref: None,
+                resolved_revision: None,
             }],
             ..SkillsRuntimeView::default()
         };

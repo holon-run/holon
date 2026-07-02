@@ -13,6 +13,7 @@ pub async fn templates_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
+    let config = state.host.config();
     let user_home = crate::agent_template::user_home_dir().ok();
     // Use a non-existent agent_home path so the global catalog shows only
     // builtin + user_global entries, parallel to /skills/catalog.
@@ -20,10 +21,31 @@ pub async fn templates_catalog(
         user_home.as_deref(),
         FsPath::new("/nonexistent-agent-home"),
     );
+    let remote = crate::agent_template::load_remote_template_catalog_snapshot(
+        state.host.runtime_db(),
+        &config.stored_config.agent_templates.remote_sources,
+    )
+    .map_err(error_response)?;
+    let mut catalog = catalog;
+    catalog.extend(remote.catalog);
     Ok(Json(json!({
         "ok": true,
         "catalog": catalog,
+        "sources": remote.sources,
+        "diagnostics": remote.diagnostics,
     })))
+}
+
+/// `POST /templates/remote-sources/sync`
+///
+/// Queue a daemon job that synchronizes configured remote template sources.
+pub async fn sync_template_remote_sources(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::types::SyncTemplateRemoteSourcesRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    super::jobs::create_template_remote_source_sync_job(state, request).await
 }
 
 /// `GET /templates/catalog/{catalog_id}`

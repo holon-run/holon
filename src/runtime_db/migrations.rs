@@ -835,6 +835,31 @@ CREATE INDEX IF NOT EXISTS idx_operator_delivery_records_agent_created
   ON operator_delivery_records(agent_id, created_at DESC);
 "#,
     },
+    Migration {
+        version: 23,
+        name: "agent_template_remote_source_syncs",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_template_remote_source_syncs (
+  source_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  url TEXT NOT NULL,
+  requested_ref TEXT,
+  enabled INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  last_synced_at TEXT,
+  resolved_ref TEXT,
+  resolved_revision TEXT,
+  catalog_json TEXT NOT NULL,
+  diagnostics_json TEXT NOT NULL,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_template_remote_source_syncs_status
+  ON agent_template_remote_source_syncs(status);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

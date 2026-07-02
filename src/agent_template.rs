@@ -3,15 +3,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::types::{
-    AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
-    AgentTemplateSourceKind, SkillInstallKind, SkillInstallMode,
+use crate::{
+    config::AgentTemplateRemoteSourceConfigFile,
+    runtime_db::RuntimeDb,
+    types::{
+        AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
+        AgentTemplateSourceKind, SkillInstallKind, SkillInstallMode,
+    },
 };
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 const TEMPLATE_AGENTS_FILENAME: &str = "AGENTS.md";
@@ -247,22 +252,66 @@ struct GitHubContentsDirEntry {
     kind: String,
 }
 
-/// Parsed `holon-index.toml` manifest at a repository root.
+/// Parsed `holon-index.toml` repository manifest.
 ///
-/// Optional file that overrides default collection directory names.
-/// When absent, discovery falls back to `agent_templates/`.
-#[derive(Debug, Deserialize)]
+/// Present at a remote repository root to declare the collection layout.
+/// When absent, discovery falls back to the conventional `agent_templates/` directory.
 #[allow(dead_code)]
+#[derive(Debug, Deserialize)]
 struct HolonIndexManifest {
+    #[serde(default)]
     schema: String,
     #[serde(default)]
     collections: HolonIndexCollections,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default, Deserialize)]
 struct HolonIndexCollections {
-    #[serde(default)]
+    skills: Option<String>,
     agent_templates: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTemplateRemoteSourceSyncStatus {
+    NotSynced,
+    Synced,
+    Failed,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTemplateRemoteSourceStatus {
+    pub source_id: String,
+    pub kind: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_ref: Option<String>,
+    pub enabled: bool,
+    pub status: AgentTemplateRemoteSourceSyncStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_synced_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTemplateCatalogDiagnostic {
+    pub source_id: String,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTemplateRemoteCatalogSnapshot {
+    pub catalog: Vec<AgentTemplateCatalogEntry>,
+    pub sources: Vec<AgentTemplateRemoteSourceStatus>,
+    pub diagnostics: Vec<AgentTemplateCatalogDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -615,6 +664,9 @@ fn builtin_template_catalog_entry(builtin: &BuiltinTemplate) -> AgentTemplateCat
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| template_description(builtin.agents_md)),
         included_skills: builtin_template_skills(builtin),
+        source_id: None,
+        resolved_ref: None,
+        resolved_revision: None,
         source_url: None,
     }
 }
@@ -674,10 +726,304 @@ fn discover_local_templates(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| template_description(&agents_md)),
             included_skills: local_template_skills(&path),
+            source_id: None,
+            resolved_ref: None,
+            resolved_revision: None,
             source_url: None,
         });
     }
     entries
+}
+
+pub fn load_remote_template_catalog_snapshot(
+    db: &RuntimeDb,
+    configured_sources: &std::collections::BTreeMap<String, AgentTemplateRemoteSourceConfigFile>,
+) -> Result<AgentTemplateRemoteCatalogSnapshot> {
+    let connection = db.connection()?;
+    let mut catalog = Vec::new();
+    let mut sources = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for (source_id, config) in configured_sources {
+        let enabled = config.enabled();
+        let Some(row) = load_remote_source_row(&connection, source_id)? else {
+            let status = if enabled {
+                AgentTemplateRemoteSourceSyncStatus::NotSynced
+            } else {
+                AgentTemplateRemoteSourceSyncStatus::Disabled
+            };
+            sources.push(AgentTemplateRemoteSourceStatus {
+                source_id: source_id.clone(),
+                kind: "github".into(),
+                url: config.url.clone(),
+                requested_ref: config.git_ref.clone(),
+                enabled,
+                status,
+                last_synced_at: None,
+                resolved_ref: None,
+                resolved_revision: None,
+                error: None,
+            });
+            continue;
+        };
+        if enabled {
+            catalog.extend(row.catalog.iter().cloned());
+        }
+        diagnostics.extend(row.diagnostics.iter().cloned());
+        let mut status = row.status;
+        if !enabled {
+            status = AgentTemplateRemoteSourceSyncStatus::Disabled;
+        }
+        sources.push(AgentTemplateRemoteSourceStatus {
+            source_id: source_id.clone(),
+            kind: row.kind,
+            url: config.url.clone(),
+            requested_ref: config.git_ref.clone(),
+            enabled,
+            status,
+            last_synced_at: row.last_synced_at,
+            resolved_ref: row.resolved_ref,
+            resolved_revision: row.resolved_revision,
+            error: row.error,
+        });
+    }
+
+    Ok(AgentTemplateRemoteCatalogSnapshot {
+        catalog,
+        sources,
+        diagnostics,
+    })
+}
+
+#[derive(Debug)]
+struct RemoteSourceDbRow {
+    kind: String,
+    status: AgentTemplateRemoteSourceSyncStatus,
+    last_synced_at: Option<DateTime<Utc>>,
+    resolved_ref: Option<String>,
+    resolved_revision: Option<String>,
+    catalog: Vec<AgentTemplateCatalogEntry>,
+    diagnostics: Vec<AgentTemplateCatalogDiagnostic>,
+    error: Option<String>,
+}
+
+fn load_remote_source_row(
+    connection: &rusqlite::Connection,
+    source_id: &str,
+) -> Result<Option<RemoteSourceDbRow>> {
+    connection
+        .query_row(
+            "SELECT kind, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error \
+             FROM agent_template_remote_source_syncs WHERE source_id = ?1",
+            [source_id],
+            |row| {
+                let status: String = row.get(1)?;
+                let last_synced_at: Option<String> = row.get(2)?;
+                let catalog_json: String = row.get(5)?;
+                let diagnostics_json: String = row.get(6)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    status,
+                    last_synced_at,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    catalog_json,
+                    diagnostics_json,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(
+            |(
+                kind,
+                status,
+                last_synced_at,
+                resolved_ref,
+                resolved_revision,
+                catalog_json,
+                diagnostics_json,
+                error,
+            )| {
+                Ok(RemoteSourceDbRow {
+                    kind,
+                    status: parse_remote_source_sync_status(&status),
+                    last_synced_at: last_synced_at
+                        .map(|value| value.parse())
+                        .transpose()
+                        .context("failed to parse remote source last_synced_at")?,
+                    resolved_ref,
+                    resolved_revision,
+                    catalog: serde_json::from_str(&catalog_json)
+                        .context("failed to decode remote template catalog_json")?,
+                    diagnostics: serde_json::from_str(&diagnostics_json)
+                        .context("failed to decode remote template diagnostics_json")?,
+                    error,
+                })
+            },
+        )
+        .transpose()
+}
+
+fn parse_remote_source_sync_status(value: &str) -> AgentTemplateRemoteSourceSyncStatus {
+    match value {
+        "synced" => AgentTemplateRemoteSourceSyncStatus::Synced,
+        "failed" => AgentTemplateRemoteSourceSyncStatus::Failed,
+        "disabled" => AgentTemplateRemoteSourceSyncStatus::Disabled,
+        _ => AgentTemplateRemoteSourceSyncStatus::NotSynced,
+    }
+}
+
+fn remote_source_sync_status_label(status: &AgentTemplateRemoteSourceSyncStatus) -> &'static str {
+    match status {
+        AgentTemplateRemoteSourceSyncStatus::NotSynced => "not_synced",
+        AgentTemplateRemoteSourceSyncStatus::Synced => "synced",
+        AgentTemplateRemoteSourceSyncStatus::Failed => "failed",
+        AgentTemplateRemoteSourceSyncStatus::Disabled => "disabled",
+    }
+}
+
+pub async fn sync_agent_template_remote_source(
+    db: &RuntimeDb,
+    source_id: &str,
+    config: &AgentTemplateRemoteSourceConfigFile,
+) -> Result<AgentTemplateRemoteSourceStatus> {
+    if !config.enabled() {
+        let status = AgentTemplateRemoteSourceStatus {
+            source_id: source_id.to_string(),
+            kind: "github".into(),
+            url: config.url.clone(),
+            requested_ref: config.git_ref.clone(),
+            enabled: false,
+            status: AgentTemplateRemoteSourceSyncStatus::Disabled,
+            last_synced_at: None,
+            resolved_ref: None,
+            resolved_revision: None,
+            error: None,
+        };
+        upsert_remote_source_sync(
+            db,
+            &status,
+            &[],
+            &[AgentTemplateCatalogDiagnostic {
+                source_id: source_id.to_string(),
+                severity: "info".into(),
+                message: "remote source is disabled".into(),
+            }],
+        )?;
+        return Ok(status);
+    }
+
+    let parsed = parse_github_repo_url(&config.url)?;
+    let resolved_ref = match config.git_ref.clone().or(parsed.git_ref) {
+        Some(value) => value,
+        None => fetch_default_branch(&parsed.owner, &parsed.repo).await?,
+    };
+    let mut catalog =
+        discover_github_repo_templates(&parsed.owner, &parsed.repo, &resolved_ref).await?;
+    for entry in &mut catalog {
+        entry.source_id = Some(source_id.to_string());
+        entry.resolved_ref = Some(resolved_ref.clone());
+        entry.resolved_revision = None;
+        entry.catalog_id = format!("remote:{source_id}:{}", entry.template_id);
+        entry.template = entry.catalog_id.clone();
+    }
+    let now = Utc::now();
+    let status = AgentTemplateRemoteSourceStatus {
+        source_id: source_id.to_string(),
+        kind: "github".into(),
+        url: config.url.clone(),
+        requested_ref: config.git_ref.clone(),
+        enabled: true,
+        status: AgentTemplateRemoteSourceSyncStatus::Synced,
+        last_synced_at: Some(now),
+        resolved_ref: Some(resolved_ref),
+        resolved_revision: None,
+        error: None,
+    };
+    upsert_remote_source_sync(db, &status, &catalog, &[])?;
+    Ok(status)
+}
+
+pub fn record_agent_template_remote_source_sync_failure(
+    db: &RuntimeDb,
+    source_id: &str,
+    config: &AgentTemplateRemoteSourceConfigFile,
+    error: &str,
+) -> Result<AgentTemplateRemoteSourceStatus> {
+    let previous_catalog = db
+        .connection()
+        .ok()
+        .and_then(|connection| {
+            load_remote_source_row(&connection, source_id)
+                .ok()
+                .flatten()
+                .map(|row| row.catalog)
+        })
+        .unwrap_or_default();
+    let diagnostic = AgentTemplateCatalogDiagnostic {
+        source_id: source_id.to_string(),
+        severity: "error".into(),
+        message: error.to_string(),
+    };
+    let status = AgentTemplateRemoteSourceStatus {
+        source_id: source_id.to_string(),
+        kind: "github".into(),
+        url: config.url.clone(),
+        requested_ref: config.git_ref.clone(),
+        enabled: config.enabled(),
+        status: AgentTemplateRemoteSourceSyncStatus::Failed,
+        last_synced_at: Some(Utc::now()),
+        resolved_ref: None,
+        resolved_revision: None,
+        error: Some(error.to_string()),
+    };
+    upsert_remote_source_sync(db, &status, &previous_catalog, &[diagnostic])?;
+    Ok(status)
+}
+
+fn upsert_remote_source_sync(
+    db: &RuntimeDb,
+    status: &AgentTemplateRemoteSourceStatus,
+    catalog: &[AgentTemplateCatalogEntry],
+    diagnostics: &[AgentTemplateCatalogDiagnostic],
+) -> Result<()> {
+    let status_label = remote_source_sync_status_label(&status.status);
+    let last_synced_at = status.last_synced_at.map(|t| t.to_rfc3339());
+    let catalog_json = serde_json::to_string(catalog)?;
+    let diagnostics_json = serde_json::to_string(diagnostics)?;
+    let now = Utc::now().to_rfc3339();
+    let created_at = now.clone();
+    db.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO agent_template_remote_source_syncs \
+             (source_id, kind, url, requested_ref, enabled, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+             ON CONFLICT(source_id) DO UPDATE SET \
+               kind = excluded.kind, url = excluded.url, requested_ref = excluded.requested_ref, \
+               enabled = excluded.enabled, status = excluded.status, last_synced_at = excluded.last_synced_at, \
+               resolved_ref = excluded.resolved_ref, resolved_revision = excluded.resolved_revision, \
+               catalog_json = excluded.catalog_json, diagnostics_json = excluded.diagnostics_json, \
+               error = excluded.error, updated_at = excluded.updated_at",
+            params![
+                status.source_id,
+                status.kind,
+                status.url,
+                status.requested_ref,
+                if status.enabled { 1 } else { 0 },
+                status_label,
+                last_synced_at,
+                status.resolved_ref,
+                status.resolved_revision,
+                catalog_json,
+                diagnostics_json,
+                status.error,
+                created_at,
+                now,
+            ],
+        )?;
+        Ok(())
+    })
 }
 
 fn is_managed_seeded_builtin_template(path: &Path, template_id: &str) -> bool {
@@ -1590,31 +1936,15 @@ async fn fetch_default_branch(owner: &str, repo: &str) -> Result<String> {
         .with_context(|| format!("failed to decode repo info for {owner}/{repo}"))
 }
 
-/// Discover all AgentTemplates under a GitHub repository's template collection.
-///
-/// Fetches `holon-index.toml` from the repo root to determine the template
-/// directory. If absent, falls back to `agent_templates/`. Lists subdirectories
-/// and fetches each template's `template.toml` manifest. Individual template
-/// failures are logged as warnings and skipped rather than failing the whole
-/// catalog.
+/// Discover all AgentTemplates under a GitHub repository's conventional
+/// `agent_templates/` collection.
 pub(crate) async fn discover_github_repo_templates(
     owner: &str,
     repo: &str,
     git_ref: &str,
 ) -> Result<Vec<AgentTemplateCatalogEntry>> {
-    // Resolve template directory from holon-index.toml or default.
-    let template_dir = match fetch_github_file(owner, repo, git_ref, "holon-index.toml").await? {
-        Some(content) => {
-            let index: HolonIndexManifest = toml::from_str(&content).with_context(|| {
-                format!("failed to parse holon-index.toml for {owner}/{repo}@{git_ref}")
-            })?;
-            index
-                .collections
-                .agent_templates
-                .unwrap_or_else(|| DEFAULT_REMOTE_TEMPLATE_DIR.to_string())
-        }
-        None => DEFAULT_REMOTE_TEMPLATE_DIR.to_string(),
-    };
+    let template_dir =
+        resolve_remote_template_collection_dir(owner, repo, git_ref).await?;
 
     // List subdirectories under the template collection.
     let entries = match fetch_github_dir(owner, repo, git_ref, &template_dir).await? {
@@ -1658,12 +1988,37 @@ pub(crate) async fn discover_github_repo_templates(
             schema_version: Some(manifest.schema),
             description: manifest.summary,
             included_skills: Vec::new(),
+            source_id: None,
+            resolved_ref: Some(git_ref.to_string()),
+            resolved_revision: None,
             source_url: Some(format!(
                 "https://github.com/{owner}/{repo}/tree/{git_ref}/{template_dir}/{template_id}"
             )),
         });
     }
     Ok(catalog_entries)
+}
+
+/// Resolve the template collection directory for a remote GitHub repository.
+///
+/// Tries `holon-index.toml` at the repo root first; when present and parseable,
+/// uses its `collections.agent_templates` value. Falls back to
+/// [`DEFAULT_REMOTE_TEMPLATE_DIR`] when the index is absent, unreadable, or
+/// does not declare a custom collection path.
+async fn resolve_remote_template_collection_dir(
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+) -> Result<String> {
+    match fetch_github_file(owner, repo, git_ref, "holon-index.toml").await? {
+        Some(content) => match toml::from_str::<HolonIndexManifest>(&content) {
+            Ok(manifest) if manifest.collections.agent_templates.as_deref().is_some() => {
+                Ok(manifest.collections.agent_templates.unwrap())
+            }
+            _ => Ok(DEFAULT_REMOTE_TEMPLATE_DIR.to_string()),
+        },
+        None => Ok(DEFAULT_REMOTE_TEMPLATE_DIR.to_string()),
+    }
 }
 
 /// Discover AgentTemplates from a GitHub repository URL.
