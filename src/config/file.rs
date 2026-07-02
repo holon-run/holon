@@ -18,6 +18,8 @@ pub struct HolonConfigFile {
     pub tui: TuiConfigFile,
     #[serde(default, skip_serializing_if = "WebConfigFile::is_empty")]
     pub web: WebConfigFile,
+    #[serde(default, skip_serializing_if = "AgentTemplatesConfigFile::is_empty")]
+    pub agent_templates: AgentTemplatesConfigFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -141,6 +143,33 @@ pub struct ProviderConfigFile {
 
 pub(crate) fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentTemplatesConfigFile {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub remote_sources: BTreeMap<String, AgentTemplateRemoteSourceConfigFile>,
+}
+
+impl AgentTemplatesConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.remote_sources.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentTemplateRemoteSourceConfigFile {
+    pub url: String,
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl AgentTemplateRemoteSourceConfigFile {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -748,6 +748,16 @@ pub struct AgentTemplateCatalogEntry {
     /// Skill names declared by the template manifest, if any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub included_skills: Vec<String>,
+    /// Configured remote source id for remote templates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Branch, tag, or commit used for this catalog entry after source
+    /// configuration/default-branch resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref: Option<String>,
+    /// Immutable provider revision when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_revision: Option<String>,
     /// Full template tree URL for Remote templates (e.g.
     /// `https://github.com/owner/repo/tree/ref/agent_templates/worker`).
     /// `None` for local and builtin sources.
@@ -1117,6 +1127,18 @@ pub struct InstallTemplateRequest {
 pub struct RemoveTemplateRequest {
     /// Template id within the user global library.
     pub template_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SyncTemplateRemoteSourcesRequest {
+    /// Optional configured source id. When omitted, all enabled remote sources
+    /// are synchronized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Force a refresh even if a later TTL policy would consider the cache
+    /// fresh. Currently accepted for forward compatibility.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

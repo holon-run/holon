@@ -175,6 +175,7 @@ pub struct AppState {
     pub skills_registry: Arc<tokio::sync::RwLock<SkillsRegistry>>,
     pub jobs: JobRegistry,
     pub skill_install_jobs: Arc<tokio::sync::Semaphore>,
+    pub template_remote_source_sync_jobs: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,6 +237,7 @@ impl AppState {
         let skills_registry = host.skills_registry();
         let jobs = JobRegistry::default();
         let skill_install_jobs = Arc::new(tokio::sync::Semaphore::new(1));
+        let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         Self {
             host,
             require_control_token,
@@ -245,6 +247,7 @@ impl AppState {
             skills_registry,
             jobs,
             skill_install_jobs,
+            template_remote_source_sync_jobs,
         }
     }
 
@@ -260,6 +263,7 @@ impl AppState {
         let skills_registry = host.skills_registry();
         let jobs = JobRegistry::default();
         let skill_install_jobs = Arc::new(tokio::sync::Semaphore::new(1));
+        let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         Self {
             host,
             require_control_token: false,
@@ -269,6 +273,7 @@ impl AppState {
             skills_registry,
             jobs,
             skill_install_jobs,
+            template_remote_source_sync_jobs,
         }
     }
 
@@ -503,6 +508,10 @@ pub fn router(state: AppState) -> Router {
             get(templates::template_detail),
         )
         .route("/templates/catalog/check", post(templates::check_template))
+        .route(
+            "/templates/remote-sources/sync",
+            post(templates::sync_template_remote_sources),
+        )
         .route(
             "/control/templates/install",
             post(templates::install_template),

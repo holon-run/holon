@@ -1,7 +1,7 @@
 ---
 title: RFC: Agent Initialization and Template
 date: 2026-04-22
-updated: 2026-06-24
+updated: 2026-07-02
 status: accepted
 issue:
   - 367
@@ -274,26 +274,11 @@ agent_templates/
 collisions with prompt templates, UI templates, workflow templates, and other
 future template-like assets.
 
-A repository may optionally include a small repository index:
-
-```text
-holon-index.toml
-```
-
-Example:
-
-```toml
-schema = "holon.repository.v1"
-
-[collections]
-skills = "skills"
-agent_templates = "agent_templates"
-```
-
-The index is an optimization and capability declaration, not the source of the
-template body. The source of truth remains the per-template directory.
-Implementations may scan the default `skills/` and `agent_templates/`
-directories when `holon-index.toml` is absent.
+Template discovery uses convention over configuration: implementations scan the
+default `agent_templates/` directory. There is no repository index file; the
+directory layout itself is the capability declaration. This keeps the repository
+layout simple and makes it suitable as a public standard rather than a
+tool-specific format.
 
 ### GitHub URL format
 
@@ -324,9 +309,9 @@ If the URL does not resolve to a readable directory with the expected template
 shape, template application should fail.
 
 Repository-level discovery is a separate catalog operation from explicit
-template URL application. A daemon may discover a GitHub repository by reading
-`holon-index.toml` or by scanning the default collection directories, then
-expose the discovered package catalog through API responses.
+template URL application. A daemon discovers templates in configured remote
+sources by scanning the `agent_templates/` directory and exposes the catalog
+through API responses.
 
 ### Builtin templates
 
@@ -457,6 +442,102 @@ initialization:
 This split mirrors skill discovery versus skill activation and keeps GUI
 management from becoming coupled to one creation flow.
 
+### Remote source configuration
+
+Remote template sources are configured explicitly in daemon-level config:
+
+```json
+{
+  "agent_templates": {
+    "remote_sources": {
+      "community": {
+        "url": "https://github.com/holon-run/agent-templates",
+        "ref": "main",
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+Config fields:
+
+- `url`: remote repository URL; v1 supports GitHub repository URLs
+- `ref`: optional branch/tag/commit; omitted means provider default branch
+- `enabled`: optional bool, default `true`
+
+v1 supported URL shape: GitHub repository URL
+(`https://github.com/<owner>/<repo>`). Internally normalized as `kind = "github"`
+so generic git/http can be added later without changing the public config shape.
+
+v1 non-goals:
+
+- no env/CLI override source of truth
+- no secret material in config
+- no implicit trust source from `template-provenance.json`, existing `agent_home`,
+  or ad-hoc URLs
+- no configurable remote repo layout path
+
+### Remote source sync
+
+Sync is explicit, not automatic:
+
+```
+POST /templates/remote-sources/sync
+```
+
+Request body (optional):
+
+```json
+{
+  "source_id": "community",
+  "force": false
+}
+```
+
+- Omit `source_id` to sync all enabled sources
+- `force: true` bypasses cache freshness checks
+
+Sync runs as a daemon job (`kind = "agent_template.remote_sources.sync"`) through
+the existing `/jobs` infrastructure. Jobs are asynchronous and trackable.
+
+Sync results are persisted in DB table `agent_template_remote_source_syncs` with
+fields: `source_id`, `resolved_ref`, `resolved_revision` (commit SHA), `synced_at`.
+
+Cache policy: conservative. Each source has its own cache directory. Last-good
+cache is preserved on sync failure. Disabled or removed source caches are not
+automatically cleaned up.
+
+### Catalog API response
+
+`GET /templates/catalog` returns:
+
+```json
+{
+  "catalog": [
+    {
+      "id": "holon-developer",
+      "source": "builtin",
+      "source_id": null,
+      "name": "Holon Developer",
+      "description": "A long-lived implementation-focused agent.",
+      "resolved_ref": null,
+      "resolved_revision": null
+    }
+  ],
+  "sources": [
+    { "source": "builtin", "source_id": null, "kind": "builtin", "enabled": true },
+    { "source": "remote", "source_id": "community", "kind": "github", "enabled": true,
+      "url": "https://github.com/holon-run/agent-templates",
+      "resolved_ref": "main", "resolved_revision": "abc1234" }
+  ],
+  "diagnostics": []
+}
+```
+
+`resolved_ref` is the configured or default branch name. `resolved_revision` is
+the concrete commit SHA from the last successful sync.
+
 ## Evolving `AGENTS.md`
 
 ### `AGENTS.md` is allowed to evolve
@@ -536,8 +617,8 @@ The intended direction is:
    catalog-qualified selector, absolute path, or GitHub URL
 3. user-authored template packages live under
    `~/.agents/agent_templates/<template_id>/`
-4. package repositories use top-level `skills/` and `agent_templates/`
-   collections, with optional `holon-index.toml`
+4. package repositories use top-level `agent_templates/` convention;
+   no index file required
 5. each template package uses `template.toml`, `AGENTS.md`, and optional
    `skills.toml`
 6. templates materialize an initial `agent_home/AGENTS.md`
