@@ -580,10 +580,6 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             })
         };
 
-    if estimated_baseline_tokens > effective_budget_estimated_tokens {
-        return baseline_over_budget("baseline_unfit", 0, estimated_baseline_tokens);
-    }
-
     let mut exact_conversation = vec![ConversationMessage::UserBlocks(
         prompt_frame.context_blocks.clone(),
     )];
