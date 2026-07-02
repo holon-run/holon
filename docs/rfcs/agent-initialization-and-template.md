@@ -502,7 +502,9 @@ Sync runs as a daemon job (`kind = "agent_template.remote_sources.sync"`) throug
 the existing `/jobs` infrastructure. Jobs are asynchronous and trackable.
 
 Sync results are persisted in DB table `agent_template_remote_source_syncs` with
-fields: `source_id`, `resolved_ref`, `resolved_revision` (commit SHA), `synced_at`.
+fields: `source_id`, `kind`, `url`, `requested_ref`, `enabled`, `status`,
+`last_synced_at`, `resolved_ref`, nullable `resolved_revision`, `catalog_json`,
+`diagnostics_json`, and `error`.
 
 Cache policy: conservative. Each source has its own cache directory. Last-good
 cache is preserved on sync failure. Disabled or removed source caches are not
@@ -516,27 +518,32 @@ automatically cleaned up.
 {
   "catalog": [
     {
-      "id": "holon-developer",
+      "catalog_id": "builtin:holon-developer",
+      "template": "holon-developer",
+      "template_id": "holon-developer",
       "source": "builtin",
-      "source_id": null,
       "name": "Holon Developer",
       "description": "A long-lived implementation-focused agent.",
-      "resolved_ref": null,
-      "resolved_revision": null
+      "included_skills": []
     }
   ],
   "sources": [
-    { "source": "builtin", "source_id": null, "kind": "builtin", "enabled": true },
-    { "source": "remote", "source_id": "community", "kind": "github", "enabled": true,
+    { "source_id": "community", "kind": "github", "enabled": true,
+      "status": "synced",
       "url": "https://github.com/holon-run/agent-templates",
-      "resolved_ref": "main", "resolved_revision": "abc1234" }
+      "resolved_ref": "main", "resolved_revision": null,
+      "last_synced_at": "2026-01-01T00:00:00Z" }
   ],
   "diagnostics": []
 }
 ```
 
 `resolved_ref` is the configured or default branch name. `resolved_revision` is
-the concrete commit SHA from the last successful sync.
+nullable in v1 because GitHub contents discovery currently resolves branch
+names for request stability but does not require an additional commit SHA
+lookup. Remote entries include `source_id`, `resolved_ref`, and `source_url`;
+`GET /templates/catalog/{catalog_id}` can resolve remote details by fetching the
+template tree from `source_url`.
 
 ## Evolving `AGENTS.md`
 

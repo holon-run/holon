@@ -97,11 +97,9 @@ pub async fn create_job(
 ) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     match request {
-        CreateJobRequest::SkillInstall { params } => {
-            create_skill_install_job(state, params)
-                .await
-                .map(IntoResponse::into_response)
-        }
+        CreateJobRequest::SkillInstall { params } => create_skill_install_job(state, params)
+            .await
+            .map(IntoResponse::into_response),
         CreateJobRequest::AgentTemplateRemoteSourcesSync { params } => {
             create_template_remote_source_sync_job(state, params)
                 .await
@@ -247,7 +245,8 @@ async fn create_skill_install_job(
             "ok": true,
             "job": job,
         })),
-    )).into_response())
+    ))
+        .into_response())
 }
 
 pub(super) async fn create_template_remote_source_sync_job(
@@ -378,10 +377,16 @@ pub(super) async fn create_template_remote_source_sync_job(
                 }
                 Err(error) => {
                     failed += 1;
-                    let message = error.to_string();
-                    let _ = crate::agent_template::record_agent_template_remote_source_sync_failure(
-                        &db, &source_id, &config, &message,
-                    );
+                    let mut message = error.to_string();
+                    if let Err(record_error) =
+                        crate::agent_template::record_agent_template_remote_source_sync_failure(
+                            &db, &source_id, &config, &message,
+                        )
+                    {
+                        message = format!(
+                            "{message}; additionally failed to persist sync failure: {record_error}"
+                        );
+                    }
                     jobs.update(&job_id, |job| {
                         job.progress.current = completed + failed;
                         if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
@@ -402,9 +407,8 @@ pub(super) async fn create_template_remote_source_sync_job(
             } else {
                 job.status = JobStatus::Failed;
                 job.phase = "failed".into();
-                job.summary = format!(
-                    "Synced {completed} agent template remote source(s), {failed} failed"
-                );
+                job.summary =
+                    format!("Synced {completed} agent template remote source(s), {failed} failed");
                 job.error = Some(job.summary.clone());
             }
             job.result = Some(json!({
@@ -421,7 +425,8 @@ pub(super) async fn create_template_remote_source_sync_job(
             "ok": true,
             "job": job,
         })),
-    )).into_response())
+    ))
+        .into_response())
 }
 
 pub(super) fn create_codex_device_login_job(

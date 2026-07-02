@@ -1820,6 +1820,22 @@
   },
   {
     "method": "post",
+    "path": "/api/templates/remote-sources/sync",
+    "handler": "sync_template_remote_sources",
+    "operation_id": "syncTemplateRemoteSources",
+    "tag": "templates",
+    "parameters": [],
+    "request_schema": "SyncTemplateRemoteSourcesRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/webhooks/generic/{agent_id}",
     "handler": "generic_webhook",
     "operation_id": "genericWebhook",

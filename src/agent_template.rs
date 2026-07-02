@@ -1116,8 +1116,6 @@ fn parse_local_template_manifest(template_dir: &Path) -> Option<TemplateManifest
 /// Reads AGENTS.md content and skill dependencies for the template, suitable
 /// for GUI or daemon API detail responses.
 ///
-/// `Remote` templates are not yet supported; resolution is deferred to the
-/// GitHub library discovery work in #1984.
 #[allow(dead_code)]
 pub(crate) fn resolve_agent_template_detail(
     entry: &AgentTemplateCatalogEntry,
@@ -1184,6 +1182,48 @@ pub(crate) fn resolve_agent_template_detail(
         summary: entry.description.clone(),
         schema_version: entry.schema_version.clone(),
         agents_md,
+        skills,
+    })
+}
+
+pub(crate) async fn resolve_remote_agent_template_detail(
+    entry: &AgentTemplateCatalogEntry,
+) -> Result<AgentTemplateDetail> {
+    let source_url = entry
+        .source_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
+    let resolved = resolve_github_template(source_url).await?;
+    let skills = resolved
+        .skill_refs
+        .into_iter()
+        .map(|skill_ref| match skill_ref {
+            TemplateSkillRef::Local { path } => AgentTemplateSkillDependency {
+                kind: "local".to_string(),
+                reference: path.display().to_string(),
+            },
+            TemplateSkillRef::Github { package } => AgentTemplateSkillDependency {
+                kind: "github".to_string(),
+                reference: package,
+            },
+            TemplateSkillRef::Builtin { name } => AgentTemplateSkillDependency {
+                kind: "builtin".to_string(),
+                reference: name,
+            },
+        })
+        .collect::<Vec<_>>();
+    Ok(AgentTemplateDetail {
+        catalog_id: entry.catalog_id.clone(),
+        template: entry.template.clone(),
+        template_id: entry.template_id.clone(),
+        source: entry.source,
+        source_location: entry.source_url.clone(),
+        name: entry.name.clone(),
+        summary: entry.description.clone(),
+        schema_version: resolved
+            .schema_version
+            .or_else(|| entry.schema_version.clone()),
+        agents_md: resolved.agents_md,
         skills,
     })
 }
@@ -1943,8 +1983,7 @@ pub(crate) async fn discover_github_repo_templates(
     repo: &str,
     git_ref: &str,
 ) -> Result<Vec<AgentTemplateCatalogEntry>> {
-    let template_dir =
-        resolve_remote_template_collection_dir(owner, repo, git_ref).await?;
+    let template_dir = resolve_remote_template_collection_dir(owner, repo, git_ref).await?;
 
     // List subdirectories under the template collection.
     let entries = match fetch_github_dir(owner, repo, git_ref, &template_dir).await? {
@@ -3789,6 +3828,68 @@ name = "Worker"
             entries[0].source_url.as_deref(),
             Some("https://github.com/owner/repo/tree/main/agent_templates/worker")
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_remote_agent_template_detail_fetches_template_tree() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
+                200,
+                github_file_response("# Worker\n\nDoes worker things\n"),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
+                200,
+                github_file_response(
+                    "[[skills]]\nkind = \"github\"\npackage = \"owner/skills/ghx\"\n",
+                ),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                ),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+        let entry = AgentTemplateCatalogEntry {
+            catalog_id: "remote:community:worker".into(),
+            template: "remote:community:worker".into(),
+            template_id: "worker".into(),
+            source: AgentTemplateSourceKind::Remote,
+            path: None,
+            name: "Worker".into(),
+            schema_version: None,
+            description: "Does worker things".into(),
+            included_skills: vec!["owner/skills/ghx".into()],
+            source_id: Some("community".into()),
+            resolved_ref: Some("main".into()),
+            resolved_revision: None,
+            source_url: Some(
+                "https://github.com/owner/repo/tree/main/agent_templates/worker".into(),
+            ),
+        };
+
+        let detail = resolve_remote_agent_template_detail(&entry).await.unwrap();
+        assert_eq!(detail.catalog_id, "remote:community:worker");
+        assert_eq!(detail.source, AgentTemplateSourceKind::Remote);
+        assert_eq!(
+            detail.schema_version.as_deref(),
+            Some("holon.agent_template.v1")
+        );
+        assert!(detail.agents_md.contains("Does worker things"));
+        assert_eq!(detail.skills.len(), 1);
+        assert_eq!(detail.skills[0].kind, "github");
+        assert_eq!(detail.skills[0].reference, "owner/skills/ghx");
     }
     #[tokio::test]
     async fn provenance_records_schema_version_from_template_toml() {

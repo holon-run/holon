@@ -64,6 +64,14 @@ pub async fn template_detail(
         user_home.as_deref(),
         FsPath::new("/nonexistent-agent-home"),
     );
+    let config = state.host.config();
+    let remote = crate::agent_template::load_remote_template_catalog_snapshot(
+        state.host.runtime_db(),
+        &config.stored_config.agent_templates.remote_sources,
+    )
+    .map_err(error_response)?;
+    let mut catalog = catalog;
+    catalog.extend(remote.catalog);
     let Some(entry) = catalog
         .iter()
         .find(|entry| entry.catalog_id == catalog_id || entry.template == catalog_id)
@@ -71,10 +79,17 @@ pub async fn template_detail(
         return Err(not_found(format!("template {catalog_id} not found")));
     };
 
-    let Some(detail) = crate::agent_template::resolve_agent_template_detail(entry) else {
-        return Err(not_found(format!(
-            "template {catalog_id} detail could not be resolved"
-        )));
+    let detail = if entry.source == crate::types::AgentTemplateSourceKind::Remote {
+        crate::agent_template::resolve_remote_agent_template_detail(entry)
+            .await
+            .map_err(error_response)?
+    } else {
+        let Some(detail) = crate::agent_template::resolve_agent_template_detail(entry) else {
+            return Err(not_found(format!(
+                "template {catalog_id} detail could not be resolved"
+            )));
+        };
+        detail
     };
 
     Ok(Json(json!({
