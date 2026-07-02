@@ -809,7 +809,7 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
         .expect("missing turn_local_baseline_over_budget event");
     assert_eq!(
         baseline_event.data["reason"].as_str(),
-        Some("baseline_unfit")
+        Some("minimum_exact_round_unfit")
     );
     assert!(
         baseline_event.data["estimated_baseline_tokens"]
