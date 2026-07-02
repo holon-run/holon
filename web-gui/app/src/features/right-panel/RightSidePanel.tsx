@@ -182,7 +182,7 @@ export function RightSidePanel({
             <TaskDetailPanel task={activeView.task} detailState={taskDetailState} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} />
+          <FileBrowserPanel workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} onClose={onShowAgentOverview} />
         ) : (
           <AgentOverviewPanel
             agent={agent}

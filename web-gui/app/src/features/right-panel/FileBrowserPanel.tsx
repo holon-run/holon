@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createHighlighter, type Highlighter } from "shiki";
+import Markdown from "react-markdown";
+import type { Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtime/types";
 import { useRuntimeStore } from "../../runtime/runtime-store";
@@ -9,6 +12,7 @@ interface FileBrowserPanelProps {
   executionRootId?: string;
   initialFilePath?: string;
   initialPath?: string;
+  onClose?: () => void;
 }
 
 interface SelectedFile {
@@ -128,7 +132,7 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
   return highlighted;
 }
 
-export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath }: FileBrowserPanelProps) {
+export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, onClose }: FileBrowserPanelProps) {
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
   const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
@@ -142,6 +146,19 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const autoOpenedRef = useRef(false);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
+  const [showRendered, setShowRendered] = useState(true);
+
+  // Determine whether the selected file is markdown.
+  const isMarkdownFile = selectedFile?.path?.toLowerCase().endsWith(".md") ?? false;
+
+  // Reset scroll position and toggle state when a new file is opened.
+  useEffect(() => {
+    if (contentScrollRef.current) {
+      contentScrollRef.current.scrollTop = 0;
+    }
+    setShowRendered(true);
+  }, [selectedFile?.path]);
 
   const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
 
@@ -185,6 +202,10 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   };
 
   const openEntry = async (entry: WorkspaceFileEntry) => {
+    if (entry.name === "..") {
+      void loadDir(parentPath);
+      return;
+    }
     if (entry.type === "directory") {
       const dirPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
       void loadDir(dirPath);
@@ -223,6 +244,13 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
   };
 
+  const parentPath = currentPath.split("/").filter(Boolean).slice(0, -1).join("/");
+  const atRoot = !currentPath;
+
+  const markdownComponents: Components = {
+    a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+  };
+
   const entries = listing?.entries ?? [];
   const visibleEntries = showHidden
     ? entries
@@ -230,6 +258,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const dirs = visibleEntries.filter((e) => e.type === "directory" || e.type === "symlink");
   const files = visibleEntries.filter((e) => e.type === "file");
   const sortedEntries = [...dirs, ...files];
+  if (!atRoot) {
+    sortedEntries.unshift({ name: "..", type: "directory" as const, size: 0, mimeType: undefined });
+  }
 
   return (
     <div className="file-browser">
@@ -286,6 +317,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               <button
                 type="button"
                 className="file-browser-entry"
+                data-parent-dir={entry.name === ".." ? true : undefined}
                 data-selected={selectedFile?.path === (currentPath ? `${currentPath}/${entry.name}` : entry.name)}
                 onClick={() => void openEntry(entry)}
               >
@@ -304,13 +336,27 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         <div className="file-browser-viewer">
           <div className="file-browser-viewer-head">
             <strong>{selectedFile.path.split("/").pop()}</strong>
-            <button
-              type="button"
-              aria-label="Back to directory listing"
-              onClick={() => setSelectedFile(null)}
-            >
-              ← Back
-            </button>
+            <div className="file-browser-viewer-actions">
+              {isMarkdownFile ? (
+                <div className="file-browser-md-toggle" role="group" aria-label="Markdown view mode">
+                  <button
+                    type="button"
+                    className={showRendered ? "active" : ""}
+                    onClick={() => setShowRendered(true)}
+                  >
+                    Rendered
+                  </button>
+                  <button
+                    type="button"
+                    className={!showRendered ? "active" : ""}
+                    onClick={() => setShowRendered(false)}
+                  >
+                    Source
+                  </button>
+                </div>
+              ) : null}
+              <button type="button" aria-label="Back to previous page" onClick={() => onClose?.()}>← Back</button>
+            </div>
           </div>
           {selectedFile.loading ? (
             <p className="inspector-muted">Loading file…</p>
@@ -330,13 +376,16 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                   {selectedFile.totalSize ? ` (${formatSize(selectedFile.totalSize)} total)` : ""}.
                 </p>
               ) : null}
-              {highlightedHtml ? (
-                <div
-                  className="file-browser-code"
-                  dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-                />
+              {isMarkdownFile && showRendered ? (
+                <div className="file-browser-markdown" ref={contentScrollRef}>
+                  <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {selectedFile.content}
+                  </Markdown>
+                </div>
+              ) : highlightedHtml ? (
+                <div className="file-browser-code" ref={contentScrollRef} dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
               ) : (
-                <pre className="file-browser-text">
+                <pre className="file-browser-text" ref={contentScrollRef as React.Ref<HTMLPreElement>}>
                   <code>{selectedFile.content}</code>
                 </pre>
               )}
