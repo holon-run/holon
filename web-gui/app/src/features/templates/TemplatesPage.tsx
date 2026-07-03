@@ -263,7 +263,7 @@ export function TemplatesPage({
           <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </CardHeader>
         <CardContent>
-          <form className="skills-add-form" onSubmit={(event) => void handleAddSource(event)}>
+          <form className="skills-add-form template-remote-source-form" onSubmit={(event) => void handleAddSource(event)}>
             <label className="skills-add-source">
               <span>GitHub URL</span>
               <input
@@ -273,9 +273,6 @@ export function TemplatesPage({
                 disabled={sourceFormBusy}
               />
             </label>
-            <span className="template-source-id-preview">
-              Source ID: <strong>{customSourceId.trim() || suggestedSourceId || "generated from GitHub URL"}</strong>
-            </span>
             <label>
               <span>Ref (optional)</span>
               <input
@@ -285,6 +282,10 @@ export function TemplatesPage({
                 disabled={sourceFormBusy}
               />
             </label>
+            <div className="template-source-id-preview">
+              <span>Generated source id</span>
+              <strong>{customSourceId.trim() || suggestedSourceId || "generated from GitHub URL"}</strong>
+            </div>
             <details className="template-source-advanced">
               <summary>Advanced: custom source id</summary>
               <label>
