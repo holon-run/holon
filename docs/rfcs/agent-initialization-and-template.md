@@ -504,25 +504,55 @@ The daemon may also start a non-blocking background sync for enabled sources
 that have never synced or whose last successful sync is stale. That work must
 not block startup, default agent creation, or explicit agent creation.
 
-Sync results are persisted in DB table `agent_template_remote_source_syncs` with
-fields: `source_id`, `kind`, `url`, `requested_ref`, `enabled`, `status`,
-`last_synced_at`, `resolved_ref`, nullable `resolved_revision`, `catalog_json`,
-`diagnostics_json`, and `error`.
-
-Sync materializes each discovered template into:
+Sync materializes each discovered template into the user template library:
 
 ```text
-~/.agents/agent_templates/<template_id>/
+~/.agents/agent_templates/
+  .registry.json
+  <install_id>/
+    template.toml
+    AGENTS.md
+    skills.toml
 ```
 
 This is intentionally the same root used for user-authored templates and
-explicit installs. Managed metadata records the owning remote source and content
-hash. A later sync may update templates it owns, but it must refuse to overwrite
-a user-owned template directory or a template managed by another source.
+explicit installs. Dotfiles and dot-directories under this root are metadata,
+not visible templates; normal catalog discovery only exposes non-dot child
+directories.
+
+Remote source sync is a batch install/update. The `.registry.json` file is the
+local source of truth for remote source snapshots and the installed templates
+created from those snapshots. It records:
+
+- `version`
+- `sources[source_id]`: source kind, URL, requested ref, resolved ref, catalog
+  path, catalog hash, and sync time
+- `installed[install_id]`: original source-local `template_id`, source id,
+  source URL, source resolved ref, remote template path, local path, content
+  hash, and sync time
+
+`template_id` remains source-local. If the desired local directory name is
+available, sync uses the original `template_id` as the `install_id`. If that
+directory already belongs to a user-authored template or another source, sync
+allocates a deterministic suffix such as `<template_id>@<source_id>`, followed
+by numeric suffixes if needed. Re-sync of the same `(source_id, template_id)`
+reuses the previously recorded `install_id`.
+
+A later sync may update a template it owns, but it must refuse to overwrite a
+user-owned directory, a template managed by another source, or a locally edited
+managed template whose current content hash no longer matches the recorded
+baseline. Dirty state is computed from the registry baseline and filesystem
+content rather than persisted as a separate mutable flag.
+
+Sync status is also persisted in DB table
+`agent_template_remote_source_syncs` with fields: `source_id`, `kind`, `url`,
+`requested_ref`, `enabled`, `status`, `last_synced_at`, `resolved_ref`,
+nullable `resolved_revision`, `catalog_json`, `diagnostics_json`, and `error`.
 
 The DB row remains source status metadata for APIs and diagnostics. It is not
-the live catalog source for synced templates; after materialization, normal
-local template discovery exposes the synced templates.
+the installed-template source of truth; after materialization, normal local
+template discovery exposes the synced templates and `.registry.json` records
+their provenance, install mapping, and content baseline.
 
 ### Catalog API response
 

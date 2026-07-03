@@ -26,13 +26,23 @@ Common scenarios:
 Holon keeps visible templates in the user template library:
 
 ```text
-~/.agents/agent_templates/<template_id>/
+~/.agents/agent_templates/
+  .registry.json
+  <install_id>/
 ```
 
 User-authored templates, explicit installs, and remote-source sync results all
 use this same root. Remote-source sync is equivalent to a batch install/update
-of managed templates into that library; Holon writes managed metadata so later
-syncs can update their own templates without overwriting user-owned directories.
+of managed templates into that library. Holon writes `.registry.json` metadata
+in the root to track synced remote sources, installed template mappings, and
+content hashes.
+
+Template IDs stay local to their source. If a synced remote template conflicts
+with an existing local directory, Holon keeps the remote `template_id` in
+metadata and installs it under a deterministic local `install_id`, such as
+`worker@official`. Re-syncs reuse the recorded install id. If a managed template
+has local edits, sync refuses to overwrite it until the operator resolves the
+dirty copy.
 
 Holon also carries one hidden built-in `holon-default` template for zero-config
 and offline startup. It is not seeded into `~/.agents/agent_templates`, and it
