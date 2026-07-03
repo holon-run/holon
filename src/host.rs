@@ -638,21 +638,18 @@ impl RuntimeHost {
         }
         if let Some(template) = template {
             let agent_home = self.agent_data_dir(agent_id);
+            let user_home = crate::agent_template::user_home_dir()?;
             if let Some(catalog_agent_home) = catalog_agent_home {
                 initialize_agent_home_from_template_with_catalog(
                     &agent_home,
-                    &self.config().home_dir,
+                    &user_home,
                     catalog_agent_home,
                     template,
                 )
                 .await?;
             } else {
-                initialize_agent_home_from_template_with_home(
-                    &agent_home,
-                    &self.config().home_dir,
-                    template,
-                )
-                .await?;
+                initialize_agent_home_from_template_with_home(&agent_home, &user_home, template)
+                    .await?;
             }
         } else {
             initialize_agent_home_without_template(&self.agent_data_dir(agent_id))?;
@@ -1252,9 +1249,10 @@ impl RuntimeHost {
 
     async fn ensure_default_agent_home_initialized(&self) -> Result<()> {
         let agent_home = self.agent_data_dir(&self.config().default_agent_id);
+        let user_home = crate::agent_template::user_home_dir()?;
         let _ = ensure_agent_home_agents_md_from_template_with_home(
             &agent_home,
-            &self.config().home_dir,
+            &user_home,
             DEFAULT_AGENT_TEMPLATE_ID,
         )
         .await?;
@@ -1271,9 +1269,10 @@ impl RuntimeHost {
         let child_agent_id = ids::runtime_id(TEMP_CHILD_AGENT_PREFIX.trim_end_matches('_'));
         self.validate_agent_id(&child_agent_id)?;
         if let Some(template) = template {
+            let user_home = crate::agent_template::user_home_dir()?;
             initialize_agent_home_from_template_with_catalog(
                 &self.agent_data_dir(&child_agent_id),
-                &self.config().home_dir,
+                &user_home,
                 catalog_agent_home,
                 template,
             )

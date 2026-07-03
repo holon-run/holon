@@ -3033,6 +3033,65 @@ code {
   grid-template-columns: minmax(140px, 0.6fr) minmax(180px, 1fr) auto;
 }
 
+.template-remote-source-form {
+  grid-template-columns: minmax(260px, 1fr) minmax(140px, 180px) auto;
+  align-items: start;
+}
+
+.template-remote-source-form .skills-add-source {
+  min-width: 0;
+}
+
+.template-remote-source-form .template-source-id-preview,
+.template-remote-source-form .template-source-advanced {
+  grid-column: 1 / -1;
+}
+
+.template-remote-source-form .template-source-id-preview {
+  margin-top: -2px;
+}
+
+.template-remote-source-form > button {
+  align-self: end;
+}
+
+.template-source-id-preview {
+  display: grid;
+  gap: 5px;
+  align-self: stretch;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  color: var(--muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.template-source-id-preview strong {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.template-source-advanced {
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.template-source-advanced summary {
+  cursor: pointer;
+  padding-top: 10px;
+  width: fit-content;
+}
+
+.template-source-advanced label {
+  margin-top: 8px;
+  max-width: 360px;
+}
+
 .template-row-title,
 .template-row-meta {
   display: flex;
