@@ -174,17 +174,17 @@ When you start Holon, it automatically creates a **default agent** in `~/.holon/
 Create a specialized agent for a specific role:
 
 ```bash
-holon agent create reviewer --template holon-reviewer
+holon agent create reviewer
 ```
 
-This creates a new agent in `~/.holon/agents/reviewer/` initialized with the holon-reviewer template.
+This creates a new agent in `~/.holon/agents/reviewer/` initialized with the default role contract.
 
 ### Use a template
 
 Templates provide reusable agent configurations:
 
 ```bash
-# Use a builtin template by ID
+# Use an installed or synced template by ID
 holon agent create docs-helper --template holon-developer
 
 # Use a local template path

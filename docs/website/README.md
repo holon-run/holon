@@ -62,7 +62,7 @@ holon tui
 ```
 
 Holon automatically provides a default main agent. You can also create a more
-specialized agent from a template:
+specialized agent after syncing or installing templates:
 
 ```bash
 holon agent create builder --template holon-developer

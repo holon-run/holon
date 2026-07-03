@@ -31,7 +31,7 @@
 | Original section | Current home |
 |------------------|--------------|
 | Agent State | [Agent state spec](./website/spec/agent-state.md) |
-| Agent Initialization Contract | Implementation detail; see `src/runtime/agent_init.rs` and `builtin_templates/` |
+| Agent Initialization Contract | Implementation detail; see `src/runtime/agent_init.rs` and `src/agent_template.rs` |
 | Agent Identity And Visibility Contract | [Agent state spec](./website/spec/agent-state.md) — lifecycle, identity, visibility, ownership, profile presets |
 | Agent Model Selection | [Agent state spec](./website/spec/agent-state.md) |
 | Agent Inspection Surface Contract | Control-plane API; see `/agents/list`, `/agents/:id/status`, `/agents/:id/state` |
@@ -121,7 +121,7 @@ focused spec page. They remain in source code, RFCs, or CLI reference:
 - **Failure artifact envelope** (operator-facing failure normalization):
   `src/types.rs` `FailureArtifact`
 - **Agent initialization** (template selection, agent_home materialization):
-  `src/runtime/agent_init.rs`, `builtin_templates/`
+  `src/runtime/agent_init.rs`, `src/agent_template.rs`
 - **Memory search index** (FTS indexing, CJK, rebuild markers):
   `src/memory/`, tool schema inventory
 - **Local operator console** (TUI contract):

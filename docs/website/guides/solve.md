@@ -130,8 +130,8 @@ When you run `holon solve`, these steps happen inside the runtime:
    `$TMPDIR/holon-output-<uuid>`) and a `github-context/` subdirectory holds
    input metadata.
 
-3. **Create the agent** — Holon creates an agent from the built-in
-   `holon-github-solve` template, which includes the `github-issue-solve`,
+3. **Create the agent** — Holon creates an agent from the configured solve
+   template, normally `holon-github-solve`, which includes the `github-issue-solve`,
    `github-pr-fix`, `github-review`, and `ghx` skills.
 
 4. **Run the prompt** — The runtime constructs a prompt describing the target
@@ -181,7 +181,7 @@ serve different purposes:
 |---|---|---|
 | Use case | General headless tasks | GitHub issues and PRs |
 | Input | Free-text prompt | GitHub target ref |
-| Agent template | `holon-default` | `holon-github-solve` (GitHub skills pre-loaded) |
+| Agent template | hidden default when no selector is provided | `holon-github-solve` (GitHub skills pre-loaded) |
 | Output | Text or JSON to stdout | Structured artifacts in output directory |
 | GitHub integration | Manual (`gh` CLI) | Automatic context collection and skill dispatch |
 | Pipeline-friendly | Use `--json` for structured output | Built-in manifest and summary files |

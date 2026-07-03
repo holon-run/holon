@@ -273,13 +273,9 @@ pub(super) async fn create_template_remote_source_sync_job(
     let jobs = state.jobs.clone();
     let sync_jobs = state.template_remote_source_sync_jobs.clone();
     let db = state.host.runtime_db().clone();
-    let configured_sources = state
-        .host
-        .config()
-        .stored_config
-        .agent_templates
-        .remote_sources
-        .clone();
+    let configured_sources = crate::agent_template::effective_agent_template_remote_sources(
+        &state.host.config().stored_config.agent_templates,
+    );
     let job_id = id.clone();
     tokio::spawn(async move {
         let selected_sources = configured_sources
@@ -349,6 +345,24 @@ pub(super) async fn create_template_remote_source_sync_job(
         };
         let _permit = permit;
 
+        let user_home = match crate::agent_template::user_home_dir() {
+            Ok(path) => path,
+            Err(error) => {
+                let message = error.to_string();
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Remote source sync failed".into();
+                    job.error = Some(message.clone());
+                    for item in &mut job.items {
+                        item.status = JobStatus::Failed;
+                        item.error = Some(message.clone());
+                    }
+                });
+                return;
+            }
+        };
+
         let mut completed = 0usize;
         let mut failed = 0usize;
         let mut source_results = Vec::new();
@@ -360,8 +374,10 @@ pub(super) async fn create_template_remote_source_sync_job(
                     item.error = None;
                 }
             });
-            match crate::agent_template::sync_agent_template_remote_source(&db, &source_id, &config)
-                .await
+            match crate::agent_template::sync_agent_template_remote_source(
+                &db, &user_home, &source_id, &config,
+            )
+            .await
             {
                 Ok(status) => {
                     completed += 1;

@@ -131,7 +131,7 @@ a new agent:
 - Or create one through the CLI:
 
 ```bash
-holon agent create builder --template holon-developer
+holon agent create builder
 holon agent list
 ```
 

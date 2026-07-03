@@ -21,9 +21,12 @@ pub async fn templates_catalog(
         user_home.as_deref(),
         FsPath::new("/nonexistent-agent-home"),
     );
+    let remote_sources = crate::agent_template::effective_agent_template_remote_sources(
+        &config.stored_config.agent_templates,
+    );
     let remote = crate::agent_template::load_remote_template_catalog_snapshot(
         state.host.runtime_db(),
-        &config.stored_config.agent_templates.remote_sources,
+        &remote_sources,
     )
     .map_err(error_response)?;
     let mut catalog = catalog;
@@ -65,9 +68,12 @@ pub async fn template_detail(
         FsPath::new("/nonexistent-agent-home"),
     );
     let config = state.host.config();
+    let remote_sources = crate::agent_template::effective_agent_template_remote_sources(
+        &config.stored_config.agent_templates,
+    );
     let remote = crate::agent_template::load_remote_template_catalog_snapshot(
         state.host.runtime_db(),
-        &config.stored_config.agent_templates.remote_sources,
+        &remote_sources,
     )
     .map_err(error_response)?;
     let mut catalog = catalog;
