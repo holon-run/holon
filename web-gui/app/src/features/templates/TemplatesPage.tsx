@@ -131,7 +131,7 @@ export function TemplatesPage({
           <span className="eyebrow">Agent Template Library</span>
           <h1>Agent Templates</h1>
           <p>
-            Browse read-only AgentTemplate definitions from builtin, global, and remote sources. Install/remove user templates
+            Browse read-only AgentTemplate definitions from global and remote sources. Install/remove user templates
             through daemon APIs; source configuration can follow in a later settings phase.
           </p>
         </div>
@@ -201,7 +201,7 @@ export function TemplatesPage({
             </form>
           </div>
           <p className="skills-add-help">
-            Template content is read-only. Use the + button in Active Agents to create an agent from a template. Removal targets user/global templates; builtin and remote entries remain owned by their source.
+            Template content is read-only. Use the + button in Active Agents to create an agent from a template. Removal targets user/global templates; remote entries remain owned by their source.
           </p>
 
           <div className="skills-toolbar" role="search">
@@ -220,11 +220,9 @@ export function TemplatesPage({
               <span>Source</span>
               <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}>
                 <option value="all">All sources</option>
-                <option value="builtin">Builtin</option>
                 <option value="user_global">Global</option>
-                <option value="user">User</option>
                 <option value="remote">Remote</option>
-                <option value="agent">Agent</option>
+                <option value="agent_home">Agent</option>
               </select>
             </label>
           </div>
@@ -363,7 +361,7 @@ export function TemplateDetailPage({
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? "Refreshing…" : "Refresh"}
           </Button>
-          {template?.source === "user_global" || template?.source === "user" ? (
+          {template?.source === "user_global" ? (
             <Button type="button" variant="outline" disabled={loading} onClick={() => void onRemoveTemplate(template.templateId)}>
               Remove
             </Button>
@@ -482,7 +480,7 @@ function TemplateRow({
   onOpen: (catalogId: string) => void;
   onRemove: (templateId: string) => Promise<boolean>;
 }) {
-  const canRemove = template.source === "user_global" || template.source === "user";
+  const canRemove = template.source === "user_global";
   return (
     <li className="skills-row">
       <button className="skills-row-open" type="button" onClick={() => onOpen(template.catalogId)}>
@@ -512,8 +510,7 @@ function TemplateRow({
 function templateStats(templates: AgentTemplateCatalogEntry[]) {
   return [
     { label: "templates", value: String(templates.length) },
-    { label: "builtin", value: String(templates.filter((template) => template.source === "builtin").length) },
-    { label: "global", value: String(templates.filter((template) => template.source === "user_global" || template.source === "user").length) },
+    { label: "global", value: String(templates.filter((template) => template.source === "user_global").length) },
     { label: "remote", value: String(templates.filter((template) => template.source === "remote").length) },
   ];
 }

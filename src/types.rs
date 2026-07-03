@@ -723,17 +723,17 @@ impl AgentTemplateSourceKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTemplateCatalogEntry {
-    /// Stable source-scoped catalog identifier, such as `builtin:holon-default`.
+    /// Stable source-scoped catalog identifier, such as `user:holon-reviewer`.
     pub catalog_id: String,
     /// Preferred selector accepted by SpawnAgent.template.
     ///
     /// `catalog_id` is also accepted, along with source aliases such as
-    /// `builtin:`, `user:`, and `agent:`.
+    /// `user:`, `agent:`, and `remote:`.
     pub template: String,
     /// Human-readable local id after precedence is applied.
     pub template_id: String,
     pub source: AgentTemplateSourceKind,
-    /// Filesystem location for local templates; builtins have no path.
+    /// Filesystem location for local templates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     /// Human-readable name from `template.toml`, fallback to template_id.
@@ -772,7 +772,7 @@ pub struct AgentTemplateCatalogEntry {
 /// a GUI detail view or daemon API response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTemplateDetail {
-    /// Stable source-scoped catalog identifier, such as `builtin:holon-default`.
+    /// Stable source-scoped catalog identifier, such as `user:holon-reviewer`.
     pub catalog_id: String,
     /// Preferred selector accepted by SpawnAgent.template.
     pub template: String,

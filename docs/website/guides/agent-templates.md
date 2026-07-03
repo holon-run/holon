@@ -81,7 +81,8 @@ A template consists of a directory containing:
 ```
 my-template/
 ├── AGENTS.md       # Required — the agent role contract
-└── skills.json     # Optional — skill references to pre-install
+├── template.toml   # Optional — display metadata and compatibility
+└── skills.toml     # Optional — skill references to pre-install
 ```
 
 ### `AGENTS.md`
@@ -90,18 +91,29 @@ The agent's role contract. This is the same format as any agent's `AGENTS.md`.
 The runtime appends the standard Agent Home guidance
 automatically, so your template only needs to define the role-specific content.
 
-### `skills.json`
+### `template.toml`
+
+An optional manifest for template metadata such as display name, summary,
+schema, and compatibility. Synced remote templates use it for catalog metadata;
+path-based local templates can omit it and fall back to directory/AGENTS.md
+metadata.
+
+### `skills.toml`
 
 An optional manifest that lists skills to pre-install when the agent is created:
 
-```json
-{
-  "skill_refs": [
-    { "kind": "builtin", "name": "github-issue-solve" },
-    { "kind": "builtin", "name": "github-pr-fix" },
-    { "kind": "local", "path": "/path/to/custom-skill" }
-  ]
-}
+```toml
+[[skills]]
+kind = "builtin"
+name = "github-issue-solve"
+
+[[skills]]
+kind = "builtin"
+name = "github-pr-fix"
+
+[[skills]]
+kind = "local"
+path = "/path/to/custom-skill"
 ```
 
 Two skill reference kinds are supported:
@@ -111,8 +123,8 @@ Two skill reference kinds are supported:
 
 ## Creating Custom Templates
 
-Create a directory with an `AGENTS.md` and optional `skills.json`, then use the
-absolute path as the template selector:
+Create a directory with an `AGENTS.md`, optional `template.toml`, and optional
+`skills.toml`, then use the absolute path as the template selector:
 
 ```bash
 holon agent create my-agent --template /path/to/my-template

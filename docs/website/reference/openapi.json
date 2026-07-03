@@ -9711,7 +9711,7 @@
     },
     "/api/templates/catalog": {
       "get": {
-        "description": "Return the global AgentTemplate catalog (builtin + user global library + synced remote sources).",
+        "description": "Return the global AgentTemplate catalog (user global library + synced remote sources).",
         "operationId": "templatesCatalog",
         "parameters": [],
         "responses": {
