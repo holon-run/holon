@@ -1108,7 +1108,6 @@ pub async fn sync_agent_template_remote_source(
         registry.installed.insert(record.local_path.clone(), record);
         write_template_registry(&templates_root, &registry)?;
     }
-    write_template_registry(&templates_root, &registry)?;
     let status = AgentTemplateRemoteSourceStatus {
         source_id: source_id.to_string(),
         kind: "github".into(),
@@ -2004,7 +2003,14 @@ fn managed_template_has_local_changes(
 ) -> Result<bool> {
     match current_managed_template_content_hash(template_dir) {
         Ok(content_hash) => Ok(content_hash != state.content_hash),
-        Err(_) => Ok(true),
+        Err(error) => {
+            tracing::warn!(
+                template_dir = %template_dir.display(),
+                error = ?error,
+                "failed to resolve managed template content; treating it as locally changed"
+            );
+            Ok(true)
+        }
     }
 }
 
