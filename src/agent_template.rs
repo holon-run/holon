@@ -1471,6 +1471,12 @@ fn unknown_template_error(
     home_dir: &Path,
     catalog_agent_home: &Path,
 ) -> anyhow::Error {
+    tracing::warn!(
+        template = %template,
+        home_dir = %home_dir.display(),
+        catalog_agent_home = %catalog_agent_home.display(),
+        "unknown template selector — diagnosing home_dir mismatch",
+    );
     let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
     let known = if catalog.is_empty() {
         "none".to_string()
@@ -2347,7 +2353,11 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
         let response = request.send().context("failed to request GitHub tarball")?;
         if response.status().is_success() {
             resolved_path = candidate_path;
-            bytes = Some(response.bytes().context("failed to read GitHub tarball body")?);
+            bytes = Some(
+                response
+                    .bytes()
+                    .context("failed to read GitHub tarball body")?,
+            );
             break;
         }
     }
@@ -2475,9 +2485,7 @@ pub fn validate_github_template_url(url: &str) -> Result<String> {
     let parsed = ParsedGithubTemplateUrl::parse(url)?;
     Ok(format!(
         "{}/{}/tree/{}",
-        parsed.owner,
-        parsed.repo,
-        parsed.all_after_tree,
+        parsed.owner, parsed.repo, parsed.all_after_tree,
     ))
 }
 
