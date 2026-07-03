@@ -236,7 +236,6 @@ const BUILTIN_SKILLS: &[BuiltinSkill] = &[
 ];
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct GitHubContentsFileResponse {
     #[serde(rename = "type")]
     kind: String,
