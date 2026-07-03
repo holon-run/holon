@@ -1,10 +1,11 @@
 use std::{
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
 };
 
 use crate::{
-    config::AgentTemplateRemoteSourceConfigFile,
+    config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     runtime_db::RuntimeDb,
     types::{
         AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
@@ -23,8 +24,10 @@ const TEMPLATE_AGENTS_FILENAME: &str = "AGENTS.md";
 const TEMPLATE_SKILLS_FILENAME: &str = "skills.toml";
 const TEMPLATE_MANIFEST_FILENAME: &str = "template.toml";
 const TEMPLATE_PROVENANCE_FILENAME: &str = "template-provenance.json";
-const BUILTIN_TEMPLATE_STATE_FILENAME: &str = ".holon-builtin-template.json";
+const MANAGED_TEMPLATE_STATE_FILENAME: &str = ".holon-template.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
+pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID: &str = "official";
+pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL: &str = "https://github.com/holon-run/holon";
 const MEMORY_SELF_INITIAL: &str = "# Self Memory\n\n";
 const MEMORY_OPERATOR_INITIAL: &str = r#"# Operator Memory
 
@@ -44,62 +47,38 @@ pub const REQUIRED_AGENT_HOME_GUIDANCE: &str = r#"## Holon Agent Home
 - `.holon/` is runtime-owned state, ledger, index, and cache storage. Do not edit it as ordinary agent-authored files.
 "#;
 
-const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
-    BuiltinTemplate {
-        template_id: "holon-default",
-        version: 1,
-        agents_md: include_str!("../builtin_templates/holon-default/AGENTS.md"),
-        template_toml: include_str!("../builtin_templates/holon-default/template.toml"),
-        skill_names: &[],
-    },
-    BuiltinTemplate {
-        template_id: "holon-developer",
-        version: 1,
-        agents_md: include_str!("../builtin_templates/holon-developer/AGENTS.md"),
-        template_toml: include_str!("../builtin_templates/holon-developer/template.toml"),
-        skill_names: &[],
-    },
-    BuiltinTemplate {
-        template_id: "holon-reviewer",
-        version: 1,
-        agents_md: include_str!("../builtin_templates/holon-reviewer/AGENTS.md"),
-        template_toml: include_str!("../builtin_templates/holon-reviewer/template.toml"),
-        skill_names: &[],
-    },
-    BuiltinTemplate {
-        template_id: "holon-release",
-        version: 1,
-        agents_md: include_str!("../builtin_templates/holon-release/AGENTS.md"),
-        template_toml: include_str!("../builtin_templates/holon-release/template.toml"),
-        skill_names: &[],
-    },
-    BuiltinTemplate {
-        template_id: "holon-github-solve",
-        version: 1,
-        agents_md: include_str!("../builtin_templates/holon-github-solve/AGENTS.md"),
-        template_toml: include_str!("../builtin_templates/holon-github-solve/template.toml"),
-        skill_names: &[
-            "ghx",
-            "github-issue-solve",
-            "github-pr-fix",
-            "github-review",
-        ],
-    },
-];
+const DEFAULT_BUILTIN_TEMPLATE: BuiltinTemplate = BuiltinTemplate {
+    template_id: "holon-default",
+    agents_md: include_str!("../builtin_templates/holon-default/AGENTS.md"),
+    template_toml: include_str!("../builtin_templates/holon-default/template.toml"),
+    skill_names: &[],
+};
+const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[DEFAULT_BUILTIN_TEMPLATE];
 
 struct BuiltinTemplate {
     template_id: &'static str,
-    version: u32,
     agents_md: &'static str,
     template_toml: &'static str,
     skill_names: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct BuiltinTemplateState {
+struct ManagedTemplateState {
     template_id: String,
-    version: u32,
     content_hash: String,
+    owner: ManagedTemplateOwner,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ManagedTemplateOwner {
+    RemoteSource {
+        source_id: String,
+        url: String,
+        resolved_ref: String,
+        source_url: String,
+        synced_at: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -251,26 +230,6 @@ struct GitHubContentsDirEntry {
     kind: String,
 }
 
-/// Parsed `holon-index.toml` repository manifest.
-///
-/// Present at a remote repository root to declare the collection layout.
-/// When absent, discovery falls back to the conventional `agent_templates/` directory.
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct HolonIndexManifest {
-    #[serde(default)]
-    schema: String,
-    #[serde(default)]
-    collections: HolonIndexCollections,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Default, Deserialize)]
-struct HolonIndexCollections {
-    skills: Option<String>,
-    agent_templates: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTemplateRemoteSourceSyncStatus {
@@ -317,6 +276,7 @@ pub struct AgentTemplateRemoteCatalogSnapshot {
 struct ResolvedTemplate {
     provenance: TemplateProvenanceSource,
     agents_md: String,
+    template_toml: Option<String>,
     skill_refs: Vec<TemplateSkillRef>,
     schema_version: Option<String>,
 }
@@ -337,42 +297,15 @@ pub fn agent_memory_operator_path(agent_home: &Path) -> PathBuf {
 }
 
 fn builtin_template_state_path(template_dir: &Path) -> PathBuf {
-    template_dir.join(BUILTIN_TEMPLATE_STATE_FILENAME)
+    template_dir.join(MANAGED_TEMPLATE_STATE_FILENAME)
 }
 
 pub fn seed_builtin_templates() -> Result<()> {
-    let home_dir = user_home_dir()?;
-    seed_builtin_templates_for_home(&home_dir)
+    Ok(())
 }
 
 pub fn seed_builtin_templates_for_home(home_dir: &Path) -> Result<()> {
-    let templates_root = templates_root_for_home(home_dir);
-    fs::create_dir_all(&templates_root)
-        .with_context(|| format!("failed to create {}", templates_root.display()))?;
-
-    for builtin in BUILTIN_TEMPLATES {
-        let template_dir = templates_root.join(builtin.template_id);
-        let existed_before = template_dir.exists();
-        let was_empty_before = if existed_before {
-            fs::read_dir(&template_dir)?.next().is_none()
-        } else {
-            false
-        };
-        let existing_state = read_builtin_template_state(&template_dir)?;
-        let should_write = if !existed_before || was_empty_before {
-            true
-        } else if let Some(state) = existing_state.as_ref() {
-            builtin_template_is_managed(&template_dir, state)?
-                && (state.version != builtin.version
-                    || state.content_hash != builtin_template_content_hash(builtin))
-        } else {
-            false
-        };
-        if should_write {
-            write_builtin_template(&template_dir, builtin)?;
-        }
-    }
-
+    let _ = home_dir;
     Ok(())
 }
 
@@ -399,13 +332,18 @@ pub async fn initialize_agent_home_from_template_with_catalog(
     .await
 }
 
-pub fn initialize_agent_home_without_template(agent_home: &Path) -> Result<()> {
-    ensure_agent_home_layout(agent_home)?;
-    let agents_md_path = agent_home.join(TEMPLATE_AGENTS_FILENAME);
-    create_file_if_missing(
-        &agents_md_path,
-        render_agent_home_agents_md("", None).as_bytes(),
-    )
+pub async fn initialize_agent_home_without_template(
+    agent_home: &Path,
+) -> Result<TemplateProvenanceRecord> {
+    let home_dir = user_home_dir()?;
+    initialize_agent_home_without_template_with_home(agent_home, &home_dir).await
+}
+
+pub async fn initialize_agent_home_without_template_with_home(
+    agent_home: &Path,
+    home_dir: &Path,
+) -> Result<TemplateProvenanceRecord> {
+    initialize_agent_home_from_builtin_default(agent_home, home_dir).await
 }
 
 pub async fn initialize_agent_home_from_template_with_home(
@@ -486,6 +424,68 @@ async fn initialize_agent_home_from_template_with_home_and_catalog(
     result
 }
 
+async fn initialize_agent_home_from_builtin_default(
+    agent_home: &Path,
+    home_dir: &Path,
+) -> Result<TemplateProvenanceRecord> {
+    let agent_home = agent_home.to_path_buf();
+    let existed_before = agent_home.exists();
+    let was_empty_before = if existed_before {
+        fs::read_dir(&agent_home)?.next().is_none()
+    } else {
+        false
+    };
+    if existed_before && !was_empty_before {
+        bail!(
+            "agent home {} already exists and is not empty; template initialization refuses to overwrite existing agent state",
+            agent_home.display()
+        );
+    }
+
+    if !existed_before {
+        fs::create_dir_all(&agent_home)
+            .with_context(|| format!("failed to create {}", agent_home.display()))?;
+    }
+
+    let result = async {
+        ensure_agent_home_layout(&agent_home)?;
+        let resolved = resolve_builtin_template(DEFAULT_AGENT_TEMPLATE_ID, home_dir)?;
+        materialize_template(&agent_home, &resolved).await?;
+        let record = TemplateProvenanceRecord {
+            selector: DEFAULT_AGENT_TEMPLATE_ID.to_string(),
+            source: resolved.provenance,
+            applied_at: Utc::now(),
+            schema_version: resolved.schema_version,
+        };
+        tracing::info!(
+            template = %record.selector,
+            schema_version = ?record.schema_version,
+            agent_home = %agent_home.display(),
+            "template_applied: agent initialized from hidden builtin default template"
+        );
+        let content = serde_json::to_vec_pretty(&record)?;
+        fs::write(template_provenance_path(&agent_home), content).with_context(|| {
+            format!(
+                "failed to write {}",
+                template_provenance_path(&agent_home).display()
+            )
+        })?;
+        Ok(record)
+    }
+    .await;
+
+    if result.is_err() && agent_home.exists() {
+        if !existed_before {
+            let _ = fs::remove_dir_all(&agent_home);
+        } else if was_empty_before {
+            let _ = fs::remove_dir_all(&agent_home);
+            let _ = fs::create_dir_all(&agent_home);
+        }
+    }
+
+    result
+}
+
 pub async fn ensure_agent_home_agents_md_from_template(
     agent_home: &Path,
     template: &str,
@@ -518,6 +518,13 @@ pub async fn ensure_agent_home_agents_md_from_template_with_home(
         agent_home, home_dir, None, template,
     )
     .await
+}
+
+pub async fn ensure_agent_home_agents_md_without_template_with_home(
+    agent_home: &Path,
+    home_dir: &Path,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    ensure_agent_home_agents_md_from_builtin_default(agent_home, home_dir).await
 }
 
 async fn ensure_agent_home_agents_md_from_template_with_home_and_catalog(
@@ -581,6 +588,60 @@ async fn ensure_agent_home_agents_md_from_template_with_home_and_catalog(
     }
 }
 
+async fn ensure_agent_home_agents_md_from_builtin_default(
+    agent_home: &Path,
+    home_dir: &Path,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    let agent_home = agent_home.to_path_buf();
+    fs::create_dir_all(&agent_home)
+        .with_context(|| format!("failed to create {}", agent_home.display()))?;
+    ensure_agent_home_layout(&agent_home)?;
+    let agents_md_path = agent_home.join(TEMPLATE_AGENTS_FILENAME);
+    if agents_md_path.exists() {
+        return Ok(None);
+    }
+    let resolved = resolve_builtin_template(DEFAULT_AGENT_TEMPLATE_ID, home_dir)?;
+    let skills_root = agent_home.join("skills");
+    let mut created_skill_destinations = Vec::new();
+
+    let result: Result<TemplateProvenanceRecord> = async {
+        let agents_md = render_agent_home_agents_md(&resolved.agents_md, None);
+        write_file_atomically(&agents_md_path, agents_md.as_bytes())?;
+        for skill_ref in &resolved.skill_refs {
+            let destination = materialize_skill_ref(&agent_home, &skills_root, skill_ref).await?;
+            created_skill_destinations.push(destination);
+        }
+        let record = TemplateProvenanceRecord {
+            selector: DEFAULT_AGENT_TEMPLATE_ID.to_string(),
+            source: resolved.provenance,
+            applied_at: Utc::now(),
+            schema_version: resolved.schema_version,
+        };
+        tracing::info!(
+            template = %record.selector,
+            schema_version = ?record.schema_version,
+            agent_home = %agent_home.display(),
+            "template_applied: agent initialized from hidden builtin default template"
+        );
+        let content = serde_json::to_vec_pretty(&record)?;
+        write_file_atomically(&template_provenance_path(&agent_home), &content)?;
+        Ok(record)
+    }
+    .await;
+
+    match result {
+        Ok(record) => Ok(Some(record)),
+        Err(err) => {
+            let _ = fs::remove_file(&agents_md_path);
+            let _ = fs::remove_file(template_provenance_path(&agent_home));
+            for destination in created_skill_destinations.into_iter().rev() {
+                let _ = remove_materialized_skill_destination(&destination);
+            }
+            Err(err)
+        }
+    }
+}
+
 #[cfg(test)]
 fn templates_root() -> Result<PathBuf> {
     Ok(templates_root_for_home(&user_home_dir()?))
@@ -588,6 +649,20 @@ fn templates_root() -> Result<PathBuf> {
 
 fn templates_root_for_home(home_dir: &Path) -> PathBuf {
     home_dir.join(".agents").join("agent_templates")
+}
+
+pub fn effective_agent_template_remote_sources(
+    config: &AgentTemplatesConfigFile,
+) -> BTreeMap<String, AgentTemplateRemoteSourceConfigFile> {
+    let mut sources = config.remote_sources.clone();
+    sources
+        .entry(OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID.to_string())
+        .or_insert_with(|| AgentTemplateRemoteSourceConfigFile {
+            url: OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL.to_string(),
+            git_ref: None,
+            enabled: Some(true),
+        });
+    sources
 }
 
 pub(crate) fn discover_agent_templates_catalog(
@@ -614,20 +689,6 @@ pub(crate) fn discover_agent_templates_catalog(
         .into_iter()
         .filter(|entry| !agent_home_template_ids.contains(&entry.template_id))
         .collect::<Vec<_>>();
-    let user_template_ids = entries
-        .iter()
-        .map(|entry| entry.template_id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-
-    for builtin in BUILTIN_TEMPLATES {
-        if user_template_ids.contains(builtin.template_id)
-            || agent_home_template_ids.contains(builtin.template_id)
-        {
-            continue;
-        }
-        entries.push(builtin_template_catalog_entry(builtin));
-    }
-
     entries.extend(agent_home_entries);
     entries.sort_by(|left, right| {
         (
@@ -690,11 +751,6 @@ fn discover_local_templates(
         if validate_template_id(template_id).is_err() {
             continue;
         }
-        if source == AgentTemplateSourceKind::UserGlobal
-            && is_managed_seeded_builtin_template(&path, template_id)
-        {
-            continue;
-        }
         let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
         let Ok(agents_md) = fs::read_to_string(&agents_md_path) else {
             continue;
@@ -736,10 +792,10 @@ fn discover_local_templates(
 
 pub fn load_remote_template_catalog_snapshot(
     db: &RuntimeDb,
-    configured_sources: &std::collections::BTreeMap<String, AgentTemplateRemoteSourceConfigFile>,
+    configured_sources: &BTreeMap<String, AgentTemplateRemoteSourceConfigFile>,
 ) -> Result<AgentTemplateRemoteCatalogSnapshot> {
     let connection = db.connection()?;
-    let mut catalog = Vec::new();
+    let catalog = Vec::new();
     let mut sources = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -765,9 +821,6 @@ pub fn load_remote_template_catalog_snapshot(
             });
             continue;
         };
-        if enabled {
-            catalog.extend(row.catalog.iter().cloned());
-        }
         diagnostics.extend(row.diagnostics.iter().cloned());
         let mut status = row.status;
         if !enabled {
@@ -792,6 +845,24 @@ pub fn load_remote_template_catalog_snapshot(
         sources,
         diagnostics,
     })
+}
+
+pub fn agent_template_remote_source_needs_sync(
+    db: &RuntimeDb,
+    source_id: &str,
+    stale_after: chrono::Duration,
+) -> Result<bool> {
+    let connection = db.connection()?;
+    let Some(row) = load_remote_source_row(&connection, source_id)? else {
+        return Ok(true);
+    };
+    if row.status != AgentTemplateRemoteSourceSyncStatus::Synced {
+        return Ok(true);
+    }
+    let Some(last_synced_at) = row.last_synced_at else {
+        return Ok(true);
+    };
+    Ok(Utc::now().signed_duration_since(last_synced_at) >= stale_after)
 }
 
 #[derive(Debug)]
@@ -884,6 +955,7 @@ fn remote_source_sync_status_label(status: &AgentTemplateRemoteSourceSyncStatus)
 
 pub async fn sync_agent_template_remote_source(
     db: &RuntimeDb,
+    user_home: &Path,
     source_id: &str,
     config: &AgentTemplateRemoteSourceConfigFile,
 ) -> Result<AgentTemplateRemoteSourceStatus> {
@@ -928,6 +1000,17 @@ pub async fn sync_agent_template_remote_source(
         entry.template = entry.catalog_id.clone();
     }
     let now = Utc::now();
+    for entry in &catalog {
+        install_remote_template_catalog_entry(
+            user_home,
+            source_id,
+            &config.url,
+            &resolved_ref,
+            now,
+            entry,
+        )
+        .await?;
+    }
     let status = AgentTemplateRemoteSourceStatus {
         source_id: source_id.to_string(),
         kind: "github".into(),
@@ -1023,34 +1106,6 @@ fn upsert_remote_source_sync(
         )?;
         Ok(())
     })
-}
-
-fn is_managed_seeded_builtin_template(path: &Path, template_id: &str) -> bool {
-    let Some(builtin) = BUILTIN_TEMPLATES
-        .iter()
-        .find(|builtin| builtin.template_id == template_id)
-    else {
-        return false;
-    };
-    let state = match read_builtin_template_state(path) {
-        Ok(Some(state)) => state,
-        Ok(None) => return false,
-        Err(error) => {
-            tracing::debug!(
-                template_path = %path.display(),
-                %error,
-                "failed to read seeded builtin template state while building catalog"
-            );
-            return false;
-        }
-    };
-    if state.template_id != builtin.template_id
-        || state.version != builtin.version
-        || state.content_hash != builtin_template_content_hash(builtin)
-    {
-        return false;
-    }
-    builtin_template_is_managed(path, &state).unwrap_or(false)
 }
 
 fn template_description(agents_md: &str) -> String {
@@ -1227,6 +1282,43 @@ pub(crate) async fn resolve_remote_agent_template_detail(
     })
 }
 
+async fn install_remote_template_catalog_entry(
+    user_home: &Path,
+    source_id: &str,
+    source_url: &str,
+    resolved_ref: &str,
+    synced_at: DateTime<Utc>,
+    entry: &AgentTemplateCatalogEntry,
+) -> Result<()> {
+    let template_url = entry
+        .source_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
+    let resolved = resolve_github_template(template_url).await?;
+    let templates_root = templates_root_for_home(user_home);
+    fs::create_dir_all(&templates_root)
+        .with_context(|| format!("failed to create {}", templates_root.display()))?;
+    let destination = templates_root.join(&entry.template_id);
+    let state = ManagedTemplateState {
+        template_id: entry.template_id.clone(),
+        content_hash: resolved_template_content_hash(&resolved),
+        owner: ManagedTemplateOwner::RemoteSource {
+            source_id: source_id.to_string(),
+            url: source_url.to_string(),
+            resolved_ref: resolved_ref.to_string(),
+            source_url: template_url.to_string(),
+            synced_at,
+        },
+    };
+    if let Err(error) = write_managed_template_dir(&destination, &resolved, &state) {
+        bail!(
+            "failed to install remote template {}: {error:#}",
+            entry.template_id
+        );
+    }
+    Ok(())
+}
+
 fn local_template_skills(path: &Path) -> Vec<String> {
     match parse_skill_refs(path.join(TEMPLATE_SKILLS_FILENAME)) {
         Ok(skill_refs) => skill_ref_names(skill_refs),
@@ -1266,7 +1358,7 @@ fn skill_ref_names(skill_refs: Vec<TemplateSkillRef>) -> Vec<String> {
     names
 }
 
-pub(crate) fn user_home_dir() -> Result<PathBuf> {
+pub fn user_home_dir() -> Result<PathBuf> {
     env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
@@ -1407,10 +1499,7 @@ async fn resolve_catalog_template(
     match entry.source {
         AgentTemplateSourceKind::Builtin => resolve_builtin_template(&entry.template_id, home_dir),
         AgentTemplateSourceKind::Remote => {
-            let source_url = entry
-                .source_url
-                .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
-            resolve_github_template(&source_url).await
+            unreachable!("remote templates are materialized locally")
         }
         AgentTemplateSourceKind::UserGlobal | AgentTemplateSourceKind::AgentHome => {
             let path = entry.path.clone().ok_or_else(|| {
@@ -1419,35 +1508,24 @@ async fn resolve_catalog_template(
                     entry.catalog_id
                 )
             })?;
-            let mut resolved = resolve_local_template(
+            let resolved = resolve_local_template(
                 path.clone(),
                 TemplateProvenanceSource::TemplateId {
                     template_id: entry.template_id.clone(),
                     path,
                 },
             )?;
-            // Seeded builtin templates carry compiled-in skills that cannot be
-            // expressed in skills.toml. Merge them so they are materialized.
-            if let Some(builtin) = BUILTIN_TEMPLATES
-                .iter()
-                .find(|t| t.template_id == entry.template_id)
-            {
-                for &name in builtin.skill_names {
-                    resolved.skill_refs.push(TemplateSkillRef::Builtin {
-                        name: name.to_string(),
-                    });
-                }
-            }
             Ok(resolved)
         }
     }
 }
 
 fn resolve_builtin_template(template_id: &str, home_dir: &Path) -> Result<ResolvedTemplate> {
-    let builtin = BUILTIN_TEMPLATES
-        .iter()
-        .find(|builtin| builtin.template_id == template_id)
-        .ok_or_else(|| anyhow!("unknown builtin template id {template_id}"))?;
+    let builtin = if template_id == DEFAULT_AGENT_TEMPLATE_ID {
+        &DEFAULT_BUILTIN_TEMPLATE
+    } else {
+        bail!("unknown builtin template id {template_id}");
+    };
     let skill_refs: Vec<TemplateSkillRef> = builtin
         .skill_names
         .iter()
@@ -1461,6 +1539,7 @@ fn resolve_builtin_template(template_id: &str, home_dir: &Path) -> Result<Resolv
             path: templates_root_for_home(home_dir).join(template_id),
         },
         agents_md: builtin.agents_md.to_string(),
+        template_toml: Some(builtin.template_toml.to_string()),
         skill_refs,
         schema_version: parse_template_manifest(builtin.template_toml).map(|m| m.schema),
     })
@@ -1518,14 +1597,19 @@ fn resolve_local_template(
     Ok(ResolvedTemplate {
         provenance,
         agents_md,
+        template_toml: read_template_manifest_content(&path),
         skill_refs,
         schema_version: read_template_schema_version(&path),
     })
 }
 
-fn read_template_schema_version(template_dir: &Path) -> Option<String> {
+fn read_template_manifest_content(template_dir: &Path) -> Option<String> {
     let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
-    let content = fs::read_to_string(&manifest_path).ok()?;
+    fs::read_to_string(&manifest_path).ok()
+}
+
+fn read_template_schema_version(template_dir: &Path) -> Option<String> {
+    let content = read_template_manifest_content(template_dir)?;
     parse_template_manifest(&content).map(|m| m.schema)
 }
 
@@ -1611,7 +1695,7 @@ fn validate_template_github_skill_name(skill: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_builtin_template_state(template_dir: &Path) -> Result<Option<BuiltinTemplateState>> {
+fn read_managed_template_state(template_dir: &Path) -> Result<Option<ManagedTemplateState>> {
     let path = builtin_template_state_path(template_dir);
     if !path.is_file() {
         return Ok(None);
@@ -1621,79 +1705,141 @@ fn read_builtin_template_state(template_dir: &Path) -> Result<Option<BuiltinTemp
     if content.trim().is_empty() {
         return Ok(None);
     }
-    let state = serde_json::from_str(&content).ok();
-    Ok(state)
+    serde_json::from_str(&content)
+        .map(Some)
+        .with_context(|| format!("failed to parse {}", path.display()))
 }
 
-fn builtin_template_content_hash(template: &BuiltinTemplate) -> String {
+fn resolved_template_content_hash(resolved: &ResolvedTemplate) -> String {
     use sha2::{Digest as _, Sha256};
 
     let mut hasher = Sha256::new();
     hasher.update(TEMPLATE_AGENTS_FILENAME.as_bytes());
     hasher.update(b"\n");
-    hasher.update(template.agents_md.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(TEMPLATE_MANIFEST_FILENAME.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(template.template_toml.as_bytes());
-    if !template.skill_names.is_empty() {
+    hasher.update(resolved.agents_md.as_bytes());
+    if let Some(schema_version) = resolved.schema_version.as_deref() {
         hasher.update(b"\n");
-        hasher.update(b"skill_names\n");
-        for &name in template.skill_names {
-            hasher.update(name.as_bytes());
-            hasher.update(b"\n");
+        hasher.update(b"schema_version\n");
+        hasher.update(schema_version.as_bytes());
+    }
+    if let Some(template_toml) = resolved.template_toml.as_deref() {
+        hasher.update(b"\n");
+        hasher.update(TEMPLATE_MANIFEST_FILENAME.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(template_toml.as_bytes());
+    }
+    for skill_ref in &resolved.skill_refs {
+        hasher.update(b"\n");
+        match skill_ref {
+            TemplateSkillRef::Local { path } => {
+                hasher.update(b"local:");
+                hasher.update(path.display().to_string().as_bytes());
+            }
+            TemplateSkillRef::Github { package } => {
+                hasher.update(b"github:");
+                hasher.update(package.as_bytes());
+            }
+            TemplateSkillRef::Builtin { name } => {
+                hasher.update(b"builtin:");
+                hasher.update(name.as_bytes());
+            }
         }
     }
     format!("{:x}", hasher.finalize())
 }
 
-fn current_builtin_template_content_hash(template_dir: &Path) -> Result<String> {
-    use sha2::{Digest as _, Sha256};
-
-    let agents_md_path = template_dir.join(TEMPLATE_AGENTS_FILENAME);
-    let agents_md = fs::read_to_string(&agents_md_path)
-        .with_context(|| format!("failed to read {}", agents_md_path.display()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(TEMPLATE_AGENTS_FILENAME.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(agents_md.as_bytes());
-    let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
-    if manifest_path.exists() {
-        let manifest = fs::read_to_string(&manifest_path)
-            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-        hasher.update(b"\n");
-        hasher.update(TEMPLATE_MANIFEST_FILENAME.as_bytes());
-        hasher.update(b"\n");
-        hasher.update(manifest.as_bytes());
+fn write_managed_template_dir(
+    template_dir: &Path,
+    resolved: &ResolvedTemplate,
+    state: &ManagedTemplateState,
+) -> Result<()> {
+    if template_dir.exists() {
+        let existing_state = read_managed_template_state(template_dir)?;
+        match existing_state {
+            Some(existing)
+                if matches!(
+                    (&existing.owner, &state.owner),
+                    (
+                        ManagedTemplateOwner::RemoteSource {
+                            source_id: existing_source,
+                            ..
+                        },
+                        ManagedTemplateOwner::RemoteSource {
+                            source_id: new_source,
+                            ..
+                        }
+                    ) if existing_source == new_source
+                ) =>
+            {
+                fs::remove_dir_all(template_dir)
+                    .with_context(|| format!("failed to clear {}", template_dir.display()))?;
+            }
+            Some(existing) => {
+                bail!(
+                    "template '{}' at {} is managed by {:?}; refusing to overwrite from another source",
+                    existing.template_id,
+                    template_dir.display(),
+                    existing.owner
+                );
+            }
+            None => {
+                bail!(
+                    "template directory {} already exists without managed metadata; refusing to overwrite user-owned template",
+                    template_dir.display()
+                );
+            }
+        }
     }
-    Ok(format!("{:x}", hasher.finalize()))
-}
 
-fn builtin_template_is_managed(template_dir: &Path, state: &BuiltinTemplateState) -> Result<bool> {
-    let current_hash = current_builtin_template_content_hash(template_dir)?;
-    Ok(current_hash == state.content_hash)
-}
-
-fn write_builtin_template(template_dir: &Path, builtin: &BuiltinTemplate) -> Result<()> {
     fs::create_dir_all(template_dir)
         .with_context(|| format!("failed to create {}", template_dir.display()))?;
-    let agents_md_path = template_dir.join(TEMPLATE_AGENTS_FILENAME);
-    write_file_atomically(&agents_md_path, builtin.agents_md.as_bytes())?;
-    let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
-    write_file_atomically(&manifest_path, builtin.template_toml.as_bytes())?;
-    // Remove any leftover skills.json from the old format.
-    let old_skills_path = template_dir.join("skills.json");
-    if old_skills_path.exists() {
-        let _ = fs::remove_file(&old_skills_path);
+    write_file_atomically(
+        &template_dir.join(TEMPLATE_AGENTS_FILENAME),
+        resolved.agents_md.as_bytes(),
+    )?;
+    if let Some(manifest) = resolved.template_toml.as_deref() {
+        write_file_atomically(
+            &template_dir.join(TEMPLATE_MANIFEST_FILENAME),
+            manifest.as_bytes(),
+        )?;
     }
-    let state = BuiltinTemplateState {
-        template_id: builtin.template_id.to_string(),
-        version: builtin.version,
-        content_hash: builtin_template_content_hash(builtin),
-    };
-    let content = serde_json::to_vec_pretty(&state)?;
+    if !resolved.skill_refs.is_empty() {
+        write_template_skills_file(template_dir, &resolved.skill_refs)?;
+    }
+    let content = serde_json::to_vec_pretty(state)?;
     write_file_atomically(&builtin_template_state_path(template_dir), &content)?;
     Ok(())
+}
+
+fn write_template_skills_file(template_dir: &Path, skill_refs: &[TemplateSkillRef]) -> Result<()> {
+    let mut content = String::new();
+    for skill_ref in skill_refs {
+        match skill_ref {
+            TemplateSkillRef::Local { path } => {
+                content.push_str("[[skills]]\nkind = \"local\"\npath = \"");
+                content.push_str(&toml_escape(&path.display().to_string()));
+                content.push_str("\"\n\n");
+            }
+            TemplateSkillRef::Github { package } => {
+                content.push_str("[[skills]]\nkind = \"github\"\npackage = \"");
+                content.push_str(&toml_escape(package));
+                content.push_str("\"\n\n");
+            }
+            TemplateSkillRef::Builtin { name } => {
+                content.push_str("[[skills]]\nkind = \"builtin\"\nname = \"");
+                content.push_str(&toml_escape(name));
+                content.push_str("\"\n\n");
+            }
+        }
+    }
+    write_file_atomically(
+        &template_dir.join(TEMPLATE_SKILLS_FILENAME),
+        content.as_bytes(),
+    )
+}
+
+fn toml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn write_file_atomically(path: &Path, content: &[u8]) -> Result<()> {
@@ -1786,6 +1932,7 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
                 template_path,
             },
             agents_md,
+            template_toml: manifest_content,
             skill_refs,
             schema_version,
         });
@@ -1988,10 +2135,8 @@ pub(crate) async fn discover_github_repo_templates(
     repo: &str,
     git_ref: &str,
 ) -> Result<Vec<AgentTemplateCatalogEntry>> {
-    let template_dir = resolve_remote_template_collection_dir(owner, repo, git_ref).await?;
-
     // List subdirectories under the template collection.
-    let entries = match fetch_github_dir(owner, repo, git_ref, &template_dir).await? {
+    let entries = match fetch_github_dir(owner, repo, git_ref, DEFAULT_REMOTE_TEMPLATE_DIR).await? {
         Some(entries) => entries,
         None => return Ok(Vec::new()),
     };
@@ -2002,7 +2147,8 @@ pub(crate) async fn discover_github_repo_templates(
             continue;
         }
         let template_id = entry.name;
-        let manifest_path = format!("{template_dir}/{template_id}/{TEMPLATE_MANIFEST_FILENAME}");
+        let manifest_path =
+            format!("{DEFAULT_REMOTE_TEMPLATE_DIR}/{template_id}/{TEMPLATE_MANIFEST_FILENAME}");
         let manifest = match fetch_github_file(owner, repo, git_ref, &manifest_path).await {
             Ok(Some(content)) => parse_template_manifest(&content),
             Ok(None) => None,
@@ -2036,33 +2182,11 @@ pub(crate) async fn discover_github_repo_templates(
             resolved_ref: Some(git_ref.to_string()),
             resolved_revision: None,
             source_url: Some(format!(
-                "https://github.com/{owner}/{repo}/tree/{git_ref}/{template_dir}/{template_id}"
+                "https://github.com/{owner}/{repo}/tree/{git_ref}/{DEFAULT_REMOTE_TEMPLATE_DIR}/{template_id}"
             )),
         });
     }
     Ok(catalog_entries)
-}
-
-/// Resolve the template collection directory for a remote GitHub repository.
-///
-/// Tries `holon-index.toml` at the repo root first; when present and parseable,
-/// uses its `collections.agent_templates` value. Falls back to
-/// [`DEFAULT_REMOTE_TEMPLATE_DIR`] when the index is absent, unreadable, or
-/// does not declare a custom collection path.
-async fn resolve_remote_template_collection_dir(
-    owner: &str,
-    repo: &str,
-    git_ref: &str,
-) -> Result<String> {
-    match fetch_github_file(owner, repo, git_ref, "holon-index.toml").await? {
-        Some(content) => match toml::from_str::<HolonIndexManifest>(&content) {
-            Ok(manifest) if manifest.collections.agent_templates.as_deref().is_some() => {
-                Ok(manifest.collections.agent_templates.unwrap())
-            }
-            _ => Ok(DEFAULT_REMOTE_TEMPLATE_DIR.to_string()),
-        },
-        None => Ok(DEFAULT_REMOTE_TEMPLATE_DIR.to_string()),
-    }
 }
 
 /// Discover AgentTemplates from a GitHub repository URL.
@@ -2413,8 +2537,19 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
 
     let destination = templates_root.join(&template_id);
     if destination.exists() {
-        fs::remove_dir_all(&destination)
-            .with_context(|| format!("failed to clear existing {}", destination.display()))?;
+        if let Some(state) = read_managed_template_state(&destination)? {
+            bail!(
+                "template '{}' at {} is managed by {:?}; refusing to overwrite it with an explicit install",
+                state.template_id,
+                destination.display(),
+                state.owner
+            );
+        }
+        bail!(
+            "template '{}' already exists at {}; refusing to overwrite existing user-owned template",
+            template_id,
+            destination.display()
+        );
     }
     copy_template_dir(&search_dir, &destination)?;
 
@@ -2549,75 +2684,20 @@ mod tests {
     }
 
     #[test]
-    fn seed_builtin_templates_is_idempotent() {
+    fn seed_builtin_templates_is_noop() {
         let home = tempdir().unwrap();
         let templates = templates_root_for_home(home.path());
 
         seed_builtin_templates_for_home(home.path()).unwrap();
-        let developer_agents = templates.join("holon-developer/AGENTS.md");
-        assert!(developer_agents.is_file());
 
-        fs::write(&developer_agents, "custom").unwrap();
-        seed_builtin_templates_for_home(home.path()).unwrap();
-        assert_eq!(fs::read_to_string(&developer_agents).unwrap(), "custom");
+        assert!(!templates.exists());
     }
 
     #[test]
-    fn seed_builtin_templates_writes_prefixed_default_template() {
-        let home = tempdir().unwrap();
-        let templates = templates_root_for_home(home.path());
-
-        seed_builtin_templates_for_home(home.path()).unwrap();
-        let agents_md = templates.join("holon-default/AGENTS.md");
-        assert!(agents_md.is_file());
-        assert!(fs::read_to_string(agents_md)
-            .unwrap()
-            .contains("Holon Default Agent"));
-    }
-
-    #[test]
-    fn seed_builtin_templates_upgrades_managed_builtin_content() {
-        let home = tempdir().unwrap();
-        let templates = templates_root_for_home(home.path());
-
-        seed_builtin_templates_for_home(home.path()).unwrap();
-        let template_dir = templates.join("holon-reviewer");
-        let agents_md = template_dir.join("AGENTS.md");
-        let state_path = builtin_template_state_path(&template_dir);
-        let original = fs::read_to_string(&agents_md).unwrap();
-        let mut state: BuiltinTemplateState =
-            serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
-        state.version = 0;
-        fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
-
-        seed_builtin_templates_for_home(home.path()).unwrap();
-
-        assert_eq!(fs::read_to_string(&agents_md).unwrap(), original);
-        let upgraded: BuiltinTemplateState =
-            serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
-        assert_eq!(upgraded.version, 1);
-    }
-
-    #[test]
-    fn seed_builtin_templates_tolerates_empty_builtin_state_file() {
-        let home = tempdir().unwrap();
-        let templates = templates_root_for_home(home.path());
-
-        seed_builtin_templates_for_home(home.path()).unwrap();
-        let template_dir = templates.join("holon-default");
-        fs::write(builtin_template_state_path(&template_dir), "").unwrap();
-
-        seed_builtin_templates_for_home(home.path()).unwrap();
-
-        assert!(template_dir.join("AGENTS.md").is_file());
-    }
-
-    #[test]
-    fn discover_agent_templates_catalog_lists_stable_selectors_and_shadowing() {
+    fn discover_agent_templates_catalog_lists_local_templates_without_builtin_entries() {
         let user_home = tempdir().unwrap();
         let agent_home = tempdir().unwrap();
         let user_templates = templates_root_for_home(user_home.path());
-        seed_builtin_templates_for_home(user_home.path()).unwrap();
         let worker = user_templates.join("worker");
         fs::create_dir_all(&worker).unwrap();
         fs::write(
@@ -2627,26 +2707,13 @@ mod tests {
         .unwrap();
         let source_skill = user_home.path().join("source-skill");
         fs::create_dir_all(&source_skill).unwrap();
-        fs::write(
-            source_skill.join("SKILL.md"),
-            "# Source
-",
-        )
-        .unwrap();
+        fs::write(source_skill.join("SKILL.md"), "# Source\n").unwrap();
         fs::write(
             worker.join(TEMPLATE_SKILLS_FILENAME),
             format!(
                 "[[skills]]\nkind = \"local\"\npath = \"{}\"\n",
                 source_skill.display()
             ),
-        )
-        .unwrap();
-
-        let shadowed_default = user_templates.join("holon-default");
-        fs::create_dir_all(&shadowed_default).unwrap();
-        fs::write(
-            shadowed_default.join(TEMPLATE_AGENTS_FILENAME),
-            "# Custom default\n",
         )
         .unwrap();
 
@@ -2665,16 +2732,10 @@ mod tests {
 
         assert!(catalog
             .iter()
-            .any(|entry| entry.catalog_id == "user_global:holon-default"));
+            .all(|entry| entry.source != AgentTemplateSourceKind::Builtin));
         assert!(!catalog
             .iter()
             .any(|entry| entry.catalog_id == "builtin:holon-default"));
-        assert!(catalog
-            .iter()
-            .any(|entry| entry.catalog_id == "builtin:holon-developer"));
-        assert!(!catalog
-            .iter()
-            .any(|entry| entry.catalog_id == "user_global:holon-developer"));
 
         let worker_entry = catalog
             .iter()
@@ -2698,11 +2759,45 @@ mod tests {
     }
 
     #[test]
-    fn discover_agent_templates_catalog_prefers_agent_home_over_other_sources() {
+    fn effective_remote_sources_include_official_source_by_default() {
+        let config = AgentTemplatesConfigFile::default();
+
+        let sources = effective_agent_template_remote_sources(&config);
+
+        let official = sources
+            .get(OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID)
+            .expect("official remote source should be registered by default");
+        assert_eq!(official.url, OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL);
+        assert!(official.enabled());
+    }
+
+    #[test]
+    fn effective_remote_sources_preserve_explicit_official_override() {
+        let mut config = AgentTemplatesConfigFile::default();
+        config.remote_sources.insert(
+            OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID.to_string(),
+            AgentTemplateRemoteSourceConfigFile {
+                url: "https://github.com/example/custom".into(),
+                git_ref: Some("dev".into()),
+                enabled: Some(false),
+            },
+        );
+
+        let sources = effective_agent_template_remote_sources(&config);
+
+        let official = sources
+            .get(OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID)
+            .expect("explicit official remote source should be preserved");
+        assert_eq!(official.url, "https://github.com/example/custom");
+        assert_eq!(official.git_ref.as_deref(), Some("dev"));
+        assert!(!official.enabled());
+    }
+
+    #[test]
+    fn discover_agent_templates_catalog_prefers_agent_home_over_user_global() {
         let user_home = tempdir().unwrap();
         let agent_home = tempdir().unwrap();
         let user_templates = templates_root_for_home(user_home.path());
-        seed_builtin_templates_for_home(user_home.path()).unwrap();
 
         let user_worker = user_templates.join("worker");
         fs::create_dir_all(&user_worker).unwrap();
@@ -2742,9 +2837,6 @@ mod tests {
         assert!(!catalog
             .iter()
             .any(|entry| entry.catalog_id == "builtin:holon-default"));
-        assert!(!catalog
-            .iter()
-            .any(|entry| entry.catalog_id == "user_global:holon-default"));
     }
 
     #[tokio::test]
@@ -2752,18 +2844,6 @@ mod tests {
         let user_home = tempdir().unwrap();
         let agent_home = tempdir().unwrap();
         let user_templates = templates_root_for_home(user_home.path());
-        seed_builtin_templates_for_home(user_home.path()).unwrap();
-
-        let agent_default = agent_home
-            .path()
-            .join("agent_templates")
-            .join("holon-default");
-        fs::create_dir_all(&agent_default).unwrap();
-        fs::write(
-            agent_default.join(TEMPLATE_AGENTS_FILENAME),
-            "# Agent default\n\nAgent-home default\n",
-        )
-        .unwrap();
 
         let user_worker = user_templates.join("worker");
         fs::create_dir_all(&user_worker).unwrap();
@@ -2785,7 +2865,7 @@ mod tests {
             resolve_template("builtin:holon-default", user_home.path(), agent_home.path())
                 .await
                 .unwrap();
-        assert!(builtin.agents_md.contains("## Role"));
+        assert!(builtin.agents_md.contains("Holon Default Agent"));
 
         let user = resolve_template("user_global:worker", user_home.path(), agent_home.path())
             .await
@@ -2805,65 +2885,6 @@ mod tests {
             "Visible description"
         );
         assert_eq!(template_description("<!-- hidden --> Visible\n"), "Visible");
-    }
-
-    #[test]
-    fn builtin_template_is_managed_accounts_for_template_manifest() {
-        let home = tempdir().unwrap();
-        let template_dir = home.path().join("template");
-        fs::create_dir_all(&template_dir).unwrap();
-        fs::write(template_dir.join(TEMPLATE_AGENTS_FILENAME), "agents").unwrap();
-        fs::write(
-            template_dir.join(TEMPLATE_MANIFEST_FILENAME),
-            "schema = \"holon.agent_template.v1\"\nid = \"test\"\nname = \"Test\"\nsummary = \"test\"\n",
-        )
-        .unwrap();
-
-        let builtin = BuiltinTemplate {
-            template_id: "holon-test",
-            version: 1,
-            agents_md: "agents",
-            template_toml: "schema = \"holon.agent_template.v1\"\nid = \"test\"\nname = \"Test\"\nsummary = \"test\"\n",
-            skill_names: &[],
-        };
-        let state = BuiltinTemplateState {
-            template_id: builtin.template_id.to_string(),
-            version: builtin.version,
-            content_hash: builtin_template_content_hash(&builtin),
-        };
-
-        assert!(builtin_template_is_managed(&template_dir, &state).unwrap());
-    }
-
-    #[tokio::test]
-    async fn github_solve_template_materializes_builtin_skills() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
-        seed_builtin_templates().unwrap();
-
-        let agent_home = home.path().join("agent");
-        initialize_agent_home_from_template(&agent_home, "holon-github-solve")
-            .await
-            .unwrap();
-
-        let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
-        assert!(agents_md.contains("Holon GitHub Solve Agent"));
-        assert!(agent_home
-            .join("skills/github-issue-solve/SKILL.md")
-            .is_file());
-        assert!(agent_home
-            .join("skills/github-issue-solve/references/issue-solve-workflow.md")
-            .is_file());
-        assert!(agent_home.join("skills/github-pr-fix/SKILL.md").is_file());
-        assert!(agent_home
-            .join("skills/github-pr-fix/references/diagnostics.md")
-            .is_file());
-        assert!(agent_home
-            .join("skills/github-pr-fix/references/pr-fix-workflow.md")
-            .is_file());
-        assert!(agent_home.join("skills/github-review/SKILL.md").is_file());
-        assert!(agent_home.join("skills/ghx/SKILL.md").is_file());
     }
 
     #[tokio::test]
@@ -3062,7 +3083,7 @@ mod tests {
         fs::write(agent_home.join(".holon/state/agent.json"), "{}").unwrap();
 
         let record =
-            ensure_agent_home_agents_md_from_template(&agent_home, DEFAULT_AGENT_TEMPLATE_ID)
+            ensure_agent_home_agents_md_without_template_with_home(&agent_home, home.path())
                 .await
                 .unwrap()
                 .expect("missing AGENTS.md should be materialized");
@@ -3379,12 +3400,13 @@ package = "owner/repo@../bad"
 
     #[test]
     fn resolve_agent_template_detail_builtin() {
-        let catalog = discover_agent_templates_catalog(None, std::path::Path::new("/nonexistent"));
-        let entry = catalog
-            .iter()
-            .find(|e| e.catalog_id == "builtin:holon-default")
-            .unwrap();
-        let detail = resolve_agent_template_detail(entry).unwrap();
+        let entry = builtin_template_catalog_entry(
+            BUILTIN_TEMPLATES
+                .iter()
+                .find(|template| template.template_id == DEFAULT_AGENT_TEMPLATE_ID)
+                .unwrap(),
+        );
+        let detail = resolve_agent_template_detail(&entry).unwrap();
         assert_eq!(detail.template_id, "holon-default");
         assert_eq!(detail.source, AgentTemplateSourceKind::Builtin);
         assert!(!detail.agents_md.is_empty());
@@ -3467,27 +3489,6 @@ package = "owner/repo@../bad"
         assert!(parse_github_repo_url("https://github.com/owner/repo#section").is_err());
     }
 
-    #[test]
-    fn holon_index_manifest_parses_collections() {
-        let toml_str = r#"schema = "holon.repository.v1"
-[collections]
-skills = "my-skills"
-agent_templates = "my-templates"
-"#;
-        let index: HolonIndexManifest = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            index.collections.agent_templates.as_deref(),
-            Some("my-templates")
-        );
-    }
-
-    #[test]
-    fn holon_index_manifest_missing_collections_defaults() {
-        let toml_str = r#"schema = "holon.repository.v1""#;
-        let index: HolonIndexManifest = toml::from_str(toml_str).unwrap();
-        assert!(index.collections.agent_templates.is_none());
-    }
-
     /// Build a mock GitHub API server that serves configured responses.
     struct MockGithubServer {
         addr: std::net::SocketAddr,
@@ -3554,23 +3555,11 @@ agent_templates = "my-templates"
     }
 
     #[tokio::test]
-    async fn discover_github_repo_templates_with_index() {
+    async fn discover_github_repo_templates_uses_default_agent_templates_dir() {
         let _lock = crate::test_env::lock_env();
         let server = MockGithubServer::start(vec![
-            // holon-index.toml at repo root
             (
-                "/repos/owner/repo/contents/holon-index.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.repository.v1"
-[collections]
-agent_templates = "custom-templates"
-"#,
-                ),
-            ),
-            // Directory listing of custom-templates/
-            (
-                "/repos/owner/repo/contents/custom-templates",
+                "/repos/owner/repo/contents/agent_templates",
                 200,
                 github_dir_response(&[
                     ("worker", "dir"),
@@ -3578,9 +3567,8 @@ agent_templates = "custom-templates"
                     ("README.md", "file"),
                 ]),
             ),
-            // worker/template.toml
             (
-                "/repos/owner/repo/contents/custom-templates/worker/template.toml",
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
                 200,
                 github_file_response(
                     r#"schema = "holon.agent_template.v1"
@@ -3590,9 +3578,8 @@ summary = "Implementation agent"
 "#,
                 ),
             ),
-            // reviewer/template.toml
             (
-                "/repos/owner/repo/contents/custom-templates/reviewer/template.toml",
+                "/repos/owner/repo/contents/agent_templates/reviewer/template.toml",
                 200,
                 github_file_response(
                     r#"schema = "holon.agent_template.v1"
@@ -3627,12 +3614,6 @@ name = "Reviewer"
     async fn discover_github_repo_templates_fallback_default_dir() {
         let _lock = crate::test_env::lock_env();
         let server = MockGithubServer::start(vec![
-            // No holon-index.toml → 404
-            (
-                "/repos/owner/repo/contents/holon-index.toml",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
-            ),
             // Default agent_templates/ directory listing
             (
                 "/repos/owner/repo/contents/agent_templates",
@@ -3667,12 +3648,6 @@ name = "Simple"
     async fn discover_github_repo_templates_skips_invalid_template() {
         let _lock = crate::test_env::lock_env();
         let server = MockGithubServer::start(vec![
-            // No holon-index.toml
-            (
-                "/repos/owner/repo/contents/holon-index.toml",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
-            ),
             // Directory with two templates
             (
                 "/repos/owner/repo/contents/agent_templates",
@@ -3714,12 +3689,6 @@ name = "Good"
     async fn discover_github_repo_templates_empty_when_no_dir() {
         let _lock = crate::test_env::lock_env();
         let server = MockGithubServer::start(vec![
-            // No holon-index.toml
-            (
-                "/repos/owner/repo/contents/holon-index.toml",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
-            ),
             // No agent_templates/ directory either
             (
                 "/repos/owner/repo/contents/agent_templates",
@@ -3743,11 +3712,6 @@ name = "Good"
         let _lock = crate::test_env::lock_env();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let server = MockGithubServer::start(vec![
-            (
-                "/repos/owner/repo/contents/holon-index.toml",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
-            ),
             (
                 "/repos/owner/repo/contents/agent_templates",
                 200,
@@ -3805,12 +3769,6 @@ name = "Worker"
                 "/repos/owner/repo",
                 200,
                 serde_json::json!({"default_branch": "main"}).to_string(),
-            ),
-            // No holon-index.toml
-            (
-                "/repos/owner/repo/contents/holon-index.toml",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
             ),
             // Directory listing
             (
@@ -3908,6 +3866,216 @@ name = "Worker"
         assert_eq!(detail.skills[0].kind, "github");
         assert_eq!(detail.skills[0].reference, "owner/skills/ghx");
     }
+
+    #[tokio::test]
+    async fn sync_remote_source_installs_templates_into_user_library() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let server = MockGithubServer::start(vec![
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                200,
+                github_dir_response(&[("worker", "dir")]),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+summary = "Implementation agent"
+"#,
+                ),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
+                200,
+                github_file_response("# Worker\n\nDoes worker things\n"),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
+                200,
+                github_file_response(
+                    "[[skills]]\nkind = \"github\"\npackage = \"owner/skills/ghx\"\n",
+                ),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+summary = "Implementation agent"
+"#,
+                ),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+        };
+
+        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+
+        assert_eq!(status.status, AgentTemplateRemoteSourceSyncStatus::Synced);
+        let template_dir = templates_root_for_home(home.path()).join("worker");
+        assert_eq!(
+            fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
+            "# Worker\n\nDoes worker things\n"
+        );
+        assert_eq!(
+            fs::read_to_string(template_dir.join(TEMPLATE_SKILLS_FILENAME)).unwrap(),
+            "[[skills]]\nkind = \"github\"\npackage = \"owner/skills/ghx\"\n\n"
+        );
+        let state = read_managed_template_state(&template_dir)
+            .unwrap()
+            .expect("remote sync should write managed metadata");
+        assert_eq!(state.template_id, "worker");
+        assert!(matches!(
+            state.owner,
+            ManagedTemplateOwner::RemoteSource {
+                ref source_id,
+                ref url,
+                ref resolved_ref,
+                ..
+            } if source_id == "official" && url == "https://github.com/owner/repo" && resolved_ref == "main"
+        ));
+
+        let catalog = discover_agent_templates_catalog(Some(home.path()), home.path());
+        assert!(catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "user_global:worker"));
+    }
+
+    #[tokio::test]
+    async fn remote_source_needs_sync_when_never_synced_but_not_after_recent_success() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let source_id = "official";
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+        };
+
+        assert!(agent_template_remote_source_needs_sync(
+            &db,
+            source_id,
+            chrono::Duration::hours(24)
+        )
+        .unwrap());
+
+        let status = AgentTemplateRemoteSourceStatus {
+            source_id: source_id.into(),
+            kind: "github".into(),
+            url: config.url.clone(),
+            requested_ref: config.git_ref.clone(),
+            enabled: config.enabled(),
+            status: AgentTemplateRemoteSourceSyncStatus::Synced,
+            last_synced_at: Some(Utc::now()),
+            resolved_ref: Some("main".into()),
+            resolved_revision: Some("abc123".into()),
+            error: None,
+        };
+        upsert_remote_source_sync(&db, &status, &[], &[]).unwrap();
+
+        assert!(!agent_template_remote_source_needs_sync(
+            &db,
+            source_id,
+            chrono::Duration::hours(24)
+        )
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn sync_remote_source_refuses_to_overwrite_user_owned_template() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let existing = templates_root_for_home(home.path()).join("worker");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join(TEMPLATE_AGENTS_FILENAME), "user-owned").unwrap();
+        let server = MockGithubServer::start(vec![
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                200,
+                github_dir_response(&[("worker", "dir")]),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                ),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
+                200,
+                github_file_response("remote-owned"),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
+                404,
+                "{\"message\":\"not found\"}".to_string(),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                ),
+            ),
+        ]);
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+        };
+
+        let err = sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("user-owned template"), "{err:#}");
+        assert_eq!(
+            fs::read_to_string(existing.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
+            "user-owned"
+        );
+    }
+
     #[tokio::test]
     async fn provenance_records_schema_version_from_template_toml() {
         let _lock = crate::test_env::lock_env();
@@ -3963,7 +4131,7 @@ name = "Versioned"
         seed_builtin_templates().unwrap();
 
         let agent_home = home.path().join("agent-builtin");
-        let provenance = initialize_agent_home_from_template(&agent_home, "holon-default")
+        let provenance = initialize_agent_home_without_template(&agent_home)
             .await
             .unwrap();
 

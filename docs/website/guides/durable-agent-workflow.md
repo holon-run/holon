@@ -43,14 +43,15 @@ local Unix socket.
 
 ### 2. Create a specialized agent
 
-For focused durable work, create a named agent with a template:
+For focused durable work, create a named agent with an installed or synced
+template:
 
 ```bash
 holon agent create builder --template holon-developer
 ```
 
-This creates `~/.holon/agents/builder/` initialized with the developer
-template, which includes code-editing skills.
+This creates `~/.holon/agents/builder/` initialized from the local developer
+template.
 
 ### 3. Start a WorkItem-backed piece of work
 

@@ -88,7 +88,7 @@ Edit and build the Holon documentation website.
   <!-- mdorigin:index kind=article -->
 
 - [Agent templates](./agent-templates.md)
-  What agent templates are, available built-in templates, how to use --template, and how to create custom templates.
+  What agent templates are, how to sync or install them, how to use --template, and how to create custom templates.
   <!-- mdorigin:index kind=article -->
 
 - [Documentation workflow](./documentation-workflow.md)

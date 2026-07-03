@@ -70,7 +70,7 @@ This is a short orientation for contributors. End users don't need to know the r
 - `tests/` contains Rust integration tests and shared support.
 - `docs/` contains runtime contracts, design records, and current architecture
   notes.
-- `builtin_templates/` contains runtime-managed agent templates.
+- `agent_templates/` contains remote-syncable agent templates.
 - `docs/website/` contains this mdorigin documentation site.
 
 

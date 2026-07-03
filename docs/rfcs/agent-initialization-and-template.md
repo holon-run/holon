@@ -274,26 +274,10 @@ agent_templates/
 collisions with prompt templates, UI templates, workflow templates, and other
 future template-like assets.
 
-A repository may optionally include a small repository index:
-
-```text
-holon-index.toml
-```
-
-Example:
-
-```toml
-schema = "holon.repository.v1"
-
-[collections]
-skills = "skills"
-agent_templates = "agent_templates"
-```
-
-The index is an optimization and capability declaration, not the source of the
-template body. The source of truth remains the per-template directory.
-Implementations may scan the default `skills/` and `agent_templates/`
-directories when `holon-index.toml` is absent.
+Template repositories use the top-level `agent_templates/` directory for
+repository-level discovery. `holon-index.toml` is not part of v1 template
+discovery; keeping one conventional path avoids a second source of truth for
+remote sync.
 
 ### GitHub URL format
 
@@ -328,26 +312,21 @@ template URL application. A daemon discovers templates in configured remote
 sources by scanning the `agent_templates/` directory and exposes the catalog
 through API responses.
 
-### Builtin templates
+### Builtin default template
 
-Holon should ship a small builtin template set for common roles.
+Holon ships exactly one hidden built-in `holon-default` template as the
+zero-config and offline fallback. It is not exposed as a normal catalog entry
+and is not seeded into the user-visible template root on startup.
 
-Builtin templates should be exposed through the same catalog model as other
-templates.
+Creating an agent without an explicit template selector uses this hidden
+default. Creating an agent with a selector resolves only visible local
+templates, catalog-qualified local templates, explicit paths, and explicit
+GitHub template URLs. Compatibility selectors for the hidden default may remain
+available, but they should not create duplicate visible catalog entries.
 
-If builtin templates are materialized into the user-visible local root, that
-materialization should be idempotent:
-
-- builtin templates are installed only when the target template directory does
-  not already exist
-- startup should not overwrite or silently rewrite an existing user template
-- after materialization, normal `template_id` resolution uses the standard
-  `agent_templates` directory
-
-Builtin templates should not be special caller-provided inline prompts. They
-may still be materialized locally for inspectability, but their target
-user-visible root should follow the same `agent_templates` convention as
-user-authored templates.
+Common role templates such as developer, reviewer, release, or GitHub issue
+solver should be delivered through the official remote template source and
+materialized into `~/.agents/agent_templates` by sync/install operations.
 
 ### `skills.toml` format
 
@@ -431,8 +410,8 @@ daemon should expose templates as first-class catalog and lifecycle resources.
 
 The API surface should be able to:
 
-- list visible template catalog entries across builtin, user, agent-local, and
-  configured remote sources
+- list visible template catalog entries across user, agent-local, and managed
+  templates materialized from configured remote sources
 - return template details, including metadata, source, package path, rendered
   `AGENTS.md` preview, and declared skill references
 - validate a local or remote template package without applying it
@@ -465,8 +444,8 @@ Remote template sources are configured explicitly in daemon-level config:
 {
   "agent_templates": {
     "remote_sources": {
-      "community": {
-        "url": "https://github.com/holon-run/agent-templates",
+      "official": {
+        "url": "https://github.com/holon-run/holon",
         "ref": "main",
         "enabled": true
       }
@@ -493,9 +472,14 @@ v1 non-goals:
   or ad-hoc URLs
 - no configurable remote repo layout path
 
+If config does not explicitly define `official`, Holon registers the official
+`https://github.com/holon-run/holon` source by default. Startup must not require
+network access: missing, stale, or failed source sync state is surfaced as
+source status and diagnostics, not as an agent creation blocker.
+
 ### Remote source sync
 
-Sync is explicit, not automatic:
+Sync can be requested explicitly:
 
 ```
 POST /templates/remote-sources/sync
@@ -505,7 +489,7 @@ Request body (optional):
 
 ```json
 {
-  "source_id": "community",
+  "source_id": "official",
   "force": false
 }
 ```
@@ -516,14 +500,29 @@ Request body (optional):
 Sync runs as a daemon job (`kind = "agent_template.remote_sources.sync"`) through
 the existing `/jobs` infrastructure. Jobs are asynchronous and trackable.
 
+The daemon may also start a non-blocking background sync for enabled sources
+that have never synced or whose last successful sync is stale. That work must
+not block startup, default agent creation, or explicit agent creation.
+
 Sync results are persisted in DB table `agent_template_remote_source_syncs` with
 fields: `source_id`, `kind`, `url`, `requested_ref`, `enabled`, `status`,
 `last_synced_at`, `resolved_ref`, nullable `resolved_revision`, `catalog_json`,
 `diagnostics_json`, and `error`.
 
-Cache policy: conservative. Each source has its own cache directory. Last-good
-cache is preserved on sync failure. Disabled or removed source caches are not
-automatically cleaned up.
+Sync materializes each discovered template into:
+
+```text
+~/.agents/agent_templates/<template_id>/
+```
+
+This is intentionally the same root used for user-authored templates and
+explicit installs. Managed metadata records the owning remote source and content
+hash. A later sync may update templates it owns, but it must refuse to overwrite
+a user-owned template directory or a template managed by another source.
+
+The DB row remains source status metadata for APIs and diagnostics. It is not
+the live catalog source for synced templates; after materialization, normal
+local template discovery exposes the synced templates.
 
 ### Catalog API response
 
@@ -533,19 +532,19 @@ automatically cleaned up.
 {
   "catalog": [
     {
-      "catalog_id": "builtin:holon-developer",
+      "catalog_id": "user_global:holon-developer",
       "template": "holon-developer",
       "template_id": "holon-developer",
-      "source": "builtin",
+      "source": "user_global",
       "name": "Holon Developer",
       "description": "A long-lived implementation-focused agent.",
       "included_skills": []
     }
   ],
   "sources": [
-    { "source_id": "community", "kind": "github", "enabled": true,
+    { "source_id": "official", "kind": "github", "enabled": true,
       "status": "synced",
-      "url": "https://github.com/holon-run/agent-templates",
+      "url": "https://github.com/holon-run/holon",
       "resolved_ref": "main", "resolved_revision": null,
       "last_synced_at": "2026-01-01T00:00:00Z" }
   ],
@@ -556,9 +555,9 @@ automatically cleaned up.
 `resolved_ref` is the configured or default branch name. `resolved_revision` is
 nullable in v1 because GitHub contents discovery currently resolves branch
 names for request stability but does not require an additional commit SHA
-lookup. Remote entries include `source_id`, `resolved_ref`, and `source_url`;
-`GET /templates/catalog/{catalog_id}` can resolve remote details by fetching the
-template tree from `source_url`.
+lookup. The visible catalog is local: user-authored templates, explicit
+installs, agent-home templates, and managed templates materialized by remote
+sync. Hidden built-in defaults are not returned as normal catalog entries.
 
 ## Evolving `AGENTS.md`
 
@@ -640,7 +639,7 @@ The intended direction is:
 3. user-authored template packages live under
    `~/.agents/agent_templates/<template_id>/`
 4. package repositories use top-level `agent_templates/` convention;
-   no index file required
+   no index file supported
 5. each template package uses `template.toml`, `AGENTS.md`, and optional
    `skills.toml`
 6. templates materialize an initial `agent_home/AGENTS.md`

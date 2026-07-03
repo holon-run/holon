@@ -22,6 +22,7 @@ use holon::{
         AppConfig, ControlAuthMode, CredentialKind, CredentialSource, ProviderAuthConfig,
         ProviderConfigFile, ProviderId, ProviderTransportKind,
     },
+    config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
         daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
         ensure_serve_preflight, prepare_runtime_before_server, RuntimeServiceHandle,
@@ -47,6 +48,7 @@ use holon::{
     types::{AuditEvent, AuthorityClass, ControlAction, TimerStatus},
 };
 use tokio::net::TcpListener;
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use holon::cli::{
@@ -823,6 +825,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let host = RuntimeHost::new(config.clone())?;
     let runtime = host.default_runtime().await?;
     host.spawn_daemon_memory_indexer();
+    spawn_stale_agent_template_remote_source_sync(&config, &host);
     emit_first_run_intro(&config, &runtime).await;
     let runtime_service = RuntimeServiceHandle::new(&config)?;
 
@@ -932,6 +935,91 @@ fn ensure_socket_parent(socket_path: &Path) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     Ok(())
+}
+
+fn spawn_stale_agent_template_remote_source_sync(config: &AppConfig, host: &RuntimeHost) {
+    let sync_candidates = stale_agent_template_remote_source_sync_candidates(
+        &config.stored_config.agent_templates,
+        host.runtime_db(),
+    );
+    if sync_candidates.is_empty() {
+        return;
+    }
+
+    let db = host.runtime_db().clone();
+    tokio::spawn(async move {
+        let user_home = match holon::agent_template::user_home_dir() {
+            Ok(path) => path,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "failed to resolve user home for agent template remote source startup sync"
+                );
+                return;
+            }
+        };
+        for (source_id, source_config) in sync_candidates {
+            if let Err(error) = holon::agent_template::sync_agent_template_remote_source(
+                &db,
+                &user_home,
+                &source_id,
+                &source_config,
+            )
+            .await
+            {
+                let message = error.to_string();
+                if let Err(record_error) =
+                    holon::agent_template::record_agent_template_remote_source_sync_failure(
+                        &db,
+                        &source_id,
+                        &source_config,
+                        &message,
+                    )
+                {
+                    warn!(
+                        source_id = %source_id,
+                        error = %record_error,
+                        "failed to persist agent template remote source startup sync failure"
+                    );
+                }
+                warn!(
+                    source_id = %source_id,
+                    error = %error,
+                    "agent template remote source startup sync failed"
+                );
+            }
+        }
+    });
+}
+
+fn stale_agent_template_remote_source_sync_candidates(
+    config: &AgentTemplatesConfigFile,
+    db: &RuntimeDb,
+) -> Vec<(String, AgentTemplateRemoteSourceConfigFile)> {
+    holon::agent_template::effective_agent_template_remote_sources(config)
+        .into_iter()
+        .filter_map(|(source_id, source_config)| {
+            if !source_config.enabled() {
+                return None;
+            }
+            match holon::agent_template::agent_template_remote_source_needs_sync(
+                db,
+                &source_id,
+                chrono::Duration::hours(24),
+            ) {
+                Ok(true) => Some((source_id, source_config)),
+                Ok(false) => None,
+                Err(error) => {
+                    warn!(
+                        source_id = %source_id,
+                        error = %error,
+                        "failed to inspect agent template remote source sync state"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 async fn wait_for_shutdown(mut shutdown: tokio::sync::watch::Receiver<bool>) {
@@ -1093,6 +1181,59 @@ mod tests {
             ]
         );
         assert_eq!(serve_launch.control_token_env, None);
+    }
+
+    #[test]
+    fn stale_template_remote_source_startup_sync_candidates_include_official_when_needed() {
+        let home = tempfile::tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let config = AgentTemplatesConfigFile::default();
+
+        let candidates = stale_agent_template_remote_source_sync_candidates(&config, &db);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, "official");
+        assert_eq!(candidates[0].1.url, "https://github.com/holon-run/holon");
+    }
+
+    #[test]
+    fn stale_template_remote_source_startup_sync_candidates_skip_recent_and_disabled_sources() {
+        let home = tempfile::tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        db.connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO agent_template_remote_source_syncs \
+                 (source_id, kind, url, requested_ref, enabled, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, created_at, updated_at) \
+                 VALUES (?1, 'github', ?2, 'main', 1, 'synced', ?3, 'main', NULL, '[]', '[]', NULL, ?3, ?3)",
+                (
+                    "official",
+                    "https://github.com/holon-run/holon",
+                    chrono::Utc::now().to_rfc3339(),
+                ),
+            )
+            .unwrap();
+        let mut config = AgentTemplatesConfigFile::default();
+        config.remote_sources.insert(
+            "disabled".into(),
+            AgentTemplateRemoteSourceConfigFile {
+                url: "https://github.com/example/templates".into(),
+                git_ref: Some("main".into()),
+                enabled: Some(false),
+            },
+        );
+
+        let candidates = stale_agent_template_remote_source_sync_candidates(&config, &db);
+
+        assert!(candidates.is_empty());
     }
 
     #[test]

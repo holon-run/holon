@@ -30,7 +30,7 @@ Create a named agent that persists across sessions:
 holon agent create reviewer
 ```
 
-Create an agent from a built-in template:
+Create an agent from an installed or synced template:
 
 ```bash
 holon agent create reviewer --template holon-reviewer

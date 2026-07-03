@@ -1,6 +1,6 @@
 ---
 title: Agent templates
-summary: What agent templates are, available built-in templates, how to use --template, and how to create custom templates.
+summary: What agent templates are, how to sync or install them, how to use --template, and how to create custom templates.
 order: 18
 ---
 
@@ -17,61 +17,31 @@ capabilities. Without a template, agents start with a generic default contract.
 
 Common scenarios:
 
-- **Creating a reviewer agent** — `holon agent create reviewer --template holon-reviewer`
+- **Creating a synced reviewer agent** — `holon agent create reviewer --template holon-reviewer`
 - **One-shot tasks with a role** — `holon run --template holon-developer "Fix the null check in handler.rs"`
 - **Solving GitHub issues** — `holon solve --template holon-github-solve https://github.com/owner/repo/issues/42`
 
-## Built-in Templates
+## Template library and default bootstrap
 
-Holon ships with these built-in templates. The repository source lives under
-`builtin_templates/`, and at runtime templates resolve from
-`~/.agents/templates/<template_id>/` (built-in templates are seeded there
-during initialization).
+Holon keeps visible templates in the user template library:
 
-| Template ID | Purpose | Includes Skills |
-|-------------|---------|----------------|
-| `holon-default` | Generic agent with fill-in-the-blank role contract | None |
-| `holon-developer` | Implementation-focused agent for code changes | None |
-| `holon-reviewer` | Review-focused agent for PR inspection | None |
-| `holon-release` | Release and delivery agent for versioning/publishing | None |
-| `holon-github-solve` | GitHub task agent for issues and PRs | `ghx`, `github-issue-solve`, `github-pr-fix`, `github-review` |
+```text
+~/.agents/agent_templates/<template_id>/
+```
 
-### `holon-default`
+User-authored templates, explicit installs, and remote-source sync results all
+use this same root. Remote-source sync is equivalent to a batch install/update
+of managed templates into that library; Holon writes managed metadata so later
+syncs can update their own templates without overwriting user-owned directories.
 
-The default template. Provides a fill-in-the-blank `AGENTS.md` structure with
-sections for Role, Responsibilities, Authority, Escalation Boundary, and
-Operating Conventions. Use this as a starting point for custom roles.
+Holon also carries one hidden built-in `holon-default` template for zero-config
+and offline startup. It is not seeded into `~/.agents/agent_templates`, and it
+is not shown as a catalog entry. It is used only when creating an agent without
+an explicit template selector.
 
-### `holon-developer`
-
-Pre-configured for implementation work:
-
-- Turn requirements into concrete code changes
-- Run minimal verification that meaningfully checks the change
-- Keep edits narrow, explicit, and easy to review
-- Report blockers with concrete technical evidence
-
-### `holon-reviewer`
-
-Pre-configured for code review:
-
-- Inspect pull requests for correctness, regressions, and contract drift
-- Prioritize concrete findings with clear severity and file references
-- Distinguish proven issues from open questions
-
-### `holon-release`
-
-Pre-configured for release work:
-
-- Prepare release changesets, version bumps, and release notes
-- Verify release prerequisites before publishing
-- Surface irreversible steps before executing them
-
-### `holon-github-solve`
-
-The most feature-rich template. Pre-configures the agent for GitHub workflows
-and pre-installs four skills for issue solving, PR fixing, code review, and
-GitHub CLI operations.
+The official template source is the Holon repository. When synced, templates
+under its top-level `agent_templates/` directory become normal local catalog
+entries from `~/.agents/agent_templates`.
 
 ## Using `--template`
 
@@ -81,9 +51,10 @@ GitHub CLI operations.
 holon agent create reviewer --template holon-reviewer
 ```
 
-This initializes `~/.holon/agents/reviewer/AGENTS.md` with the reviewer role
-contract. If the agent home already exists and is non-empty, template
-initialization refuses to overwrite it.
+This initializes `~/.holon/agents/reviewer/AGENTS.md` from the local
+`holon-reviewer` template after that template has been installed or synced. If
+the agent home already exists and is non-empty, template initialization refuses
+to overwrite it.
 
 ### One-Shot Run
 

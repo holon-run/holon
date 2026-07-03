@@ -20,10 +20,9 @@ use tracing::warn;
 use crate::{
     agent_memory::load_agent_memory,
     agent_template::{
-        discover_agent_templates_catalog, ensure_agent_home_agents_md_from_template_with_home,
+        discover_agent_templates_catalog, ensure_agent_home_agents_md_without_template_with_home,
         initialize_agent_home_from_template_with_catalog,
         initialize_agent_home_from_template_with_home, initialize_agent_home_without_template,
-        seed_builtin_templates_for_home, DEFAULT_AGENT_TEMPLATE_ID,
     },
     agents_md::load_agents_md,
     callbacks::hash_callback_token,
@@ -197,7 +196,6 @@ impl RuntimeHost {
         config: AppConfig,
         static_provider: Option<Arc<dyn AgentProvider>>,
     ) -> Result<Self> {
-        seed_builtin_templates_for_home(&config.home_dir)?;
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
@@ -652,7 +650,7 @@ impl RuntimeHost {
                     .await?;
             }
         } else {
-            initialize_agent_home_without_template(&self.agent_data_dir(agent_id))?;
+            initialize_agent_home_without_template(&self.agent_data_dir(agent_id)).await?;
         }
         let record = AgentIdentityRecord::new(
             agent_id,
@@ -1250,12 +1248,8 @@ impl RuntimeHost {
     async fn ensure_default_agent_home_initialized(&self) -> Result<()> {
         let agent_home = self.agent_data_dir(&self.config().default_agent_id);
         let user_home = crate::agent_template::user_home_dir()?;
-        let _ = ensure_agent_home_agents_md_from_template_with_home(
-            &agent_home,
-            &user_home,
-            DEFAULT_AGENT_TEMPLATE_ID,
-        )
-        .await?;
+        let _ =
+            ensure_agent_home_agents_md_without_template_with_home(&agent_home, &user_home).await?;
         Ok(())
     }
 
@@ -1278,7 +1272,7 @@ impl RuntimeHost {
             )
             .await?;
         } else {
-            initialize_agent_home_without_template(&self.agent_data_dir(&child_agent_id))?;
+            initialize_agent_home_without_template(&self.agent_data_dir(&child_agent_id)).await?;
         }
         let record = AgentIdentityRecord::new(
             child_agent_id,
@@ -2557,7 +2551,10 @@ mod tests {
             &std::fs::read(crate::agent_template::template_provenance_path(&agent_home)).unwrap(),
         )
         .unwrap();
-        assert_eq!(provenance.selector, DEFAULT_AGENT_TEMPLATE_ID);
+        assert_eq!(
+            provenance.selector,
+            crate::agent_template::DEFAULT_AGENT_TEMPLATE_ID
+        );
         assert_eq!(
             runtime.agent_summary().await.unwrap().identity.agent_id,
             host.config().default_agent_id
