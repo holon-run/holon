@@ -5,7 +5,7 @@ const USER_GLOBAL_LIBRARY_LABEL: &str = "user_global";
 
 /// `GET /templates/catalog`
 ///
-/// List all globally visible templates (builtin + user global library).
+/// List all globally visible templates (user global library + synced remote sources).
 /// Agent-scoped templates are excluded from this global catalog endpoint.
 pub async fn templates_catalog(
     State(state): State<Arc<AppState>>,
@@ -16,7 +16,8 @@ pub async fn templates_catalog(
     let config = state.host.config();
     let user_home = crate::agent_template::user_home_dir().ok();
     // Use a non-existent agent_home path so the global catalog shows only
-    // builtin + user_global entries, parallel to /skills/catalog.
+    // user_global entries, parallel to /skills/catalog. The hidden builtin
+    // default remains available only as the no-selector fallback.
     let catalog = crate::agent_template::discover_agent_templates_catalog(
         user_home.as_deref(),
         FsPath::new("/nonexistent-agent-home"),

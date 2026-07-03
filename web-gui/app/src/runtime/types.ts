@@ -49,7 +49,7 @@ export interface SkillCatalogState {
   error?: string;
 }
 
-export type AgentTemplateSourceKind = "builtin" | "user" | "user_global" | "agent" | "remote";
+export type AgentTemplateSourceKind = "builtin" | "user_global" | "agent_home" | "remote";
 
 export interface AgentTemplateCatalogEntry {
   catalogId: string;

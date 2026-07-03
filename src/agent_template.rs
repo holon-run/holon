@@ -2694,6 +2694,36 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_templates_split_hidden_builtin_from_syncable_official_templates() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let builtin = repo.join("builtin_templates");
+        let syncable = repo.join("agent_templates");
+
+        let builtin_ids: Vec<_> = fs::read_dir(&builtin)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(builtin_ids, vec!["holon-default"]);
+
+        for template_id in [
+            "holon-developer",
+            "holon-github-solve",
+            "holon-release",
+            "holon-reviewer",
+        ] {
+            let template_dir = syncable.join(template_id);
+            assert!(
+                template_dir.join(TEMPLATE_AGENTS_FILENAME).is_file(),
+                "{template_id} should be syncable from agent_templates/"
+            );
+            assert!(
+                template_dir.join(TEMPLATE_MANIFEST_FILENAME).is_file(),
+                "{template_id} should declare template metadata"
+            );
+        }
+    }
+
+    #[test]
     fn discover_agent_templates_catalog_lists_local_templates_without_builtin_entries() {
         let user_home = tempdir().unwrap();
         let agent_home = tempdir().unwrap();
