@@ -25,6 +25,7 @@ const TEMPLATE_SKILLS_FILENAME: &str = "skills.toml";
 const TEMPLATE_MANIFEST_FILENAME: &str = "template.toml";
 const TEMPLATE_PROVENANCE_FILENAME: &str = "template-provenance.json";
 const MANAGED_TEMPLATE_STATE_FILENAME: &str = ".holon-template.json";
+const TEMPLATE_REGISTRY_FILENAME: &str = ".registry.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID: &str = "official";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL: &str = "https://github.com/holon-run/holon";
@@ -79,6 +80,39 @@ enum ManagedTemplateOwner {
         source_url: String,
         synced_at: DateTime<Utc>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AgentTemplateRegistry {
+    version: u32,
+    #[serde(default)]
+    sources: BTreeMap<String, AgentTemplateRegistrySource>,
+    #[serde(default)]
+    installed: BTreeMap<String, AgentTemplateRegistryInstalled>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AgentTemplateRegistrySource {
+    kind: String,
+    url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_ref: Option<String>,
+    resolved_ref: String,
+    catalog_path: String,
+    catalog_hash: String,
+    synced_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AgentTemplateRegistryInstalled {
+    template_id: String,
+    source_id: String,
+    source_url: String,
+    source_resolved_ref: String,
+    template_path: String,
+    local_path: String,
+    content_hash: String,
+    synced_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -651,6 +685,45 @@ fn templates_root_for_home(home_dir: &Path) -> PathBuf {
     home_dir.join(".agents").join("agent_templates")
 }
 
+fn template_registry_path(templates_root: &Path) -> PathBuf {
+    templates_root.join(TEMPLATE_REGISTRY_FILENAME)
+}
+
+fn empty_template_registry() -> AgentTemplateRegistry {
+    AgentTemplateRegistry {
+        version: 1,
+        sources: BTreeMap::new(),
+        installed: BTreeMap::new(),
+    }
+}
+
+fn load_template_registry(templates_root: &Path) -> Result<AgentTemplateRegistry> {
+    let path = template_registry_path(templates_root);
+    if !path.is_file() {
+        return Ok(empty_template_registry());
+    }
+    let content =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(empty_template_registry());
+    }
+    let registry: AgentTemplateRegistry = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if registry.version != 1 {
+        bail!(
+            "unsupported agent template registry version {} in {}",
+            registry.version,
+            path.display()
+        );
+    }
+    Ok(registry)
+}
+
+fn write_template_registry(templates_root: &Path, registry: &AgentTemplateRegistry) -> Result<()> {
+    let content = serde_json::to_vec_pretty(registry)?;
+    write_file_atomically(&template_registry_path(templates_root), &content)
+}
+
 pub fn effective_agent_template_remote_sources(
     config: &AgentTemplatesConfigFile,
 ) -> BTreeMap<String, AgentTemplateRemoteSourceConfigFile> {
@@ -742,13 +815,13 @@ fn discover_local_templates(
     let mut entries = Vec::new();
     for entry in read_dir.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
         let Some(template_id) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if validate_template_id(template_id).is_err() {
+        if template_id.starts_with('.') || !path.is_dir() {
+            continue;
+        }
+        if validate_template_install_id(template_id).is_err() {
             continue;
         }
         let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
@@ -764,10 +837,15 @@ fn discover_local_templates(
             template_id.to_string()
         };
         let manifest = parse_local_template_manifest(&path);
+        let display_template_id = manifest
+            .as_ref()
+            .map(|m| m.id.clone())
+            .filter(|id| validate_template_id(id).is_ok())
+            .unwrap_or_else(|| template_id.to_string());
         entries.push(AgentTemplateCatalogEntry {
             catalog_id: format!("{}:{}", source.label(), template_id),
             template,
-            template_id: template_id.to_string(),
+            template_id: display_template_id,
             source,
             path: Some(path.clone()),
             name: manifest
@@ -1000,17 +1078,40 @@ pub async fn sync_agent_template_remote_source(
         entry.template = entry.catalog_id.clone();
     }
     let now = Utc::now();
+    let templates_root = templates_root_for_home(user_home);
+    fs::create_dir_all(&templates_root)
+        .with_context(|| format!("failed to create {}", templates_root.display()))?;
+    let mut registry = load_template_registry(&templates_root)?;
+    registry.sources.insert(
+        source_id.to_string(),
+        AgentTemplateRegistrySource {
+            kind: "github".into(),
+            url: config.url.clone(),
+            requested_ref: config.git_ref.clone(),
+            resolved_ref: resolved_ref.clone(),
+            catalog_path: DEFAULT_REMOTE_TEMPLATE_DIR.into(),
+            catalog_hash: catalog_hash(&catalog)?,
+            synced_at: now,
+        },
+    );
+    let mut installed = Vec::new();
     for entry in &catalog {
         install_remote_template_catalog_entry(
-            user_home,
+            &templates_root,
+            &registry,
             source_id,
             &config.url,
             &resolved_ref,
             now,
             entry,
         )
-        .await?;
+        .await
+        .map(|record| installed.push(record))?;
     }
+    for record in installed {
+        registry.installed.insert(record.local_path.clone(), record);
+    }
+    write_template_registry(&templates_root, &registry)?;
     let status = AgentTemplateRemoteSourceStatus {
         source_id: source_id.to_string(),
         kind: "github".into(),
@@ -1283,25 +1384,25 @@ pub(crate) async fn resolve_remote_agent_template_detail(
 }
 
 async fn install_remote_template_catalog_entry(
-    user_home: &Path,
+    templates_root: &Path,
+    registry: &AgentTemplateRegistry,
     source_id: &str,
     source_url: &str,
     resolved_ref: &str,
     synced_at: DateTime<Utc>,
     entry: &AgentTemplateCatalogEntry,
-) -> Result<()> {
+) -> Result<AgentTemplateRegistryInstalled> {
     let template_url = entry
         .source_url
         .as_deref()
         .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
     let resolved = resolve_github_template(template_url).await?;
-    let templates_root = templates_root_for_home(user_home);
-    fs::create_dir_all(&templates_root)
-        .with_context(|| format!("failed to create {}", templates_root.display()))?;
-    let destination = templates_root.join(&entry.template_id);
+    let install_id = choose_remote_template_install_id(templates_root, registry, source_id, entry)?;
+    let destination = templates_root.join(&install_id);
+    let content_hash = resolved_template_content_hash(&resolved);
     let state = ManagedTemplateState {
         template_id: entry.template_id.clone(),
-        content_hash: resolved_template_content_hash(&resolved),
+        content_hash: content_hash.clone(),
         owner: ManagedTemplateOwner::RemoteSource {
             source_id: source_id.to_string(),
             url: source_url.to_string(),
@@ -1316,7 +1417,95 @@ async fn install_remote_template_catalog_entry(
             entry.template_id
         );
     }
-    Ok(())
+    Ok(AgentTemplateRegistryInstalled {
+        template_id: entry.template_id.clone(),
+        source_id: source_id.to_string(),
+        source_url: source_url.to_string(),
+        source_resolved_ref: resolved_ref.to_string(),
+        template_path: remote_template_source_path(template_url),
+        local_path: install_id,
+        content_hash,
+        synced_at,
+    })
+}
+
+fn choose_remote_template_install_id(
+    templates_root: &Path,
+    registry: &AgentTemplateRegistry,
+    source_id: &str,
+    entry: &AgentTemplateCatalogEntry,
+) -> Result<String> {
+    for record in registry.installed.values() {
+        if record.source_id == source_id && record.template_id == entry.template_id {
+            validate_template_install_id(&record.local_path)?;
+            return Ok(record.local_path.clone());
+        }
+    }
+
+    let base = entry.template_id.clone();
+    validate_template_id(&base)?;
+    if remote_template_install_id_available_for_source(templates_root, &base, source_id)? {
+        return Ok(base);
+    }
+
+    let suffix = install_id_suffix(source_id);
+    for index in 0..1000 {
+        let candidate = if index == 0 {
+            format!("{}@{}", entry.template_id, suffix)
+        } else {
+            format!("{}@{}-{}", entry.template_id, suffix, index + 1)
+        };
+        validate_template_install_id(&candidate)?;
+        if remote_template_install_id_available_for_source(templates_root, &candidate, source_id)? {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "failed to allocate install_id for remote template '{}' from source '{}'",
+        entry.template_id,
+        source_id
+    )
+}
+
+fn remote_template_install_id_available_for_source(
+    templates_root: &Path,
+    install_id: &str,
+    source_id: &str,
+) -> Result<bool> {
+    let destination = templates_root.join(install_id);
+    if !destination.exists() {
+        return Ok(true);
+    }
+    let Some(state) = read_managed_template_state(&destination)? else {
+        return Ok(false);
+    };
+    Ok(matches!(
+        state.owner,
+        ManagedTemplateOwner::RemoteSource {
+            source_id: ref existing_source,
+            ..
+        } if existing_source == source_id
+    ))
+}
+
+fn install_id_suffix(source_id: &str) -> String {
+    let suffix = source_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if suffix.is_empty() {
+        "remote".into()
+    } else {
+        suffix
+    }
 }
 
 fn local_template_skills(path: &Path) -> Vec<String> {
@@ -1432,6 +1621,22 @@ fn validate_template_id(template_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_template_install_id(install_id: &str) -> Result<()> {
+    if install_id.contains('/') || install_id.contains('\\') {
+        bail!("template install_id must not be path-like");
+    }
+    if install_id == "." || install_id == ".." || install_id.contains("..") {
+        bail!("template install_id must be a simple stable name");
+    }
+    if !install_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '@'))
+    {
+        bail!("template install_id contains unsupported characters");
+    }
+    Ok(())
+}
+
 fn resolve_template_catalog_entry(
     template: &str,
     home_dir: &Path,
@@ -1455,11 +1660,11 @@ fn resolve_template_catalog_entry(
         .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home));
     }
 
-    validate_template_id(template)?;
+    validate_template_install_id(template)?;
     let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
     catalog
         .into_iter()
-        .find(|entry| entry.template_id == template)
+        .find(|entry| entry.template_id == template || entry.template == template)
         .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home))
 }
 
@@ -1481,14 +1686,22 @@ fn resolve_prefixed_template_catalog_entry(
             false,
         )
         .into_iter()
-        .find(|entry| entry.template_id == template_id),
+        .find(|entry| entry.template_id == template_id || entry.template == template_id),
         AgentTemplateSourceKind::AgentHome => discover_local_templates(
             &catalog_agent_home.join("agent_templates"),
             AgentTemplateSourceKind::AgentHome,
             true,
         )
         .into_iter()
-        .find(|entry| entry.template_id == template_id),
+        .find(|entry| {
+            entry.template_id == template_id
+                || entry
+                    .path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str())
+                    == Some(template_id)
+        }),
     }
 }
 
@@ -1748,6 +1961,53 @@ fn resolved_template_content_hash(resolved: &ResolvedTemplate) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn catalog_hash(catalog: &[AgentTemplateCatalogEntry]) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let catalog_json = serde_json::to_vec(catalog)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&catalog_json);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn remote_template_source_path(source_url: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(source_url) else {
+        return source_url.to_string();
+    };
+    let Some(segments) = url
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+    else {
+        return source_url.to_string();
+    };
+    if segments.len() < 5 || segments[2] != "tree" {
+        return source_url.to_string();
+    }
+    segments[4..].join("/")
+}
+
+fn current_managed_template_content_hash(template_dir: &Path) -> Result<String> {
+    let resolved = resolve_local_template(
+        template_dir.to_path_buf(),
+        TemplateProvenanceSource::TemplateId {
+            template_id: template_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            path: template_dir.to_path_buf(),
+        },
+    )?;
+    Ok(resolved_template_content_hash(&resolved))
+}
+
+fn managed_template_has_local_changes(
+    template_dir: &Path,
+    state: &ManagedTemplateState,
+) -> Result<bool> {
+    Ok(current_managed_template_content_hash(template_dir)? != state.content_hash)
+}
+
 fn write_managed_template_dir(
     template_dir: &Path,
     resolved: &ResolvedTemplate,
@@ -1771,6 +2031,13 @@ fn write_managed_template_dir(
                     ) if existing_source == new_source
                 ) =>
             {
+                if managed_template_has_local_changes(template_dir, &existing)? {
+                    bail!(
+                        "template '{}' at {} has local changes; refusing to overwrite managed template",
+                        existing.template_id,
+                        template_dir.display()
+                    );
+                }
                 fs::remove_dir_all(template_dir)
                     .with_context(|| format!("failed to clear {}", template_dir.display()))?;
             }
@@ -3984,6 +4251,21 @@ summary = "Implementation agent"
                 ..
             } if source_id == "official" && url == "https://github.com/owner/repo" && resolved_ref == "main"
         ));
+        let registry = load_template_registry(&templates_root_for_home(home.path())).unwrap();
+        let source = registry
+            .sources
+            .get("official")
+            .expect("registry should record synced source");
+        assert_eq!(source.url, "https://github.com/owner/repo");
+        assert_eq!(source.requested_ref.as_deref(), Some("main"));
+        assert_eq!(source.resolved_ref, "main");
+        let installed = registry
+            .installed
+            .get("worker")
+            .expect("registry should record installed template");
+        assert_eq!(installed.template_id, "worker");
+        assert_eq!(installed.source_id, "official");
+        assert_eq!(installed.template_path, "agent_templates/worker");
 
         let catalog = discover_agent_templates_catalog(Some(home.path()), home.path());
         assert!(catalog
@@ -4037,7 +4319,7 @@ summary = "Implementation agent"
     }
 
     #[tokio::test]
-    async fn sync_remote_source_refuses_to_overwrite_user_owned_template() {
+    async fn sync_remote_source_renames_when_template_id_conflicts_with_user_owned_template() {
         let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let db = RuntimeDb::open_and_migrate(
@@ -4095,14 +4377,106 @@ name = "Worker"
             enabled: Some(true),
         };
 
+        sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(existing.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
+            "user-owned"
+        );
+        let renamed = templates_root_for_home(home.path()).join("worker@official");
+        assert_eq!(
+            fs::read_to_string(renamed.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
+            "remote-owned"
+        );
+        let registry = load_template_registry(&templates_root_for_home(home.path())).unwrap();
+        let installed = registry
+            .installed
+            .get("worker@official")
+            .expect("registry should record renamed install_id");
+        assert_eq!(installed.template_id, "worker");
+        assert_eq!(installed.local_path, "worker@official");
+    }
+
+    #[tokio::test]
+    async fn sync_remote_source_refuses_to_overwrite_dirty_managed_template() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let routes = || {
+            vec![
+                (
+                    "/repos/owner/repo/contents/agent_templates",
+                    200,
+                    github_dir_response(&[("worker", "dir")]),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                    200,
+                    github_file_response(
+                        r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                    ),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
+                    200,
+                    github_file_response("remote-owned"),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
+                    404,
+                    "{\"message\":\"not found\"}".to_string(),
+                ),
+                (
+                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                    200,
+                    github_file_response(
+                        r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+"#,
+                    ),
+                ),
+            ]
+        };
+        let server = MockGithubServer::start(routes());
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+        };
+
+        sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+        let template_dir = templates_root_for_home(home.path()).join("worker");
+        fs::write(template_dir.join(TEMPLATE_AGENTS_FILENAME), "local edit").unwrap();
+
+        let server = MockGithubServer::start(routes());
+        let _api_guard = EnvGuard::set(
+            "HOLON_TEMPLATE_GITHUB_API_BASE",
+            format!("http://{}", server.addr),
+        );
         let err = sync_agent_template_remote_source(&db, home.path(), "official", &config)
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("user-owned template"), "{err:#}");
+        assert!(err.to_string().contains("local changes"), "{err:#}");
         assert_eq!(
-            fs::read_to_string(existing.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            "user-owned"
+            fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
+            "local edit"
         );
     }
 
