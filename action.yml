@@ -601,6 +601,14 @@ runs:
         fi
         mkdir -p "$input_dir" "$output_dir" "$state_dir"
 
+        template=""
+        if [ -n "${HOLON_SOURCE_DIR:-}" ]; then
+          source_template="$HOLON_SOURCE_DIR/agent_templates/holon-github-solve"
+          if [ -f "$source_template/AGENTS.md" ]; then
+            template="$source_template"
+          fi
+        fi
+
         args=("$INPUT_REF" --home "$state_dir" --workspace "$workspace" --cwd "$cwd" --input "$input_dir" --output "$output_dir" --max-turns "$INPUT_MAX_TURNS" --json)
         if [ -n "$INPUT_REPO" ]; then
           args+=(--repo "$INPUT_REPO")
@@ -613,6 +621,9 @@ runs:
         fi
         if [ -n "$INPUT_ROLE" ]; then
           args+=(--role "$INPUT_ROLE")
+        fi
+        if [ -n "$template" ]; then
+          args+=(--template "$template")
         fi
         if [ -n "$INPUT_MODEL" ]; then
           args+=(--model "$INPUT_MODEL")
