@@ -2115,15 +2115,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "volcengine",
-            "glm-4-7-251222",
-            "GLM-4.7",
-            204_800,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
             "volcengine-coding",
             "ark-code-latest",
             "Ark Code Latest",
@@ -2170,15 +2161,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-coding",
-            "glm-4-7-251222",
-            "GLM-4.7",
-            204_800,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             1_000_000,
@@ -2219,7 +2201,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "glm-5.2",
             "GLM-5.2",
             204_800,
-            131_072,
+            128_000,
             true,
             false,
         ),
@@ -2270,15 +2252,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-agent",
-            "glm-4-7-251222",
-            "GLM-4.7",
-            204_800,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             1_000_000,
@@ -2319,7 +2292,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "glm-5.2",
             "GLM-5.2",
             204_800,
-            131_072,
+            128_000,
             true,
             false,
         ),
@@ -3130,5 +3103,48 @@ mod tests {
             8192,
         );
         assert_eq!(policy.runtime_max_output_tokens, 131_072);
+    }
+
+    #[test]
+    fn volcengine_catalog_respects_anthropic_compatible_output_limits() {
+        // Regression test for #2095: Volcengine's Anthropic-compatible API
+        // rejects max_tokens above 128000.
+        let catalog = BuiltInModelCatalog::new();
+
+        for removed_model_ref in [
+            "volcengine/glm-4-7-251222",
+            "volcengine-coding/glm-4-7-251222",
+            "volcengine-agent/glm-4-7-251222",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::parse(removed_model_ref).unwrap())
+                    .is_none(),
+                "{removed_model_ref} should not be registered"
+            );
+        }
+
+        for entry in catalog.list() {
+            if entry.model_ref.provider.as_str().starts_with("volcengine") {
+                assert!(
+                    entry.max_output_tokens_upper_limit <= Some(128_000),
+                    "{} should not exceed Volcengine's Anthropic-compatible max_tokens limit",
+                    entry.model_ref.as_string()
+                );
+            }
+        }
+
+        for model_ref in ["volcengine-coding/glm-5.2", "volcengine-agent/glm-5.2"] {
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse(model_ref).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                200_000,
+            );
+            assert_eq!(policy.runtime_max_output_tokens, 128_000);
+            assert_eq!(policy.max_output_tokens_upper_limit, Some(128_000));
+        }
     }
 }
