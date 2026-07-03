@@ -51,12 +51,14 @@ export function TemplatesPage({
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | AgentTemplateSourceKind>("all");
   const [githubUrl, setGithubUrl] = useState("");
-  const [newSourceId, setNewSourceId] = useState("");
+  const [customSourceId, setCustomSourceId] = useState("");
   const [newSourceUrl, setNewSourceUrl] = useState("");
   const [newSourceRef, setNewSourceRef] = useState("");
   const [sourceFormError, setSourceFormError] = useState<string | undefined>();
   const [sourceFormBusy, setSourceFormBusy] = useState(false);
   const stats = useMemo(() => templateStats(templates), [templates]);
+  const existingSourceIds = useMemo(() => catalog.sources.map((source) => source.sourceId), [catalog.sources]);
+  const suggestedSourceId = useMemo(() => uniqueSourceId(deriveSourceId(newSourceUrl), existingSourceIds), [existingSourceIds, newSourceUrl]);
   const visibleTemplates = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return templates.filter((template) => {
@@ -88,15 +90,28 @@ export function TemplatesPage({
 
   async function handleAddSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const id = newSourceId.trim();
     const url = newSourceUrl.trim();
-    if (!id || !url) return;
+    if (!url) return;
+    const customId = customSourceId.trim();
+    const id = customId ? sanitizeSourceId(customId) : suggestedSourceId;
+    if (!id) {
+      setSourceFormError("Enter a GitHub URL so Holon can generate a source id.");
+      return;
+    }
+    if (customId && id !== customId) {
+      setSourceFormError(`Custom source id was normalized to "${id}". Use that value or leave custom id empty.`);
+      return;
+    }
+    if (existingSourceIds.includes(id)) {
+      setSourceFormError(`Remote source "${id}" already exists.`);
+      return;
+    }
     setSourceFormBusy(true);
     setSourceFormError(undefined);
     try {
       const ok = await onAddRemoteSource(id, url, newSourceRef.trim() || undefined);
       if (ok) {
-        setNewSourceId("");
+        setCustomSourceId("");
         setNewSourceUrl("");
         setNewSourceRef("");
       } else {
@@ -249,15 +264,6 @@ export function TemplatesPage({
         </CardHeader>
         <CardContent>
           <form className="skills-add-form" onSubmit={(event) => void handleAddSource(event)}>
-            <label>
-              <span>Source ID</span>
-              <input
-                value={newSourceId}
-                placeholder="my-templates"
-                onChange={(event) => setNewSourceId(event.target.value)}
-                disabled={sourceFormBusy}
-              />
-            </label>
             <label className="skills-add-source">
               <span>GitHub URL</span>
               <input
@@ -267,6 +273,9 @@ export function TemplatesPage({
                 disabled={sourceFormBusy}
               />
             </label>
+            <span className="template-source-id-preview">
+              Source ID: <strong>{customSourceId.trim() || suggestedSourceId || "generated from GitHub URL"}</strong>
+            </span>
             <label>
               <span>Ref (optional)</span>
               <input
@@ -276,7 +285,19 @@ export function TemplatesPage({
                 disabled={sourceFormBusy}
               />
             </label>
-            <Button type="submit" variant="accent" disabled={sourceFormBusy || !newSourceId.trim() || !newSourceUrl.trim()}>
+            <details className="template-source-advanced">
+              <summary>Advanced: custom source id</summary>
+              <label>
+                <span>Custom source id</span>
+                <input
+                  value={customSourceId}
+                  placeholder="org-repo"
+                  onChange={(event) => setCustomSourceId(event.target.value)}
+                  disabled={sourceFormBusy}
+                />
+              </label>
+            </details>
+            <Button type="submit" variant="accent" disabled={sourceFormBusy || !newSourceUrl.trim()}>
               Add
             </Button>
           </form>
@@ -494,4 +515,53 @@ function templateStats(templates: AgentTemplateCatalogEntry[]) {
     { label: "global", value: String(templates.filter((template) => template.source === "user_global" || template.source === "user").length) },
     { label: "remote", value: String(templates.filter((template) => template.source === "remote").length) },
   ];
+}
+
+function deriveSourceId(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  const githubRepo = githubRepoSlug(trimmed);
+  if (githubRepo) return githubRepo;
+  return sanitizeSourceId(trimmed.split("/").filter(Boolean).slice(-2).join("-")) || "remote-source";
+}
+
+function githubRepoSlug(url: string): string | undefined {
+  const parsed = parseGitHubUrl(url);
+  if (!parsed) return undefined;
+  return sanitizeSourceId(`${parsed.owner}-${parsed.repo}`);
+}
+
+function parseGitHubUrl(url: string): { owner: string; repo: string } | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "github.com") return undefined;
+    const [owner, repo] = parsed.pathname.split("/").filter(Boolean);
+    if (!owner || !repo) return undefined;
+    return { owner, repo: repo.replace(/\.git$/, "") };
+  } catch {
+    const match = url.match(/github\.com[:/](?<owner>[^/:\s]+)\/(?<repo>[^/\s]+?)(?:\.git)?(?:[/?#].*)?$/);
+    const owner = match?.groups?.owner;
+    const repo = match?.groups?.repo;
+    return owner && repo ? { owner, repo } : undefined;
+  }
+}
+
+function sanitizeSourceId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.git$/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
+function uniqueSourceId(sourceId: string, existingSourceIds: string[]): string {
+  if (!sourceId) return "";
+  const existing = new Set(existingSourceIds);
+  if (!existing.has(sourceId)) return sourceId;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${sourceId}-${index}`;
+    if (!existing.has(candidate)) return candidate;
+  }
 }

@@ -3033,6 +3033,40 @@ code {
   grid-template-columns: minmax(140px, 0.6fr) minmax(180px, 1fr) auto;
 }
 
+.template-source-id-preview {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.skills-add-form .template-source-id-preview {
+  font-weight: 640;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.template-source-id-preview strong {
+  color: var(--text);
+  font-weight: 760;
+}
+
+.template-source-advanced {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.template-source-advanced summary {
+  cursor: pointer;
+  min-height: 40px;
+  padding-top: 12px;
+}
+
+.template-source-advanced label {
+  margin-top: 8px;
+}
+
 .template-row-title,
 .template-row-meta {
   display: flex;
