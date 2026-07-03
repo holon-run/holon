@@ -39,15 +39,12 @@ use holon::{
     onboarding_tui::run_onboarding_tui,
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
-    runtime::RuntimeHandle,
+    runtime::maybe_enqueue_first_run_intro,
     runtime_db::RuntimeDb,
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
     tui::run_tui,
-    types::{
-        AdmissionContext, AuditEvent, AuthorityClass, ControlAction, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority, TimerStatus,
-    },
+    types::{AuditEvent, AuthorityClass, ControlAction, TimerStatus},
 };
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -786,47 +783,8 @@ fn restart_serve_launch_options(
     Ok(serve_args_for_options(&options))
 }
 
-/// On the first run with a configured provider, enqueue a one-time prompt so
-/// the agent greets the user and explains what it can do.
-///
-/// First-run is detected via `total_message_count == 0`: the count is
-/// persisted and restored from DB on restart, so the intro fires exactly once
-/// per fresh agent state.
-async fn maybe_emit_first_run_intro(config: &AppConfig, runtime: &RuntimeHandle) {
-    if !config.default_provider_ready() {
-        return;
-    }
-    let state = match runtime.agent_state().await {
-        Ok(state) => state,
-        Err(error) => {
-            eprintln!("failed to read agent state for first-run intro: {error:#}");
-            return;
-        }
-    };
-    if state.total_message_count > 0 {
-        return;
-    }
-    let intro_prompt = "This is the first run of Holon with a model provider configured. \
-        Introduce yourself to the user: greet them, briefly explain what you can do as a Holon \
-        agent, and suggest a few starter actions they could try. Keep it friendly and concise — \
-        this is a one-time welcome, not a generic bot template.";
-    let message = MessageEnvelope::new(
-        state.id.clone(),
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: Some("first_run_intro".into()),
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: intro_prompt.to_string(),
-        },
-    )
-    .with_admission(
-        MessageDeliverySurface::RuntimeSystem,
-        AdmissionContext::RuntimeOwned,
-    );
-    if let Err(error) = runtime.enqueue(message).await {
+async fn emit_first_run_intro(config: &AppConfig, runtime: &holon::runtime::RuntimeHandle) {
+    if let Err(error) = maybe_enqueue_first_run_intro(config, runtime).await {
         eprintln!("failed to enqueue first-run intro: {error:#}");
     }
 }
@@ -865,7 +823,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let host = RuntimeHost::new(config.clone())?;
     let runtime = host.default_runtime().await?;
     host.spawn_daemon_memory_indexer();
-    maybe_emit_first_run_intro(&config, &runtime).await;
+    emit_first_run_intro(&config, &runtime).await;
     let runtime_service = RuntimeServiceHandle::new(&config)?;
 
     let tcp_router = http::router(

@@ -5,6 +5,7 @@ mod command_task;
 mod continuation;
 mod delivery;
 mod failure;
+mod first_run_intro;
 mod lifecycle;
 mod memory_refresh;
 mod message_dispatch;
@@ -24,6 +25,7 @@ mod waiting;
 pub(crate) mod workspace;
 mod worktree;
 
+pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub use tasks::{
     PickedWorkItem, WorkItemContinuationSummary, WorkItemFocusTransition,
     WorkItemFocusTransitionWarning,

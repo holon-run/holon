@@ -861,6 +861,58 @@ Current input:
 }
 
 #[test]
+fn first_run_intro_snapshot_is_runtime_owned_internal_followup() -> Result<()> {
+    let dir = tempdir()?;
+    let storage = AppStorage::new_for_test(dir.path())?;
+
+    let intro = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "first_run_intro".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "This is the first run of Holon with a model provider configured.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    let rendered = render_context_snapshot(&storage, &AgentState::new("default"), &intro, None)?;
+    let expected = format!(
+        r#"## agent
+Agent id: default
+
+## execution_environment
+{EXECUTION_ENVIRONMENT}
+
+## current_work_item
+Current work item: none.
+No focused WorkItem is attached to this turn.
+
+## context_contract
+{CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Current input relation: current_input is an internal-followup continuation, not a trusted operator request.
+
+## current_input
+Current input:
+- [system][runtime_system][runtime_owned][runtime_instruction][InternalFollowup]
+  This is the first run of Holon with a model provider configured."#
+    );
+    assert_snapshot(&rendered, &expected);
+    assert!(!rendered.contains("[operator]"));
+    assert!(!rendered.contains("operator input full"));
+    Ok(())
+}
+
+#[test]
 fn callback_turn_context_snapshot_preserves_provenance_labels() -> Result<()> {
     let dir = tempdir()?;
     let storage = AppStorage::new_for_test(dir.path())?;
