@@ -2317,26 +2317,46 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
         .build()
         .context("failed to create HTTP client for template install")?;
 
-    let tarball_url = format!(
-        "https://api.github.com/repos/{}/{}/tarball/{}",
-        source.owner, source.repo, source.reference
-    );
-    // Forward GITHUB_TOKEN / GH_TOKEN when available so private repos work and
-    // the 60 req/hr unauthenticated rate limit is avoided.
-    let mut request = client
-        .get(&tarball_url)
-        .header("Accept", "application/vnd.github+json");
-    if let Ok(token) = env::var("GITHUB_TOKEN").or_else(|_| env::var("GH_TOKEN")) {
-        request = request.bearer_auth(&token);
-    }
+    // GitHub refs (branch/tag names) can contain slashes, making the
+    // ref/path boundary in a tree URL ambiguous.  Try candidate splits
+    // from longest ref to shortest; the first tarball download that
+    // succeeds identifies the correct ref.
+    let segments: Vec<&str> = source.all_after_tree.split('/').collect();
+    let mut bytes = None;
+    let mut resolved_path = String::new();
 
-    let response = request.send().context("failed to request GitHub tarball")?;
-    if !response.status().is_success() {
-        bail!("GitHub tarball download failed: HTTP {}", response.status());
+    for i in (1..=segments.len()).rev() {
+        let candidate_ref = segments[..i].join("/");
+        let candidate_path = if i < segments.len() {
+            segments[i..].join("/")
+        } else {
+            String::new()
+        };
+        let tarball_url = format!(
+            "https://api.github.com/repos/{}/{}/tarball/{}",
+            source.owner, source.repo, candidate_ref
+        );
+        // Forward GITHUB_TOKEN / GH_TOKEN when available so private repos work and
+        // the 60 req/hr unauthenticated rate limit is avoided.
+        let mut request = client
+            .get(&tarball_url)
+            .header("Accept", "application/vnd.github+json");
+        if let Ok(token) = env::var("GITHUB_TOKEN").or_else(|_| env::var("GH_TOKEN")) {
+            request = request.bearer_auth(&token);
+        }
+        let response = request.send().context("failed to request GitHub tarball")?;
+        if response.status().is_success() {
+            resolved_path = candidate_path;
+            bytes = Some(response.bytes().context("failed to read GitHub tarball body")?);
+            break;
+        }
     }
-    let bytes = response
-        .bytes()
-        .context("failed to read GitHub tarball body")?;
+    let bytes = bytes.ok_or_else(|| {
+        anyhow!(
+            "GitHub tarball download failed: no valid ref found for '{}'",
+            source.all_after_tree
+        )
+    })?;
     let tarball_path = tmp.join("archive.tar.gz");
     fs::write(&tarball_path, &bytes)
         .with_context(|| format!("failed to write tarball to {}", tarball_path.display()))?;
@@ -2351,13 +2371,13 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
     if entries.len() == 1 && entries[0].path().is_dir() {
         search_dir = entries[0].path();
     }
-    if !source.path.is_empty() {
-        search_dir = search_dir.join(&source.path);
+    if !resolved_path.is_empty() {
+        search_dir = search_dir.join(&resolved_path);
     }
     if !search_dir.is_dir() {
         bail!(
             "template directory not found at '{}' in the downloaded archive",
-            source.path
+            resolved_path
         );
     }
 
@@ -2402,8 +2422,9 @@ impl Drop for TmpDirGuard<'_> {
 struct ParsedGithubTemplateUrl {
     owner: String,
     repo: String,
-    reference: String,
-    path: String,
+    /// All segments after `tree/`, preserved verbatim so the caller can
+    /// resolve refs that contain slashes (e.g. `feat/branch-name`).
+    all_after_tree: String,
 }
 
 impl ParsedGithubTemplateUrl {
@@ -2422,17 +2443,11 @@ impl ParsedGithubTemplateUrl {
         if parts.len() < 4 || parts[2] != "tree" {
             bail!("invalid GitHub URL: expected .../tree/<ref>[/<path>]");
         }
-        let reference = parts[3].to_string();
-        let path = if parts.len() > 4 {
-            parts[4..].join("/")
-        } else {
-            String::new()
-        };
+        let all_after_tree = parts[3..].join("/");
         Ok(Self {
             owner,
             repo,
-            reference,
-            path,
+            all_after_tree,
         })
     }
 }
@@ -2459,15 +2474,10 @@ fn extract_tarball(tarball_path: &Path, dest: &Path) -> Result<()> {
 pub fn validate_github_template_url(url: &str) -> Result<String> {
     let parsed = ParsedGithubTemplateUrl::parse(url)?;
     Ok(format!(
-        "{}/{}/tree/{}{}",
+        "{}/{}/tree/{}",
         parsed.owner,
         parsed.repo,
-        parsed.reference,
-        if parsed.path.is_empty() {
-            String::new()
-        } else {
-            format!("/{}", parsed.path)
-        }
+        parsed.all_after_tree,
     ))
 }
 
@@ -4012,8 +4022,7 @@ name = "Versioned"
         .unwrap();
         assert_eq!(url.owner, "holon-run");
         assert_eq!(url.repo, "templates");
-        assert_eq!(url.reference, "main");
-        assert_eq!(url.path, "my-template");
+        assert_eq!(url.all_after_tree, "main/my-template");
     }
 
     #[test]
@@ -4024,8 +4033,7 @@ name = "Versioned"
         .unwrap();
         assert_eq!(url.owner, "owner");
         assert_eq!(url.repo, "repo");
-        assert_eq!(url.reference, "v1.0.0");
-        assert_eq!(url.path, "nested/path/to/template");
+        assert_eq!(url.all_after_tree, "v1.0.0/nested/path/to/template");
     }
 
     #[test]
@@ -4034,8 +4042,7 @@ name = "Versioned"
             ParsedGithubTemplateUrl::parse("https://github.com/owner/repo/tree/main").unwrap();
         assert_eq!(url.owner, "owner");
         assert_eq!(url.repo, "repo");
-        assert_eq!(url.reference, "main");
-        assert!(url.path.is_empty());
+        assert_eq!(url.all_after_tree, "main");
     }
 
     #[test]
@@ -4091,5 +4098,31 @@ name = "Versioned"
         assert_eq!(result, "owner/repo/tree/main/templates/dev");
 
         assert!(validate_github_template_url("https://gitlab.com/owner/repo").is_err());
+    }
+
+    #[test]
+    fn parsed_github_template_url_preserves_slash_in_ref() {
+        let url = ParsedGithubTemplateUrl::parse(
+            "https://github.com/holon-run/holon-test/tree/feat/seed-test-templates/agent_templates/test-developer",
+        )
+        .unwrap();
+        assert_eq!(url.owner, "holon-run");
+        assert_eq!(url.repo, "holon-test");
+        // all_after_tree preserves the full ref+path for downstream resolution
+        assert_eq!(
+            url.all_after_tree,
+            "feat/seed-test-templates/agent_templates/test-developer"
+        );
+    }
+
+    #[test]
+    fn validate_github_template_url_preserves_slash_in_ref() {
+        let result = validate_github_template_url(
+            "https://github.com/owner/repo/tree/feat/branch-name/templates/dev",
+        )
+        .unwrap();
+        // Canonical form preserves the full ref+path since we can't resolve
+        // the ref/path boundary without an API call.
+        assert_eq!(result, "owner/repo/tree/feat/branch-name/templates/dev");
     }
 }
