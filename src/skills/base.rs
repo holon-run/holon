@@ -759,7 +759,18 @@ fn install_github_remote_skill(
     let skills_root = user_library_skills_root(user_home);
     fs::create_dir_all(&skills_root)
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
-    let destination = install_destination(&skills_root, &source.skill_name)?;
+    let destination = match install_destination(&skills_root, &source.skill_name) {
+        Ok(dest) => dest,
+        Err(err) if err.downcast_ref::<SkillInstallConflict>().is_some() => {
+            tracing::info!(
+                skill_name = %source.skill_name,
+                destination = %skills_root.join(&source.skill_name).display(),
+                "skill already installed globally; skipping re-install"
+            );
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
     let tmp = skills_root.join(format!(
         ".tmp-holon-skill-{}-{}",
         std::process::id(),
