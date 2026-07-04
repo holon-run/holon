@@ -199,4 +199,9 @@ pub(crate) fn config_uses_credential_profiles(config: &HolonConfigFile) -> bool 
             .providers
             .values()
             .any(|p| p.credential_profile.is_some())
+        || config
+            .agent_templates
+            .remote_sources
+            .values()
+            .any(|source| source.credential_profile.is_some())
 }
