@@ -155,10 +155,12 @@ pub struct TemplateProvenanceRecord {
 }
 
 /// File-format skill reference as defined in `skills.toml`.
-/// Only `local` and `github` are valid in the on-disk format.
+/// `builtin` references install skills shipped with Holon without a network
+/// fetch. `local` and `github` references allow custom skill packages.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum TemplateSkillFileRef {
+    Builtin { name: String },
     Local { path: PathBuf },
     Github { package: String },
 }
@@ -171,8 +173,8 @@ struct TemplateSkillsManifest {
 }
 
 /// Internal skill reference used throughout template resolution and materialization.
-/// The `Builtin` variant exists only for compiled-in skills referenced via
-/// `BuiltinTemplate::skill_names`, not in the on-disk `skills.toml` format.
+/// The `Builtin` variant installs compiled-in skills referenced either by
+/// hidden built-in templates or by on-disk `skills.toml` manifests.
 #[derive(Debug, Clone)]
 enum TemplateSkillRef {
     Local { path: PathBuf },
@@ -183,6 +185,7 @@ enum TemplateSkillRef {
 impl From<TemplateSkillFileRef> for TemplateSkillRef {
     fn from(file_ref: TemplateSkillFileRef) -> Self {
         match file_ref {
+            TemplateSkillFileRef::Builtin { name } => TemplateSkillRef::Builtin { name },
             TemplateSkillFileRef::Local { path } => TemplateSkillRef::Local { path },
             TemplateSkillFileRef::Github { package } => TemplateSkillRef::Github { package },
         }
@@ -3701,6 +3704,41 @@ package = "@scope/package"
         assert!(
             matches!(&refs[1], TemplateSkillRef::Github { package } if package == "@scope/package")
         );
+    }
+
+    #[test]
+    fn parse_skill_refs_accepts_builtin_skill_refs() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        fs::write(
+            &manifest_path,
+            r#"[[skills]]
+kind = "builtin"
+name = "ghx"
+"#,
+        )
+        .unwrap();
+
+        let refs = parse_skill_refs(manifest_path).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert!(matches!(&refs[0], TemplateSkillRef::Builtin { name } if name == "ghx"));
+    }
+
+    #[test]
+    fn parse_skill_refs_rejects_unknown_builtin_skill_refs() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        fs::write(
+            &manifest_path,
+            r#"[[skills]]
+kind = "builtin"
+name = "missing-skill"
+"#,
+        )
+        .unwrap();
+
+        let err = parse_skill_refs(manifest_path).unwrap_err();
+        assert!(err.to_string().contains("unknown builtin skill ref"));
     }
 
     #[test]
