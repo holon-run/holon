@@ -1986,12 +1986,13 @@ fn parse_template_github_skill_tree_url(path: &str) -> Result<TemplateGithubSkil
     let parts = path.split('/').collect::<Vec<_>>();
     if parts.len() < 5 || parts[0].is_empty() || parts[1].is_empty() || parts[2] != "tree" {
         bail!(
-            "github skill ref uses GitHub URL must be a tree URL with owner, repo, ref, and path"
+            "github skill ref uses value with a GitHub URL must be a tree URL (owner/repo/tree/ref/path)"
         );
     }
     let repo = format!("{}/{}", parts[0], parts[1].trim_end_matches(".git"));
     let git_ref = parts[3];
     let skill_path = parts[4..].join("/");
+    // Delegate empty trailing path validation to the shared path validator.
     build_structured_template_github_skill_ref(repo, skill_path, Some(git_ref.to_string()))
 }
 
