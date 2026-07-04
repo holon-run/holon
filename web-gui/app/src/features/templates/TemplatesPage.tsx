@@ -65,7 +65,6 @@ export function TemplatesPage({
   const [newSourceRef, setNewSourceRef] = useState("");
   const [sourceFormError, setSourceFormError] = useState<string | undefined>();
   const [sourceFormBusy, setSourceFormBusy] = useState(false);
-  const stats = useMemo(() => templateStats(templates), [templates]);
   const existingSourceIds = useMemo(() => catalog.sources.map((source) => source.sourceId), [catalog.sources]);
   const suggestedSourceId = useMemo(() => uniqueSourceId(deriveSourceId(newSourceUrl), existingSourceIds), [existingSourceIds, newSourceUrl]);
   const visibleTemplates = useMemo(() => {
@@ -152,15 +151,6 @@ export function TemplatesPage({
             {loading ? "Refreshing…" : "Refresh"}
           </Button>
         </div>
-      </section>
-
-      <section className="skills-summary" aria-label="Template library summary">
-        {stats.map((stat) => (
-          <Card className="skills-stat" key={stat.label}>
-            <strong>{stat.value}</strong>
-            <span>{stat.label}</span>
-          </Card>
-        ))}
       </section>
 
       {error ? (
@@ -504,14 +494,6 @@ function TemplateCard({
       </div>
     </li>
   );
-}
-
-function templateStats(templates: AgentTemplateCatalogEntry[]) {
-  return [
-    { label: "templates", value: String(templates.length) },
-    { label: "global", value: String(templates.filter((template) => template.source === "user_global").length) },
-    { label: "remote", value: String(templates.filter((template) => template.source === "remote").length) },
-  ];
 }
 
 function deriveSourceId(url: string): string {
