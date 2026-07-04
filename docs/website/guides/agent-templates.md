@@ -122,13 +122,18 @@ kind = "builtin"
 name = "github-pr-fix"
 
 [[skills]]
+kind = "github"
+package = "owner/skills@custom-skill"
+
+[[skills]]
 kind = "local"
 path = "/path/to/custom-skill"
 ```
 
-Two skill reference kinds are supported:
+Three skill reference kinds are supported:
 
 - **`builtin`** — A skill shipped with Holon (e.g. `ghx`, `github-issue-solve`)
+- **`github`** — A skill fetched from a GitHub package reference
 - **`local`** — An absolute path to a skill directory on disk
 
 ## Creating Custom Templates

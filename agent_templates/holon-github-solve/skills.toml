@@ -1,0 +1,16 @@
+[[skills]]
+kind = "builtin"
+name = "ghx"
+
+[[skills]]
+kind = "builtin"
+name = "github-issue-solve"
+
+[[skills]]
+kind = "builtin"
+name = "github-pr-fix"
+
+[[skills]]
+kind = "builtin"
+name = "github-review"
+

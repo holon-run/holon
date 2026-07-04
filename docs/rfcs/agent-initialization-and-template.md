@@ -336,6 +336,10 @@ It should contain an array of typed skill references:
 
 ```toml
 [[skills]]
+kind = "builtin"
+name = "ghx"
+
+[[skills]]
 kind = "local"
 path = "/absolute/path/to/local-skill"
 
@@ -347,6 +351,10 @@ package = "vercel-labs/agent-skills@react-best-practices"
 The rules are:
 
 - `skills` is an array of typed skill references
+- built-in references use:
+  - `kind = "builtin"`
+  - `name = "ghx"`
+  - the name must match a skill shipped with the runtime
 - local references use:
   - `kind = "local"`
   - `path = "/absolute/path/to/skill"`
