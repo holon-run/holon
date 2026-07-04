@@ -2958,6 +2958,45 @@ code {
   min-width: fit-content;
 }
 
+.skill-detail-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px;
+}
+
+.skill-detail-hero > div:first-child {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.skill-detail-hero h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: clamp(28px, 4vw, 40px);
+  letter-spacing: -0.04em;
+}
+
+.skill-detail-hero p {
+  max-width: 820px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.text-button {
+  justify-self: start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+
 .skills-message {
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--success) 32%, var(--line));
@@ -3178,6 +3217,7 @@ code {
 .skills-error {
   display: grid;
   gap: 4px;
+  position: relative;
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--line));
   border-radius: 12px;
@@ -3189,9 +3229,20 @@ code {
   color: var(--text);
 }
 
+.skills-success {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--success) 42%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
+  color: var(--muted);
+}
+
 .skills-library-card {
   display: grid;
   gap: 0;
+  padding: 16px 18px;
 }
 
 .skills-library-head {
@@ -3883,6 +3934,7 @@ code {
 
 @media (max-width: 920px) {
   .skills-hero,
+  .skill-detail-hero,
   .skills-library-head {
     display: grid;
   }
@@ -3922,6 +3974,171 @@ code {
     justify-content: flex-start;
     min-width: 0;
   }
+}
+
+/* --- Template card grid --- */
+
+.template-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.template-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.template-card-open {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.template-card-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.template-card-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.template-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.template-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* --- Template detail meta bar --- */
+
+.template-detail-meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.template-detail-meta-bar > span {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  line-height: 1.35;
+}
+
+.template-detail-meta-id {
+  font-family: var(--mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.template-detail-meta-path {
+  font-family: var(--mono);
+  color: var(--muted);
+  max-width: min(100%, 560px);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.template-detail-meta-skills {
+  font-weight: 600;
+}
+
+/* --- Template remote sources collapsible --- */
+
+.template-remote-sources-collapse {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.template-remote-sources-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  list-style: none;
+}
+
+.template-remote-sources-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.template-remote-sources-collapse[open] .template-remote-sources-toggle {
+  border-bottom: 1px solid var(--line);
+}
+
+/* --- Error dismiss button --- */
+
+.skills-error-dismiss {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.skills-error-dismiss:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
 }
 
 .settings-builtins {

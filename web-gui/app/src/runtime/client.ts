@@ -871,11 +871,16 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       await postJson<unknown>(fetchImpl, baseUrl, "/control/templates/remove", { template_id: templateId }, requestHeaders);
     },
-    async syncTemplateRemoteSources(): Promise<void> {
+    async syncTemplateRemoteSources(): Promise<string> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/templates/remote-sources/sync", {}, requestHeaders);
+      const response = await postJson<JobResponseDto>(fetchImpl, baseUrl, "/templates/remote-sources/sync", {}, requestHeaders);
+      const jobId = response.job?.id;
+      if (!jobId) {
+        throw new Error("Template sync response did not include a job id.");
+      }
+      return jobId;
     },
     async createAgentFromTemplate(agentId: string, template: string): Promise<void> {
       if (!baseUrl) {

@@ -97,6 +97,8 @@ export function App() {
   const templateCatalog = useRuntimeStore((state) => state.templateCatalog);
   const templateCatalogLoading = useRuntimeStore((state) => state.templateCatalogLoading);
   const templateCatalogError = useRuntimeStore((state) => state.templateCatalogError);
+ const templateSyncInProgress = useRuntimeStore((state) => state.templateSyncInProgress);
+ const templateSyncMessage = useRuntimeStore((state) => state.templateSyncMessage);
   const templateDetail = useRuntimeStore((state) =>
     selectedTemplateId ? state.templateDetailById[selectedTemplateId] : undefined,
   );
@@ -127,6 +129,8 @@ export function App() {
   const installTemplate = useRuntimeStore((state) => state.installTemplate);
   const removeTemplate = useRuntimeStore((state) => state.removeTemplate);
   const syncTemplateRemoteSources = useRuntimeStore((state) => state.syncTemplateRemoteSources);
+ const dismissTemplateDiagnostics = useRuntimeStore((state) => state.dismissTemplateDiagnostics);
+ const dismissTemplateError = useRuntimeStore((state) => state.dismissTemplateError);
   const createAgentFromTemplate = useRuntimeStore((state) => state.createAgentFromTemplate);
   const refreshAgentSkillCatalog = useRuntimeStore((state) => state.refreshAgentSkillCatalog);
   const enableAgentSkill = useRuntimeStore((state) => state.enableAgentSkill);
@@ -613,6 +617,8 @@ export function App() {
           <TemplatesPage
             catalog={templateCatalog}
             loading={templateCatalogLoading}
+           syncInProgress={templateSyncInProgress}
+           syncMessage={templateSyncMessage}
             error={templateCatalogError}
             onRefresh={refreshTemplateCatalog}
             onSyncSources={syncTemplateRemoteSources}
@@ -621,6 +627,8 @@ export function App() {
             onOpenTemplate={navigateTemplate}
             onAddRemoteSource={addTemplateRemoteSource}
             onRemoveRemoteSource={removeTemplateRemoteSource}
+           onDismissDiagnostics={dismissTemplateDiagnostics}
+           onDismissError={dismissTemplateError}
           />
         ) : null}
         {route === "templateDetail" ? (
@@ -632,6 +640,7 @@ export function App() {
             onBack={() => navigateRoute("templates")}
             onRefresh={() => refreshTemplateDetail(selectedTemplateId)}
             onRemoveTemplate={removeTemplate}
+           onCreateAgent={(template) => { setCreateAgentTemplate(template); setShowCreateAgentModal(true); }}
           />
         ) : null}
         {route === "settings" ? (

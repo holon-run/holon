@@ -15,6 +15,8 @@ import type {
 interface TemplatesPageProps {
   catalog: AgentTemplateCatalogState;
   loading: boolean;
+  syncInProgress: boolean;
+  syncMessage?: string;
   error?: string;
   onRefresh: () => void;
   onSyncSources: () => Promise<boolean>;
@@ -23,6 +25,8 @@ interface TemplatesPageProps {
   onOpenTemplate: (catalogId: string) => void;
   onAddRemoteSource: (sourceId: string, url: string, gitRef?: string) => Promise<boolean>;
   onRemoveRemoteSource: (sourceId: string) => Promise<boolean>;
+  onDismissDiagnostics: () => void;
+  onDismissError: () => void;
 }
 
 interface TemplateDetailPageProps {
@@ -33,11 +37,14 @@ interface TemplateDetailPageProps {
   onBack: () => void;
   onRefresh: () => void;
   onRemoveTemplate: (templateId: string) => Promise<boolean>;
+  onCreateAgent: (template: string) => void;
 }
 
 export function TemplatesPage({
   catalog,
   loading,
+  syncInProgress,
+ syncMessage,
   error,
   onRefresh,
   onSyncSources,
@@ -46,6 +53,8 @@ export function TemplatesPage({
   onOpenTemplate,
   onAddRemoteSource,
   onRemoveRemoteSource,
+  onDismissDiagnostics,
+  onDismissError,
 }: TemplatesPageProps) {
   const templates = catalog.catalog;
   const [query, setQuery] = useState("");
@@ -56,7 +65,6 @@ export function TemplatesPage({
   const [newSourceRef, setNewSourceRef] = useState("");
   const [sourceFormError, setSourceFormError] = useState<string | undefined>();
   const [sourceFormBusy, setSourceFormBusy] = useState(false);
-  const stats = useMemo(() => templateStats(templates), [templates]);
   const existingSourceIds = useMemo(() => catalog.sources.map((source) => source.sourceId), [catalog.sources]);
   const suggestedSourceId = useMemo(() => uniqueSourceId(deriveSourceId(newSourceUrl), existingSourceIds), [existingSourceIds, newSourceUrl]);
   const visibleTemplates = useMemo(() => {
@@ -136,8 +144,8 @@ export function TemplatesPage({
           </p>
         </div>
         <div className="skills-actions" aria-label="Template library actions">
-          <Button type="button" variant="outline" disabled={loading} onClick={() => void onSyncSources()}>
-            Sync sources
+          <Button type="button" variant="outline" disabled={loading || syncInProgress} onClick={() => void onSyncSources()}>
+            {syncInProgress ? "Syncing…" : "Sync sources"}
           </Button>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? "Refreshing…" : "Refresh"}
@@ -145,19 +153,17 @@ export function TemplatesPage({
         </div>
       </section>
 
-      <section className="skills-summary" aria-label="Template library summary">
-        {stats.map((stat) => (
-          <Card className="skills-stat" key={stat.label}>
-            <strong>{stat.value}</strong>
-            <span>{stat.label}</span>
-          </Card>
-        ))}
-      </section>
-
       {error ? (
         <div className="skills-error" role="alert">
           <strong>Template operation failed</strong>
           <span>{error}</span>
+          <button type="button" className="skills-error-dismiss" aria-label="Dismiss error" onClick={onDismissError}>×</button>
+        </div>
+      ) : null}
+
+      {syncMessage && !syncInProgress ? (
+        <div className="skills-success" role="status">
+          <span>{syncMessage}</span>
         </div>
       ) : null}
 
@@ -170,6 +176,7 @@ export function TemplatesPage({
               {diagnostic.message}
             </span>
           ))}
+          <button type="button" className="skills-error-dismiss" aria-label="Dismiss diagnostics" onClick={onDismissDiagnostics}>×</button>
         </div>
       ) : null}
 
@@ -180,7 +187,6 @@ export function TemplatesPage({
               Showing {visibleTemplates.length} of {templates.length} templates
             </p>
           </div>
-          <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </CardHeader>
         <CardContent>
           <div className="template-actions-grid">
@@ -228,9 +234,9 @@ export function TemplatesPage({
           </div>
 
           {visibleTemplates.length ? (
-            <ul className="skills-list templates-list">
+            <ul className="template-card-grid">
               {visibleTemplates.map((template) => (
-                <TemplateRow
+                <TemplateCard
                   key={template.catalogId}
                   template={template}
                   loading={loading}
@@ -253,13 +259,11 @@ export function TemplatesPage({
         </CardContent>
       </Card>
 
+      <details className="template-remote-sources-collapse" open>
+        <summary className="template-remote-sources-toggle">
+          Remote sources ({catalog.sources.length})
+        </summary>
       <Card className="skills-library-card">
-        <CardHeader className="skills-library-head">
-          <div>
-            <p>Remote sources</p>
-          </div>
-          <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
-        </CardHeader>
         <CardContent>
           <form className="skills-add-form template-remote-source-form" onSubmit={(event) => void handleAddSource(event)}>
             <label className="skills-add-source">
@@ -330,6 +334,7 @@ export function TemplatesPage({
           )}
         </CardContent>
       </Card>
+      </details>
     </div>
   );
 }
@@ -342,6 +347,7 @@ export function TemplateDetailPage({
   onBack,
   onRefresh,
   onRemoveTemplate,
+  onCreateAgent,
 }: TemplateDetailPageProps) {
   const template = detail?.detail;
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
@@ -353,11 +359,28 @@ export function TemplateDetailPage({
           <button className="text-button" type="button" onClick={onBack}>
             ← Agent Templates
           </button>
-          <span className="eyebrow">AgentTemplate</span>
+          <span className="eyebrow">{template?.schemaVersion ?? "AgentTemplate"}</span>
           <h1>{template?.name ?? catalogId}</h1>
           <p>{template?.summary || "Read-only template detail from the Holon daemon catalog."}</p>
+          {template ? (
+            <div className="template-detail-meta-bar">
+              <StatusBadge className="state-chip" kind="connection" value={template.source} />
+              <span className="template-detail-meta-id">{template.catalogId}</span>
+              {template.sourceLocation ? (
+                <span className="template-detail-meta-path">{template.sourceLocation}</span>
+              ) : null}
+              {template.skills.length ? (
+                <span className="template-detail-meta-skills">{template.skills.length} skills</span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="skills-actions">
+          {template ? (
+            <Button type="button" variant="accent" onClick={() => onCreateAgent(template.template)}>
+              Create Agent
+            </Button>
+          ) : null}
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? "Refreshing…" : "Refresh"}
           </Button>
@@ -378,39 +401,6 @@ export function TemplateDetailPage({
 
       {template ? (
         <>
-          <Card className="skills-library-card">
-            <CardHeader className="skills-library-head">
-              <div>
-                <p>{template.template}</p>
-              </div>
-              <StatusBadge className="state-chip" kind="connection" value={template.source} />
-            </CardHeader>
-            <CardContent>
-              <dl className="skills-detail-meta">
-                <div>
-                  <dt>Catalog id</dt>
-                  <dd>{template.catalogId}</dd>
-                </div>
-                <div>
-                  <dt>Template id</dt>
-                  <dd>{template.templateId}</dd>
-                </div>
-                {template.schemaVersion ? (
-                  <div>
-                    <dt>Schema</dt>
-                    <dd>{template.schemaVersion}</dd>
-                  </div>
-                ) : null}
-                {template.sourceLocation ? (
-                  <div>
-                    <dt>Source</dt>
-                    <dd>{template.sourceLocation}</dd>
-                  </div>
-                ) : null}
-              </dl>
-            </CardContent>
-          </Card>
-
           <Card className="skills-library-card">
             <CardHeader className="skills-library-head">
               <div>
@@ -469,7 +459,7 @@ export function TemplateDetailPage({
   );
 }
 
-function TemplateRow({
+function TemplateCard({
   template,
   loading,
   onOpen,
@@ -482,21 +472,20 @@ function TemplateRow({
 }) {
   const canRemove = template.source === "user_global";
   return (
-    <li className="skills-row">
-      <button className="skills-row-open" type="button" onClick={() => onOpen(template.catalogId)}>
-        <span className="template-row-title">
+    <li className="template-card">
+      <button className="template-card-open" type="button" onClick={() => onOpen(template.catalogId)}>
+        <span className="template-card-title">
           <strong>{template.name}</strong>
           <StatusBadge className="state-chip" kind="connection" value={template.source} />
         </span>
-        <span className="template-row-description">{template.description || template.template}</span>
-        <span className="template-row-meta">
+        <span className="template-card-description">{template.description || template.template}</span>
+        <span className="template-card-meta">
           <span>{template.catalogId}</span>
           {template.includedSkills.length ? <span>{template.includedSkills.length} skills</span> : null}
           {template.sourceId ? <span>{template.sourceId}</span> : null}
         </span>
       </button>
-      <div className="skills-row-actions">
-
+      <div className="template-card-actions">
         {canRemove ? (
           <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void onRemove(template.templateId)}>
             Remove
@@ -505,14 +494,6 @@ function TemplateRow({
       </div>
     </li>
   );
-}
-
-function templateStats(templates: AgentTemplateCatalogEntry[]) {
-  return [
-    { label: "templates", value: String(templates.length) },
-    { label: "global", value: String(templates.filter((template) => template.source === "user_global").length) },
-    { label: "remote", value: String(templates.filter((template) => template.source === "remote").length) },
-  ];
 }
 
 function deriveSourceId(url: string): string {

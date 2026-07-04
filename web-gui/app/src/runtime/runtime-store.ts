@@ -19,6 +19,7 @@ import {
 import type {
   AddSkillInput,
   AgentDetail,
+  AgentTemplateCatalogDiagnostic,
   AgentSummary,
   AgentTemplateCatalogState,
   AgentTemplateDetailState,
@@ -192,6 +193,9 @@ export interface RuntimeStoreState {
   templateCatalog: AgentTemplateCatalogState;
   templateCatalogLoading: boolean;
   templateCatalogError?: string;
+  dismissedTemplateDiagnostics: string[];
+  templateSyncInProgress: boolean;
+  templateSyncMessage?: string;
   templateDetailById: Record<string, AgentTemplateDetailState>;
   templateDetailLoadingById: Record<string, boolean>;
   templateDetailErrorById: Record<string, string | undefined>;
@@ -241,6 +245,8 @@ export interface RuntimeStoreState {
   installTemplate: (githubUrl: string) => Promise<boolean>;
   removeTemplate: (templateId: string) => Promise<boolean>;
   syncTemplateRemoteSources: () => Promise<boolean>;
+  dismissTemplateDiagnostics: () => void;
+  dismissTemplateError: () => void;
   createAgentFromTemplate: (agentId: string, template: string) => Promise<boolean>;
   addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
   removeSkillFromCatalog: (name: string) => Promise<boolean>;
@@ -637,6 +643,26 @@ const emptyTemplateCatalog: AgentTemplateCatalogState = {
   diagnostics: [],
 };
 
+function diagnosticSignature(d: AgentTemplateCatalogDiagnostic): string {
+  return `${d.sourceId ?? "catalog"}:${d.message}`;
+}
+
+/**
+ * Filter out diagnostics the user has previously dismissed so they don't
+ * reappear on refresh when the server still has them stored.
+ */
+function filterDismissedDiagnostics(
+  catalog: AgentTemplateCatalogState,
+  dismissed: string[],
+): AgentTemplateCatalogState {
+  if (!dismissed.length || !catalog.diagnostics.length) return catalog;
+  const dismissedSet = new Set(dismissed);
+  return {
+    ...catalog,
+    diagnostics: catalog.diagnostics.filter((d) => !dismissedSet.has(diagnosticSignature(d))),
+  };
+}
+
 /**
  * Initialize session cache for the current remote and hydrate any cached
  * sessions into the store. Called on initial load and remote switch.
@@ -700,6 +726,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   templateCatalog: emptyTemplateCatalog,
   templateCatalogLoading: false,
   templateCatalogError: undefined,
+  dismissedTemplateDiagnostics: [],
+  templateSyncInProgress: false,
+  templateSyncMessage: undefined,
   templateDetailById: {},
   templateDetailLoadingById: {},
   templateDetailErrorById: {},
@@ -903,6 +932,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       templateCatalog: emptyTemplateCatalog,
       templateCatalogLoading: false,
       templateCatalogError: undefined,
+      dismissedTemplateDiagnostics: [],
+      templateSyncInProgress: false,
+      templateSyncMessage: undefined,
       templateDetailById: {},
       templateDetailLoadingById: {},
       templateDetailErrorById: {},
@@ -1085,7 +1117,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   refreshTemplateCatalog: async () => {
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1127,7 +1161,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
       await runtimeClient.installTemplate(githubUrl);
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
       return true;
     } catch (error) {
@@ -1145,7 +1181,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
       await runtimeClient.removeTemplate(templateId);
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
       return true;
     } catch (error) {
@@ -1160,18 +1198,26 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   syncTemplateRemoteSources: async () => {
-    set({ templateCatalogLoading: true, templateCatalogError: undefined });
+    set({ templateCatalogLoading: true, templateCatalogError: undefined, templateSyncMessage: undefined });
     try {
-      await runtimeClient.syncTemplateRemoteSources();
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
-      set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
+      set({ templateSyncInProgress: true });
+      const jobId = await runtimeClient.syncTemplateRemoteSources();
+      await pollTemplateSyncJob(set, get, jobId);
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
+      const sourceCount = templateCatalog.sources.length;
+      const templateCount = templateCatalog.catalog.length;
+      set({ templateCatalog, templateCatalogLoading: false, templateSyncInProgress: false, templateCatalogError: templateCatalog.error, templateSyncMessage: `Synced ${sourceCount} source(s), ${templateCount} template(s).` });
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         templateCatalog: { ...state.templateCatalog, error: message },
         templateCatalogLoading: false,
+        templateSyncInProgress: false,
         templateCatalogError: message,
+        templateSyncMessage: undefined,
       }));
       return false;
     }
@@ -1188,6 +1234,23 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set({ templateCatalogError: message });
       return false;
     }
+  },
+
+  dismissTemplateDiagnostics: () => {
+    set((state) => ({
+      dismissedTemplateDiagnostics: [
+        ...state.dismissedTemplateDiagnostics,
+        ...state.templateCatalog.diagnostics.map(diagnosticSignature),
+      ],
+      templateCatalog: { ...state.templateCatalog, diagnostics: [] },
+    }));
+  },
+
+  dismissTemplateError: () => {
+    set((state) => ({
+      templateCatalog: { ...state.templateCatalog, error: undefined },
+      templateCatalogError: undefined,
+    }));
   },
 
   addSkillToCatalog: async (input) => {
@@ -2464,6 +2527,34 @@ async function pollSkillInstallJob(
   }
   updateSkillInstallJob(set, jobId, "failed", "Timed out waiting for skill install.");
   removeSkillInstallJobAfterDelay(set, get, jobId, 10_000);
+}
+
+const TEMPLATE_SYNC_POLL_INTERVAL_MS = 1_000;
+const TEMPLATE_SYNC_POLL_TIMEOUT_MS = 120_000;
+
+/**
+ * Poll the daemon job created by `POST /templates/remote-sources/sync` until
+ * it completes, fails, or times out. Throws on failure so the caller can
+ * surface the error via `templateCatalogError`.
+ */
+async function pollTemplateSyncJob(
+  _set: StoreSet,
+  _get: () => RuntimeStoreState,
+  jobId: string,
+): Promise<void> {
+  const deadline = Date.now() + TEMPLATE_SYNC_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => globalThis.setTimeout(resolve, TEMPLATE_SYNC_POLL_INTERVAL_MS));
+    const job = await runtimeClient.getJob(jobId);
+    if (job.status === "completed") {
+      return;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || job.summary || "Template remote source sync failed.");
+    }
+    // status is "queued" or "running" — continue polling
+  }
+  throw new Error("Timed out waiting for template remote source sync.");
 }
 
 function updateSkillInstallJob(set: StoreSet, jobId: string, status: SkillInstallJob["status"], error?: string): void {
