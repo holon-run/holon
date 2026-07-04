@@ -1947,7 +1947,6 @@ mod tests {
             command:
                 SkillsCommands::Install {
                     name_or_path,
-                    builtin,
                     remote,
                     skill,
                     copy,
@@ -1959,7 +1958,6 @@ mod tests {
         };
 
         assert_eq!(name_or_path, "vercel-labs/agent-skills");
-        assert!(!builtin);
         assert!(remote);
         assert_eq!(skill.as_deref(), Some("pr-review"));
         assert!(!copy);
@@ -2988,12 +2986,11 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         }
         SkillsCommands::Add {
             source,
-            builtin,
             remote,
             skill,
             copy,
         } => {
-            let kind = build_skill_add_kind(&source, builtin, remote, skill, copy)?;
+            let kind = build_skill_add_kind(&source, remote, skill, copy)?;
             post_control_json(
                 config,
                 "/skills/catalog/add",
@@ -3066,19 +3063,13 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
         }
         SkillsCommands::Install {
             name_or_path,
-            builtin,
             remote,
             skill,
             copy,
             agent,
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-            let kind = if builtin {
-                if remote || skill.is_some() {
-                    anyhow::bail!("--builtin cannot be combined with --remote or --skill");
-                }
-                holon::types::SkillInstallKind::Builtin { name: name_or_path }
-            } else if remote {
+            let kind = if remote {
                 let mode = if copy {
                     holon::types::SkillInstallMode::Copied
                 } else {
@@ -3116,19 +3107,11 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
 
 fn build_skill_add_kind(
     source: &str,
-    builtin: bool,
     remote: bool,
     skill: Option<String>,
     copy: bool,
 ) -> Result<holon::types::SkillInstallKind> {
-    if builtin {
-        if remote || skill.is_some() {
-            anyhow::bail!("--builtin cannot be combined with --remote or --skill");
-        }
-        Ok(holon::types::SkillInstallKind::Builtin {
-            name: source.to_string(),
-        })
-    } else if remote {
+    if remote {
         let mode = if copy {
             holon::types::SkillInstallMode::Copied
         } else {

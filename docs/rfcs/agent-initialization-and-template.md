@@ -336,8 +336,10 @@ It should contain an array of typed skill references:
 
 ```toml
 [[skills]]
-kind = "builtin"
-name = "ghx"
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+ref = "main"
 
 [[skills]]
 kind = "local"
@@ -345,16 +347,14 @@ path = "/absolute/path/to/local-skill"
 
 [[skills]]
 kind = "github"
-package = "vercel-labs/agent-skills@react-best-practices"
+repo = "owner/repo"
+path = "skills/react-best-practices"
+ref = "v1.0.0"
 ```
 
 The rules are:
 
 - `skills` is an array of typed skill references
-- built-in references use:
-  - `kind = "builtin"`
-  - `name = "ghx"`
-  - the name must match a skill shipped with the runtime
 - local references use:
   - `kind = "local"`
   - `path = "/absolute/path/to/skill"`
@@ -363,11 +363,19 @@ The rules are:
 - a local path points to a skill directory whose entrypoint is `SKILL.md`
 - GitHub references use:
   - `kind = "github"`
-  - `package = "<owner>/<repo>@<skill>"`
-- the GitHub package string should follow the same package-style convention used
-  by `npx skills add`
-- this RFC does not require the manifest to expose lower-level installer fields
-  such as separate repo and path keys
+  - `repo = "<owner>/<repo>"`
+  - `path = "<relative/path/to/skill>"`
+  - optional `ref = "<branch-or-tag-or-commit>"`
+- GitHub `repo` must be in `owner/repo` form
+- GitHub `path` must be a repository-relative directory path and must not
+  contain empty, `.`, or `..` segments
+- GitHub `ref` is optional; when omitted, the installer resolves the default
+  branch according to its remote-source behavior
+- `kind = "builtin"` is not part of the manifest format; official Holon skills
+  are referenced through `repo = "holon-run/holon"` and `path = "skills/<name>"`
+- legacy manifests that use `kind = "github"` with `package = "..."`
+  may be parsed for compatibility, but new manifests and write-back should use
+  the structured `repo`/`path`/`ref` fields
 - invalid, unreadable, or unresolvable entries should cause template
   application to fail rather than silently produce a partially initialized
   agent

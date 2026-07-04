@@ -1071,16 +1071,6 @@
     ],
     "flags": [
       {
-        "long": "builtin",
-        "short": null,
-        "default_value": null,
-        "possible_values": [
-          "true",
-          "false"
-        ],
-        "required": false
-      },
-      {
         "long": "copy",
         "short": null,
         "default_value": null,
@@ -1197,16 +1187,6 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "builtin",
-        "short": null,
-        "default_value": null,
-        "possible_values": [
-          "true",
-          "false"
-        ],
         "required": false
       },
       {

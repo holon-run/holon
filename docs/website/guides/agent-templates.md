@@ -114,27 +114,37 @@ An optional manifest that lists skills to pre-install when the agent is created:
 
 ```toml
 [[skills]]
-kind = "builtin"
-name = "github-issue-solve"
-
-[[skills]]
-kind = "builtin"
-name = "github-pr-fix"
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/github-issue-solve"
+ref = "main"
 
 [[skills]]
 kind = "github"
-package = "owner/skills@custom-skill"
+repo = "holon-run/holon"
+path = "skills/github-pr-fix"
+ref = "main"
+
+[[skills]]
+kind = "github"
+repo = "owner/skills"
+path = "skills/custom-skill"
+ref = "v1.2.3"
 
 [[skills]]
 kind = "local"
-path = "/path/to/custom-skill"
+path = "/absolute/path/to/custom-skill"
 ```
 
-Three skill reference kinds are supported:
+Two skill reference kinds are supported:
 
-- **`builtin`** — A skill shipped with Holon (e.g. `ghx`, `github-issue-solve`)
-- **`github`** — A skill fetched from a GitHub package reference
+- **`github`** — A skill fetched from a GitHub repository path. Use
+  `repo = "owner/repo"`, `path = "path/to/skill"`, and optional `ref`.
 - **`local`** — An absolute path to a skill directory on disk
+
+`kind = "builtin"` is no longer part of the template manifest format. Official
+Holon skills are referenced the same way as any other GitHub-hosted skill, for
+example `repo = "holon-run/holon"` and `path = "skills/ghx"`.
 
 ## Creating Custom Templates
 

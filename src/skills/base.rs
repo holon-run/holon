@@ -1301,26 +1301,10 @@ fn install_skill_with_user_home_and_remote_installer(
     fs::create_dir_all(&skills_root)
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
     let name = match kind {
-        crate::types::SkillInstallKind::Builtin { name } => {
-            validate_skill_name(name)?;
-            let _ = install_destination(&skills_root, name)?;
-            let destination =
-                crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
-            record_install_metadata(&destination, "builtin")?;
-            name.clone()
-        }
         crate::types::SkillInstallKind::Named { name, mode } => {
             validate_skill_name(name)?;
-            if crate::agent_template::builtin_skill_names().contains(&name.as_str()) {
-                let _ = install_destination(&skills_root, name)?;
-                let destination =
-                    crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
-                record_install_metadata(&destination, "builtin")?;
-                name.clone()
-            } else {
-                let path = resolve_user_skill_by_name(user_home, name)?;
-                materialize_local_skill(&skills_root, &path, mode)?
-            }
+            let path = resolve_user_skill_by_name(user_home, name)?;
+            materialize_local_skill(&skills_root, &path, mode)?
         }
         crate::types::SkillInstallKind::Local { path, mode } => {
             materialize_local_skill(&skills_root, path, mode)?
@@ -1365,26 +1349,10 @@ fn add_library_skill_with_remote_installer(
     fs::create_dir_all(&skills_root)
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
     let name = match kind {
-        crate::types::SkillInstallKind::Builtin { name } => {
-            validate_skill_name(name)?;
-            let _ = install_destination(&skills_root, name)?;
-            let destination =
-                crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
-            record_install_metadata(&destination, "builtin")?;
-            name.clone()
-        }
         crate::types::SkillInstallKind::Named { name, mode } => {
-            if crate::agent_template::builtin_skill_names().contains(&name.as_str()) {
-                validate_skill_name(name)?;
-                let _ = install_destination(&skills_root, name)?;
-                let destination =
-                    crate::agent_template::materialize_builtin_skill_ref(&skills_root, name)?;
-                record_install_metadata(&destination, "builtin")?;
-                name.clone()
-            } else {
-                let path = resolve_user_skill_by_name(Some(user_home), name)?;
-                materialize_local_skill(&skills_root, &path, mode)?
-            }
+            validate_skill_name(name)?;
+            let path = resolve_user_skill_by_name(Some(user_home), name)?;
+            materialize_local_skill(&skills_root, &path, mode)?
         }
         crate::types::SkillInstallKind::Local { path, mode } => {
             materialize_local_skill(&skills_root, path, mode)?
@@ -1539,7 +1507,7 @@ fn resolve_user_skill_by_name(user_home: Option<&Path>, name: &str) -> Result<Pa
         }
     }
     bail!(
-        "skill '{}' is not a builtin skill and was not found in the user-global skill catalog; use an explicit path",
+        "skill '{}' was not found in the user-global skill catalog; use an explicit path or add it to the skill library first",
         name
     )
 }
@@ -2297,11 +2265,6 @@ fn upsert_skill_lock_entry(
     };
     let source = if metadata.file_type().is_symlink() {
         "linked"
-    } else if read_install_metadata(skill_dir)
-        .as_ref()
-        .is_some_and(|metadata| metadata.install_mode == "builtin")
-    {
-        "builtin"
     } else {
         "local"
     };
@@ -2500,20 +2463,9 @@ fn installed_skill_view(catalog: SkillCatalogEntry) -> Result<InstalledSkillView
             install_metadata
                 .as_ref()
                 .map(|metadata| metadata.install_mode.as_str()),
-            Some("builtin")
-        ) {
-            "builtin".into()
-        } else if matches!(
-            install_metadata
-                .as_ref()
-                .map(|metadata| metadata.install_mode.as_str()),
             Some("copied")
         ) {
             "copied".into()
-        } else if crate::agent_template::builtin_skill_names()
-            .contains(&catalog.skill_id.trim_start_matches("agent:"))
-        {
-            "builtin".into()
         } else {
             "copied".into()
         },
@@ -3009,6 +2961,26 @@ mod tests {
     }
 
     #[test]
+    fn named_install_does_not_fallback_to_builtin_skill() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        let agent_home = dir.path().join("agent");
+
+        let error = install_skill_with_user_home(
+            &agent_home,
+            Some(&user_home),
+            &crate::types::SkillInstallKind::Named {
+                name: "ghx".into(),
+                mode: SkillInstallMode::Linked,
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:?}").contains("was not found in the user-global skill catalog"));
+        assert!(!agent_home.join("skills/ghx").exists());
+    }
+
+    #[test]
     fn local_install_can_copy_skill_directory() {
         let dir = tempdir().unwrap();
         let source = dir.path().join("source/demo");
@@ -3097,26 +3069,6 @@ mod tests {
     }
 
     #[test]
-    fn list_installed_skills_reports_builtin_mode() {
-        let dir = tempdir().unwrap();
-        let agent_home = dir.path().join("agent");
-        install_skill_with_user_home(
-            &agent_home,
-            None,
-            &crate::types::SkillInstallKind::Builtin { name: "ghx".into() },
-        )
-        .unwrap();
-
-        let installed = list_installed_skills(&agent_home).unwrap();
-
-        assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].catalog.name, "ghx");
-        assert_eq!(installed[0].install_mode, "builtin");
-        assert!(installed[0].link_target.is_none());
-        assert!(installed[0].warning.is_none());
-    }
-
-    #[test]
     fn list_installed_skills_merges_compatible_agent_roots() {
         let dir = tempdir().unwrap();
         let agent_home = dir.path().join("agent");
@@ -3143,21 +3095,27 @@ mod tests {
     fn install_existing_destination_returns_structured_conflict() {
         let dir = tempdir().unwrap();
         let agent_home = dir.path().join("agent");
-        let destination = agent_home.join("skills/ghx");
+        let source = dir.path().join("source/demo");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(SKILL_ENTRYPOINT), "# Demo").unwrap();
+        let destination = agent_home.join("skills/demo");
         fs::create_dir_all(&destination).unwrap();
-        fs::write(destination.join(SKILL_ENTRYPOINT), "# Existing ghx").unwrap();
+        fs::write(destination.join(SKILL_ENTRYPOINT), "# Existing demo").unwrap();
 
         let error = install_skill_with_user_home(
             &agent_home,
             None,
-            &crate::types::SkillInstallKind::Builtin { name: "ghx".into() },
+            &crate::types::SkillInstallKind::Local {
+                path: source,
+                mode: SkillInstallMode::Linked,
+            },
         )
         .unwrap_err();
         let conflict = error
             .downcast_ref::<SkillInstallConflict>()
             .expect("existing destination should return a structured conflict");
 
-        assert_eq!(conflict.skill_name, "ghx");
+        assert_eq!(conflict.skill_name, "demo");
         assert_eq!(conflict.destination, destination);
     }
 

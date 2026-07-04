@@ -155,14 +155,28 @@ pub struct TemplateProvenanceRecord {
 }
 
 /// File-format skill reference as defined in `skills.toml`.
-/// `builtin` references install skills shipped with Holon without a network
-/// fetch. `local` and `github` references allow custom skill packages.
+/// Template-authored manifests expose only `local` and `github` skill
+/// references. The legacy `package` field is accepted for old manifests, but
+/// new GitHub references should use structured `repo` + `path` fields.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum TemplateSkillFileRef {
-    Builtin { name: String },
-    Local { path: PathBuf },
-    Github { package: String },
+    Builtin {
+        name: String,
+    },
+    Local {
+        path: PathBuf,
+    },
+    Github {
+        #[serde(default)]
+        repo: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default, rename = "ref")]
+        git_ref: Option<String>,
+        #[serde(default)]
+        package: Option<String>,
+    },
 }
 
 /// Parsed `skills.toml` manifest.
@@ -173,21 +187,36 @@ struct TemplateSkillsManifest {
 }
 
 /// Internal skill reference used throughout template resolution and materialization.
-/// The `Builtin` variant installs compiled-in skills referenced either by
-/// hidden built-in templates or by on-disk `skills.toml` manifests.
 #[derive(Debug, Clone)]
 enum TemplateSkillRef {
     Local { path: PathBuf },
-    Github { package: String },
-    Builtin { name: String },
+    Github(TemplateGithubSkillRef),
 }
 
-impl From<TemplateSkillFileRef> for TemplateSkillRef {
-    fn from(file_ref: TemplateSkillFileRef) -> Self {
-        match file_ref {
-            TemplateSkillFileRef::Builtin { name } => TemplateSkillRef::Builtin { name },
-            TemplateSkillFileRef::Local { path } => TemplateSkillRef::Local { path },
-            TemplateSkillFileRef::Github { package } => TemplateSkillRef::Github { package },
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TemplateGithubSkillRef {
+    Structured {
+        repo: String,
+        path: String,
+        git_ref: Option<String>,
+    },
+    LegacyPackage {
+        package: String,
+    },
+}
+
+impl TemplateGithubSkillRef {
+    fn display_reference(&self) -> String {
+        match self {
+            TemplateGithubSkillRef::Structured {
+                repo,
+                path,
+                git_ref,
+            } => match git_ref {
+                Some(git_ref) => format!("{repo}/{path}@{git_ref}"),
+                None => format!("{repo}/{path}"),
+            },
+            TemplateGithubSkillRef::LegacyPackage { package } => package.clone(),
         }
     }
 }
@@ -1302,7 +1331,7 @@ pub(crate) fn resolve_agent_template_detail(
                 .skill_names
                 .iter()
                 .map(|&name| AgentTemplateSkillDependency {
-                    kind: "builtin".to_string(),
+                    kind: "github".to_string(),
                     reference: name.to_string(),
                 })
                 .collect::<Vec<_>>();
@@ -1331,13 +1360,9 @@ pub(crate) fn resolve_agent_template_detail(
                         kind: "local".to_string(),
                         reference: path.display().to_string(),
                     },
-                    TemplateSkillRef::Github { package } => AgentTemplateSkillDependency {
+                    TemplateSkillRef::Github(github_ref) => AgentTemplateSkillDependency {
                         kind: "github".to_string(),
-                        reference: package,
-                    },
-                    TemplateSkillRef::Builtin { name } => AgentTemplateSkillDependency {
-                        kind: "builtin".to_string(),
-                        reference: name,
+                        reference: github_ref.display_reference(),
                     },
                 })
                 .collect::<Vec<_>>();
@@ -1375,13 +1400,9 @@ pub(crate) async fn resolve_remote_agent_template_detail(
                 kind: "local".to_string(),
                 reference: path.display().to_string(),
             },
-            TemplateSkillRef::Github { package } => AgentTemplateSkillDependency {
+            TemplateSkillRef::Github(github_ref) => AgentTemplateSkillDependency {
                 kind: "github".to_string(),
-                reference: package,
-            },
-            TemplateSkillRef::Builtin { name } => AgentTemplateSkillDependency {
-                kind: "builtin".to_string(),
-                reference: name,
+                reference: github_ref.display_reference(),
             },
         })
         .collect::<Vec<_>>();
@@ -1557,13 +1578,20 @@ fn skill_ref_names(skill_refs: Vec<TemplateSkillRef>) -> Vec<String> {
         .into_iter()
         .map(|skill_ref| match skill_ref {
             TemplateSkillRef::Local { path } => path.display().to_string(),
-            TemplateSkillRef::Github { package } => package,
-            TemplateSkillRef::Builtin { name } => name,
+            TemplateSkillRef::Github(github_ref) => github_ref.display_reference(),
         })
         .collect::<Vec<_>>();
     names.sort();
     names.dedup();
     names
+}
+
+fn official_template_skill_ref(name: &str) -> TemplateGithubSkillRef {
+    TemplateGithubSkillRef::Structured {
+        repo: "holon-run/holon".to_string(),
+        path: format!("skills/{name}"),
+        git_ref: Some("main".to_string()),
+    }
 }
 
 pub fn user_home_dir() -> Result<PathBuf> {
@@ -1761,9 +1789,7 @@ fn resolve_builtin_template(template_id: &str, home_dir: &Path) -> Result<Resolv
     let skill_refs: Vec<TemplateSkillRef> = builtin
         .skill_names
         .iter()
-        .map(|&name| TemplateSkillRef::Builtin {
-            name: name.to_string(),
-        })
+        .map(|&name| TemplateSkillRef::Github(official_template_skill_ref(name)))
         .collect();
     Ok(ResolvedTemplate {
         provenance: TemplateProvenanceSource::TemplateId {
@@ -1853,16 +1879,16 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
     let manifest: TemplateSkillsManifest =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
-    let skill_refs: Vec<TemplateSkillRef> = manifest.skills.into_iter().map(Into::into).collect();
+    let skill_refs: Vec<TemplateSkillRef> = manifest
+        .skills
+        .into_iter()
+        .map(parse_template_skill_file_ref)
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
     for skill_ref in &skill_refs {
         match skill_ref {
-            TemplateSkillRef::Github { package } => {
-                template_github_skill_install_kind(package)?;
-            }
-            TemplateSkillRef::Builtin { name } => {
-                if builtin_skill(name).is_none() {
-                    bail!("unknown builtin skill ref: {name}");
-                }
+            TemplateSkillRef::Github(github_ref) => {
+                template_github_skill_install_kind(github_ref)?;
             }
             TemplateSkillRef::Local { .. } => {}
         }
@@ -1870,14 +1896,83 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     Ok(skill_refs)
 }
 
-fn template_github_skill_install_kind(package: &str) -> Result<SkillInstallKind> {
-    validate_template_github_skill_package(package)?;
-    let (remote_package, skill) = split_template_github_skill_package(package)?;
+fn parse_template_skill_file_ref(file_ref: TemplateSkillFileRef) -> Result<TemplateSkillRef> {
+    match file_ref {
+        TemplateSkillFileRef::Builtin { name } => {
+            bail!(
+                "skills.toml no longer supports kind = \"builtin\" for '{name}'; \
+                 use kind = \"github\" with repo = \"holon-run/holon\" and path = \"skills/{name}\""
+            )
+        }
+        TemplateSkillFileRef::Local { path } => Ok(TemplateSkillRef::Local { path }),
+        TemplateSkillFileRef::Github {
+            repo,
+            path,
+            git_ref,
+            package,
+        } => parse_template_github_skill_ref(repo, path, git_ref, package)
+            .map(TemplateSkillRef::Github),
+    }
+}
+
+fn parse_template_github_skill_ref(
+    repo: Option<String>,
+    path: Option<String>,
+    git_ref: Option<String>,
+    package: Option<String>,
+) -> Result<TemplateGithubSkillRef> {
+    if let Some(package) = package {
+        if repo.is_some() || path.is_some() || git_ref.is_some() {
+            bail!("github skill ref must use either legacy package or structured repo/path/ref fields, not both");
+        }
+        validate_template_github_skill_package(&package)?;
+        return Ok(TemplateGithubSkillRef::LegacyPackage { package });
+    }
+
+    let repo = repo.context("github skill ref requires repo")?;
+    let path = path.context("github skill ref requires path")?;
+    validate_template_github_skill_repo(&repo)?;
+    validate_template_github_skill_path(&path)?;
+    if let Some(git_ref) = &git_ref {
+        validate_template_github_skill_ref(git_ref)?;
+    }
+    Ok(TemplateGithubSkillRef::Structured {
+        repo,
+        path,
+        git_ref,
+    })
+}
+
+fn template_github_skill_install_kind(
+    github_ref: &TemplateGithubSkillRef,
+) -> Result<SkillInstallKind> {
+    let (package, skill) = template_github_skill_package(github_ref)?;
     Ok(SkillInstallKind::Remote {
-        package: remote_package.to_string(),
-        skill: skill.map(str::to_string),
+        package,
+        skill,
         mode: SkillInstallMode::Linked,
     })
+}
+
+fn template_github_skill_package(
+    github_ref: &TemplateGithubSkillRef,
+) -> Result<(String, Option<String>)> {
+    let package = match github_ref {
+        TemplateGithubSkillRef::Structured {
+            repo,
+            path,
+            git_ref,
+        } => {
+            let git_ref = git_ref.as_deref().unwrap_or("main");
+            format!("https://github.com/{repo}/tree/{git_ref}/{path}")
+        }
+        TemplateGithubSkillRef::LegacyPackage { package } => {
+            validate_template_github_skill_package(package)?;
+            let (remote_package, skill) = split_template_github_skill_package(package)?;
+            return Ok((remote_package.to_string(), skill.map(str::to_string)));
+        }
+    };
+    Ok((package, None))
 }
 
 fn split_template_github_skill_package(package: &str) -> Result<(&str, Option<&str>)> {
@@ -1910,6 +2005,47 @@ fn validate_template_github_skill_package(package: &str) -> Result<()> {
         .any(|ch| ch.is_control() || ch.is_ascii_whitespace())
     {
         bail!("github skill ref package must not contain whitespace or control characters");
+    }
+    Ok(())
+}
+
+fn validate_template_github_skill_repo(repo: &str) -> Result<()> {
+    validate_template_github_skill_package(repo)?;
+    let mut parts = repo.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    if owner.is_empty() || name.is_empty() || parts.next().is_some() {
+        bail!("github skill ref repo must be in owner/repo form");
+    }
+    Ok(())
+}
+
+fn validate_template_github_skill_path(path: &str) -> Result<()> {
+    validate_template_github_skill_package(path)?;
+    if path.starts_with('/') || path.starts_with('-') {
+        bail!("github skill ref path must be a relative repository path");
+    }
+    if path
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        bail!("github skill ref path must not contain empty, '.' or '..' segments");
+    }
+    Ok(())
+}
+
+fn validate_template_github_skill_ref(git_ref: &str) -> Result<()> {
+    if git_ref.trim().is_empty() {
+        bail!("github skill ref ref must not be empty");
+    }
+    if git_ref.trim() != git_ref {
+        bail!("github skill ref ref must not contain leading or trailing whitespace");
+    }
+    if git_ref
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_ascii_whitespace())
+    {
+        bail!("github skill ref ref must not contain whitespace or control characters");
     }
     Ok(())
 }
@@ -1967,13 +2103,9 @@ fn resolved_template_content_hash(resolved: &ResolvedTemplate) -> String {
                 hasher.update(b"local:");
                 hasher.update(path.display().to_string().as_bytes());
             }
-            TemplateSkillRef::Github { package } => {
+            TemplateSkillRef::Github(github_ref) => {
                 hasher.update(b"github:");
-                hasher.update(package.as_bytes());
-            }
-            TemplateSkillRef::Builtin { name } => {
-                hasher.update(b"builtin:");
-                hasher.update(name.as_bytes());
+                hasher.update(github_ref.display_reference().as_bytes());
             }
         }
     }
@@ -2116,16 +2248,30 @@ fn write_template_skills_file(template_dir: &Path, skill_refs: &[TemplateSkillRe
                 content.push_str(&toml_escape(&path.display().to_string()));
                 content.push_str("\"\n\n");
             }
-            TemplateSkillRef::Github { package } => {
-                content.push_str("[[skills]]\nkind = \"github\"\npackage = \"");
-                content.push_str(&toml_escape(package));
-                content.push_str("\"\n\n");
-            }
-            TemplateSkillRef::Builtin { name } => {
-                content.push_str("[[skills]]\nkind = \"builtin\"\nname = \"");
-                content.push_str(&toml_escape(name));
-                content.push_str("\"\n\n");
-            }
+            TemplateSkillRef::Github(github_ref) => match github_ref {
+                TemplateGithubSkillRef::Structured {
+                    repo,
+                    path,
+                    git_ref,
+                } => {
+                    content.push_str("[[skills]]\nkind = \"github\"\nrepo = \"");
+                    content.push_str(&toml_escape(repo));
+                    content.push_str("\"\npath = \"");
+                    content.push_str(&toml_escape(path));
+                    content.push('"');
+                    if let Some(git_ref) = git_ref {
+                        content.push_str("\nref = \"");
+                        content.push_str(&toml_escape(git_ref));
+                        content.push('"');
+                    }
+                    content.push_str("\n\n");
+                }
+                TemplateGithubSkillRef::LegacyPackage { package } => {
+                    content.push_str("[[skills]]\nkind = \"github\"\npackage = \"");
+                    content.push_str(&toml_escape(package));
+                    content.push_str("\"\n\n");
+                }
+            },
         }
     }
     write_file_atomically(
@@ -2218,7 +2364,14 @@ async fn resolve_github_template_with_client(
                     toml::from_str(&content).with_context(|| {
                         format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
                     })?;
-                manifest.skills.into_iter().map(Into::into).collect()
+                manifest
+                    .skills
+                    .into_iter()
+                    .map(parse_template_skill_file_ref)
+                    .collect::<Result<Vec<_>>>()
+                    .with_context(|| {
+                        format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
+                    })?
             }
             None => Vec::new(),
         };
@@ -2720,13 +2873,17 @@ async fn materialize_skill_ref(
 ) -> Result<PathBuf> {
     match skill_ref {
         TemplateSkillRef::Local { path } => materialize_local_skill_ref(skills_root, path),
-        TemplateSkillRef::Builtin { name } => materialize_builtin_skill_ref(skills_root, name),
-        TemplateSkillRef::Github { package } => materialize_github_skill_ref(agent_home, package),
+        TemplateSkillRef::Github(github_ref) => {
+            materialize_github_skill_ref(agent_home, github_ref)
+        }
     }
 }
 
-fn materialize_github_skill_ref(agent_home: &Path, package: &str) -> Result<PathBuf> {
-    let install_kind = template_github_skill_install_kind(package)?;
+fn materialize_github_skill_ref(
+    agent_home: &Path,
+    github_ref: &TemplateGithubSkillRef,
+) -> Result<PathBuf> {
+    let install_kind = template_github_skill_install_kind(github_ref)?;
     let user_home = user_home_dir()?;
     let skill_name = crate::skills::install_skill_with_user_home(
         agent_home,
@@ -3680,7 +3837,47 @@ path = "relative/path"
     }
 
     #[test]
-    fn parse_skill_refs_accepts_github_skill_refs() {
+    fn parse_skill_refs_accepts_structured_github_skill_refs() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        fs::write(
+            &manifest_path,
+            r#"[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+ref = "main"
+
+[[skills]]
+kind = "github"
+repo = "owner/repo"
+path = "nested/skills/demo"
+"#,
+        )
+        .unwrap();
+
+        let refs = parse_skill_refs(manifest_path).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert!(matches!(
+            &refs[0],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::Structured {
+                repo,
+                path,
+                git_ref: Some(git_ref),
+            }) if repo == "holon-run/holon" && path == "skills/ghx" && git_ref == "main"
+        ));
+        assert!(matches!(
+            &refs[1],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::Structured {
+                repo,
+                path,
+                git_ref: None,
+            }) if repo == "owner/repo" && path == "nested/skills/demo"
+        ));
+    }
+
+    #[test]
+    fn parse_skill_refs_accepts_legacy_github_package_refs() {
         let home = tempdir().unwrap();
         let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
         fs::write(
@@ -3698,16 +3895,20 @@ package = "@scope/package"
 
         let refs = parse_skill_refs(manifest_path).unwrap();
         assert_eq!(refs.len(), 2);
-        assert!(
-            matches!(&refs[0], TemplateSkillRef::Github { package } if package == "owner/repo@skill")
-        );
-        assert!(
-            matches!(&refs[1], TemplateSkillRef::Github { package } if package == "@scope/package")
-        );
+        assert!(matches!(
+            &refs[0],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::LegacyPackage { package })
+                if package == "owner/repo@skill"
+        ));
+        assert!(matches!(
+            &refs[1],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::LegacyPackage { package })
+                if package == "@scope/package"
+        ));
     }
 
     #[test]
-    fn parse_skill_refs_accepts_builtin_skill_refs() {
+    fn parse_skill_refs_rejects_builtin_skill_refs_with_migration_hint() {
         let home = tempdir().unwrap();
         let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
         fs::write(
@@ -3719,31 +3920,37 @@ name = "ghx"
         )
         .unwrap();
 
-        let refs = parse_skill_refs(manifest_path).unwrap();
-        assert_eq!(refs.len(), 1);
-        assert!(matches!(&refs[0], TemplateSkillRef::Builtin { name } if name == "ghx"));
-    }
-
-    #[test]
-    fn parse_skill_refs_rejects_unknown_builtin_skill_refs() {
-        let home = tempdir().unwrap();
-        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
-        fs::write(
-            &manifest_path,
-            r#"[[skills]]
-kind = "builtin"
-name = "missing-skill"
-"#,
-        )
-        .unwrap();
-
         let err = parse_skill_refs(manifest_path).unwrap_err();
-        assert!(err.to_string().contains("unknown builtin skill ref"));
+        let message = format!("{err:?}");
+        assert!(message.contains("no longer supports kind = \"builtin\""));
+        assert!(message.contains("repo = \"holon-run/holon\""));
+        assert!(message.contains("path = \"skills/ghx\""));
     }
 
     #[test]
-    fn template_github_skill_install_kind_splits_skill_selector() {
-        let kind = template_github_skill_install_kind("owner/repo@skill").unwrap();
+    fn template_github_skill_install_kind_uses_structured_tree_url() {
+        let kind = template_github_skill_install_kind(&TemplateGithubSkillRef::Structured {
+            repo: "holon-run/holon".into(),
+            path: "skills/ghx".into(),
+            git_ref: Some("main".into()),
+        })
+        .unwrap();
+        assert!(matches!(
+            kind,
+            SkillInstallKind::Remote {
+                package,
+                skill: None,
+                mode: SkillInstallMode::Linked,
+            } if package == "https://github.com/holon-run/holon/tree/main/skills/ghx"
+        ));
+    }
+
+    #[test]
+    fn template_github_skill_install_kind_splits_legacy_skill_selector() {
+        let kind = template_github_skill_install_kind(&TemplateGithubSkillRef::LegacyPackage {
+            package: "owner/repo@skill".into(),
+        })
+        .unwrap();
         assert!(matches!(
             kind,
             SkillInstallKind::Remote {
@@ -3753,7 +3960,10 @@ name = "missing-skill"
             } if package == "owner/repo" && skill == "skill"
         ));
 
-        let scoped = template_github_skill_install_kind("@scope/package").unwrap();
+        let scoped = template_github_skill_install_kind(&TemplateGithubSkillRef::LegacyPackage {
+            package: "@scope/package".into(),
+        })
+        .unwrap();
         assert!(matches!(
             scoped,
             SkillInstallKind::Remote {
@@ -4403,7 +4613,7 @@ name = "Worker"
                 "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
                 200,
                 github_file_response(
-                    "[[skills]]\nkind = \"github\"\npackage = \"owner/skills/ghx\"\n",
+                    "[[skills]]\nkind = \"github\"\nrepo = \"holon-run/holon\"\npath = \"skills/ghx\"\nref = \"main\"\n",
                 ),
             ),
             (
@@ -4430,7 +4640,7 @@ name = "Worker"
             name: "Worker".into(),
             schema_version: None,
             description: "Does worker things".into(),
-            included_skills: vec!["owner/skills/ghx".into()],
+            included_skills: vec!["holon-run/holon/skills/ghx@main".into()],
             source_id: Some("community".into()),
             resolved_ref: Some("main".into()),
             resolved_revision: None,
@@ -4449,7 +4659,10 @@ name = "Worker"
         assert!(detail.agents_md.contains("Does worker things"));
         assert_eq!(detail.skills.len(), 1);
         assert_eq!(detail.skills[0].kind, "github");
-        assert_eq!(detail.skills[0].reference, "owner/skills/ghx");
+        assert_eq!(
+            detail.skills[0].reference,
+            "holon-run/holon/skills/ghx@main"
+        );
     }
 
     #[tokio::test]
@@ -4487,7 +4700,7 @@ summary = "Implementation agent"
                 "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
                 200,
                 github_file_response(
-                    "[[skills]]\nkind = \"github\"\npackage = \"owner/skills/ghx\"\n",
+                    "[[skills]]\nkind = \"github\"\nrepo = \"holon-run/holon\"\npath = \"skills/ghx\"\nref = \"main\"\n",
                 ),
             ),
             (
@@ -4525,7 +4738,7 @@ summary = "Implementation agent"
         );
         assert_eq!(
             fs::read_to_string(template_dir.join(TEMPLATE_SKILLS_FILENAME)).unwrap(),
-            "[[skills]]\nkind = \"github\"\npackage = \"owner/skills/ghx\"\n\n"
+            "[[skills]]\nkind = \"github\"\nrepo = \"holon-run/holon\"\npath = \"skills/ghx\"\nref = \"main\"\n\n"
         );
         let state = read_managed_template_state(&template_dir)
             .unwrap()

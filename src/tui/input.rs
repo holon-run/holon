@@ -253,7 +253,7 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 21] = [
     SlashCommandSpec {
         name: "/skill-add",
         description: "add or import a skill into the Skill Library",
-        usage: "/skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]",
+        usage: "/skill-add <source> [--remote] [--skill <name>] [--copy]",
         arg_hint: SlashArgHint::SkillName,
         category: SlashCommandCategory::Skills,
         arg_rule: SlashArgRule::AtLeastOne,
@@ -420,18 +420,16 @@ fn parse_skill_add_kind(args: &[String]) -> Result<crate::types::SkillInstallKin
         .ok_or_else(|| anyhow!("/skill-add requires a source"))?;
     if source.starts_with("--") {
         return Err(anyhow!(
-            "/skill-add requires the source before flags; usage: /skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]"
+            "/skill-add requires the source before flags; usage: /skill-add <source> [--remote] [--skill <name>] [--copy]"
         ));
     }
 
-    let mut builtin = false;
     let mut remote = false;
     let mut copy = false;
     let mut skill = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
-            "--builtin" => builtin = true,
             "--remote" => remote = true,
             "--copy" => copy = true,
             "--skill" => {
@@ -446,22 +444,11 @@ fn parse_skill_add_kind(args: &[String]) -> Result<crate::types::SkillInstallKin
             }
             other => {
                 return Err(anyhow!(
-                    "unexpected /skill-add argument '{other}'; usage: /skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]"
+                    "unexpected /skill-add argument '{other}'; usage: /skill-add <source> [--remote] [--skill <name>] [--copy]"
                 ));
             }
         }
         index += 1;
-    }
-
-    if builtin {
-        if remote || skill.is_some() {
-            return Err(anyhow!(
-                "--builtin cannot be combined with --remote or --skill"
-            ));
-        }
-        return Ok(crate::types::SkillInstallKind::Builtin {
-            name: source.clone(),
-        });
     }
 
     let mode = if copy {
@@ -2647,7 +2634,7 @@ mod tests {
             "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
             "/skills",
             "/skill-catalog",
-            "/skill-add <source> [--builtin|--remote] [--skill <name>] [--copy]",
+            "/skill-add <source> [--remote] [--skill <name>] [--copy]",
             "/skill-remove <name>",
             "/skill-enable <name> [--copy]",
             "/skill-disable <name>",
