@@ -1,16 +1,20 @@
 [[skills]]
-kind = "builtin"
-name = "ghx"
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
 
 [[skills]]
-kind = "builtin"
-name = "github-issue-solve"
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/github-issue-solve"
 
 [[skills]]
-kind = "builtin"
-name = "github-pr-fix"
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/github-pr-fix"
 
 [[skills]]
-kind = "builtin"
-name = "github-review"
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/github-review"
 
