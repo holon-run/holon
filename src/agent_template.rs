@@ -2,10 +2,14 @@ use std::{
     collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use crate::{
-    config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
+    config::{
+        credential_store_path, load_credential_store_at, AgentTemplateRemoteSourceConfigFile,
+        AgentTemplatesConfigFile, CredentialKind,
+    },
     runtime_db::RuntimeDb,
     types::{
         AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
@@ -16,7 +20,10 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use reqwest::StatusCode;
+use reqwest::{
+    header::{HeaderValue, AUTHORIZATION, USER_AGENT},
+    StatusCode,
+};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +36,10 @@ const TEMPLATE_REGISTRY_FILENAME: &str = ".registry.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID: &str = "official";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL: &str = "https://github.com/holon-run/holon";
+const GITHUB_TEMPLATE_API_BASE_ENV: &str = "HOLON_TEMPLATE_GITHUB_API_BASE";
+const GITHUB_TEMPLATE_TOKEN_ENV_VARS: &[&str] = &["HOLON_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"];
+const GITHUB_TEMPLATE_USER_AGENT: &str = "holon-template-resolver";
+const GITHUB_TOKEN_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEMORY_SELF_INITIAL: &str = "# Self Memory\n\n";
 const MEMORY_OPERATOR_INITIAL: &str = r#"# Operator Memory
 
@@ -734,6 +745,7 @@ pub fn effective_agent_template_remote_sources(
             url: OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL.to_string(),
             git_ref: None,
             enabled: Some(true),
+            credential_profile: None,
         });
     sources
 }
@@ -1064,12 +1076,18 @@ pub async fn sync_agent_template_remote_source(
     }
 
     let parsed = parse_github_repo_url(&config.url)?;
+    let github = GitHubTemplateClient::from_remote_source_config(user_home, config).await?;
     let resolved_ref = match config.git_ref.clone().or(parsed.git_ref) {
         Some(value) => value,
-        None => fetch_default_branch(&parsed.owner, &parsed.repo).await?,
+        None => fetch_default_branch_with_client(&github, &parsed.owner, &parsed.repo).await?,
     };
-    let mut catalog =
-        discover_github_repo_templates(&parsed.owner, &parsed.repo, &resolved_ref).await?;
+    let mut catalog = discover_github_repo_templates_with_client(
+        &github,
+        &parsed.owner,
+        &parsed.repo,
+        &resolved_ref,
+    )
+    .await?;
     for entry in &mut catalog {
         entry.source_id = Some(source_id.to_string());
         entry.resolved_ref = Some(resolved_ref.clone());
@@ -1096,6 +1114,7 @@ pub async fn sync_agent_template_remote_source(
     );
     for entry in &catalog {
         let record = install_remote_template_catalog_entry(
+            &github,
             &templates_root,
             &registry,
             source_id,
@@ -1380,6 +1399,7 @@ pub(crate) async fn resolve_remote_agent_template_detail(
 }
 
 async fn install_remote_template_catalog_entry(
+    github: &GitHubTemplateClient,
     templates_root: &Path,
     registry: &AgentTemplateRegistry,
     source_id: &str,
@@ -1392,7 +1412,7 @@ async fn install_remote_template_catalog_entry(
         .source_url
         .as_deref()
         .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
-    let resolved = resolve_github_template(template_url).await?;
+    let resolved = resolve_github_template_with_client(github, template_url).await?;
     let install_id = choose_remote_template_install_id(templates_root, registry, source_id, entry)?;
     let destination = templates_root.join(&install_id);
     let content_hash = resolved_template_content_hash(&resolved);
@@ -2150,6 +2170,14 @@ fn is_github_tree_url(template: &str) -> Result<bool> {
 }
 
 async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
+    let github = GitHubTemplateClient::new().await?;
+    resolve_github_template_with_client(&github, template).await
+}
+
+async fn resolve_github_template_with_client(
+    github: &GitHubTemplateClient,
+    template: &str,
+) -> Result<ResolvedTemplate> {
     let url = reqwest::Url::parse(template)?;
     if url.query().is_some() || url.fragment().is_some() {
         bail!("GitHub template URL must not include a query string or fragment");
@@ -2171,7 +2199,8 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
         let git_ref = ref_and_path[..split].join("/");
         let template_path = ref_and_path[split..].join("/");
         let agents_md_path = format!("{template_path}/{TEMPLATE_AGENTS_FILENAME}");
-        let maybe_agents_md = fetch_github_file(&owner, &repo, &git_ref, &agents_md_path).await?;
+        let maybe_agents_md =
+            fetch_github_file(github, &owner, &repo, &git_ref, &agents_md_path).await?;
         let Some(agents_md) = maybe_agents_md else {
             continue;
         };
@@ -2179,7 +2208,7 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
             bail!("GitHub template {template} resolved to an empty AGENTS.md");
         }
         let skills_path = format!("{template_path}/{TEMPLATE_SKILLS_FILENAME}");
-        let skills_toml = fetch_github_file(&owner, &repo, &git_ref, &skills_path).await?;
+        let skills_toml = fetch_github_file(github, &owner, &repo, &git_ref, &skills_path).await?;
         let skill_refs = match skills_toml {
             Some(content) => {
                 let manifest: TemplateSkillsManifest =
@@ -2191,7 +2220,8 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
             None => Vec::new(),
         };
         let manifest_path = format!("{template_path}/{TEMPLATE_MANIFEST_FILENAME}");
-        let manifest_content = fetch_github_file(&owner, &repo, &git_ref, &manifest_path).await?;
+        let manifest_content =
+            fetch_github_file(github, &owner, &repo, &git_ref, &manifest_path).await?;
         let schema_version = manifest_content
             .as_deref()
             .and_then(parse_template_manifest)
@@ -2214,31 +2244,157 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
     bail!("GitHub template URL did not resolve to a readable template directory: {template}")
 }
 
+struct GitHubTemplateClient {
+    client: reqwest::Client,
+    auth: GitHubTemplateAuth,
+}
+
+impl GitHubTemplateClient {
+    async fn new() -> Result<Self> {
+        Self::with_token(None).await
+    }
+
+    async fn from_remote_source_config(
+        user_home: &Path,
+        config: &AgentTemplateRemoteSourceConfigFile,
+    ) -> Result<Self> {
+        let configured_token = match config.credential_profile.as_deref() {
+            Some(profile) => Some(load_github_template_credential_profile_token(
+                user_home, profile,
+            )?),
+            None => None,
+        };
+        Self::with_token(configured_token).await
+    }
+
+    async fn with_token(configured_token: Option<String>) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .build()
+            .context("failed to build GitHub template client")?;
+        Ok(Self {
+            client,
+            auth: GitHubTemplateAuth::resolve(configured_token).await,
+        })
+    }
+
+    fn get(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
+        self.auth.apply(
+            self.client
+                .get(url)
+                .header(USER_AGENT, GITHUB_TEMPLATE_USER_AGENT),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GitHubTemplateAuth {
+    token: Option<String>,
+}
+
+impl GitHubTemplateAuth {
+    async fn resolve(configured_token: Option<String>) -> Self {
+        Self {
+            token: resolve_github_template_token(configured_token).await,
+        }
+    }
+
+    fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let Some(token) = self.token.as_deref() else {
+            return request;
+        };
+        let value = format!("Bearer {token}");
+        match HeaderValue::from_str(&value) {
+            Ok(mut value) => {
+                value.set_sensitive(true);
+                request.header(AUTHORIZATION, value)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "ignoring invalid GitHub template token header value");
+                request
+            }
+        }
+    }
+}
+
+fn load_github_template_credential_profile_token(
+    user_home: &Path,
+    profile: &str,
+) -> Result<String> {
+    let store_path = credential_store_path(user_home);
+    let store = load_credential_store_at(&store_path)?;
+    let entry = store.profiles.get(profile).ok_or_else(|| {
+        anyhow!("GitHub template credential profile '{profile}' is not configured")
+    })?;
+    if entry.kind != CredentialKind::BearerToken && entry.kind != CredentialKind::ApiKey {
+        bail!("GitHub template credential profile '{profile}' must be api_key or bearer_token");
+    }
+    let token = entry.material.trim();
+    if token.is_empty() {
+        bail!("GitHub template credential profile '{profile}' is empty");
+    }
+    Ok(token.to_string())
+}
+
+async fn resolve_github_template_token(configured_token: Option<String>) -> Option<String> {
+    if let Some(token) = configured_token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+    {
+        return Some(token);
+    }
+    if let Some(token) = resolve_github_template_env_token() {
+        return Some(token);
+    }
+    resolve_github_template_gh_token().await
+}
+
+fn resolve_github_template_env_token() -> Option<String> {
+    GITHUB_TEMPLATE_TOKEN_ENV_VARS
+        .iter()
+        .find_map(|key| env::var(key).ok().map(|value| value.trim().to_string()))
+        .filter(|value| !value.is_empty())
+}
+
+async fn resolve_github_template_gh_token() -> Option<String> {
+    let output = tokio::time::timeout(
+        GITHUB_TOKEN_RESOLVE_TIMEOUT,
+        tokio::process::Command::new("gh")
+            .args(["auth", "token", "-h", "github.com"])
+            .env("GH_PROMPT_DISABLED", "1")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
+fn github_template_api_base() -> String {
+    env::var(GITHUB_TEMPLATE_API_BASE_ENV).unwrap_or_else(|_| "https://api.github.com".to_string())
+}
+
 async fn fetch_github_file(
+    github: &GitHubTemplateClient,
     owner: &str,
     repo: &str,
     git_ref: &str,
     path: &str,
 ) -> Result<Option<String>> {
-    let base = env::var("HOLON_TEMPLATE_GITHUB_API_BASE")
-        .unwrap_or_else(|_| "https://api.github.com".to_string());
+    let base = github_template_api_base();
     let mut url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}/contents/{path}"))
         .with_context(|| {
             format!("failed to build GitHub contents URL for {owner}/{repo}:{path}")
         })?;
     url.query_pairs_mut().append_pair("ref", git_ref);
 
-    let client = reqwest::Client::builder()
-        .build()
-        .context("failed to build GitHub template client")?;
-    let response = client
-        .get(url)
-        .header(reqwest::header::USER_AGENT, "holon-template-resolver")
-        .send()
-        .await
-        .with_context(|| {
-            format!("failed to fetch GitHub template file {owner}/{repo}:{path}@{git_ref}")
-        })?;
+    let response = github.get(url).send().await.with_context(|| {
+        format!("failed to fetch GitHub template file {owner}/{repo}:{path}@{git_ref}")
+    })?;
 
     if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
@@ -2321,28 +2477,20 @@ fn parse_github_repo_url(url: &str) -> Result<ParsedGithubRepoUrl> {
 ///
 /// Returns `Ok(None)` for a 404 (directory not found).
 async fn fetch_github_dir(
+    github: &GitHubTemplateClient,
     owner: &str,
     repo: &str,
     git_ref: &str,
     path: &str,
 ) -> Result<Option<Vec<GitHubContentsDirEntry>>> {
-    let base = env::var("HOLON_TEMPLATE_GITHUB_API_BASE")
-        .unwrap_or_else(|_| "https://api.github.com".to_string());
+    let base = github_template_api_base();
     let mut url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}/contents/{path}"))
         .with_context(|| format!("failed to build GitHub dir URL for {owner}/{repo}:{path}"))?;
     url.query_pairs_mut().append_pair("ref", git_ref);
 
-    let client = reqwest::Client::builder()
-        .build()
-        .context("failed to build GitHub template client")?;
-    let response = client
-        .get(url)
-        .header(reqwest::header::USER_AGENT, "holon-template-resolver")
-        .send()
-        .await
-        .with_context(|| {
-            format!("failed to list GitHub directory {owner}/{repo}:{path}@{git_ref}")
-        })?;
+    let response = github.get(url).send().await.with_context(|| {
+        format!("failed to list GitHub directory {owner}/{repo}:{path}@{git_ref}")
+    })?;
 
     if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
@@ -2375,17 +2523,22 @@ struct GitHubRepoInfo {
 ///
 /// Used when a repo URL omits `/tree/<ref>` — avoids hardcoding `main` so
 /// repositories on `master`, `develop`, etc. are handled correctly.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn fetch_default_branch(owner: &str, repo: &str) -> Result<String> {
-    let base = env::var("HOLON_TEMPLATE_GITHUB_API_BASE")
-        .unwrap_or_else(|_| "https://api.github.com".to_string());
+    let github = GitHubTemplateClient::new().await?;
+    fetch_default_branch_with_client(&github, owner, repo).await
+}
+
+async fn fetch_default_branch_with_client(
+    github: &GitHubTemplateClient,
+    owner: &str,
+    repo: &str,
+) -> Result<String> {
+    let base = github_template_api_base();
     let url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}"))
         .with_context(|| format!("failed to build GitHub repo URL for {owner}/{repo}"))?;
-    let client = reqwest::Client::builder()
-        .build()
-        .context("failed to build GitHub template client")?;
-    let response = client
+    let response = github
         .get(url)
-        .header(reqwest::header::USER_AGENT, "holon-template-resolver")
         .send()
         .await
         .with_context(|| format!("failed to fetch repo info for {owner}/{repo}"))?;
@@ -2403,16 +2556,28 @@ async fn fetch_default_branch(owner: &str, repo: &str) -> Result<String> {
 
 /// Discover all AgentTemplates under a GitHub repository's conventional
 /// `agent_templates/` collection.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn discover_github_repo_templates(
     owner: &str,
     repo: &str,
     git_ref: &str,
 ) -> Result<Vec<AgentTemplateCatalogEntry>> {
+    let github = GitHubTemplateClient::new().await?;
+    discover_github_repo_templates_with_client(&github, owner, repo, git_ref).await
+}
+
+async fn discover_github_repo_templates_with_client(
+    github: &GitHubTemplateClient,
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+) -> Result<Vec<AgentTemplateCatalogEntry>> {
     // List subdirectories under the template collection.
-    let entries = match fetch_github_dir(owner, repo, git_ref, DEFAULT_REMOTE_TEMPLATE_DIR).await? {
-        Some(entries) => entries,
-        None => return Ok(Vec::new()),
-    };
+    let entries =
+        match fetch_github_dir(github, owner, repo, git_ref, DEFAULT_REMOTE_TEMPLATE_DIR).await? {
+            Some(entries) => entries,
+            None => return Ok(Vec::new()),
+        };
 
     let mut catalog_entries = Vec::new();
     for entry in entries {
@@ -2422,7 +2587,7 @@ pub(crate) async fn discover_github_repo_templates(
         let template_id = entry.name;
         let manifest_path =
             format!("{DEFAULT_REMOTE_TEMPLATE_DIR}/{template_id}/{TEMPLATE_MANIFEST_FILENAME}");
-        let manifest = match fetch_github_file(owner, repo, git_ref, &manifest_path).await {
+        let manifest = match fetch_github_file(github, owner, repo, git_ref, &manifest_path).await {
             Ok(Some(content)) => parse_template_manifest(&content),
             Ok(None) => None,
             Err(error) => {
@@ -2470,11 +2635,12 @@ pub(crate) async fn discover_github_repo_templates(
 /// browsing a remote template library from a repo URL.
 pub async fn discover_remote_templates(url: &str) -> Result<Vec<AgentTemplateCatalogEntry>> {
     let parsed = parse_github_repo_url(url)?;
+    let github = GitHubTemplateClient::new().await?;
     let git_ref = match parsed.git_ref {
         Some(r) => r,
-        None => fetch_default_branch(&parsed.owner, &parsed.repo).await?,
+        None => fetch_default_branch_with_client(&github, &parsed.owner, &parsed.repo).await?,
     };
-    discover_github_repo_templates(&parsed.owner, &parsed.repo, &git_ref).await
+    discover_github_repo_templates_with_client(&github, &parsed.owner, &parsed.repo, &git_ref).await
 }
 
 async fn materialize_template(agent_home: &Path, template: &ResolvedTemplate) -> Result<()> {
@@ -2932,6 +3098,8 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::config::{save_credential_store_at, CredentialProfileFile, CredentialStoreFile};
+
     use super::*;
 
     struct EnvGuard {
@@ -2943,6 +3111,12 @@ mod tests {
         fn set(key: &'static str, value: String) -> Self {
             let old = env::var(key).ok();
             env::set_var(key, value);
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = env::var(key).ok();
+            env::remove_var(key);
             Self { key, old }
         }
     }
@@ -3083,6 +3257,7 @@ mod tests {
                 url: "https://github.com/example/custom".into(),
                 git_ref: Some("dev".into()),
                 enabled: Some(false),
+                credential_profile: None,
             },
         );
 
@@ -3795,7 +3970,14 @@ package = "owner/repo@../bad"
     /// Build a mock GitHub API server that serves configured responses.
     struct MockGithubServer {
         addr: std::net::SocketAddr,
+        requests: Arc<Mutex<Vec<MockGithubRequest>>>,
         _handle: thread::JoinHandle<()>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockGithubRequest {
+        path: String,
+        authorization: Option<String>,
     }
 
     impl MockGithubServer {
@@ -3804,6 +3986,8 @@ package = "owner/repo@../bad"
         fn start(responses: Vec<(&'static str, u16, String)>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let requests_clone = requests.clone();
             let handle = thread::spawn(move || {
                 for stream in listener.incoming().take(responses.len()) {
                     let mut stream = stream.unwrap();
@@ -3812,6 +3996,19 @@ package = "owner/repo@../bad"
                     let request = String::from_utf8_lossy(&buffer);
                     let request_line = request.lines().next().unwrap_or("");
                     let req_path = request_line.split_whitespace().nth(1).unwrap_or("");
+                    let authorization = request
+                        .lines()
+                        .find_map(|line| line.strip_prefix("authorization: "))
+                        .or_else(|| {
+                            request
+                                .lines()
+                                .find_map(|line| line.strip_prefix("Authorization: "))
+                        })
+                        .map(|value| value.trim().to_string());
+                    requests_clone.lock().unwrap().push(MockGithubRequest {
+                        path: req_path.to_string(),
+                        authorization,
+                    });
 
                     // Strip query for matching.
                     let match_path = req_path.split('?').next().unwrap_or("");
@@ -3835,8 +4032,13 @@ package = "owner/repo@../bad"
             });
             Self {
                 addr,
+                requests,
                 _handle: handle,
             }
+        }
+
+        fn requests(&self) -> Vec<MockGithubRequest> {
+            self.requests.lock().unwrap().clone()
         }
     }
 
@@ -3855,6 +4057,48 @@ package = "owner/repo@../bad"
             .map(|(name, kind)| serde_json::json!({ "name": name, "type": kind }))
             .collect();
         serde_json::Value::Array(arr).to_string()
+    }
+
+    fn sync_worker_template_routes() -> Vec<(&'static str, u16, String)> {
+        vec![
+            (
+                "/repos/owner/repo/contents/agent_templates",
+                200,
+                github_dir_response(&[("worker", "dir")]),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+summary = "Implementation agent"
+"#,
+                ),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
+                200,
+                github_file_response("# Worker\n\nDoes worker things\n"),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
+                200,
+                github_file_response(""),
+            ),
+            (
+                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
+                200,
+                github_file_response(
+                    r#"schema = "holon.agent_template.v1"
+id = "worker"
+name = "Worker"
+summary = "Implementation agent"
+"#,
+                ),
+            ),
+        ]
     }
 
     #[tokio::test]
@@ -4228,6 +4472,7 @@ summary = "Implementation agent"
             url: "https://github.com/owner/repo".into(),
             git_ref: Some("main".into()),
             enabled: Some(true),
+            credential_profile: None,
         };
 
         let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
@@ -4280,6 +4525,134 @@ summary = "Implementation agent"
     }
 
     #[tokio::test]
+    async fn sync_remote_source_uses_env_github_token() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let server = MockGithubServer::start(sync_worker_template_routes());
+        let _api_guard = EnvGuard::set(
+            GITHUB_TEMPLATE_API_BASE_ENV,
+            format!("http://{}", server.addr),
+        );
+        let _token_guard = EnvGuard::set("HOLON_GITHUB_TOKEN", "env-token".to_string());
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+            credential_profile: None,
+        };
+
+        sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+
+        let requests = server.requests();
+        assert!(!requests.is_empty());
+        assert_eq!(
+            requests[0].path.split('?').next(),
+            Some("/repos/owner/repo/contents/agent_templates")
+        );
+        assert!(requests
+            .iter()
+            .all(|request| request.authorization.as_deref() == Some("Bearer env-token")));
+    }
+
+    #[tokio::test]
+    async fn sync_remote_source_credential_profile_overrides_env_github_token() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let credential_store_path = credential_store_path(home.path());
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "github-templates".to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::BearerToken,
+                material: "profile-token".to_string(),
+            },
+        );
+        save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles })
+            .unwrap();
+        let server = MockGithubServer::start(sync_worker_template_routes());
+        let _api_guard = EnvGuard::set(
+            GITHUB_TEMPLATE_API_BASE_ENV,
+            format!("http://{}", server.addr),
+        );
+        let _token_guard = EnvGuard::set("HOLON_GITHUB_TOKEN", "env-token".to_string());
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+            credential_profile: Some("github-templates".to_string()),
+        };
+
+        sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+
+        assert!(server
+            .requests()
+            .iter()
+            .all(|request| request.authorization.as_deref() == Some("Bearer profile-token")));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sync_remote_source_uses_gh_cli_token_when_no_configured_token_exists() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let fake_bin = home.path().join("bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        let gh = fake_bin.join("gh");
+        fs::write(
+            &gh,
+            "#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"auth token -h github.com\" ] && printf gh-token\n",
+        )
+        .unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let server = MockGithubServer::start(sync_worker_template_routes());
+        let _api_guard = EnvGuard::set(
+            GITHUB_TEMPLATE_API_BASE_ENV,
+            format!("http://{}", server.addr),
+        );
+        let _holon_token_guard = EnvGuard::remove("HOLON_GITHUB_TOKEN");
+        let _github_token_guard = EnvGuard::remove("GITHUB_TOKEN");
+        let _gh_token_guard = EnvGuard::remove("GH_TOKEN");
+        let old_path = env::var("PATH").unwrap_or_default();
+        let _path_guard = EnvGuard::set("PATH", format!("{}:{old_path}", fake_bin.display()));
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+            credential_profile: None,
+        };
+
+        sync_agent_template_remote_source(&db, home.path(), "official", &config)
+            .await
+            .unwrap();
+
+        assert!(server
+            .requests()
+            .iter()
+            .all(|request| request.authorization.as_deref() == Some("Bearer gh-token")));
+    }
+
+    #[tokio::test]
     async fn remote_source_needs_sync_when_never_synced_but_not_after_recent_success() {
         let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
@@ -4293,6 +4666,7 @@ summary = "Implementation agent"
             url: "https://github.com/owner/repo".into(),
             git_ref: Some("main".into()),
             enabled: Some(true),
+            credential_profile: None,
         };
 
         assert!(agent_template_remote_source_needs_sync(
@@ -4381,6 +4755,7 @@ name = "Worker"
             url: "https://github.com/owner/repo".into(),
             git_ref: Some("main".into()),
             enabled: Some(true),
+            credential_profile: None,
         };
 
         sync_agent_template_remote_source(&db, home.path(), "official", &config)
@@ -4462,6 +4837,7 @@ name = "Worker"
             url: "https://github.com/owner/repo".into(),
             git_ref: Some("main".into()),
             enabled: Some(true),
+            credential_profile: None,
         };
 
         sync_agent_template_remote_source(&db, home.path(), "official", &config)
@@ -4543,6 +4919,7 @@ name = "Worker"
             url: "https://github.com/owner/repo".into(),
             git_ref: Some("main".into()),
             enabled: Some(true),
+            credential_profile: None,
         };
 
         sync_agent_template_remote_source(&db, home.path(), "official", &config)

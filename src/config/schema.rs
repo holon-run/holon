@@ -453,6 +453,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             default: json!(crate::web::WebProviderLimitsConfig::default().max_output_bytes),
             allowed_values: vec![],
         },
+        ConfigSchemaEntry {
+            key: "agent_templates.remote_sources",
+            kind: "json_object",
+            description: "Remote AgentTemplate sources keyed by source id. Each source supports url, ref, enabled, and optional credential_profile. The credential profile must contain an api_key or bearer_token GitHub token.",
+            default: json!({}),
+            allowed_values: vec![],
+        },
     ]
 }
 

@@ -164,6 +164,8 @@ pub struct AgentTemplateRemoteSourceConfigFile {
     pub git_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_profile: Option<String>,
 }
 
 impl AgentTemplateRemoteSourceConfigFile {

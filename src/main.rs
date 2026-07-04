@@ -1228,6 +1228,7 @@ mod tests {
                 url: "https://github.com/example/templates".into(),
                 git_ref: Some("main".into()),
                 enabled: Some(false),
+                credential_profile: None,
             },
         );
 
