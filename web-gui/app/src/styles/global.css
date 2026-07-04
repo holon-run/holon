@@ -3192,6 +3192,7 @@ code {
 .skills-library-card {
   display: grid;
   gap: 0;
+  padding: 16px 18px;
 }
 
 .skills-library-head {
