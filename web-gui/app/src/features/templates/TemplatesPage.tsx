@@ -146,8 +146,8 @@ export function TemplatesPage({
           <Button type="button" variant="outline" disabled={loading || syncInProgress} onClick={() => void onSyncSources()}>
             {syncInProgress ? "Syncing…" : "Sync sources"}
           </Button>
-          <Button type="button" variant="outline" disabled={loading || syncInProgress} onClick={onRefresh}>
-            {syncInProgress ? "Syncing…" : loading ? "Refreshing…" : "Refresh"}
+          <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
+            {loading ? "Refreshing…" : "Refresh"}
           </Button>
         </div>
       </section>
@@ -262,7 +262,7 @@ export function TemplatesPage({
         </CardContent>
       </Card>
 
-      <details className="template-remote-sources-collapse">
+      <details className="template-remote-sources-collapse" open>
         <summary className="template-remote-sources-toggle">
           Remote sources ({catalog.sources.length})
           <StatusBadge className="state-chip" kind="connection" value={catalog.source} />

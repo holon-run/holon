@@ -19,6 +19,7 @@ import {
 import type {
   AddSkillInput,
   AgentDetail,
+  AgentTemplateCatalogDiagnostic,
   AgentSummary,
   AgentTemplateCatalogState,
   AgentTemplateDetailState,
@@ -192,6 +193,7 @@ export interface RuntimeStoreState {
   templateCatalog: AgentTemplateCatalogState;
   templateCatalogLoading: boolean;
   templateCatalogError?: string;
+  dismissedTemplateDiagnostics: string[];
   templateSyncInProgress: boolean;
   templateDetailById: Record<string, AgentTemplateDetailState>;
   templateDetailLoadingById: Record<string, boolean>;
@@ -640,6 +642,26 @@ const emptyTemplateCatalog: AgentTemplateCatalogState = {
   diagnostics: [],
 };
 
+function diagnosticSignature(d: AgentTemplateCatalogDiagnostic): string {
+  return `${d.sourceId ?? "catalog"}:${d.message}`;
+}
+
+/**
+ * Filter out diagnostics the user has previously dismissed so they don't
+ * reappear on refresh when the server still has them stored.
+ */
+function filterDismissedDiagnostics(
+  catalog: AgentTemplateCatalogState,
+  dismissed: string[],
+): AgentTemplateCatalogState {
+  if (!dismissed.length || !catalog.diagnostics.length) return catalog;
+  const dismissedSet = new Set(dismissed);
+  return {
+    ...catalog,
+    diagnostics: catalog.diagnostics.filter((d) => !dismissedSet.has(diagnosticSignature(d))),
+  };
+}
+
 /**
  * Initialize session cache for the current remote and hydrate any cached
  * sessions into the store. Called on initial load and remote switch.
@@ -703,6 +725,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   templateCatalog: emptyTemplateCatalog,
   templateCatalogLoading: false,
   templateCatalogError: undefined,
+  dismissedTemplateDiagnostics: [],
   templateSyncInProgress: false,
   templateDetailById: {},
   templateDetailLoadingById: {},
@@ -907,6 +930,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       templateCatalog: emptyTemplateCatalog,
       templateCatalogLoading: false,
       templateCatalogError: undefined,
+      dismissedTemplateDiagnostics: [],
       templateSyncInProgress: false,
       templateDetailById: {},
       templateDetailLoadingById: {},
@@ -1090,7 +1114,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   refreshTemplateCatalog: async () => {
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1132,7 +1158,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
       await runtimeClient.installTemplate(githubUrl);
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
       return true;
     } catch (error) {
@@ -1150,7 +1178,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
       await runtimeClient.removeTemplate(templateId);
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
       return true;
     } catch (error) {
@@ -1170,7 +1200,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set({ templateSyncInProgress: true });
       const jobId = await runtimeClient.syncTemplateRemoteSources();
       await pollTemplateSyncJob(set, get, jobId);
-      const templateCatalog = await runtimeClient.getTemplateCatalog();
+      const templateCatalog = filterDismissedDiagnostics(
+        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+      );
       set({ templateCatalog, templateCatalogLoading: false, templateSyncInProgress: false, templateCatalogError: templateCatalog.error });
       return true;
     } catch (error) {
@@ -1200,6 +1232,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   dismissTemplateDiagnostics: () => {
     set((state) => ({
+      dismissedTemplateDiagnostics: [
+        ...state.dismissedTemplateDiagnostics,
+        ...state.templateCatalog.diagnostics.map(diagnosticSignature),
+      ],
       templateCatalog: { ...state.templateCatalog, diagnostics: [] },
     }));
   },
