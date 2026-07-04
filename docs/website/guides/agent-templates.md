@@ -132,6 +132,10 @@ path = "skills/custom-skill"
 ref = "v1.2.3"
 
 [[skills]]
+kind = "github"
+uses = "holon-run/holon/skills/ghx@main"
+
+[[skills]]
 kind = "local"
 path = "/absolute/path/to/custom-skill"
 ```
@@ -139,7 +143,12 @@ path = "/absolute/path/to/custom-skill"
 Two skill reference kinds are supported:
 
 - **`github`** — A skill fetched from a GitHub repository path. Use
-  `repo = "owner/repo"`, `path = "path/to/skill"`, and optional `ref`.
+  `repo = "owner/repo"`, `path = "path/to/skill"`, and optional `ref` as the
+  canonical form. Templates may also use `uses = "owner/repo/path@ref"` as a
+  GitHub Actions-style shorthand; Holon normalizes it to `repo`/`path`/`ref`.
+  Holon also accepts `owner/repo/path#ref` and GitHub tree URLs as compatible
+  input forms, but it does not use the `owner/repo@skill` shorthand where `@`
+  names a skill.
 - **`local`** — An absolute path to a skill directory on disk
 
 `kind = "builtin"` is no longer part of the template manifest format. Official

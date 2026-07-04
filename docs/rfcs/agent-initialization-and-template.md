@@ -350,6 +350,10 @@ kind = "github"
 repo = "owner/repo"
 path = "skills/react-best-practices"
 ref = "v1.0.0"
+
+[[skills]]
+kind = "github"
+uses = "holon-run/holon/skills/ghx@main"
 ```
 
 The rules are:
@@ -366,6 +370,13 @@ The rules are:
   - `repo = "<owner>/<repo>"`
   - `path = "<relative/path/to/skill>"`
   - optional `ref = "<branch-or-tag-or-commit>"`
+- GitHub references may use `uses = "<owner>/<repo>/<path>@<ref>"` as a
+  GitHub Actions-style shorthand for human-authored manifests; the runtime
+  normalizes this form into `repo`/`path`/`ref`
+- `uses = "<owner>/<repo>/<path>#<ref>"` and GitHub tree URLs may be accepted
+  as compatible input forms and should normalize to the same structured fields
+- `owner/repo@skill` is not the `uses` shorthand; Holon keeps `@` reserved for
+  the Git ref in the GitHub Actions-style form
 - GitHub `repo` must be in `owner/repo` form
 - GitHub `path` must be a repository-relative directory path and must not
   contain empty, `.`, or `..` segments

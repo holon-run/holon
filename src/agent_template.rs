@@ -157,7 +157,9 @@ pub struct TemplateProvenanceRecord {
 /// File-format skill reference as defined in `skills.toml`.
 /// Template-authored manifests expose only `local` and `github` skill
 /// references. The legacy `package` field is accepted for old manifests, but
-/// new GitHub references should use structured `repo` + `path` fields.
+/// new GitHub references should use structured `repo` + `path` fields. The
+/// `uses` field is accepted as a GitHub Actions-style shorthand and is
+/// normalized into the structured form.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum TemplateSkillFileRef {
@@ -174,6 +176,8 @@ enum TemplateSkillFileRef {
         path: Option<String>,
         #[serde(default, rename = "ref")]
         git_ref: Option<String>,
+        #[serde(default)]
+        uses: Option<String>,
         #[serde(default)]
         package: Option<String>,
     },
@@ -1909,8 +1913,9 @@ fn parse_template_skill_file_ref(file_ref: TemplateSkillFileRef) -> Result<Templ
             repo,
             path,
             git_ref,
+            uses,
             package,
-        } => parse_template_github_skill_ref(repo, path, git_ref, package)
+        } => parse_template_github_skill_ref(repo, path, git_ref, uses, package)
             .map(TemplateSkillRef::Github),
     }
 }
@@ -1919,18 +1924,99 @@ fn parse_template_github_skill_ref(
     repo: Option<String>,
     path: Option<String>,
     git_ref: Option<String>,
+    uses: Option<String>,
     package: Option<String>,
 ) -> Result<TemplateGithubSkillRef> {
     if let Some(package) = package {
-        if repo.is_some() || path.is_some() || git_ref.is_some() {
-            bail!("github skill ref must use either legacy package or structured repo/path/ref fields, not both");
+        if repo.is_some() || path.is_some() || git_ref.is_some() || uses.is_some() {
+            bail!("github skill ref must use exactly one of legacy package, uses, or structured repo/path/ref fields");
         }
         validate_template_github_skill_package(&package)?;
         return Ok(TemplateGithubSkillRef::LegacyPackage { package });
     }
 
+    if let Some(uses) = uses {
+        if repo.is_some() || path.is_some() || git_ref.is_some() {
+            bail!("github skill ref must use exactly one of legacy package, uses, or structured repo/path/ref fields");
+        }
+        return parse_template_github_skill_uses(&uses);
+    }
+
     let repo = repo.context("github skill ref requires repo")?;
     let path = path.context("github skill ref requires path")?;
+    validate_template_github_skill_repo(&repo)?;
+    validate_template_github_skill_path(&path)?;
+    if let Some(git_ref) = &git_ref {
+        validate_template_github_skill_ref(git_ref)?;
+    }
+    Ok(TemplateGithubSkillRef::Structured {
+        repo,
+        path,
+        git_ref,
+    })
+}
+
+fn parse_template_github_skill_uses(uses: &str) -> Result<TemplateGithubSkillRef> {
+    if uses.trim() != uses || uses.is_empty() {
+        bail!("github skill ref uses must not be empty or contain leading/trailing whitespace");
+    }
+    if let Some(path) = uses
+        .strip_prefix("https://github.com/")
+        .or_else(|| uses.strip_prefix("http://github.com/"))
+    {
+        return parse_template_github_skill_tree_url(path);
+    }
+
+    let (path_ref, git_ref) = split_template_github_skill_uses_ref(uses)?;
+    let mut parts = path_ref.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let repo_name = parts.next().unwrap_or_default();
+    let path = parts.collect::<Vec<_>>().join("/");
+    if owner.is_empty() || repo_name.is_empty() || path.is_empty() {
+        bail!("github skill ref uses must be in owner/repo/path@ref form");
+    }
+    build_structured_template_github_skill_ref(
+        format!("{owner}/{repo_name}"),
+        path,
+        Some(git_ref.to_string()),
+    )
+}
+
+fn parse_template_github_skill_tree_url(path: &str) -> Result<TemplateGithubSkillRef> {
+    let parts = path.split('/').collect::<Vec<_>>();
+    if parts.len() < 5 || parts[0].is_empty() || parts[1].is_empty() || parts[2] != "tree" {
+        bail!(
+            "github skill ref uses value with a GitHub URL must be a tree URL (owner/repo/tree/ref/path)"
+        );
+    }
+    let repo = format!("{}/{}", parts[0], parts[1].trim_end_matches(".git"));
+    let git_ref = parts[3];
+    let skill_path = parts[4..].join("/");
+    // Delegate empty trailing path validation to the shared path validator.
+    build_structured_template_github_skill_ref(repo, skill_path, Some(git_ref.to_string()))
+}
+
+fn split_template_github_skill_uses_ref(uses: &str) -> Result<(&str, &str)> {
+    if let Some((path_ref, git_ref)) = uses.rsplit_once('@') {
+        if !path_ref.is_empty() && !git_ref.is_empty() {
+            return Ok((path_ref, git_ref));
+        }
+    }
+    if let Some((path_ref, git_ref)) = uses.rsplit_once('#') {
+        if !path_ref.is_empty() && !git_ref.is_empty() {
+            return Ok((path_ref, git_ref));
+        }
+    }
+    bail!(
+        "github skill ref uses must include a ref via owner/repo/path@ref or owner/repo/path#ref"
+    );
+}
+
+fn build_structured_template_github_skill_ref(
+    repo: String,
+    path: String,
+    git_ref: Option<String>,
+) -> Result<TemplateGithubSkillRef> {
     validate_template_github_skill_repo(&repo)?;
     validate_template_github_skill_path(&path)?;
     if let Some(git_ref) = &git_ref {
@@ -3877,6 +3963,55 @@ path = "nested/skills/demo"
     }
 
     #[test]
+    fn parse_skill_refs_accepts_github_uses_shorthand() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        fs::write(
+            &manifest_path,
+            r#"[[skills]]
+kind = "github"
+uses = "holon-run/holon/skills/ghx@main"
+
+[[skills]]
+kind = "github"
+uses = "owner/repo/nested/skills/demo#v1.2.3"
+
+[[skills]]
+kind = "github"
+uses = "https://github.com/holon-run/holon/tree/main/skills/github-pr-fix"
+"#,
+        )
+        .unwrap();
+
+        let refs = parse_skill_refs(manifest_path).unwrap();
+        assert_eq!(refs.len(), 3);
+        assert!(matches!(
+            &refs[0],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::Structured {
+                repo,
+                path,
+                git_ref: Some(git_ref),
+            }) if repo == "holon-run/holon" && path == "skills/ghx" && git_ref == "main"
+        ));
+        assert!(matches!(
+            &refs[1],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::Structured {
+                repo,
+                path,
+                git_ref: Some(git_ref),
+            }) if repo == "owner/repo" && path == "nested/skills/demo" && git_ref == "v1.2.3"
+        ));
+        assert!(matches!(
+            &refs[2],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::Structured {
+                repo,
+                path,
+                git_ref: Some(git_ref),
+            }) if repo == "holon-run/holon" && path == "skills/github-pr-fix" && git_ref == "main"
+        ));
+    }
+
+    #[test]
     fn parse_skill_refs_accepts_legacy_github_package_refs() {
         let home = tempdir().unwrap();
         let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
@@ -4006,6 +4141,35 @@ package = "owner/repo@../bad"
         .unwrap();
         let err = parse_skill_refs(manifest_path).unwrap_err();
         assert!(err.to_string().contains("plain skill directory name"));
+    }
+
+    #[test]
+    fn parse_skill_refs_rejects_ambiguous_github_uses_refs() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        fs::write(
+            &manifest_path,
+            r#"[[skills]]
+kind = "github"
+uses = "owner/repo@skill"
+"#,
+        )
+        .unwrap();
+        let err = parse_skill_refs(manifest_path.clone()).unwrap_err();
+        assert!(format!("{err:?}").contains("owner/repo/path@ref"));
+
+        fs::write(
+            &manifest_path,
+            r#"[[skills]]
+kind = "github"
+repo = "owner/repo"
+path = "skills/demo"
+uses = "owner/repo/skills/demo@main"
+"#,
+        )
+        .unwrap();
+        let err = parse_skill_refs(manifest_path).unwrap_err();
+        assert!(format!("{err:?}").contains("exactly one"));
     }
 
     #[test]
