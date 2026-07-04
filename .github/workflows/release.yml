@@ -114,22 +114,17 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release adds a Bing Web Search provider with managed WebSearch tool kept alongside native search, an external trigger token-only storage model with reset-callback API, and trigger revocation on agent stop. It also fixes max_turns counting, coerce_string JSON-string parsing for tool arguments, callback_base_url/advertise_url decoupling, and skill install for non-flat catalog layouts. The memory indexer is redesigned as a single daemon with outbox cleanup, and SQLite connection init gains PRAGMA tuning for better performance.
+          This release introduces the Agent Template package and registry line: local and remote template sources, GitHub repository discovery, daemon sync and diagnostics APIs, web GUI template browsing, and template skill preinstallation. It also adds GitHub Actions-style skill `uses` shorthand, improves the web GUI skills/file experience, and fixes template/skill install edge cases plus several runtime and provider issues.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Add Bing Web Search provider and keep managed WebSearch alongside native search ([#2075](https://github.com/holon-run/holon/pull/2075)).
-          - Store external trigger token only, add reset-callback API ([#2072](https://github.com/holon-run/holon/pull/2072)).
-          - Revoke external triggers when agent is stopped ([#2074](https://github.com/holon-run/holon/pull/2074)).
-          - Parse JSON-string arrays/objects in coerce_string for tool arguments ([#2073](https://github.com/holon-run/holon/pull/2073)).
-          - Fix max_turns counter to use turn_index instead of total_model_rounds ([#2070](https://github.com/holon-run/holon/pull/2070)).
-          - Emit first-run intro when provider is configured ([#2069](https://github.com/holon-run/holon/pull/2069)).
-          - Decouple callback_base_url from advertise_url ([#2068](https://github.com/holon-run/holon/pull/2068)).
-          - Support non-flat catalog layouts and non-main default branches in skill install ([#2067](https://github.com/holon-run/holon/pull/2067)).
-          - Redesign memory indexer to single daemon with outbox cleanup ([#2061](https://github.com/holon-run/holon/pull/2061)).
-          - Add SQLite PRAGMA tuning to connection init for performance ([#2063](https://github.com/holon-run/holon/pull/2063)).
+          - Implement the AgentTemplate package format, catalog/detail model, provenance events, GitHub repository discovery, and lifecycle daemon APIs ([#1981](https://github.com/holon-run/holon/pull/1981), [#1982](https://github.com/holon-run/holon/pull/1982), [#1983](https://github.com/holon-run/holon/pull/1983), [#1984](https://github.com/holon-run/holon/pull/1984), [#1985](https://github.com/holon-run/holon/pull/1985), [#2086](https://github.com/holon-run/holon/pull/2086), [#2102](https://github.com/holon-run/holon/pull/2102)).
+          - Add Agent Templates Web UI pages, Create Agent entry points, remote-source cache handling, and related navigation/file-viewer improvements ([#2094](https://github.com/holon-run/holon/pull/2094), [#2105](https://github.com/holon-run/holon/pull/2105), [#2082](https://github.com/holon-run/holon/pull/2082), [#2090](https://github.com/holon-run/holon/pull/2090), [#2092](https://github.com/holon-run/holon/pull/2092)).
+          - Preinstall skills for agent templates, split official templates from builtin fallback, remove user-facing builtin skills, resolve omitted template skill refs via HEAD, add skill `uses` shorthand, and make global skill install idempotent ([#2100](https://github.com/holon-run/holon/pull/2100), [#2106](https://github.com/holon-run/holon/pull/2106), [#2107](https://github.com/holon-run/holon/pull/2107), [#2108](https://github.com/holon-run/holon/pull/2108), [#2109](https://github.com/holon-run/holon/pull/2109), [#2110](https://github.com/holon-run/holon/pull/2110)).
+          - Derive template remote source IDs, fix template install/home-dir handling, authenticate GitHub template API requests, and use the source solve template in action builds ([#2098](https://github.com/holon-run/holon/pull/2098), [#2101](https://github.com/holon-run/holon/pull/2101), [#2104](https://github.com/holon-run/holon/pull/2104)).
+          - Retry transient OpenAI streaming server errors, make first-run intro runtime-owned, remove legacy message fallback, remove baseline_unfit turn-projection early exit, and correct Volcengine GLM catalog limits ([#2093](https://github.com/holon-run/holon/pull/2093), [#2097](https://github.com/holon-run/holon/pull/2097), [#2091](https://github.com/holon-run/holon/pull/2091), [#2088](https://github.com/holon-run/holon/pull/2088), [#2096](https://github.com/holon-run/holon/pull/2096)).
 
           ## Install
 
