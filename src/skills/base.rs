@@ -948,10 +948,8 @@ struct GithubTreeResponse {
 }
 
 /// Resolve the effective Git reference for a remote skill source.
-/// If the reference is empty or `"main"` (the pre-fix hardcoded default),
-/// queries the repository's actual default branch via `GET /repos/{o}/{r}`.
-/// Treating `"main"` as a sentinel ensures legacy lock files benefit from the
-/// fix instead of 404-ing on master-default repos.
+/// If the reference is empty or `"HEAD"`, queries the repository's actual
+/// default branch via `GET /repos/{o}/{r}`.
 fn resolve_effective_reference(
     client: &reqwest::blocking::Client,
     owner: &str,
@@ -959,7 +957,7 @@ fn resolve_effective_reference(
     reference: &str,
     package: &str,
 ) -> Result<String> {
-    if !reference.is_empty() && reference != "main" {
+    if !reference.is_empty() && reference != "HEAD" {
         return Ok(reference.to_string());
     }
     resolve_default_branch(client, owner, repo, package)
@@ -3310,6 +3308,26 @@ mod tests {
                 owner: "user".into(),
                 repo: "repo".into(),
                 reference: "main".into(),
+                path: "skills/my-skill".into(),
+                skill_name: "my-skill".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn remote_skill_source_preserves_head_default_ref_sentinel() {
+        let source = RemoteSkillSource::parse(
+            "https://github.com/user/repo/tree/HEAD/skills/my-skill",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            source,
+            RemoteSkillSource {
+                owner: "user".into(),
+                repo: "repo".into(),
+                reference: "HEAD".into(),
                 path: "skills/my-skill".into(),
                 skill_name: "my-skill".into(),
             }

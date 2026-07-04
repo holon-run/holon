@@ -1963,7 +1963,7 @@ fn template_github_skill_package(
             path,
             git_ref,
         } => {
-            let git_ref = git_ref.as_deref().unwrap_or("main");
+            let git_ref = git_ref.as_deref().unwrap_or("HEAD");
             format!("https://github.com/{repo}/tree/{git_ref}/{path}")
         }
         TemplateGithubSkillRef::LegacyPackage { package } => {
@@ -3942,6 +3942,24 @@ name = "ghx"
                 skill: None,
                 mode: SkillInstallMode::Linked,
             } if package == "https://github.com/holon-run/holon/tree/main/skills/ghx"
+        ));
+    }
+
+    #[test]
+    fn template_github_skill_install_kind_uses_head_for_omitted_ref() {
+        let kind = template_github_skill_install_kind(&TemplateGithubSkillRef::Structured {
+            repo: "holon-run/holon".into(),
+            path: "skills/ghx".into(),
+            git_ref: None,
+        })
+        .unwrap();
+        assert!(matches!(
+            kind,
+            SkillInstallKind::Remote {
+                package,
+                skill: None,
+                mode: SkillInstallMode::Linked,
+            } if package == "https://github.com/holon-run/holon/tree/HEAD/skills/ghx"
         ));
     }
 
