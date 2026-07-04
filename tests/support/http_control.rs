@@ -804,10 +804,18 @@ pub async fn skill_detail_returns_catalog_skill_markdown() -> Result<()> {
 pub async fn install_skill_existing_destination_returns_conflict() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = Client::new();
+    let skill_name = format!("http-install-conflict-{}", std::process::id());
+    let local_skill_root = tempdir()?;
+    let local_skill_path = local_skill_root.path().join(&skill_name);
+    std::fs::create_dir_all(&local_skill_path)?;
+    std::fs::write(
+        local_skill_path.join("SKILL.md"),
+        format!("---\nname: {skill_name}\ndescription: test skill\n---\n# Test skill\n"),
+    )?;
     let payload = serde_json::json!({
         "kind": {
-            "kind": "builtin",
-            "name": "ghx"
+            "kind": "local",
+            "path": local_skill_path
         }
     });
 

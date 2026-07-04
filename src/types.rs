@@ -1036,9 +1036,6 @@ impl Default for SkillInstallMode {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SkillInstallKind {
-    Builtin {
-        name: String,
-    },
     Named {
         name: String,
         #[serde(default)]

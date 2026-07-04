@@ -13,22 +13,6 @@
               {
                 "properties": {
                   "kind": {
-                    "const": "builtin",
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "name"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "kind": {
                     "const": "named",
                     "type": "string"
                   },

@@ -145,14 +145,14 @@ Skill management is split into library operations and agent enablement:
 |---|---|---|---|---:|---|
 | `holon skills catalog` | none | none | JSON catalog response | `experimental` | Lists all skills in the local Skill Library. |
 | `holon skills refresh` | none | none | JSON catalog response | `experimental` | Refresh runtime catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates. |
-| `holon skills add` | `<SOURCE>` | `--builtin`; `--remote`; `--skill <SKILL>`; `--copy` | pretty JSON control-plane response | `experimental` | Adds a skill to the local Skill Library. Local paths resolved relative to cwd when directories. |
+| `holon skills add` | `<SOURCE>` | `--remote`; `--skill <SKILL>`; `--copy` | pretty JSON control-plane response | `experimental` | Adds a skill to the local Skill Library. Local paths resolved relative to cwd when directories. |
 | `holon skills remove` | `<NAME>` | none | pretty JSON control-plane response | `experimental` | Removes a skill from the local Skill Library. |
 | `holon skills check` | `[NAME]` | none | pretty JSON control-plane response | `experimental` | Checks Skill Library consistency against `.skill-lock.json`. |
 | `holon skills reconcile` | `[NAME]` | none | pretty JSON control-plane response | `experimental` | Reconciles library entries with lock file. |
 | `holon skills list` | none | `--agent <AGENT>` | JSON agent skills response | `experimental` | Lists skills enabled/effective for an agent. |
 | `holon skills enable` | `<NAME>` | `--agent <AGENT>`; `--copy` | pretty JSON control-plane response | `experimental` | Enables a locally known skill for an agent. |
 | `holon skills disable` | `<NAME>` | `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Disables a skill for an agent. |
-| `holon skills install` | `<NAME_OR_PATH>` | `--builtin`; `--remote`; `--skill <SKILL>`; `--copy`; `--agent <AGENT>` | pretty JSON control-plane response | `deprecated` | Compatibility alias. Prefer `skills add` for library or `skills enable` for agents. |
+| `holon skills install` | `<NAME_OR_PATH>` | `--remote`; `--skill <SKILL>`; `--copy`; `--agent <AGENT>` | pretty JSON control-plane response | `deprecated` | Compatibility alias. Prefer `skills add` for library or `skills enable` for agents. |
 | `holon skills uninstall` | `<NAME>` | `--agent <AGENT>` | pretty JSON control-plane response | `deprecated` | Compatibility alias. Prefer `skills remove` for library or `skills disable` for agents. |
 
 ### One-shot and solve workflows

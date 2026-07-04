@@ -624,8 +624,6 @@ pub enum SkillsCommands {
     Add {
         source: String,
         #[arg(long)]
-        builtin: bool,
-        #[arg(long)]
         remote: bool,
         #[arg(long)]
         skill: Option<String>,
@@ -659,8 +657,6 @@ pub enum SkillsCommands {
     #[command(about = "Compatibility alias for enabling or importing a skill for an agent")]
     Install {
         name_or_path: String,
-        #[arg(long)]
-        builtin: bool,
         #[arg(long)]
         remote: bool,
         #[arg(long)]

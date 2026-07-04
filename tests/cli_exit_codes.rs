@@ -49,7 +49,14 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
         ),
         (&["skills", "catalog"], "/api/skills/catalog"),
         (
-            &["skills", "add", "ghx", "--builtin"],
+            &[
+                "skills",
+                "add",
+                "holon-run/holon",
+                "--remote",
+                "--skill",
+                "ghx",
+            ],
             "/api/skills/catalog/add",
         ),
         (&["skills", "remove", "ghx"], "/api/skills/catalog/remove"),

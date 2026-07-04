@@ -79,9 +79,6 @@ holon skills add /path/to/skill-dir
 # Add from a remote source
 holon skills add https://github.com/user/repo/tree/main/skills/my-skill --remote
 
-# Add a built-in skill by name
-holon skills add my-skill --builtin
-
 # Copy the skill into the user directory instead of referencing it
 holon skills add /path/to/skill --copy
 ```
@@ -174,7 +171,6 @@ holon skills disable my-skill --agent reviewer
 |--------|------|---------|
 | Local path | (default) | `holon skills add ./skills/my-skill` |
 | Remote URL | `--remote` | `holon skills add https://... --remote` |
-| Built-in | `--builtin` | `holon skills add ghx --builtin` |
 
 ### Command summary
 

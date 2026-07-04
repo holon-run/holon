@@ -568,7 +568,6 @@ fn fail_codex_device_login_job(jobs: &JobRegistry, job_id: &str, summary: &str, 
 
 fn skill_install_summary(kind: &crate::types::SkillInstallKind) -> String {
     match kind {
-        crate::types::SkillInstallKind::Builtin { name } => format!("Install builtin skill {name}"),
         crate::types::SkillInstallKind::Named { name, .. } => format!("Install named skill {name}"),
         crate::types::SkillInstallKind::Local { path, .. } => {
             format!("Install local skill {}", path.display())
