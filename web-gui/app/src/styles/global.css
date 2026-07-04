@@ -3190,6 +3190,16 @@ code {
   color: var(--text);
 }
 
+.skills-success {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--success) 42%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
+  color: var(--muted);
+}
+
 .skills-library-card {
   display: grid;
   gap: 0;
@@ -4002,9 +4012,7 @@ code {
 
 .template-remote-sources-collapse {
   border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-  overflow: hidden;
+  border-radius: 12px;
 }
 
 .template-remote-sources-toggle {

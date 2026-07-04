@@ -16,6 +16,7 @@ interface TemplatesPageProps {
   catalog: AgentTemplateCatalogState;
   loading: boolean;
   syncInProgress: boolean;
+  syncMessage?: string;
   error?: string;
   onRefresh: () => void;
   onSyncSources: () => Promise<boolean>;
@@ -43,6 +44,7 @@ export function TemplatesPage({
   catalog,
   loading,
   syncInProgress,
+ syncMessage,
   error,
   onRefresh,
   onSyncSources,
@@ -166,6 +168,12 @@ export function TemplatesPage({
           <strong>Template operation failed</strong>
           <span>{error}</span>
           <button type="button" className="skills-error-dismiss" aria-label="Dismiss error" onClick={onDismissError}>×</button>
+        </div>
+      ) : null}
+
+      {syncMessage && !syncInProgress ? (
+        <div className="skills-success" role="status">
+          <span>{syncMessage}</span>
         </div>
       ) : null}
 

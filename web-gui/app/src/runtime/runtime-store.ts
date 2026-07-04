@@ -195,6 +195,7 @@ export interface RuntimeStoreState {
   templateCatalogError?: string;
   dismissedTemplateDiagnostics: string[];
   templateSyncInProgress: boolean;
+  templateSyncMessage?: string;
   templateDetailById: Record<string, AgentTemplateDetailState>;
   templateDetailLoadingById: Record<string, boolean>;
   templateDetailErrorById: Record<string, string | undefined>;
@@ -727,6 +728,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   templateCatalogError: undefined,
   dismissedTemplateDiagnostics: [],
   templateSyncInProgress: false,
+  templateSyncMessage: undefined,
   templateDetailById: {},
   templateDetailLoadingById: {},
   templateDetailErrorById: {},
@@ -932,6 +934,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       templateCatalogError: undefined,
       dismissedTemplateDiagnostics: [],
       templateSyncInProgress: false,
+      templateSyncMessage: undefined,
       templateDetailById: {},
       templateDetailLoadingById: {},
       templateDetailErrorById: {},
@@ -1195,7 +1198,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   syncTemplateRemoteSources: async () => {
-    set({ templateCatalogLoading: true, templateCatalogError: undefined });
+    set({ templateCatalogLoading: true, templateCatalogError: undefined, templateSyncMessage: undefined });
     try {
       set({ templateSyncInProgress: true });
       const jobId = await runtimeClient.syncTemplateRemoteSources();
@@ -1203,7 +1206,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       const templateCatalog = filterDismissedDiagnostics(
         await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
       );
-      set({ templateCatalog, templateCatalogLoading: false, templateSyncInProgress: false, templateCatalogError: templateCatalog.error });
+      const sourceCount = templateCatalog.sources.length;
+      const templateCount = templateCatalog.catalog.length;
+      set({ templateCatalog, templateCatalogLoading: false, templateSyncInProgress: false, templateCatalogError: templateCatalog.error, templateSyncMessage: `Synced ${sourceCount} source(s), ${templateCount} template(s).` });
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1212,6 +1217,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         templateCatalogLoading: false,
         templateSyncInProgress: false,
         templateCatalogError: message,
+        templateSyncMessage: undefined,
       }));
       return false;
     }

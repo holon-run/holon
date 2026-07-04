@@ -98,6 +98,7 @@ export function App() {
   const templateCatalogLoading = useRuntimeStore((state) => state.templateCatalogLoading);
   const templateCatalogError = useRuntimeStore((state) => state.templateCatalogError);
  const templateSyncInProgress = useRuntimeStore((state) => state.templateSyncInProgress);
+ const templateSyncMessage = useRuntimeStore((state) => state.templateSyncMessage);
   const templateDetail = useRuntimeStore((state) =>
     selectedTemplateId ? state.templateDetailById[selectedTemplateId] : undefined,
   );
@@ -617,6 +618,7 @@ export function App() {
             catalog={templateCatalog}
             loading={templateCatalogLoading}
            syncInProgress={templateSyncInProgress}
+           syncMessage={templateSyncMessage}
             error={templateCatalogError}
             onRefresh={refreshTemplateCatalog}
             onSyncSources={syncTemplateRemoteSources}
