@@ -4008,6 +4008,38 @@ code {
   gap: 6px;
 }
 
+/* --- Template detail meta bar --- */
+
+.template-detail-meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.template-detail-meta-id {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.template-detail-meta-path {
+  font-family: var(--mono);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 380px;
+}
+
+.template-detail-meta-skills {
+  font-weight: 600;
+}
+
 /* --- Template remote sources collapsible --- */
 
 .template-remote-sources-collapse {

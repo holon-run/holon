@@ -197,7 +197,6 @@ export function TemplatesPage({
               Showing {visibleTemplates.length} of {templates.length} templates
             </p>
           </div>
-          <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </CardHeader>
         <CardContent>
           <div className="template-actions-grid">
@@ -273,7 +272,6 @@ export function TemplatesPage({
       <details className="template-remote-sources-collapse" open>
         <summary className="template-remote-sources-toggle">
           Remote sources ({catalog.sources.length})
-          <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </summary>
       <Card className="skills-library-card">
         <CardContent>
@@ -371,9 +369,21 @@ export function TemplateDetailPage({
           <button className="text-button" type="button" onClick={onBack}>
             ← Agent Templates
           </button>
-          <span className="eyebrow">AgentTemplate</span>
+          <span className="eyebrow">{template?.schemaVersion ?? "AgentTemplate"}</span>
           <h1>{template?.name ?? catalogId}</h1>
           <p>{template?.summary || "Read-only template detail from the Holon daemon catalog."}</p>
+          {template ? (
+            <div className="template-detail-meta-bar">
+              <StatusBadge className="state-chip" kind="connection" value={template.source} />
+              <span className="template-detail-meta-id">{template.catalogId}</span>
+              {template.sourceLocation ? (
+                <span className="template-detail-meta-path">{template.sourceLocation}</span>
+              ) : null}
+              {template.skills.length ? (
+                <span className="template-detail-meta-skills">{template.skills.length} skills</span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="skills-actions">
           {template ? (
@@ -401,39 +411,6 @@ export function TemplateDetailPage({
 
       {template ? (
         <>
-          <Card className="skills-library-card">
-            <CardHeader className="skills-library-head">
-              <div>
-                <p>{template.template}</p>
-              </div>
-              <StatusBadge className="state-chip" kind="connection" value={template.source} />
-            </CardHeader>
-            <CardContent>
-              <dl className="skills-detail-meta">
-                <div>
-                  <dt>Catalog id</dt>
-                  <dd>{template.catalogId}</dd>
-                </div>
-                <div>
-                  <dt>Template id</dt>
-                  <dd>{template.templateId}</dd>
-                </div>
-                {template.schemaVersion ? (
-                  <div>
-                    <dt>Schema</dt>
-                    <dd>{template.schemaVersion}</dd>
-                  </div>
-                ) : null}
-                {template.sourceLocation ? (
-                  <div>
-                    <dt>Source</dt>
-                    <dd>{template.sourceLocation}</dd>
-                  </div>
-                ) : null}
-              </dl>
-            </CardContent>
-          </Card>
-
           <Card className="skills-library-card">
             <CardHeader className="skills-library-head">
               <div>
