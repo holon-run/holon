@@ -18,6 +18,7 @@ use super::{
     state::{tui_state_path, TuiClientState},
     view_model::{HeaderViewModel, StatusbarViewModel},
 };
+use crate::tui::keymap::DEFAULT_BINDING_HINTS;
 use crate::{
     client::{
         AgentStateSnapshot, AgentStreamEvent, LocalClient, StateSessionSnapshot,
@@ -2144,6 +2145,98 @@ async fn vim_mode_preserves_empty_composer_history_shortcuts() {
         .unwrap();
     assert!(app.composer.is_empty());
     assert_eq!(app.history_index, None);
+}
+
+#[tokio::test]
+async fn ctrl_o_prefix_opens_overlay_without_touching_composer() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("draft");
+    app.selected_agent = 2;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.overlay_shortcut_pending);
+    assert_eq!(app.composer.as_str(), "draft");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.overlay, OverlayState::Agents { selected: 2 });
+    assert!(!app.overlay_shortcut_pending);
+    assert_eq!(app.composer.as_str(), "draft");
+}
+
+#[tokio::test]
+async fn ctrl_o_prefix_can_cancel_or_reject_unknown_shortcut() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.overlay_shortcut_pending);
+    assert_eq!(app.overlay, OverlayState::None);
+    assert_eq!(app.status_line, "Overlay shortcut cancelled");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.overlay_shortcut_pending);
+    assert_eq!(app.overlay, OverlayState::None);
+    assert!(app.status_line.contains("Unknown overlay shortcut"));
+}
+
+#[tokio::test]
+async fn ctrl_o_k_shows_selected_agent_skills_not_global_catalog() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.apply_agent_list(vec![sample_agent_summary("default")]);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.overlay, OverlayState::None);
+    assert_ne!(
+        app.status_line, "Opened Skill Catalog: 0 skills",
+        "Ctrl+O K must not open the global skill catalog"
+    );
+    assert!(
+        app.status_line.contains("Discoverable skills")
+            || app.status_line.contains("Failed to list skills")
+    );
+}
+
+#[test]
+fn default_keymap_documents_overlay_shortcuts_and_mac_paging() {
+    let default_keymap = DEFAULT_BINDING_HINTS
+        .iter()
+        .map(|hint| format!("{} {}", hint.action, hint.keys))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(default_keymap.contains("Ctrl+O"));
+    assert!(default_keymap.contains("Mac: Fn+Up/Fn+Down"));
 }
 
 #[tokio::test]

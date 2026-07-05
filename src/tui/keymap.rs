@@ -77,6 +77,8 @@ impl KeyContext {
 pub(super) enum TuiKeyAction {
     Quit,
     OpenHelp,
+    BeginOverlayShortcut,
+    OpenOverlay(OverlayShortcutTarget),
     HistoryPrevious,
     HistoryNext,
     ChatScroll(ScrollAction),
@@ -92,6 +94,18 @@ pub(super) enum TuiKeyAction {
     ModelFilterBackspace,
     InsertChar(char),
     Ignore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverlayShortcutTarget {
+    Help,
+    Agents,
+    Tasks,
+    AgentState,
+    Transcript,
+    Events,
+    ModelPicker,
+    SelectedAgentSkills,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +164,12 @@ pub(super) const DEFAULT_BINDING_HINTS: &[DefaultBindingHint] = &[
     DefaultBindingHint {
         context: KeyContext::Main,
         action: "help when composer is empty",
-        keys: "?",
+        keys: "? or Ctrl+O H",
+    },
+    DefaultBindingHint {
+        context: KeyContext::Main,
+        action: "open overlays",
+        keys: "Ctrl+O then A/T/S/C/E/M/K",
     },
     DefaultBindingHint {
         context: KeyContext::Main,
@@ -165,7 +184,7 @@ pub(super) const DEFAULT_BINDING_HINTS: &[DefaultBindingHint] = &[
     DefaultBindingHint {
         context: KeyContext::Main,
         action: "scroll chat",
-        keys: "PgUp/PgDn",
+        keys: "PgUp/PgDn (Mac: Fn+Up/Fn+Down)",
     },
     DefaultBindingHint {
         context: KeyContext::Composer,
@@ -200,7 +219,7 @@ pub(super) const DEFAULT_BINDING_HINTS: &[DefaultBindingHint] = &[
     DefaultBindingHint {
         context: KeyContext::ScrollOverlay,
         action: "scroll/close",
-        keys: "Up/Down PgUp/PgDn Home/End Esc",
+        keys: "Up/Down PgUp/PgDn Home/End (Mac: Fn+arrows) Esc",
     },
 ];
 
@@ -226,13 +245,15 @@ pub(super) fn status_hint(context: KeyContext, slash_menu_visible: bool) -> &'st
     }
     match context {
         KeyContext::Global | KeyContext::Main | KeyContext::Composer => {
-            "/help commands  /state agent state  /transcript  PgUp/PgDn scroll  Ctrl+A/E edit  Ctrl+C quit"
+            "Ctrl+O overlays  /help commands  PgUp/PgDn scroll (Mac Fn+Up/Down)  Ctrl+A/E edit  Ctrl+C quit"
         }
         KeyContext::SlashMenu => "Slash: Up/Down select  Tab complete  Enter run  Esc close",
         KeyContext::AgentsOverlay => "Agents: Up/Down, Enter select, Esc",
-        KeyContext::EventsOverlay => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
-        KeyContext::ScrollOverlay => "Up/Down, PgUp/PgDn, Home/End, Esc",
-        KeyContext::TasksOverlay => "Tasks: Up/Down, PgUp/PgDn, Home/End, f/l/x/i actions, Esc",
+        KeyContext::EventsOverlay => "Events: Up/Down, PgUp/PgDn, Home/End (Mac Fn+arrows), Esc",
+        KeyContext::ScrollOverlay => "Up/Down, PgUp/PgDn, Home/End (Mac Fn+arrows), Esc",
+        KeyContext::TasksOverlay => {
+            "Tasks: Up/Down, PgUp/PgDn, Home/End (Mac Fn+arrows), f/l/x/i actions, Esc"
+        }
         KeyContext::TemplatesOverlay => {
             "Templates: Up/Down, Enter select, g URL, i install, r remove, s sync, n no template, Esc"
         }
@@ -253,6 +274,9 @@ fn resolve_global_key(key: KeyEvent) -> TuiKeyAction {
 }
 
 fn resolve_main_key(key: KeyEvent) -> TuiKeyAction {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+        return TuiKeyAction::BeginOverlayShortcut;
+    }
     match key.code {
         KeyCode::Char('?') => TuiKeyAction::OpenHelp,
         KeyCode::Up => TuiKeyAction::HistoryPrevious,
@@ -260,6 +284,40 @@ fn resolve_main_key(key: KeyEvent) -> TuiKeyAction {
         KeyCode::PageUp => TuiKeyAction::ChatScroll(ScrollAction::PageUp),
         KeyCode::PageDown => TuiKeyAction::ChatScroll(ScrollAction::PageDown),
         _ => resolve_composer_key(key),
+    }
+}
+
+pub(super) fn resolve_overlay_shortcut_key(key: KeyEvent) -> TuiKeyAction {
+    if !key.modifiers.is_empty() {
+        return TuiKeyAction::Ignore;
+    }
+    match key.code {
+        KeyCode::Esc => TuiKeyAction::OverlayClose,
+        KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::Help)
+        }
+        KeyCode::Char('a') | KeyCode::Char('A') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::Agents)
+        }
+        KeyCode::Char('t') | KeyCode::Char('T') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::Tasks)
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::AgentState)
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::Transcript)
+        }
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::Events)
+        }
+        KeyCode::Char('m') | KeyCode::Char('M') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::ModelPicker)
+        }
+        KeyCode::Char('k') | KeyCode::Char('K') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::SelectedAgentSkills)
+        }
+        _ => TuiKeyAction::Ignore,
     }
 }
 
@@ -453,6 +511,30 @@ mod tests {
         assert_eq!(
             resolve_key(KeyContext::SlashMenu, ctrl('n')),
             TuiKeyAction::SlashMenu(SlashMenuAction::Next)
+        );
+    }
+
+    #[test]
+    fn overlay_shortcut_keys_resolve_to_explicit_targets() {
+        assert_eq!(
+            resolve_key(KeyContext::Main, ctrl('o')),
+            TuiKeyAction::BeginOverlayShortcut
+        );
+        assert_eq!(
+            resolve_overlay_shortcut_key(key(KeyCode::Char('a'))),
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::Agents)
+        );
+        assert_eq!(
+            resolve_overlay_shortcut_key(key(KeyCode::Char('K'))),
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::SelectedAgentSkills)
+        );
+        assert_eq!(
+            resolve_overlay_shortcut_key(key(KeyCode::Esc)),
+            TuiKeyAction::OverlayClose
+        );
+        assert_eq!(
+            resolve_overlay_shortcut_key(ctrl('a')),
+            TuiKeyAction::Ignore
         );
     }
 

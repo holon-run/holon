@@ -1,7 +1,8 @@
 use super::*;
 use crate::tui::app::ComposerEditMode;
 use crate::tui::keymap::{
-    resolve_key, ComposerAction, KeyContext, ScrollAction, SlashMenuAction, TuiKeyAction,
+    resolve_key, resolve_overlay_shortcut_key, ComposerAction, KeyContext, OverlayShortcutTarget,
+    ScrollAction, SlashMenuAction, TuiKeyAction,
 };
 use crate::tui::overlay::{TemplateCatalogMode, TemplateUrlInputMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -870,31 +871,20 @@ impl TuiApp {
     ) -> Result<()> {
         match command {
             SlashCommand::Help => {
-                self.overlay = OverlayState::HelpView { scroll: 0 };
-                self.status_line = "Opened slash command help".into();
+                self.open_overlay_shortcut(OverlayShortcutTarget::Help)
+                    .await?;
             }
             SlashCommand::Agents => {
-                self.overlay = OverlayState::Agents {
-                    selected: self.selected_agent,
-                };
-                self.status_line = "Opened agents overlay".into();
+                self.open_overlay_shortcut(OverlayShortcutTarget::Agents)
+                    .await?;
             }
             SlashCommand::Events => {
-                self.overlay = OverlayState::Events {
-                    selected_event_id: self.event_id_for_reverse_index(0),
-                    detail_scroll: 0,
-                };
-                self.status_line = "Opened raw events overlay".into();
+                self.open_overlay_shortcut(OverlayShortcutTarget::Events)
+                    .await?;
             }
             SlashCommand::Model => {
-                self.onboarding_model_picker = false;
-                self.begin_load_models();
-                self.overlay = OverlayState::ModelPicker {
-                    provider: None,
-                    filter: String::new(),
-                    selected: 0,
-                };
-                self.status_line = "Opened model picker".into();
+                self.open_overlay_shortcut(OverlayShortcutTarget::ModelPicker)
+                    .await?;
             }
             SlashCommand::Onboard => {
                 self.onboarding_model_picker = true;
@@ -907,19 +897,16 @@ impl TuiApp {
                 self.status_line = "Onboarding: choose a runtime default model. Credentials/login remain in `holon onboard`; supported changes are applied through daemon config.".into();
             }
             SlashCommand::Tasks => {
-                self.overlay = OverlayState::Tasks {
-                    selected: 0,
-                    detail_scroll: 0,
-                };
-                self.status_line = "Opened tasks overlay".into();
+                self.open_overlay_shortcut(OverlayShortcutTarget::Tasks)
+                    .await?;
             }
             SlashCommand::Transcript => {
-                self.overlay = OverlayState::Transcript { scroll: 0 };
-                self.status_line = "Opened conversation events overlay".into();
+                self.open_overlay_shortcut(OverlayShortcutTarget::Transcript)
+                    .await?;
             }
             SlashCommand::State => {
-                self.overlay = OverlayState::AgentState { scroll: 0 };
-                self.status_line = "Opened agent state overlay".into();
+                self.open_overlay_shortcut(OverlayShortcutTarget::AgentState)
+                    .await?;
             }
             SlashCommand::Refresh => {
                 self.overlay = OverlayState::None;
@@ -1048,34 +1035,7 @@ impl TuiApp {
                 }
             },
             SlashCommand::Skills => {
-                let agent_id = match self.selected_agent_id() {
-                    Some(id) => id.to_string(),
-                    None => {
-                        self.status_line = "No agent selected".into();
-                        return Ok(());
-                    }
-                };
-                let response = self.client.list_skills(&agent_id).await?;
-                if let Some(discoverable) = json_array_names(&response, "skills") {
-                    let active = self
-                        .selected_agent_summary()
-                        .map(|agent| {
-                            agent
-                                .skills
-                                .active_skills
-                                .iter()
-                                .map(|skill| skill.name.clone())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    self.status_line = format!(
-                        "{}; {}",
-                        summarize_names("Discoverable skills", &discoverable),
-                        summarize_names("active", &active)
-                    );
-                } else {
-                    self.status_line = "Failed to list skills".into();
-                }
+                self.show_selected_agent_skills().await?;
             }
             SlashCommand::SkillCatalog => {
                 let response = self.client.skills_catalog().await?;
@@ -1185,6 +1145,22 @@ impl TuiApp {
     pub(super) async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         if resolve_key(KeyContext::Global, key) == TuiKeyAction::Quit {
             self.should_quit = true;
+            return Ok(());
+        }
+
+        if self.overlay_shortcut_pending {
+            self.overlay_shortcut_pending = false;
+            match resolve_overlay_shortcut_key(key) {
+                TuiKeyAction::OpenOverlay(target) => {
+                    self.open_overlay_shortcut(target).await?;
+                }
+                TuiKeyAction::OverlayClose => {
+                    self.status_line = "Overlay shortcut cancelled".into();
+                }
+                _ => {
+                    self.status_line = "Unknown overlay shortcut; use Ctrl+O H for help".into();
+                }
+            }
             return Ok(());
         }
 
@@ -1642,8 +1618,14 @@ impl TuiApp {
         }
 
         match resolve_key(KeyContext::Main, key) {
+            TuiKeyAction::BeginOverlayShortcut => {
+                self.overlay_shortcut_pending = true;
+                self.status_line =
+                    "Overlay shortcut: H help, A agents, T tasks, S state, C conversation, E events, M model, K skills".into();
+            }
             TuiKeyAction::OpenHelp if self.composer.is_empty() => {
-                self.overlay = OverlayState::HelpView { scroll: 0 };
+                self.open_overlay_shortcut(OverlayShortcutTarget::Help)
+                    .await?;
             }
             TuiKeyAction::OpenHelp => {
                 let before = self.composer.as_str().to_string();
@@ -1710,6 +1692,13 @@ impl TuiApp {
 
     fn handle_main_shortcut_key(&mut self, key: KeyEvent) -> bool {
         match resolve_key(KeyContext::Main, key) {
+            TuiKeyAction::BeginOverlayShortcut => {
+                self.vim_pending_command = None;
+                self.overlay_shortcut_pending = true;
+                self.status_line =
+                    "Overlay shortcut: H help, A agents, T tasks, S state, C conversation, E events, M model, K skills".into();
+                true
+            }
             TuiKeyAction::OpenHelp if self.composer.is_empty() => {
                 self.vim_pending_command = None;
                 self.overlay = OverlayState::HelpView { scroll: 0 };
@@ -2022,6 +2011,97 @@ impl TuiApp {
         } else {
             self.slash_menu_selected = self.slash_menu_selected.min(len - 1);
         }
+    }
+
+    async fn open_overlay_shortcut(&mut self, target: OverlayShortcutTarget) -> Result<()> {
+        self.vim_pending_command = None;
+        match target {
+            OverlayShortcutTarget::Help => {
+                self.overlay = OverlayState::HelpView { scroll: 0 };
+                self.status_line = "Opened help overlay".into();
+            }
+            OverlayShortcutTarget::Agents => {
+                self.overlay = OverlayState::Agents {
+                    selected: self.selected_agent,
+                };
+                self.status_line = "Opened agents overlay".into();
+            }
+            OverlayShortcutTarget::Tasks => {
+                self.overlay = OverlayState::Tasks {
+                    selected: 0,
+                    detail_scroll: 0,
+                };
+                self.status_line = "Opened tasks overlay".into();
+            }
+            OverlayShortcutTarget::AgentState => {
+                self.overlay = OverlayState::AgentState { scroll: 0 };
+                self.status_line = "Opened agent state overlay".into();
+            }
+            OverlayShortcutTarget::Transcript => {
+                self.overlay = OverlayState::Transcript { scroll: 0 };
+                self.status_line = "Opened conversation events overlay".into();
+            }
+            OverlayShortcutTarget::Events => {
+                self.overlay = OverlayState::Events {
+                    selected_event_id: self.event_id_for_reverse_index(0),
+                    detail_scroll: 0,
+                };
+                self.status_line = "Opened raw events overlay".into();
+            }
+            OverlayShortcutTarget::ModelPicker => {
+                self.onboarding_model_picker = false;
+                self.begin_load_models();
+                self.overlay = OverlayState::ModelPicker {
+                    provider: None,
+                    filter: String::new(),
+                    selected: 0,
+                };
+                self.status_line = "Opened model picker".into();
+            }
+            OverlayShortcutTarget::SelectedAgentSkills => {
+                self.show_selected_agent_skills().await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn show_selected_agent_skills(&mut self) -> Result<()> {
+        let agent_id = match self.selected_agent_id() {
+            Some(id) => id.to_string(),
+            None => {
+                self.status_line = "No agent selected".into();
+                return Ok(());
+            }
+        };
+        let response = match self.client.list_skills(&agent_id).await {
+            Ok(response) => response,
+            Err(_) => {
+                self.status_line = "Failed to list skills".into();
+                return Ok(());
+            }
+        };
+        if let Some(discoverable) = json_array_names(&response, "skills") {
+            let active = self
+                .selected_agent_summary()
+                .map(|agent| {
+                    agent
+                        .skills
+                        .active_skills
+                        .iter()
+                        .map(|skill| skill.name.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            self.overlay = OverlayState::None;
+            self.status_line = format!(
+                "{}; {}",
+                summarize_names("Discoverable skills", &discoverable),
+                summarize_names("active", &active)
+            );
+        } else {
+            self.status_line = "Failed to list skills".into();
+        }
+        Ok(())
     }
 
     async fn open_template_catalog(
