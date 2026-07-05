@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import i18next from "i18next";
+import en from "../../i18n/resources/en";
 
 import { formatToolExecutionDetail } from "./ActivityInspectorPanel";
+
+beforeAll(() => {
+  if (!i18next.isInitialized) {
+    i18next.init({ lng: "en", resources: { en: { translation: en } } });
+  }
+});
 
 describe("formatToolExecutionDetail", () => {
   it("extracts readable command output from tool execution records", () => {

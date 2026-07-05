@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -55,6 +57,7 @@ export function SearchPage({
   onLoadResultContent,
   onOpenAgent,
 }: SearchPageProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState(() => search?.query ?? readInitialQuery());
   const [agentId, setAgentId] = useState("all");
   const [limit, setLimit] = useState(String(search?.limit || DEFAULT_LIMIT));
@@ -80,25 +83,25 @@ export function SearchPage({
     <section className="page search-page" aria-label="Search">
       <div className="page-inner search-inner">
         <section className="search-hero">
-          <span className="eyebrow">Runtime search</span>
-          <h1>Search</h1>
-          <p>Find matching runtime messages across agents, turns, tasks, and WorkItems.</p>
+          <span className="eyebrow">{t("searchPage.runtimeSearch")}</span>
+          <h1>{t("searchPage.title")}</h1>
+          <p>{t("searchPage.description")}</p>
         </section>
 
         <form className="search-form" onSubmit={submit}>
           <label className="search-query">
-            <span>Query</span>
+            <span>{t("searchPage.query")}</span>
             <input
               autoFocus
-              placeholder="Search messages, tool output previews, work item context…"
+              placeholder={t("searchPage.queryPlaceholder")}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
           <label>
-            <span>Agent</span>
+            <span>{t("searchPage.agent")}</span>
             <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-              <option value="all">All agents</option>
+              <option value="all">{t("searchPage.allAgents")}</option>
               {agentOptions.map((agent) => (
                 <option key={agent.id} value={agent.id}>
                   {agent.id}
@@ -107,11 +110,11 @@ export function SearchPage({
             </select>
           </label>
           <label>
-            <span>Limit</span>
+            <span>{t("searchPage.limit")}</span>
             <input value={limit} inputMode="numeric" onChange={(event) => setLimit(event.target.value)} />
           </label>
           <Button type="submit" variant="accent" disabled={!trimmedQuery || loading || !canSearchSelection(agentId, agents)}>
-            {loading ? "Searching…" : "Search"}
+            {loading ? t("searchPage.searching") : t("searchPage.search")}
           </Button>
         </form>
 
@@ -121,21 +124,21 @@ export function SearchPage({
           {!search && !loading && !error ? (
             <EmptyState
               icon="⌕"
-              title="Search runtime messages"
-              description="Enter a query to search indexed operator inputs, assistant replies, tool receipts, and runtime evidence previews."
+              title={t("searchPage.searchRuntimeMessages")}
+              description={t("searchPage.searchDescription")}
             />
           ) : null}
           {search && !loading && !hasResults ? (
             <EmptyState
               icon="∅"
-              title="No matches"
+              title={t("searchPage.noMatches")}
               description={`No indexed messages matched “${search.query}”. Try a different keyword or search all agents.`}
             />
           ) : null}
           {hasResults ? (
             <>
               <div className="search-results-head">
-                <strong>{resultCount} results</strong>
+                <strong>{t("searchPage.resultsCount", { count: resultCount })}</strong>
                 <span>
                   for “{search?.query}” · limit {search?.limit}
                 </span>
@@ -176,6 +179,7 @@ function SearchResultCard({
   onLoadResultContent: (sourceRef: string) => Promise<void>;
   onOpenAgent: (agentId: string, eventSeq?: number) => void;
 }) {
+  const { t } = useTranslation();
   const preview = formatSearchPreview(result.preview);
   const sourceRef = result.locator.sourceRef ?? result.locator.evidenceId;
   const locator = [
@@ -224,40 +228,40 @@ function SearchResultCard({
           }
         }}
       >
-        <summary>Full source</summary>
+        <summary>{t("searchPage.fullSource")}</summary>
         {sourceRef ? (
           <section className="search-result-full-source" aria-live="polite">
-            {contentLoading ? <p>Loading full source…</p> : null}
+            {contentLoading ? <p>{t("searchPage.loadingSource")}</p> : null}
             {contentError ? <p className="search-result-full-source-error">{contentError}</p> : null}
             {content ? (
               <>
                 <div className="search-result-full-source-head">
                   <strong>{content.title}</strong>
-                  {content.truncated ? <span>truncated</span> : null}
+                  {content.truncated ? <span>{t("searchPage.truncated")}</span> : null}
                 </div>
-                <pre>{content.content || "No content available."}</pre>
+                <pre>{content.content || t("searchPage.noContent")}</pre>
               </>
             ) : null}
           </section>
         ) : (
-          <p className="search-result-full-source-empty">No source_ref available for this result.</p>
+          <p className="search-result-full-source-empty">{t("searchPage.noSourceRef")}</p>
         )}
         <dl>
           <div>
-            <dt>Result type</dt>
+            <dt>{t("searchPage.resultType")}</dt>
             <dd>{result.resultType}</dd>
           </div>
           <div>
-            <dt>Evidence</dt>
-            <dd>{result.locator.evidenceId ? shortId(result.locator.evidenceId) : "not provided"}</dd>
+            <dt>{t("searchPage.evidence")}</dt>
+            <dd>{result.locator.evidenceId ? shortId(result.locator.evidenceId) : t("searchPage.notProvided")}</dd>
           </div>
           <div>
-            <dt>Locator</dt>
-            <dd>{locator.length > 0 ? locator.join(" · ") : "no locator ids"}</dd>
+            <dt>{t("searchPage.locator")}</dt>
+            <dd>{locator.length > 0 ? locator.join(" · ") : t("searchPage.noLocatorIds")}</dd>
           </div>
           {preview.isFormatted ? (
             <div>
-              <dt>Raw preview</dt>
+              <dt>{t("searchPage.rawPreview")}</dt>
               <dd>
                 <pre>{result.preview}</pre>
               </dd>
@@ -278,10 +282,10 @@ interface FormattedSearchPreview {
 
 export function formatSearchPreview(value: string): FormattedSearchPreview {
   const text = value.trim();
-  if (!text) return { summary: "No preview available.", meta: [], isFormatted: false };
+  if (!text) return { summary: i18next.t("searchPage.noPreview"), meta: [], isFormatted: false };
 
   const messageBody = extractMessageBodyPreview(text);
-  if (messageBody) return { title: "Message body", summary: messageBody, meta: [], isFormatted: true };
+  if (messageBody) return { title: i18next.t("searchPage.messageBody"), summary: messageBody, meta: [], isFormatted: true };
 
   const parsed = parseJsonPreview(text);
   if (!parsed) return { summary: text, meta: [], isFormatted: false };
@@ -386,7 +390,7 @@ function summarizeJsonValue(value: unknown): string {
   const record = asRecord(value);
   if (!record) return String(value);
   const keys = Object.keys(record).slice(0, 6);
-  return keys.length ? `Structured runtime record with ${keys.join(", ")}.` : "Structured runtime record.";
+  return keys.length ? i18next.t("searchPage.structuredRecordWithKeys", { keys: keys.join(", ") }) : i18next.t("searchPage.structuredRecord");
 }
 
 function firstStringField(record: Record<string, unknown>, keys: string[]): string | undefined {

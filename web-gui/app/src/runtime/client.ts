@@ -2103,10 +2103,10 @@ function buildDisconnectedBootstrap(
 
 function buildMetrics(agentCount: number, attentionCount: number, activeTaskCount: number, currentWorkCount: number): DashboardMetric[] {
   return [
-    { label: "Agents", value: String(agentCount) },
-    { label: "Needs attention", value: String(attentionCount), tone: attentionCount > 0 ? "attention" : "muted" },
-    { label: "Active tasks", value: String(activeTaskCount), tone: activeTaskCount > 0 ? "attention" : "muted" },
-    { label: "Current work", value: String(currentWorkCount) },
+    { label: "dashboard.agents", value: String(agentCount) },
+    { label: "dashboard.needsAttention", value: String(attentionCount), tone: attentionCount > 0 ? "attention" : "muted" },
+    { label: "dashboard.activeTasks", value: String(activeTaskCount), tone: activeTaskCount > 0 ? "attention" : "muted" },
+    { label: "dashboard.currentWork", value: String(currentWorkCount) },
   ];
 }
 

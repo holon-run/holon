@@ -1,5 +1,7 @@
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
+import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 import type {
   AgentTimelineActivity,
   AgentTimelineItemDetail,
@@ -18,10 +20,10 @@ function HydratedActivityDetails({ detailState }: { detailState?: InspectorActiv
     return (
       <section className="context-card inspector-card inspector-detail data">
         <div className="context-head">
-          <span className="eyebrow">Full detail</span>
-          <strong>Loading…</strong>
+          <span className="eyebrow">{i18next.t("inspector.fullDetail")}</span>
+          <strong>{i18next.t("inspector.loading")}</strong>
         </div>
-        <pre>Fetching full tool/task detail from the runtime API.</pre>
+        <pre>{i18next.t("inspector.loadingDetail")}</pre>
       </section>
     );
   }
@@ -29,8 +31,8 @@ function HydratedActivityDetails({ detailState }: { detailState?: InspectorActiv
     return (
       <section className="context-card inspector-card inspector-detail data">
         <div className="context-head">
-          <span className="eyebrow">Full detail</span>
-          <strong>Unavailable</strong>
+          <span className="eyebrow">{i18next.t("inspector.fullDetail")}</span>
+          <strong>{i18next.t("inspector.unavailable")}</strong>
         </div>
         <pre>{detailState.error}</pre>
       </section>
@@ -52,14 +54,14 @@ function ToolExecutionDetail({ record }: { record: RuntimeToolExecutionRecord })
     <>
       <section className={`context-card inspector-card inspector-detail ${detail.tone}`}>
         <div className="context-head">
-          <span className="eyebrow">Tool execution</span>
+          <span className="eyebrow">{i18next.t("inspector.toolExecution")}</span>
           <strong>{compactMeta([record.tool_name, record.status])}</strong>
         </div>
         <pre>{detail.text}</pre>
       </section>
       {rawText ? (
         <details className="context-card inspector-card inspector-raw-detail">
-          <summary>Raw tool execution JSON</summary>
+          <summary>{i18next.t("inspector.rawJson")}</summary>
           <pre>{rawText}</pre>
         </details>
       ) : null}
@@ -67,21 +69,24 @@ function ToolExecutionDetail({ record }: { record: RuntimeToolExecutionRecord })
   );
 }
 
-export function formatToolExecutionDetail(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+export function formatToolExecutionDetail(record: RuntimeToolExecutionRecord): {
+  text: string;
+  tone: "output" | "data";
+} {
   const knownToolDetail = formatKnownToolExecutionDetail(record);
   if (knownToolDetail) return knownToolDetail;
 
   const output = unwrapToolOutput(record.output ?? record.result);
   const batchItemSections = formatBatchToolOutput(record.input, output);
   const lines = [
-    labelledText("Summary", record.summary),
-    batchItemSections.length ? "" : labelledText("Command", commandText(record.input)),
-    labelledText("Stdout", nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
-    labelledText("Stderr", nestedText(output, ["stderr", "stderr_preview"])),
-    labelledText("Initial output", nestedText(output, ["initial_output_preview"])),
-    labelledText("Result", nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
-    labelledText("Error", record.error ?? nestedValue(output, ["error"])),
-    labelledText("Exit", nestedValue(output, ["exit_status", "status", "disposition"])),
+    labelledText(i18next.t("inspector.summary"), record.summary),
+    batchItemSections.length ? "" : labelledText(i18next.t("inspector.command"), commandText(record.input)),
+    labelledText(i18next.t("inspector.stdout"), nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
+    labelledText(i18next.t("inspector.stderr"), nestedText(output, ["stderr", "stderr_preview"])),
+    labelledText(i18next.t("inspector.initialOutput"), nestedText(output, ["initial_output_preview"])),
+    labelledText(i18next.t("inspector.result"), nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
+    labelledText(i18next.t("inspector.error"), record.error ?? nestedValue(output, ["error"])),
+    labelledText(i18next.t("inspector.exit"), nestedValue(output, ["exit_status", "status", "disposition"])),
     ...batchItemSections,
   ].filter(Boolean);
 
@@ -137,12 +142,12 @@ function formatApplyPatchToolExecution(record: RuntimeToolExecutionRecord): { te
   const patchText = patchInputText(record.input) || textField(record.patch) || textField(result?.patch);
   const diffPreview = textField(result?.diff_preview) || changedFiles.map((file) => textField(file.diff_preview)).filter(Boolean).join("\n\n");
   const lines = [
-    labelledText("Summary", record.summary || result?.summary_text),
-    labelledText("Changed files", fileSummaries.length ? fileSummaries.join("\n") : changedPaths.join("\n")),
-    labelledText("Diagnostics", diagnostics.join("\n")),
-    labelledText(patchText ? "Patch" : "Patch preview", patchText || diffPreview),
-    labelledText("Result", result?.summary_text),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.summary"), record.summary || result?.summary_text),
+    labelledText(i18next.t("inspector.changedFiles"), fileSummaries.length ? fileSummaries.join("\n") : changedPaths.join("\n")),
+    labelledText(i18next.t("inspector.diagnostics"), diagnostics.join("\n")),
+    labelledText(patchText ? i18next.t("inspector.patch") : i18next.t("inspector.patchPreview"), patchText || diffPreview),
+    labelledText(i18next.t("inspector.result"), result?.summary_text),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
 
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
@@ -151,13 +156,13 @@ function formatApplyPatchToolExecution(record: RuntimeToolExecutionRecord): { te
 function formatExecCommandToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
   const output = unwrapToolOutput(record.output ?? record.result);
   const lines = [
-    labelledText("Command", commandText(record.input) || textField(record.cmd_preview)),
-    labelledText("Stdout", nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
-    labelledText("Stderr", nestedText(output, ["stderr", "stderr_preview"])),
-    labelledText("Initial output", nestedText(output, ["initial_output_preview"])),
-    labelledText("Result", nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"]) || record.summary),
-    labelledText("Error", record.error ?? nestedValue(output, ["error"])),
-    labelledText("Exit", nestedValue(output, ["exit_status", "status", "disposition"])),
+    labelledText(i18next.t("inspector.command"), commandText(record.input) || textField(record.cmd_preview)),
+    labelledText(i18next.t("inspector.stdout"), nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
+    labelledText(i18next.t("inspector.stderr"), nestedText(output, ["stderr", "stderr_preview"])),
+    labelledText(i18next.t("inspector.initialOutput"), nestedText(output, ["initial_output_preview"])),
+    labelledText(i18next.t("inspector.result"), nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"]) || record.summary),
+    labelledText(i18next.t("inspector.error"), record.error ?? nestedValue(output, ["error"])),
+    labelledText(i18next.t("inspector.exit"), nestedValue(output, ["exit_status", "status", "disposition"])),
   ].filter(Boolean);
 
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
@@ -167,9 +172,9 @@ function formatExecCommandBatchToolExecution(record: RuntimeToolExecutionRecord)
   const output = unwrapToolOutput(record.output ?? record.result);
   const batchItemSections = formatBatchToolOutput(record.input, output);
   const lines = [
-    labelledText("Summary", record.summary),
-    labelledText("Result", nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
-    labelledText("Error", record.error ?? nestedValue(output, ["error"])),
+    labelledText(i18next.t("inspector.summary"), record.summary),
+    labelledText(i18next.t("inspector.result"), nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
+    labelledText(i18next.t("inspector.error"), record.error ?? nestedValue(output, ["error"])),
     ...batchItemSections,
   ].filter(Boolean);
 
@@ -184,11 +189,11 @@ function formatListTasksToolExecution(record: RuntimeToolExecutionRecord): { tex
   const total = result?.total_active ?? result?.total ?? tasks.length;
   const returned = result?.returned ?? tasks.length;
   const lines = [
-    labelledText("Summary", record.summary),
-    labelledText("Tasks", taskLines.join("\n")),
-    labelledText("Total active", total),
-    labelledText("Returned", returned),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.summary"), record.summary),
+    labelledText(i18next.t("inspector.tasks"), taskLines.join("\n")),
+    labelledText(i18next.t("inspector.totalActive"), total),
+    labelledText(i18next.t("inspector.returned"), returned),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
 
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
@@ -207,13 +212,13 @@ function formatTaskOutputToolExecution(record: RuntimeToolExecutionRecord): { te
     nestedText(result, ["output_preview", "output", "stdout", "stderr", "combined_output_preview"]);
   const truncated = nestedValue(task, ["output_truncated"]) === true || nestedValue(result, ["output_truncated", "truncated"]) === true;
   const lines = [
-    labelledText("Task ID", taskId),
-    labelledText("Status", status),
-    labelledText("Retrieval", retrievalStatus),
-    labelledText("Exit", exitStatus),
-    labelledText("Summary", nestedValue(task, ["summary"]) ?? nestedValue(result, ["summary", "result_summary"])),
-    outputText ? labelledText(truncated ? "Output (truncated)" : "Output", outputText) : "",
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.taskId"), taskId),
+    labelledText(i18next.t("inspector.status"), status),
+    labelledText(i18next.t("inspector.retrieval"), retrievalStatus),
+    labelledText(i18next.t("inspector.exit"), exitStatus),
+    labelledText(i18next.t("inspector.summary"), nestedValue(task, ["summary"]) ?? nestedValue(result, ["summary", "result_summary"])),
+    outputText ? labelledText(truncated ? i18next.t("inspector.outputTruncated") : i18next.t("inspector.output"), outputText) : "",
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
@@ -223,11 +228,11 @@ function formatTaskStatusToolExecution(record: RuntimeToolExecutionRecord): { te
   const result = asResultRecord(output, "task_status_result") ?? (isRecord(output) ? output : undefined);
   const taskId = nestedValue(result, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
   const lines = [
-    labelledText("Task ID", taskId),
-    labelledText("Status", nestedValue(result, ["status"])),
-    labelledText("Kind", nestedValue(result, ["kind"])),
-    labelledText("Summary", nestedValue(result, ["summary"])),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.taskId"), taskId),
+    labelledText(i18next.t("inspector.status"), nestedValue(result, ["status"])),
+    labelledText(i18next.t("inspector.kind"), nestedValue(result, ["kind"])),
+    labelledText(i18next.t("inspector.summary"), nestedValue(result, ["summary"])),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
@@ -237,10 +242,10 @@ function formatTaskStopToolExecution(record: RuntimeToolExecutionRecord): { text
   const result = asResultRecord(output, "task_stop_result") ?? (isRecord(output) ? output : undefined);
   const taskId = nestedValue(result, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
   const lines = [
-    labelledText("Task ID", taskId),
-    labelledText("Status", nestedValue(result, ["status"])),
-    labelledText("Summary", record.summary),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.taskId"), taskId),
+    labelledText(i18next.t("inspector.status"), nestedValue(result, ["status"])),
+    labelledText(i18next.t("inspector.summary"), record.summary),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
@@ -251,11 +256,11 @@ function formatTaskInputToolExecution(record: RuntimeToolExecutionRecord): { tex
   const taskId = nestedValue(result, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
   const input = nestedValue(record.input, ["input"]) ?? nestedValue(result, ["input"]);
   const lines = [
-    labelledText("Task ID", taskId),
-    labelledText("Input", input),
-    labelledText("Status", nestedValue(result, ["status"])),
-    labelledText("Summary", record.summary),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.taskId"), taskId),
+    labelledText(i18next.t("inspector.input"), input),
+    labelledText(i18next.t("inspector.status"), nestedValue(result, ["status"])),
+    labelledText(i18next.t("inspector.summary"), record.summary),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
@@ -263,11 +268,11 @@ function formatTaskInputToolExecution(record: RuntimeToolExecutionRecord): { tex
 function formatWaitForToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
   const input = isRecord(record.input) ? record.input : record;
   const lines = [
-    labelledText("Reason", input.reason),
-    labelledText("Wake", input.wake),
-    labelledText("Resource", input.resource),
-    labelledText("Recheck after", input.recheck_after_ms),
-    labelledText("Result", record.summary),
+    labelledText(i18next.t("inspector.reason"), input.reason),
+    labelledText(i18next.t("inspector.wake"), input.wake),
+    labelledText(i18next.t("inspector.resource"), input.resource),
+    labelledText(i18next.t("inspector.recheckAfter"), input.recheck_after_ms),
+    labelledText(i18next.t("inspector.result"), record.summary),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: "data" };
 }
@@ -279,11 +284,11 @@ function formatViewImageToolExecution(record: RuntimeToolExecutionRecord): { tex
   const width = nestedValue(result, ["width"]) ?? nestedValue(dimensions, ["width"]);
   const height = nestedValue(result, ["height"]) ?? nestedValue(dimensions, ["height"]);
   const lines = [
-    labelledText("Path", nestedValue(record.input, ["path", "image_path"]) ?? nestedValue(result, ["path", "image_path"])),
-    labelledText("Dimensions", width != null && height != null ? `${width}×${height}` : ""),
-    labelledText("Observation", nestedText(result, ["visual_observation", "observation", "text_preview"])),
-    labelledText("Result", result?.summary_text || record.summary),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.path"), nestedValue(record.input, ["path", "image_path"]) ?? nestedValue(result, ["path", "image_path"])),
+    labelledText(i18next.t("inspector.dimensions"), width != null && height != null ? `${width}×${height}` : ""),
+    labelledText(i18next.t("inspector.observation"), nestedText(result, ["visual_observation", "observation", "text_preview"])),
+    labelledText(i18next.t("inspector.result"), result?.summary_text || record.summary),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
@@ -302,19 +307,19 @@ function formatWebSearchToolExecution(record: RuntimeToolExecutionRecord): { tex
     const snippet = nestedValue(item, ["snippet"]);
     const publishedAt = nestedValue(item, ["published_at"]);
     return labelledText(
-      `${index + 1}. ${title ?? "Untitled"}`,
+      `${index + 1}. ${title ?? i18next.t("inspector.untitled")}`,
       [url, source ? `(${source})` : undefined, publishedAt ? String(publishedAt) : undefined, typeof snippet === "string" ? truncateInspectorText(snippet, 300) : undefined]
         .filter(Boolean)
         .join("\n"),
     );
   });
   const lines = [
-    labelledText("Query", query),
-    labelledText("Provider", provider),
-    labelledText("Mode", mode),
-    labelledText("Results", `${results.length} found`),
+    labelledText(i18next.t("inspector.query"), query),
+    labelledText(i18next.t("inspector.provider"), provider),
+    labelledText(i18next.t("inspector.mode"), mode),
+    labelledText(i18next.t("inspector.results"), i18next.t("inspector.resultsCount", { count: results.length })),
     ...resultLines,
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: results.length ? "output" : "data" };
 }
@@ -331,14 +336,14 @@ function formatWebFetchToolExecution(record: RuntimeToolExecutionRecord): { text
   const text = nestedText(output, ["text"]);
   const contentPreview = typeof text === "string" && text.trim() ? truncateInspectorText(text, 2000) : undefined;
   const lines = [
-    labelledText("URL", url),
-    finalUrl && finalUrl !== url ? labelledText("Final URL", finalUrl) : "",
-    labelledText("Status", status),
-    labelledText("Content-Type", contentType),
-    labelledText("Bytes read", bytesRead),
-    truncated ? labelledText("Truncated", "yes") : "",
-    labelledText("Content", contentPreview),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.url"), url),
+    finalUrl && finalUrl !== url ? labelledText(i18next.t("inspector.finalUrl"), finalUrl) : "",
+    labelledText(i18next.t("inspector.status"), status),
+    labelledText(i18next.t("inspector.contentType"), contentType),
+    labelledText(i18next.t("inspector.bytesRead"), bytesRead),
+    truncated ? labelledText(i18next.t("inspector.truncated"), "yes") : "",
+    labelledText(i18next.t("inspector.content"), contentPreview),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: contentPreview ? "output" : "data" };
 }
@@ -353,17 +358,17 @@ function formatMemorySearchToolExecution(record: RuntimeToolExecutionRecord): { 
     const preview = nestedValue(item, ["preview"]);
     const score = nestedValue(item, ["score"]);
     return labelledText(
-      `${index + 1}. ${sourceRef ?? "Unknown source"}`,
+      `${index + 1}. ${sourceRef ?? i18next.t("inspector.unknownSource")}`,
       [typeof score === "string" ? `score: ${score}` : undefined, typeof preview === "string" ? truncateInspectorText(preview, 300) : undefined]
         .filter(Boolean)
         .join("\n"),
     );
   });
   const lines = [
-    labelledText("Query", query),
-    labelledText("Results", `${results.length} found`),
+    labelledText(i18next.t("inspector.query"), query),
+    labelledText(i18next.t("inspector.results"), i18next.t("inspector.resultsCount", { count: results.length })),
     ...resultLines,
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: results.length ? "output" : "data" };
 }
@@ -376,10 +381,10 @@ function formatMemoryGetToolExecution(record: RuntimeToolExecutionRecord): { tex
   const contentPreview = typeof content === "string" && content.trim() ? truncateInspectorText(content, 2000) : undefined;
   const truncated = nestedValue(output, ["truncated"]);
   const lines = [
-    labelledText("Source ref", sourceRef),
-    truncated ? labelledText("Truncated", "yes") : "",
-    labelledText("Content", contentPreview),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.sourceRef"), sourceRef),
+    truncated ? labelledText(i18next.t("inspector.truncated"), "yes") : "",
+    labelledText(i18next.t("inspector.content"), contentPreview),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: contentPreview ? "output" : "data" };
 }
@@ -399,12 +404,12 @@ function formatWorkItemToolExecution(record: RuntimeToolExecutionRecord): { text
     const items = arrayRecords(result?.work_items ?? result?.items);
     const itemLines = items.map(formatWorkItemRecord).filter(Boolean);
     const lines = [
-      labelledText("Filter", nestedValue(record.input, ["filter"]) ?? result?.filter),
-      labelledText("Work items", itemLines.join("\n")),
-      labelledText("Total", result?.total ?? result?.total_open ?? items.length),
-      labelledText("Returned", result?.returned ?? items.length),
-      labelledText("Result", record.summary || result?.summary_text),
-      labelledText("Error", record.error),
+      labelledText(i18next.t("inspector.filter"), nestedValue(record.input, ["filter"]) ?? result?.filter),
+      labelledText(i18next.t("inspector.workItems"), itemLines.join("\n")),
+      labelledText(i18next.t("inspector.total"), result?.total ?? result?.total_open ?? items.length),
+      labelledText(i18next.t("inspector.returned"), result?.returned ?? items.length),
+      labelledText(i18next.t("inspector.result"), record.summary || result?.summary_text),
+      labelledText(i18next.t("inspector.error"), record.error),
     ].filter(Boolean);
     return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
   }
@@ -412,14 +417,14 @@ function formatWorkItemToolExecution(record: RuntimeToolExecutionRecord): { text
   const workItem = isRecord(result?.work_item) ? result.work_item : result;
   const planArtifact = isRecord(workItem?.plan_artifact) ? workItem.plan_artifact : undefined;
   const lines = [
-    labelledText("Objective", nestedValue(workItem, ["objective", "objective_preview"]) ?? nestedValue(record.input, ["objective"])),
-    labelledText("Work item", nestedValue(workItem, ["id", "work_item_id"]) ?? nestedValue(record.input, ["work_item_id"])),
-    labelledText("State", compactMeta([textField(workItem?.lifecycle), textField(workItem?.state), textField(workItem?.plan_status), textField(workItem?.readiness)])),
-    labelledText("Focus", truthyText(workItem?.current) || truthyText(workItem?.current_focus)),
-    labelledText("Plan", nestedValue(planArtifact, ["path"]) ?? nestedValue(workItem, ["plan_path"])),
-    labelledText("Todo", formatTodoItems(arrayRecords(workItem?.todo_list))),
-    labelledText("Result", record.summary || result?.summary_text),
-    labelledText("Error", record.error),
+    labelledText(i18next.t("inspector.objective"), nestedValue(workItem, ["objective", "objective_preview"]) ?? nestedValue(record.input, ["objective"])),
+    labelledText(i18next.t("inspector.workItem"), nestedValue(workItem, ["id", "work_item_id"]) ?? nestedValue(record.input, ["work_item_id"])),
+    labelledText(i18next.t("inspector.state"), compactMeta([textField(workItem?.lifecycle), textField(workItem?.state), textField(workItem?.plan_status), textField(workItem?.readiness)])),
+    labelledText(i18next.t("inspector.focus"), truthyText(workItem?.current) || truthyText(workItem?.current_focus)),
+    labelledText(i18next.t("inspector.plan"), nestedValue(planArtifact, ["path"]) ?? nestedValue(workItem, ["plan_path"])),
+    labelledText(i18next.t("inspector.todo"), formatTodoItems(arrayRecords(workItem?.todo_list))),
+    labelledText(i18next.t("inspector.result"), record.summary || result?.summary_text),
+    labelledText(i18next.t("inspector.error"), record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
@@ -434,14 +439,14 @@ function formatBatchToolOutput(input: unknown, output: unknown): string[] {
       const result = isRecord(item.result) ? item.result : item;
       const command = textField(item.cmd) || commandText(inputItems[index]);
       const lines = [
-        labelledText("Command", command),
-        labelledText("Stdout", nestedText(result, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
-        labelledText("Stderr", nestedText(result, ["stderr", "stderr_preview"])),
-        labelledText("Result", nestedText(result, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
-        labelledText("Error", nestedValue(result, ["error"])),
-        labelledText("Exit", nestedValue(result, ["exit_status", "status", "disposition"])),
+        labelledText(i18next.t("inspector.command"), command),
+        labelledText(i18next.t("inspector.stdout"), nestedText(result, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
+        labelledText(i18next.t("inspector.stderr"), nestedText(result, ["stderr", "stderr_preview"])),
+        labelledText(i18next.t("inspector.result"), nestedText(result, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
+        labelledText(i18next.t("inspector.error"), nestedValue(result, ["error"])),
+        labelledText(i18next.t("inspector.exit"), nestedValue(result, ["exit_status", "status", "disposition"])),
       ].filter(Boolean);
-      return lines.length ? `Batch item ${item.index ?? index + 1}:\n${lines.join("\n\n")}` : "";
+      return lines.length ? `${i18next.t("inspector.batchItem")} ${item.index ?? index + 1}:\n${lines.join("\n\n")}` : "";
     })
     .filter(Boolean);
 }
@@ -549,7 +554,7 @@ function scalarText(value: unknown): string {
 }
 
 function truthyText(value: unknown): string {
-  return value === true ? "current" : "";
+  return value === true ? i18next.t("inspector.current") : "";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -565,7 +570,7 @@ function TaskOutputDetail({ output }: { output: RuntimeTaskOutputResult }) {
   return (
     <section className="context-card inspector-card inspector-detail output">
       <div className="context-head">
-        <span className="eyebrow">Task output</span>
+        <span className="eyebrow">{i18next.t("inspector.taskOutput")}</span>
         <strong>{compactMeta([output.task?.status ?? output.status, output.retrieval_status])}</strong>
       </div>
       <pre>{text}</pre>
@@ -599,6 +604,7 @@ function formatInspectorJson(value: unknown): string {
 }
 
 export function ActivityInspectorPanel({ activity, detailState }: { activity: AgentTimelineActivity; detailState?: InspectorActivityDetailState }) {
+  const { t } = useTranslation();
   const detail = activity.detail;
   const rawEventText = formatInspectorJson(activity.rawEvent);
   const hydratedDetail = hasHydratedDetail(detailState);
@@ -609,25 +615,25 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
     <div className="inspector-stack">
       <section className="context-card inspector-card">
         <div className="context-head">
-          <span className="eyebrow">Timeline activity</span>
+          <span className="eyebrow">{t("inspector.timelineActivity")}</span>
           <StatusBadge className="state-chip" kind="connection" value={activity.kind} />
         </div>
         <h2>{activity.body || activity.label}</h2>
         <dl className="inspector-facts">
           <div>
-            <dt>Tool</dt>
+            <dt>{t("inspector.tool")}</dt>
             <dd>{activity.label}</dd>
           </div>
           <div>
-            <dt>Meta</dt>
+            <dt>{t("inspector.meta")}</dt>
             <dd>{activity.meta || "—"}</dd>
           </div>
           <div>
-            <dt>Time</dt>
+            <dt>{t("inspector.time")}</dt>
             <dd>{formatInspectorTime(activity.timestamp)}</dd>
           </div>
           <div>
-            <dt>Sources</dt>
+            <dt>{t("inspector.sources")}</dt>
             <dd>{activity.sourceIds.length ? activity.sourceIds.join(", ") : "—"}</dd>
           </div>
         </dl>
@@ -645,8 +651,8 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
         <EmptyState
           className="inspector-empty"
           icon="⌁"
-          title="No structured detail"
-          description="This activity has no projected detail yet. Use the raw event below for the source payload."
+          title={t("inspector.noStructuredDetail")}
+          description={t("inspector.noStructuredDetailDesc")}
         />
       ) : null}
 
@@ -654,7 +660,7 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
 
       {rawEventText ? (
         <details className="context-card inspector-card inspector-raw-detail" open={!structuredDetail}>
-          <summary>Raw event</summary>
+          <summary>{t("inspector.rawEvent")}</summary>
           <pre>{rawEventText}</pre>
         </details>
       ) : null}
@@ -663,17 +669,17 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
 }
 
 export function activityInspectorTitle(activity: AgentTimelineActivity): string {
-  if (activity.detail?.tone === "command") return "Command";
-  if (activity.detail?.tone === "diff") return "Patch";
-  if (activity.detail?.tone === "output") return "Output";
-  return activity.label || "Activity";
+  if (activity.detail?.tone === "command") return i18next.t("inspector.command");
+  if (activity.detail?.tone === "diff") return i18next.t("inspector.patch");
+  if (activity.detail?.tone === "output") return i18next.t("inspector.output");
+  return activity.label || i18next.t("inspector.activity");
 }
 
 function detailLabel(tone?: AgentTimelineItemDetail["tone"]): string {
-  if (tone === "command") return "Command";
-  if (tone === "diff") return "Patch diff";
-  if (tone === "output") return "Output";
-  return "Result";
+  if (tone === "command") return i18next.t("inspector.command");
+  if (tone === "diff") return i18next.t("inspector.patchDiff");
+  if (tone === "output") return i18next.t("inspector.output");
+  return i18next.t("inspector.result");
 }
 
 function formatInspectorTime(value: string): string {

@@ -2836,10 +2836,10 @@ function buildBootstrapMetrics(agents: AgentSummary[]): RuntimeBootstrap["metric
   const currentWorkCount = agents.filter((agent) => agent.currentWork).length;
 
   return [
-    { label: "Agents", value: String(agents.length) },
-    { label: "Needs attention", value: String(attentionCount), tone: attentionCount > 0 ? "attention" : "muted" },
-    { label: "Active tasks", value: String(activeTaskCount), tone: activeTaskCount > 0 ? "attention" : "muted" },
-    { label: "Current work", value: String(currentWorkCount) },
+    { label: "dashboard.agents", value: String(agents.length) },
+    { label: "dashboard.needsAttention", value: String(attentionCount), tone: attentionCount > 0 ? "attention" : "muted" },
+    { label: "dashboard.activeTasks", value: String(activeTaskCount), tone: activeTaskCount > 0 ? "attention" : "muted" },
+    { label: "dashboard.currentWork", value: String(currentWorkCount) },
   ];
 }
 

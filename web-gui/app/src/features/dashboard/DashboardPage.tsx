@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -16,24 +17,25 @@ interface DashboardPageProps {
 }
 
 export function DashboardPage({ agents, metrics, connection, loading, onRefresh, onOpenAgent }: DashboardPageProps) {
+  const { t } = useTranslation();
   const hasAgents = agents.length > 0;
   const hasConnectionError = Boolean(connection.error);
   const isBootstrapping = loading && !hasAgents;
   const isRefreshing = loading && hasAgents;
   const isPreview = connection.source === "fixture";
   const dashboardState = getDashboardState({ isBootstrapping, hasAgents, hasConnectionError, isPreview });
-  const connectionLabel = connection.source === "http" ? "Live runtime" : hasConnectionError ? "Runtime unavailable" : "Preview data";
-  const agentCountLabel = `${agents.length} ${agents.length === 1 ? "agent" : "agents"}`;
+  const connectionLabel = connection.source === "http" ? t("dashboard.liveRuntime") : hasConnectionError ? t("dashboard.runtimeUnavailable") : t("dashboard.previewData");
+  const agentCountLabel = t("dashboard.agentsCount", { count: agents.length });
 
   return (
-    <section className="page dashboard-page" aria-label="Dashboard">
+    <section className="page dashboard-page" aria-label={t("dashboard.dashboardAria")}>
       <div className="page-inner dashboard-inner">
         <section className="dashboard-section dashboard-roster-section">
           <div className="section-head dashboard-head">
             <div>
-              <span className="eyebrow">Roster</span>
-              <h2>Agents</h2>
-              <p>{agentCountLabel} available in the local runtime</p>
+              <span className="eyebrow">{t("dashboard.roster")}</span>
+              <h2>{t("dashboard.agents")}</h2>
+              <p>{t("dashboard.available", { count: agents.length })}</p>
             </div>
             <div className="dashboard-actions">
               <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source}>
@@ -41,7 +43,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                 {connectionLabel}
               </StatusBadge>
               <Button type="button" variant="secondary" disabled={loading} onClick={onRefresh}>
-                {loading ? "Refreshing…" : "Refresh"}
+                {loading ? t("common.refreshing") : t("common.refresh")}
               </Button>
             </div>
           </div>
@@ -49,10 +51,10 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
           {dashboardState ? <DashboardStateCard state={dashboardState} detail={connection.error ?? connection.summary} /> : null}
 
           {metrics.length > 0 ? (
-            <div className="metric-strip" aria-label="Runtime metrics">
+            <div className="metric-strip" aria-label={t("dashboard.runtimeMetrics")}>
               {metrics.map((metric) => (
                 <div className={`metric-card ${metric.tone ?? "default"}`} key={metric.label}>
-                  <span>{metric.label}</span>
+                  <span>{t(metric.label)}</span>
                   <strong>{metric.value}</strong>
                 </div>
               ))}
@@ -61,12 +63,12 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
 
           {isRefreshing ? (
             <div className="dashboard-refreshing" role="status">
-              Refreshing agent state while keeping the current roster visible…
+              {t("dashboard.refreshingState")}
             </div>
           ) : null}
 
           {isBootstrapping ? (
-            <div className="agent-roster" aria-label="Loading agents">
+            <div className="agent-roster" aria-label={t("dashboard.loadingAgents")}>
               {Array.from({ length: 4 }, (_, index) => (
                 <Card className="agent-card skeleton-card" aria-hidden="true" key={index}>
                   <Skeleton className="skeleton-line short" />
@@ -84,11 +86,11 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
             <EmptyState
               className="dashboard-empty"
               icon={hasConnectionError ? "!" : "◎"}
-              title={hasConnectionError ? "Runtime data is unavailable" : "No agents are currently visible"}
+              title={hasConnectionError ? t("dashboard.runtimeUnavailable") : t("dashboard.noAgentsTitle")}
               description={
                 hasConnectionError
-                  ? "Check the local Holon API connection, then refresh this dashboard."
-                  : "Start or wake an agent and refresh to populate the roster."
+                  ? t("dashboard.checkConnection")
+                  : t("dashboard.startAgent")
               }
             />
           ) : (
@@ -111,27 +113,27 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                     </div>
                   </div>
                   <p className="agent-card-summary">{agent.focusSummary}</p>
-                  <section className="agent-card-work" title={agent.currentWork?.objective ?? "No active work item"}>
-                    <span>Current work</span>
-                    <strong>{agent.currentWork?.objective ?? "Ready for new operator input"}</strong>
+                  <section className="agent-card-work" title={agent.currentWork?.objective ?? t("dashboard.noActiveWork")}>
+                    <span>{t("dashboard.currentWork")}</span>
+                    <strong>{agent.currentWork?.objective ?? t("dashboard.readyForInput")}</strong>
                   </section>
                   <dl className="agent-detail-list">
                     <div title={agent.workspace}>
-                      <dt>Workspace</dt>
+                      <dt>{t("dashboard.workspace")}</dt>
                       <dd>{agent.workspace}</dd>
                     </div>
                     <div>
-                      <dt>Posture</dt>
+                      <dt>{t("dashboard.posture")}</dt>
                       <dd>{agent.posture}</dd>
                     </div>
                     <div title={agent.model}>
-                      <dt>Model</dt>
+                      <dt>{t("dashboard.model")}</dt>
                       <dd>{agent.model}</dd>
                     </div>
                   </dl>
                   <footer>
                     <span>{agent.footer}</span>
-                    <Button size="icon" variant="secondary" aria-label={`Open ${agent.id}`} onClick={() => onOpenAgent(agent.id)}>
+                    <Button size="icon" variant="secondary" aria-label={t("dashboard.openAgent", { id: agent.id })} onClick={() => onOpenAgent(agent.id)}>
                       →
                     </Button>
                   </footer>
@@ -166,38 +168,19 @@ function getDashboardState({
 }
 
 function DashboardStateCard({ state, detail }: { state: DashboardState; detail: string }) {
-  const copy: Record<DashboardState, { label: string; title: string; body: string }> = {
-    loading: {
-      label: "Connecting",
-      title: "Loading runtime snapshot",
-      body: "Waiting for the local runtime before showing agent data.",
-    },
-    empty: {
-      label: "Empty",
-      title: "Runtime is reachable, but no agents are visible",
-      body: "This is an empty runtime state, not a loading state.",
-    },
-    disconnected: {
-      label: "Disconnected",
-      title: "Runtime API is not reachable",
-      body: "No bundled preview data is shown while disconnected. Check the API base URL or restart the Holon daemon.",
-    },
-    preview: {
-      label: "Preview",
-      title: "Showing bundled preview data",
-      body: "Configure or reach the local Holon API to switch this dashboard to live data.",
-    },
-  };
-  const selected = copy[state];
+  const { t } = useTranslation();
+  const labelKey = state === "loading" ? "dashboard.stateLoading" : state === "empty" ? "dashboard.stateEmpty" : state === "disconnected" ? "dashboard.stateDisconnected" : "dashboard.statePreview";
+  const titleKey = `${labelKey}Title`;
+  const bodyKey = `${labelKey}Body`;
 
   return (
     <aside className={`dashboard-state ${state}`} role="status">
       <StatusBadge kind="runtime" value={state}>
-        {selected.label}
+        {t(labelKey)}
       </StatusBadge>
       <div>
-        <strong>{selected.title}</strong>
-        <p>{selected.body}</p>
+        <strong>{t(titleKey)}</strong>
+        <p>{t(bodyKey)}</p>
         <small>{detail}</small>
       </div>
     </aside>

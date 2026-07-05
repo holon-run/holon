@@ -8,10 +8,10 @@ export const runtimeFixture: RuntimeBootstrap = {
     source: "fixture",
   },
   metrics: [
-    { label: "Agents", value: "2" },
-    { label: "Needs attention", value: "1", tone: "attention" },
-    { label: "Active tasks", value: "0", tone: "muted" },
-    { label: "Current work", value: "1" },
+    { label: "dashboard.agents", value: "2" },
+    { label: "dashboard.needsAttention", value: "1", tone: "attention" },
+    { label: "dashboard.activeTasks", value: "0", tone: "muted" },
+    { label: "dashboard.currentWork", value: "1" },
   ],
   agents: [
     {

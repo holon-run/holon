@@ -5,6 +5,7 @@ import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, TaskDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { FileBrowserPanel } from "./FileBrowserPanel";
+import { useTranslation } from "react-i18next";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -57,6 +58,7 @@ export function RightSidePanel({
   onOpenPlanFile,
   onClose,
 }: RightSidePanelProps) {
+  const { t } = useTranslation();
   const PANEL_MIN = 320;
   const PANEL_MAX = typeof window !== "undefined" ? Math.floor(window.innerWidth * 0.7) : 900;
   const PANEL_KEY = "holon:panelWidth";
@@ -106,16 +108,16 @@ export function RightSidePanel({
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
   const title =
     skillManagerActive
-      ? "Manage agent skills"
+      ? t("rightPanel.manageSkills")
       : activeView.kind === "activity_inspector"
       ? activityInspectorTitle(activeView.activity)
       : activeView.kind === "work_item_detail"
-        ? "Work item detail"
+        ? t("rightPanel.workItemDetail")
         : activeView.kind === "task_detail"
-          ? "Task detail"
+          ? t("rightPanel.taskDetail")
           : activeView.kind === "file_browser"
-            ? "File browser"
-          : "Agent overview";
+            ? t("rightPanel.fileBrowser")
+          : t("panel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail"
     ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
@@ -136,29 +138,29 @@ export function RightSidePanel({
   };
 
   return (
-    <aside className="side-panel" aria-label="Context side panel" hidden={!open} ref={panelRef}>
+    <aside className="side-panel" aria-label={t("rightPanel.contextPanel")} hidden={!open} ref={panelRef}>
       {open ? (
         <div className="panel-resizer" data-dragging={dragging} onMouseDown={startResize} />
       ) : null}
       <div className="panel-header">
         <div>
-          <span className="eyebrow">Context panel</span>
+          <span className="eyebrow">{t("rightPanel.contextPanel")}</span>
           <strong>{title}</strong>
         </div>
         <div className="panel-actions">
           {activeView.kind !== "agent_overview" || skillManagerActive ? (
             <button
               type="button"
-              aria-label="Show agent overview"
+              aria-label={t("rightPanel.showOverview")}
               onClick={() => {
                 setShowSkillManager(false);
                 onShowAgentOverview();
               }}
             >
-              Agent Overview
+              {t("rightPanel.agentOverview")}
             </button>
           ) : null}
-          <button type="button" aria-label="Close side panel" onClick={onClose}>
+          <button type="button" aria-label={t("panel.closePanel")} onClick={onClose}>
             ×
           </button>
         </div>

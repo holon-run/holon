@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
+import { useI18nSettings } from "../../i18n";
+import { LANGUAGE_MODE_OPTIONS } from "../../i18n/types";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
@@ -141,12 +144,12 @@ const standardSearchProviderIds = new Set(standardSearchProviders.map((provider)
 
 type SettingsTabKey = "general" | "models" | "vision" | "search" | "advanced";
 
-const settingsTabs: Array<{ key: SettingsTabKey; label: string; description: string }> = [
-  { key: "general", label: "General", description: "connection and runtime basics" },
-  { key: "models", label: "Models", description: "defaults and provider keys" },
-  { key: "vision", label: "Vision", description: "image observation model" },
-  { key: "search", label: "Search", description: "routing and search providers" },
-  { key: "advanced", label: "Advanced", description: "diagnostics and raw config" },
+const settingsTabs: Array<{ key: SettingsTabKey; labelKey: string; descriptionKey: string }> = [
+  { key: "general", labelKey: "settings.tabGeneral", descriptionKey: "settings.tabGeneralDesc" },
+  { key: "models", labelKey: "settings.tabModels", descriptionKey: "settings.tabModelsDesc" },
+  { key: "vision", labelKey: "settings.tabVision", descriptionKey: "settings.tabVisionDesc" },
+  { key: "search", labelKey: "settings.tabSearch", descriptionKey: "settings.tabSearchDesc" },
+  { key: "advanced", labelKey: "settings.tabAdvanced", descriptionKey: "settings.tabAdvancedDesc" },
 ];
 
 function defaultSearchProviderDraft(providerId: string): SearchProviderDraft {
@@ -190,6 +193,8 @@ export function SettingsPage({
   const groupedModels = groupModelsByProvider(modelCatalog.options);
   const availableCount = modelCatalog.options.filter((model) => model.available).length;
   const unavailableCount = modelCatalog.options.length - availableCount;
+  const { t } = useTranslation();
+  const { languageMode, resolvedLanguageLabel, setLanguageMode } = useI18nSettings();
   const surface = runtimeConfig.surface;
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState("");
@@ -529,31 +534,28 @@ export function SettingsPage({
   }
 
   return (
-    <section className="page settings-page" aria-label="Settings">
+    <section className="page settings-page" aria-label={t("settings.settingsAria")}>
       <div className="page-inner settings-inner">
         <Card className="summary-panel settings-hero">
-          <span className="eyebrow">Runtime configuration</span>
-          <h1>Settings</h1>
-          <p>
-            Configure common runtime defaults from the Web GUI. Saved model and vision defaults are persisted to config.json
-            and take effect immediately via hot-reload.
-          </p>
-          <div className="settings-quickstart" aria-label="Settings overview">
+          <span className="eyebrow">{t("settings.runtimeConfig")}</span>
+          <h1>{t("settings.title")}</h1>
+          <p>{t("settings.subtitle")}</p>
+          <div className="settings-quickstart" aria-label={t("settings.settingsOverviewAria")}>
             <div>
-              <span>Connection</span>
-              <strong>{connection.source === "http" ? "Live runtime" : "Preview data"}</strong>
-              <small>{connection.baseUrl ?? "No API base configured"}</small>
+              <span>{t("settings.connection")}</span>
+              <strong>{connection.source === "http" ? t("settings.liveRuntime") : t("settings.previewData")}</strong>
+              <small>{connection.baseUrl ?? t("settings.noApiBase")}</small>
             </div>
             <div>
-              <span>Model providers</span>
+              <span>{t("settings.modelProviders")}</span>
               <strong>
                 {configuredProviderCount}/{surface?.providers.length ?? 0} ready
               </strong>
-              <small>Credential changes apply via hot-reload.</small>
+              <small>{t("settings.credentialHotReload")}</small>
             </div>
             <div>
-              <span>Web search</span>
-              <strong>{surface?.webSearch?.enabled ? "Enabled" : "Disabled"}</strong>
+              <span>{t("settings.webSearch")}</span>
+              <strong>{surface?.webSearch?.enabled ? t("settings.enabled") : "Disabled"}</strong>
               <small>
                 {searchProviderCount
                   ? `${configuredSearchProviderCount}/${searchProviderCount} search provider${searchProviderCount === 1 ? "" : "s"} ready`
@@ -561,14 +563,14 @@ export function SettingsPage({
               </small>
             </div>
             <div>
-              <span>Vision</span>
-              <strong>{surface?.visionDefault ? "Pinned model" : "Auto-discovery"}</strong>
+              <span>{t("settings.tabVision")}</span>
+              <strong>{surface?.visionDefault ? t("settings.pinnedModel") : "Auto-discovery"}</strong>
               <small>{surface?.visionDefault ?? `${visionModels.length} image-capable model${visionModels.length === 1 ? "" : "s"} ready`}</small>
             </div>
           </div>
         </Card>
 
-        <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+        <div className="settings-tabs" role="tablist" aria-label={t("settings.settingsSectionsAria")}>
           {settingsTabs.map((tab) => (
             <button
               aria-selected={activeTab === tab.key}
@@ -578,8 +580,8 @@ export function SettingsPage({
               role="tab"
               type="button"
             >
-              <span>{tab.label}</span>
-              <small>{tab.description}</small>
+              <span>{t(tab.labelKey)}</span>
+              <small>{t(tab.descriptionKey)}</small>
             </button>
           ))}
         </div>
@@ -589,46 +591,81 @@ export function SettingsPage({
             <Card className="settings-card settings-primary-card">
               <div className="settings-card-head">
                 <div>
-                  <span className="eyebrow">General</span>
-                  <h2>Runtime overview</h2>
+                  <span className="eyebrow">{t("settings.tabGeneral")}</span>
+                  <h2>{t("settings.runtimeOverview")}</h2>
                 </div>
                 <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
-                  {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+                  {runtimeConfigLoading ? t("settings.refreshing") : t("common.refresh")}
                 </Button>
               </div>
               {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
               <dl className="settings-list compact">
                 <div>
-                  <dt>Connection</dt>
-                  <dd>{connection.source === "http" ? "Live runtime" : "Preview data"}</dd>
+                  <dt>{t("settings.connection")}</dt>
+                  <dd>{connection.source === "http" ? t("settings.liveRuntime") : t("settings.previewData")}</dd>
                 </div>
                 <div>
-                  <dt>API base</dt>
-                  <dd>{connection.baseUrl ?? "not configured"}</dd>
+                  <dt>{t("settings.apiBase")}</dt>
+                  <dd>{connection.baseUrl ?? t("settings.notConfigured")}</dd>
                 </div>
                 <div>
-                  <dt>Config file</dt>
-                  <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
+                  <dt>{t("settings.configFile")}</dt>
+                  <dd>{runtimeConfig.configFilePath ?? t("settings.notReported")}</dd>
                 </div>
                 <div>
-                  <dt>Provider fallback</dt>
-                  <dd>{surface?.disableProviderFallback ? "disabled" : "enabled"}</dd>
+                  <dt>{t("settings.providerFallback")}</dt>
+                  <dd>{surface?.disableProviderFallback ? t("settings.disabled") : t("settings.enabled")}</dd>
                 </div>
                 <div>
-                  <dt>Model providers</dt>
+                  <dt>{t("settings.modelProviders")}</dt>
                   <dd>
-                    {configuredProviderCount}/{surface?.providers.length ?? 0} credential ready
+                    {configuredProviderCount}/{surface?.providers.length ?? 0}{t("settings.credentialReady")}
                   </dd>
                 </div>
                 <div>
-                  <dt>Search</dt>
-                  <dd>{surface?.webSearch?.enabled ? "enabled" : "disabled"}</dd>
+                  <dt>{t("settings.tabSearch")}</dt>
+                  <dd>{surface?.webSearch?.enabled ? t("settings.enabled") : t("settings.disabled")}</dd>
                 </div>
                 <div>
-                  <dt>Vision</dt>
-                  <dd>{surface?.visionDefault ? surface.visionDefault : "auto-discovery"}</dd>
+                  <dt>{t("settings.tabVision")}</dt>
+                  <dd>{surface?.visionDefault ? surface.visionDefault : t("settings.autoDiscovery")}</dd>
                 </div>
               </dl>
+            </Card>
+
+            {/* ── Language ── */}
+            <Card className="settings-card settings-primary-card">
+              <div className="settings-card-head">
+                <div>
+                  <span className="eyebrow">{t("settings.language.label")}</span>
+                  <h2>{t("settings.language.label")}</h2>
+                </div>
+              </div>
+              <p className="settings-muted">{t("settings.language.description")}</p>
+              <div className="settings-form-row">
+                <label>
+                  <span>{t("settings.language.label")}</span>
+                  <select
+                    value={languageMode}
+                    onChange={(event) => setLanguageMode(event.target.value as typeof languageMode)}
+                  >
+                    {LANGUAGE_MODE_OPTIONS.map((mode) => (
+                      <option key={mode} value={mode}>
+                        {mode === "system"
+                          ? t("settings.language.system")
+                          : mode === "en"
+                            ? t("settings.language.english")
+                            : t("settings.language.chineseSimplified")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {languageMode === "system" ? (
+                <p className="settings-muted">
+                  {t("settings.language.systemResolved", { language: resolvedLanguageLabel })}
+                </p>
+              ) : null}
             </Card>
           </div>
         ) : null}
@@ -638,18 +675,18 @@ export function SettingsPage({
           <Card className="settings-card settings-primary-card" hidden={activeTab !== "models"}>
             <div className="settings-card-head">
               <div>
-                <span className="eyebrow">Runtime defaults</span>
-                <h2>Model</h2>
+                <span className="eyebrow">{t("settings.runtimeDefaults")}</span>
+                <h2>{t("settings.modelHeading")}</h2>
               </div>
               <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
-                {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+                {runtimeConfigLoading ? t("settings.refreshing") : t("common.refresh")}
               </Button>
             </div>
             {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
             {!surface ? (
               <div className="settings-callout">
-                <strong>Runtime config unavailable</strong>
-                <span>Connect to a live runtime and refresh this page to edit model defaults.</span>
+                <strong>{t("settings.runtimeConfigUnavailable")}</strong>
+                <span>{t("settings.connectLiveRuntime")}</span>
               </div>
             ) : (
               <form
@@ -660,7 +697,7 @@ export function SettingsPage({
                 }}
               >
                 <label>
-                  <span>Default model</span>
+                  <span>{t("settings.defaultModel")}</span>
                   <input list="available-models" value={modelDefault} onChange={(event) => setModelDefault(event.target.value)} />
                   <datalist id="available-models">
                     {availableModels.map((model) => (
@@ -671,22 +708,22 @@ export function SettingsPage({
                   </datalist>
                 </label>
                 <details className="settings-advanced">
-                  <summary>Advanced</summary>
+                  <summary>{t("settings.tabAdvanced")}</summary>
                   <label>
-                    <span>Fallback models</span>
+                    <span>{t("settings.fallbackModels")}</span>
                     <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
                   </label>
                   <div className="settings-form-row">
                     <label>
-                      <span>Max output tokens</span>
+                      <span>{t("settings.maxOutputTokens")}</span>
                       <input inputMode="numeric" value={runtimeMaxOutputTokens} onChange={(event) => setRuntimeMaxOutputTokens(event.target.value)} />
                     </label>
                     <label>
-                      <span>Default tool output tokens</span>
+                      <span>{t("settings.defaultToolOutputTokens")}</span>
                       <input inputMode="numeric" value={defaultToolOutputTokens} onChange={(event) => setDefaultToolOutputTokens(event.target.value)} />
                     </label>
                     <label>
-                      <span>Max tool output tokens</span>
+                      <span>{t("settings.maxToolOutputTokens")}</span>
                       <input inputMode="numeric" value={maxToolOutputTokens} onChange={(event) => setMaxToolOutputTokens(event.target.value)} />
                     </label>
                   </div>
@@ -696,12 +733,12 @@ export function SettingsPage({
                       checked={disableProviderFallback}
                       onChange={(event) => setDisableProviderFallback(event.target.checked)}
                     />
-                    <span>Disable provider fallback</span>
+                    <span>{t("settings.disableProviderFallback")}</span>
                   </label>
                 </details>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? "Saving…" : "Save"}
+                    {runtimeConfigSaving ? t("settings.saving") : "Save"}
                   </Button>
                   {saveMessage ? <span>{saveMessage}</span> : null}
                 </div>
@@ -718,15 +755,15 @@ export function SettingsPage({
             )}
             <dl className="settings-list compact">
               <div>
-                <dt>Config file</dt>
-                <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
+                <dt>{t("settings.configFile")}</dt>
+                <dd>{runtimeConfig.configFilePath ?? t("settings.notReported")}</dd>
               </div>
               <div>
-                <dt>Provider fallback</dt>
-                <dd>{surface?.disableProviderFallback ? "disabled" : "enabled"}</dd>
+                <dt>{t("settings.providerFallback")}</dt>
+                <dd>{surface?.disableProviderFallback ? t("settings.disabled") : t("settings.enabled")}</dd>
               </div>
               <div>
-                <dt>Providers configured</dt>
+                <dt>{t("settings.providersConfigured")}</dt>
                 <dd>{configuredProviderCount}</dd>
               </div>
             </dl>
@@ -736,14 +773,14 @@ export function SettingsPage({
           <Card className="settings-card settings-primary-card" hidden={activeTab !== "vision"}>
             <div className="settings-card-head">
               <div>
-                <span className="eyebrow">Vision</span>
-                <h2>Image observation</h2>
+                <span className="eyebrow">{t("settings.tabVision")}</span>
+                <h2>{t("settings.imageObservation")}</h2>
               </div>
             </div>
             {!surface ? (
               <div className="settings-callout">
-                <strong>Vision config unavailable</strong>
-                <span>Connect to a live runtime and refresh this page to edit the Vision default model.</span>
+                <strong>{t("settings.visionConfigUnavailable")}</strong>
+                <span>{t("settings.connectLiveVision")}</span>
               </div>
             ) : (
               <form
@@ -754,7 +791,7 @@ export function SettingsPage({
                 }}
               >
                 <label>
-                  <span>Vision default model</span>
+                  <span>{t("settings.visionDefaultModel")}</span>
                   <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
                   <datalist id="vision-models">
                     {visionModels.map((model) => (
@@ -769,7 +806,7 @@ export function SettingsPage({
                 </p>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? "Saving…" : "Save Vision"}
+                    {runtimeConfigSaving ? t("settings.saving") : "Save Vision"}
                   </Button>
                   {visionDefault ? (
                     <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"}>
@@ -790,14 +827,14 @@ export function SettingsPage({
           <Card className="settings-card settings-primary-card" hidden={activeTab !== "search"}>
             <div className="settings-card-head">
               <div>
-                <span className="eyebrow">Runtime defaults</span>
-                <h2>Web search</h2>
+                <span className="eyebrow">{t("settings.runtimeDefaults")}</span>
+                <h2>{t("settings.webSearch")}</h2>
               </div>
             </div>
             {!surface?.webSearch ? (
               <div className="settings-callout">
-                <strong>Search config unavailable</strong>
-                <span>Refresh runtime config after connecting to a live daemon.</span>
+                <strong>{t("settings.searchConfigUnavailable")}</strong>
+                <span>{t("settings.refreshRuntimeHint")}</span>
               </div>
             ) : (
               <form
@@ -809,19 +846,19 @@ export function SettingsPage({
               >
                 <label className="settings-checkbox">
                   <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
-                  <span>Enable WebSearch</span>
+                  <span>{t("settings.enableWebSearch")}</span>
                 </label>
                 <label>
-                  <span>Routing</span>
+                  <span>{t("settings.routing")}</span>
                   <select value={searchProvider || "auto"} onChange={(event) => setSearchProvider(event.target.value)}>
-                    <option value="auto">Auto — use configured providers, then DuckDuckGo</option>
-                    <option value="duckduckgo">DuckDuckGo — builtin, no API key</option>
+                    <option value="auto">{t("settings.autoRoutingOption")}</option>
+                    <option value="duckduckgo">DuckDuckGo {t("settings.builtinNoKey")}</option>
                     {standardSearchProviders.map((provider) => {
                       const configured = surface.webSearchProviders.find((entry) => entry.id === provider.id);
                       const ready = provider.requiresApiKey ? configured?.credentialConfigured : Boolean(configured);
                       return (
                         <option key={provider.id} value={provider.id}>
-                          {provider.label}{ready ? " — ready" : provider.requiresApiKey ? " — API key needed" : ""}
+                          {provider.label}{ready ? ` — ${t("settings.readyLabel")}` : provider.requiresApiKey ? ` — ${t("settings.apiKeyNeededLabel")}` : ""}
                         </option>
                       );
                     })}
@@ -833,16 +870,16 @@ export function SettingsPage({
                     checked={searchBuiltinProviderEnabled}
                     onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
                   />
-                  <span>Allow model-native search when available</span>
+                  <span>{t("settings.allowModelNativeSearch")}</span>
                 </label>
                 <p className="settings-hint">
                   DuckDuckGo and native search do not need API keys. Add keys only for API-backed providers below.
                 </p>
                 <details className="settings-advanced">
-                  <summary>Advanced</summary>
+                  <summary>{t("settings.tabAdvanced")}</summary>
                   <div className="settings-form-row">
                     <label>
-                      <span>Mode</span>
+                      <span>{t("settings.mode")}</span>
                       <select value={searchMode} onChange={(event) => setSearchMode(event.target.value as "single" | "fallback" | "aggregate")}>
                         <option value="single">single</option>
                         <option value="fallback">fallback</option>
@@ -850,28 +887,28 @@ export function SettingsPage({
                       </select>
                     </label>
                     <label>
-                      <span>Provider order</span>
+                      <span>{t("settings.providerOrder")}</span>
                       <input value={searchProviders} onChange={(event) => setSearchProviders(event.target.value)} placeholder="duckduckgo, brave" />
                     </label>
                     <label>
-                      <span>Max results</span>
+                      <span>{t("settings.maxResults")}</span>
                       <input inputMode="numeric" value={searchMaxResults} onChange={(event) => setSearchMaxResults(event.target.value)} />
                     </label>
                   </div>
                   <div className="settings-form-row">
                     <label>
-                      <span>Max provider attempts</span>
+                      <span>{t("settings.maxProviderAttempts")}</span>
                       <input inputMode="numeric" value={searchMaxProviderAttempts} onChange={(event) => setSearchMaxProviderAttempts(event.target.value)} />
                     </label>
                     <label>
-                      <span>Configured providers</span>
+                      <span>{t("settings.configuredProviders")}</span>
                       <input readOnly value={surface.webSearchProviders.map((provider) => provider.id).join(", ") || "duckduckgo builtin"} />
                     </label>
                   </div>
                 </details>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? "Saving…" : "Save"}
+                    {runtimeConfigSaving ? t("settings.saving") : "Save"}
                   </Button>
                   {searchSaveMessage ? <span>{searchSaveMessage}</span> : null}
                 </div>
@@ -885,13 +922,13 @@ export function SettingsPage({
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Provider accounts</span>
-              <h2>Web search providers</h2>
+              <h2>{t("settings.webSearchProviders")}</h2>
             </div>
           </div>
           {!surface ? (
             <div className="settings-callout">
-              <strong>Search provider config unavailable</strong>
-              <span>Connect to a live runtime and refresh this page to edit web search provider credentials.</span>
+              <strong>{t("settings.searchProviderConfigUnavailable")}</strong>
+              <span>{t("settings.connectLiveSearchCreds")}</span>
             </div>
           ) : (
             <div className="settings-provider-list">
@@ -900,18 +937,18 @@ export function SettingsPage({
               </p>
               <div className="settings-builtins">
                 <div>
-                  <strong>Native search</strong>
-                  <span>Uses model-provider native search when the runtime can route to it. No API key is configured here.</span>
+                  <strong>{t("settings.nativeSearch")}</strong>
+                  <span>{t("settings.nativeSearchDesc")}</span>
                 </div>
                 <StatusChip className={`settings-status ${searchBuiltinProviderEnabled ? "available" : "unavailable"}`} tone={searchBuiltinProviderEnabled ? "success" : "error"}>
-                  {searchBuiltinProviderEnabled ? "allowed" : "disabled"}
+                  {searchBuiltinProviderEnabled ? t("settings.allowedLabel") : t("settings.disabled")}
                 </StatusChip>
                 <div>
                   <strong>DuckDuckGo</strong>
-                  <span>Built in and ready by default. No provider id, kind, or API key is required.</span>
+                  <span>{t("settings.duckDuckGoDesc")}</span>
                 </div>
                 <StatusChip className="settings-status available" tone="success">
-                  ready
+                  {t("settings.readyLabel")}
                 </StatusChip>
               </div>
               {standardSearchProviders.map((definition) => {
@@ -937,13 +974,13 @@ export function SettingsPage({
                         </small>
                       </div>
                       <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"}>
-                        {providerReady ? "ready" : definition.requiresApiKey ? "key needed" : "not configured"}
+                        {providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")}
                       </StatusChip>
                     </header>
                     {!definition.requiresApiKey ? (
                       <div className="settings-form-row">
                         <label>
-                          <span>Base URL</span>
+                          <span>{t("settings.baseUrl")}</span>
                           <input
                             value={draft.baseUrl ?? ""}
                             onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })}
@@ -954,7 +991,7 @@ export function SettingsPage({
                     ) : null}
                     {definition.requiresApiKey ? (
                       <label>
-                        <span>Credential profile</span>
+                        <span>{t("settings.credentialProfile")}</span>
                         <input
                           value={credentialProfile}
                           onChange={(event) => updateSearchProviderDraft(definition.id, { credentialProfile: event.target.value })}
@@ -965,12 +1002,12 @@ export function SettingsPage({
                     {definition.requiresApiKey && credentialProfile ? (
                       <div className="settings-api-key-section">
                         <div className="settings-api-key-header">
-                          <span>API Key for &quot;{credentialProfile}&quot;</span>
+                          <span>{t("settings.apiKeyFor", { profile: credentialProfile })}</span>
                           <StatusChip
                             className={`settings-status ${credentialReady ? "available" : "unavailable"}`}
                             tone={credentialReady ? "success" : "error"}
                           >
-                            {credentialReady ? "key set" : "no key"}
+                            {credentialReady ? t("settings.keySet") : "no key"}
                           </StatusChip>
                         </div>
                         <div className="settings-form-row">
@@ -978,7 +1015,7 @@ export function SettingsPage({
                             <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
                             <input
                               type="password"
-                              placeholder="Paste API key for this search provider"
+                              placeholder={t("settings.pasteApiKeySearch")}
                               value={searchApiKeyDrafts[definition.id] ?? ""}
                               onChange={(event) => setSearchApiKeyDrafts((prev) => ({ ...prev, [definition.id]: event.target.value }))}
                             />
@@ -1005,19 +1042,19 @@ export function SettingsPage({
                       </div>
                     ) : null}
                     <details className="settings-advanced">
-                      <summary>Advanced</summary>
+                      <summary>{t("settings.tabAdvanced")}</summary>
                       <div className="settings-form-row">
                         <label>
-                          <span>Provider id</span>
+                          <span>{t("settings.providerId")}</span>
                           <input value={definition.id} readOnly disabled />
                         </label>
                         <label>
-                          <span>Kind</span>
+                          <span>{t("settings.kindLabel")}</span>
                           <input value={definition.kind} readOnly disabled />
                         </label>
                         {definition.requiresApiKey ? (
                           <label>
-                            <span>Base URL</span>
+                            <span>{t("settings.baseUrl")}</span>
                             <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder="Optional provider default" />
                           </label>
                         ) : null}
@@ -1025,7 +1062,7 @@ export function SettingsPage({
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? "Saving…" : provider ? `Save ${definition.label}` : `Enable ${definition.label}`}
+                        {runtimeConfigSaving ? t("settings.saving") : provider ? `Save ${definition.label}` : `Enable ${definition.label}`}
                       </Button>
                       {provider ? (
                         <Button
@@ -1060,15 +1097,15 @@ export function SettingsPage({
                       <header>
                         <div>
                           <strong>{providerId}</strong>
-                          <small>Unsaved search provider</small>
+                          <small>{t("settings.unsavedSearchProvider")}</small>
                         </div>
                         <StatusChip className="settings-status unavailable" tone="error">
-                          not saved
+                          {t("settings.notSaved")}
                         </StatusChip>
                       </header>
                       <div className="settings-form-row">
                         <label>
-                          <span>Kind</span>
+                          <span>{t("settings.kindLabel")}</span>
                           <select value={draft.kind} onChange={(event) => updateSearchProviderDraft(providerId, { kind: event.target.value })}>
                             {webSearchProviderKinds.map((kind) => (
                               <option key={kind} value={kind}>
@@ -1078,38 +1115,38 @@ export function SettingsPage({
                           </select>
                         </label>
                         <label>
-                          <span>Base URL</span>
+                          <span>{t("settings.baseUrl")}</span>
                           <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { baseUrl: event.target.value })} />
                         </label>
                         <label>
-                          <span>Credential profile</span>
+                          <span>{t("settings.credentialProfile")}</span>
                           <input value={draft.credentialProfile ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { credentialProfile: event.target.value })} />
                         </label>
                       </div>
                       <div className="settings-actions">
                         <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                          {runtimeConfigSaving ? "Saving…" : `Save ${providerId}`}
+                          {runtimeConfigSaving ? t("settings.saving") : `Save ${providerId}`}
                         </Button>
                       </div>
                     </form>
                   );
                 })}
               <details className="settings-advanced">
-                <summary>Advanced custom provider</summary>
+                <summary>{t("settings.advancedCustomProvider")}</summary>
                 <div className="settings-provider-editor">
                   <header>
                     <div>
-                      <strong>Add custom search provider</strong>
-                      <small>Only use this for custom ids, command providers, or experimental provider kinds.</small>
+                      <strong>{t("settings.addCustomSearchProvider")}</strong>
+                      <small>{t("settings.customSearchProviderHint")}</small>
                     </div>
                   </header>
                   <div className="settings-form-row">
                     <label>
-                      <span>Provider id</span>
+                      <span>{t("settings.providerId")}</span>
                       <input value={newSearchProviderId} onChange={(event) => setNewSearchProviderId(event.target.value)} placeholder="custom_search" />
                     </label>
                     <label>
-                      <span>Kind</span>
+                      <span>{t("settings.kindLabel")}</span>
                       <select value={newSearchProviderKind} onChange={(event) => setNewSearchProviderKind(event.target.value)}>
                         {webSearchProviderKinds.map((kind) => (
                           <option key={kind} value={kind}>
@@ -1136,13 +1173,13 @@ export function SettingsPage({
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Provider accounts</span>
-              <h2>Model providers</h2>
+              <h2>{t("settings.modelProviders")}</h2>
             </div>
           </div>
           {!surface ? (
             <div className="settings-callout">
-              <strong>Provider config unavailable</strong>
-              <span>Connect to a live runtime and refresh this page to edit model provider credentials.</span>
+              <strong>{t("settings.providerConfigUnavailable")}</strong>
+              <span>{t("settings.connectLiveModelCreds")}</span>
             </div>
           ) : (
             <div className="settings-provider-list">
@@ -1170,24 +1207,24 @@ export function SettingsPage({
                         </small>
                       </div>
                       <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
-                        {provider.credentialConfigured ? "credential ready" : "credential missing"}
+                        {provider.credentialConfigured ? t("settings.credReady") : "credential missing"}
                       </StatusChip>
                     </header>
                     {provider.credentialConfigured && !providersWithModels.has(provider.id) ? (
                       <p className="settings-provider-hint">
-                        No models in catalog for this provider — it will not appear in the model selector. Add model entries under <strong>Model overrides</strong> or configure model discovery to make its models available.
+                        {t("settings.noModelsForProvider")}
                       </p>
                     ) : null}
                     {/* Primary: API Key management */}
                     {draft.credentialKind === "api_key" ? (
                       <div className="settings-api-key-section">
                         <div className="settings-api-key-header">
-                          <span>API Key for &quot;{effectiveProfile}&quot;</span>
+                          <span>{t("settings.apiKeyFor", { profile: effectiveProfile })}</span>
                           <StatusChip
                             className={`settings-status ${isCredentialProfileConfigured(effectiveProfile) ? "available" : "unavailable"}`}
                             tone={isCredentialProfileConfigured(effectiveProfile) ? "success" : "error"}
                           >
-                            {isCredentialProfileConfigured(effectiveProfile) ? "key set" : "no key"}
+                            {isCredentialProfileConfigured(effectiveProfile) ? t("settings.keySet") : "no key"}
                           </StatusChip>
                         </div>
                         <div className="settings-form-row">
@@ -1195,7 +1232,7 @@ export function SettingsPage({
                             <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
                             <input
                               type="password"
-                              placeholder="Paste API key for this credential profile"
+                              placeholder={t("settings.pasteApiKeyProfile")}
                               value={apiKeyDrafts[provider.id] ?? ""}
                               onChange={(event) => setApiKeyDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))}
                             />
@@ -1230,9 +1267,9 @@ export function SettingsPage({
                       <div className="settings-device-login-section">
                         {provider.credentialConfigured ? (
                           <div className="settings-device-login-header">
-                            <span>Connected via OAuth</span>
+                            <span>{t("settings.connectedViaOAuth")}</span>
                             <StatusChip className="settings-status available" tone="success">
-                              credential ready
+                              {t("settings.credReady")}
                             </StatusChip>
                           </div>
                         ) : null}
@@ -1261,39 +1298,39 @@ export function SettingsPage({
                             <p className="settings-hint">Enter this code on the page:</p>
                             <div className="settings-device-login-code">{codexDeviceLogin.userCode}</div>
                             <p className="settings-muted">Waiting for authorization…</p>
-                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>Cancel</Button>
+                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>{t("common.cancel")}</Button>
                           </div>
                         ) : null}
                         {codexDeviceLogin.status === "completed" ? (
                           <div className="settings-device-login-panel">
                             <StatusChip className="settings-status available" tone="success">Login successful</StatusChip>
-                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>Dismiss</Button>
+                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>{t("common.dismiss")}</Button>
                           </div>
                         ) : null}
                       </div>
                     ) : null}
                     {draft.credentialKind !== "api_key" && draft.credentialKind !== "oauth" ? (
                       <p className="settings-hint">
-                        This provider uses <code>{draft.credentialKind}</code> authentication via <code>{draft.credentialSource}</code>. Configure it in <code>{runtimeConfig.configFilePath ?? "config.json"}</code>.
+                        This provider uses <code>{draft.credentialKind}</code>{t("settings.authVia")}<code>{draft.credentialSource}</code>{t("settings.configureIn")}<code>{runtimeConfig.configFilePath ?? "config.json"}</code>.
                       </p>
                     ) : null}
                     {/* Advanced: full provider config */}
                     <details className="settings-advanced">
-                      <summary>Advanced</summary>
+                      <summary>{t("settings.tabAdvanced")}</summary>
                       <div className="settings-form-row">
                         <label>
-                          <span>Transport <small className="settings-muted">(read-only)</small></span>
+                          <span>{t("settings.transportLabel")} <small className="settings-muted">{t("settings.readOnlySuffix")}</small></span>
                           <input value={provider.transport} readOnly disabled />
                         </label>
                         <label>
-                          <span>Base URL</span>
+                          <span>{t("settings.baseUrl")}</span>
                           <input value={draft.baseUrl} onChange={(event) => updateProviderDraft(provider.id, { baseUrl: event.target.value })} />
                         </label>
                       </div>
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? "Saving…" : `Save ${provider.id}`}
+                        {runtimeConfigSaving ? t("settings.saving") : `Save ${provider.id}`}
                       </Button>
                       <Button
                         type="button"
@@ -1320,31 +1357,31 @@ export function SettingsPage({
         <Card className="settings-card" hidden={activeTab !== "advanced"}>
           <div className="settings-card-head">
             <div>
-              <span className="eyebrow">Advanced</span>
-              <h2>Raw config</h2>
+              <span className="eyebrow">{t("settings.tabAdvanced")}</span>
+              <h2>{t("settings.rawConfig")}</h2>
             </div>
             <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
-              {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+              {runtimeConfigLoading ? t("settings.refreshing") : t("common.refresh")}
             </Button>
           </div>
           <div className="settings-callout">
-            <strong>Raw config editing is not exposed in the Web GUI yet.</strong>
-            <span>Use the focused tabs for common changes, or edit the config file directly for uncommon runtime fields.</span>
+            <strong>{t("settings.rawConfigNotExposed")}</strong>
+            <span>{t("settings.rawConfigHint")}</span>
           </div>
           <dl className="settings-list compact">
             <div>
-              <dt>Config file</dt>
-              <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
+              <dt>{t("settings.configFile")}</dt>
+              <dd>{runtimeConfig.configFilePath ?? t("settings.notReported")}</dd>
             </div>
             <div>
-              <dt>Model catalog</dt>
+              <dt>{t("settings.modelCatalogLabel")}</dt>
               <dd>
-                {modelCatalog.options.length} model{modelCatalog.options.length === 1 ? "" : "s"} across {groupedModels.length} provider{groupedModels.length === 1 ? "" : "s"}
+                {t("settings.modelCatalogSummary", { models: modelCatalog.options.length, providers: groupedModels.length })}
               </dd>
             </div>
             <div>
-              <dt>Search providers</dt>
-              <dd>{surface?.webSearchProviders.map((provider) => provider.id).join(", ") || "builtin defaults"}</dd>
+              <dt>{t("settings.searchProvidersLabel")}</dt>
+              <dd>{surface?.webSearchProviders.map((provider) => provider.id).join(", ") || t("settings.builtinDefaultsValue")}</dd>
             </div>
           </dl>
         </Card>
@@ -1353,23 +1390,23 @@ export function SettingsPage({
         <Card className="settings-card settings-models" hidden={activeTab !== "advanced"}>
           <div className="settings-card-head">
             <div>
-              <span className="eyebrow">Models / Providers</span>
-              <h2>Model catalog diagnostics</h2>
+              <span className="eyebrow">{t("settings.modelsProvidersLabel")}</span>
+              <h2>{t("settings.modelCatalogDiagnostics")}</h2>
             </div>
             <Button type="button" variant="secondary" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
-              {modelCatalogLoading ? "Refreshing…" : "Refresh"}
+              {modelCatalogLoading ? t("settings.refreshing") : t("common.refresh")}
             </Button>
           </div>
 
           {modelCatalogError ? <div className="settings-error-banner">{modelCatalogError}</div> : null}
           {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
-            <EmptyState className="settings-empty" title="No models returned" description="The runtime has not returned a model catalog yet." />
+            <EmptyState className="settings-empty" title={t("settings.noModelsReturned")} description={t("settings.noModelsReturnedDesc")} />
           ) : null}
 
           <p className="settings-muted">The editable provider accounts above are the primary configuration surface. Use this catalog only to inspect runtime model availability.</p>
           <details className="settings-diagnostics">
             <summary>
-              Show {modelCatalog.options.length} model{modelCatalog.options.length === 1 ? "" : "s"} across {groupedModels.length} provider{groupedModels.length === 1 ? "" : "s"}
+              Show {t("settings.modelCatalogSummary", { models: modelCatalog.options.length, providers: groupedModels.length })}
             </summary>
             <div className="provider-list">
               {groupedModels.map(([provider, models]) => (

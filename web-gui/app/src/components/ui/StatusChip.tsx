@@ -1,5 +1,7 @@
+import type { TFunction } from "i18next";
 import type { HTMLAttributes, ReactNode } from "react";
 
+import { useTranslation } from "react-i18next";
 import { Badge } from "./Badge";
 
 type StatusKind =
@@ -39,7 +41,8 @@ export function StatusChip({ tone = "idle", ...props }: StatusChipProps) {
 }
 
 export function StatusBadge({ kind = "runtime", value, children, title, ...props }: StatusBadgeProps) {
-  const status = describeStatus(kind, value);
+  const { t } = useTranslation();
+  const status = describeStatus(kind, value, t);
   return (
     <StatusChip tone={status.tone} title={title ?? status.title} {...props}>
       {children ?? status.label}
@@ -52,12 +55,12 @@ export function AgentStateBadge({ lifecycle, posture, value, ...props }: AgentSt
   return <StatusBadge kind="agent" value={state} {...props} />;
 }
 
-function describeStatus(kind: StatusKind, rawValue?: string | null): { label: string; title: string; tone: string } {
+function describeStatus(kind: StatusKind, rawValue: string | null | undefined, t: TFunction): { label: string; title: string; tone: string } {
   const value = normalizeStatus(rawValue);
-  const label = statusLabel(kind, value);
+  const label = statusLabel(kind, value, t);
   return {
     label,
-    title: label === value ? value : `${label} · ${value}`,
+    title: label === value || label === prettify(value) ? value : `${label} · ${value}`,
     tone: statusTone(kind, value),
   };
 }
@@ -66,20 +69,29 @@ function normalizeStatus(value?: string | null): string {
   return (value ?? "unknown").trim().toLowerCase().replace(/[_\s]+/g, "-") || "unknown";
 }
 
-function statusLabel(kind: StatusKind, value: string): string {
-  if (kind === "stream" && value === "error") return "Stream error";
-  if (value === "asleep" || value === "idle") return "Ready";
-  if (value === "in-progress") return "In progress";
-  if (value === "needs-input" || value === "input") return "Needs input";
-  if (value === "http" || value === "live") return "Live";
-  if (value === "fixture" || value === "preview") return "Preview";
-  if (value === "syncing") return "Syncing";
-  if (value === "running") return "Running";
-  if (value === "waiting") return "Waiting";
-  if (value === "stale") return "Stale";
-  if (value === "stopped") return "Stopped";
-  if (value === "disconnected") return "Disconnected";
+function prettify(value: string): string {
   return value.replace(/-/g, " ");
+}
+
+function statusLabel(kind: StatusKind, value: string, t: TFunction): string {
+  if (kind === "stream" && value === "error") return t("badge.streamError");
+  if (value === "asleep" || value === "idle") return t("badge.ready");
+  if (value === "in-progress") return t("badge.inProgress");
+  if (value === "needs-input" || value === "input") return t("badge.needsInput");
+  if (value === "http" || value === "live") return t("badge.live");
+  if (value === "fixture" || value === "preview") return t("badge.preview");
+  if (value === "syncing") return t("badge.syncing");
+  if (value === "running") return t("badge.running");
+  if (value === "waiting") return t("badge.waiting");
+  if (value === "stale") return t("badge.stale");
+  if (value === "stopped") return t("badge.stopped");
+  if (value === "disconnected") return t("badge.disconnected");
+  // Try the badge namespace for common runtime values (scopes, states, etc.)
+  const badgeKey = `badge.${value}`;
+  const translated = t(badgeKey);
+  // i18next returns the key itself when no translation exists
+  if (translated !== badgeKey) return translated;
+  return prettify(value);
 }
 
 function statusTone(kind: StatusKind, value: string): string {
