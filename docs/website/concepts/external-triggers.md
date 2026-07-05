@@ -92,9 +92,20 @@ is for the agent's own tracking; the runtime does not interpret it.
 
 ## Security model
 
-Callback tokens are capability secrets.  Tokens can be revoked with
-`CancelExternalTrigger`.  Revoking a trigger invalidates its URL immediately;
-future requests to that URL are rejected.
+Callback tokens are capability secrets. The runtime stores only the hashed
+token, not the raw value — once a token is issued, the raw token is returned
+to the agent's execution context and is never persisted to logs or storage.
+Store it securely on the caller side.
+
+Tokens can be revoked with `CancelExternalTrigger`. Revoking a trigger
+invalidates its URL immediately; future requests to that URL are rejected.
+
+### Reset callback token
+
+The `POST /control/agents/:agent_id/external-triggers/:id/reset-callback`
+endpoint rotates the callback token for an existing trigger. The old token
+is invalidated immediately and a new token is returned. Use this when a
+token has been exposed or as a periodic security rotation.
 
 ## Default ingress capability
 
@@ -120,6 +131,13 @@ CancelExternalTrigger { external_trigger_id: "trigger_abc123" }
 
 This invalidates the callback URLs immediately. Any future requests to those
 URLs will be rejected.
+
+### Agent stop auto-revocation
+
+When an agent is stopped (`holon agent stop`), all of its external triggers
+are automatically revoked. This prevents orphaned callback URLs from
+remaining active after the agent is no longer running. If you restart the
+agent later, new triggers with fresh tokens are provisioned.
 
 ## Integration patterns
 

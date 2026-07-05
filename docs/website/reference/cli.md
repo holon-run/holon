@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-summary: Holon's current command-line interface — verified against holon --help (v0.16.0).
+summary: Holon's command-line interface — verified against holon --help (v0.26.0).
 order: 10
 ---
 <!-- maintenance: regenerate from `holon --help` output when commands change -->
@@ -16,7 +16,7 @@ For scripting guidance, stability levels, and support policy, see
 ## Command Tree
 
 ```
-holon (v0.16.0)
+holon (v0.26.0)
 ├── serve        Start HTTP control plane server
 ├── onboard      Interactive setup wizard or secret-safe diagnostics
 ├── daemon       Background daemon lifecycle
@@ -80,15 +80,30 @@ holon (v0.16.0)
 │   ├── list       List agent enabled skills
 │   ├── enable     Enable a skill for an agent
 │   ├── disable    Disable a skill for an agent
+│   ├── update     Fetch and update skills from remote sources
+│   ├── refresh    Rescan local roots
 │   ├── install    [deprecated] Compatibility alias
 │   └── uninstall  [deprecated] Compatibility alias
 ├── run          One-shot agent interaction
 ├── solve        Solve a GitHub issue or similar target
+├── template     Agent template management
+│   ├── catalog  List installed templates
+│   ├── install  Install a template from a source
+│   ├── remove   Remove an installed template
+│   ├── info     Show template detail
+│   ├── sources  Remote template source management
+│   │   ├── list List configured remote sources
+│   │   ├── add  Add a remote source
+│   │   └── remove Remove a remote source
+│   └── sync     Sync templates from remote sources
 ├── workspace    Workspace management (attach, exit, detach)
 │   ├── attach   Attach to an existing workspace
 │   ├── exit     Exit current workspace
 │   └── detach   Detach from a workspace
 ├── tui          Launch interactive terminal UI
+├── memory-index Memory indexing management
+│   ├── status   Show indexing status
+│   └── rebuild  Rebuild the memory search index
 ├── debug        Debug utilities
 │   ├── prompt   Debug-mode prompt
 │   ├── latency  Show latency metrics

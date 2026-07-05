@@ -99,6 +99,10 @@ holon skills check
 holon skills check my-skill
 ```
 
+> **Note:** Installing an already-installed global skill is idempotent —
+> `holon skills add` skips the install and reports the existing entry without
+> error. This is safe to repeat in scripts and automation.
+
 #### Reconcile library with lock file
 
 ```bash
@@ -165,6 +169,22 @@ holon skills disable my-skill --agent reviewer
 > add/enable and remove/disable model. Prefer the new commands for
 > clarity.
 
+### Skill `uses` shorthand
+
+When adding a GitHub-hosted skill, you can use the `uses` shorthand syntax
+instead of the repository URL:
+
+```bash
+# Full URL form
+holon skills add https://github.com/holon-run/holon/tree/main/skills/ghx --remote
+
+# uses shorthand — same result
+holon skills add holon-run/holon/skills/ghx@main
+```
+
+The `uses` form (`owner/repo/path@ref`) is normalized to the full GitHub URL
+internally. It also accepts `owner/repo/path#ref` as a compatible input.
+
 ### Skill source types
 
 | Source | Flag | Example |
@@ -186,6 +206,10 @@ holon skills disable my-skill --agent reviewer
 | Agent | `holon skills list [--agent]` | List enabled skills |
 | Agent | `holon skills enable <name>` | Enable for an agent |
 | Agent | `holon skills disable <name>` | Disable for an agent |
+
+> **Note:** The `--builtin` flag and `kind = "builtin"` in template manifests
+> have been removed in v0.26.0. Official Holon skills are referenced the same
+> way as any other GitHub-hosted skill.
 
 ## Managing skills via HTTP
 
