@@ -152,7 +152,7 @@ export function AgentOverviewPanel({
         return (
           <CollapsibleInspectorCard
             title={t("rightPanel.workspaces")}
-            summary={`${wsCount} workspace${wsCount !== 1 ? "s" : ""}`}
+            summary={wsCount === 1 ? t("rightPanel.workspaceCount", { count: wsCount }) : t("rightPanel.workspaceCountPlural", { count: wsCount })}
             defaultOpen={true}
           >
             {workspace ? (
@@ -272,7 +272,7 @@ export function AgentOverviewPanel({
 
       <CollapsibleInspectorCard
         title={t("rightPanel.skills")}
-        summary={`${skillCatalog?.catalog.length ?? 0} effective`}
+        summary={t("rightPanel.effectiveCount", { count: skillCatalog?.catalog.length ?? 0 })}
         defaultOpen={false}
       >
         <p className="inspector-muted">
@@ -296,7 +296,7 @@ export function AgentOverviewPanel({
         )}
         <div className="agent-skill-actions">
           <button type="button" className="agent-skill-refresh" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
-            {skillCatalogLoading ? "Refreshing…" : t("common.refresh")}
+            {skillCatalogLoading ? t("common.refreshing") : t("common.refresh")}
           </button>
           <button type="button" onClick={onOpenSkillManager}>
             {t("rightPanel.manageSkills")}…
@@ -404,7 +404,7 @@ export function AgentSkillManagerPanel({
           <span className="eyebrow">{t("rightPanel.userLibrary")}</span>
           <h2>{t("rightPanel.manageSkills")}</h2>
           <p className="inspector-muted">
-            t("rightPanel.manageSkillsDesc")
+            {t("rightPanel.manageSkillsDesc")}
           </p>
         </div>
         <button type="button" onClick={onRefreshAvailableSkills} disabled={availableSkillCatalogLoading}>
@@ -488,6 +488,7 @@ function WorkItemCard({
   featured?: boolean;
   onSelect: (workItem: WorkItemSummary) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
@@ -498,7 +499,7 @@ function WorkItemCard({
         <strong>{workItem.objective}</strong>
         <StatusBadge className="state-chip" kind="work" value={workItem.state} />
       </div>
-      <small>{compactMeta([workItem.current ? "current" : undefined, workItem.planStatus])}</small>
+      <small>{compactMeta([workItem.current ? t("status.current") : undefined, workItem.planStatus])}</small>
       <code>{workItem.id}</code>
     </button>
   );
@@ -526,7 +527,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
         </div>
         <div>
           <dt>{t("common.status")}</dt>
-          <dd>{compactMeta([workItem.current ? "current" : undefined, workItem.state, workItem.planStatus])}</dd>
+          <dd>{compactMeta([workItem.current ? t("status.current") : undefined, workItem.state, workItem.planStatus])}</dd>
         </div>
         {workItem.revision != null ? (
           <div>

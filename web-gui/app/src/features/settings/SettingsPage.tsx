@@ -1002,7 +1002,7 @@ export function SettingsPage({
                     {definition.requiresApiKey && credentialProfile ? (
                       <div className="settings-api-key-section">
                         <div className="settings-api-key-header">
-                          <span>API Key for &quot;{credentialProfile}&quot;</span>
+                          <span>{t("settings.apiKeyFor", { profile: credentialProfile })}</span>
                           <StatusChip
                             className={`settings-status ${credentialReady ? "available" : "unavailable"}`}
                             tone={credentialReady ? "success" : "error"}
@@ -1219,7 +1219,7 @@ export function SettingsPage({
                     {draft.credentialKind === "api_key" ? (
                       <div className="settings-api-key-section">
                         <div className="settings-api-key-header">
-                          <span>API Key for &quot;{effectiveProfile}&quot;</span>
+                          <span>{t("settings.apiKeyFor", { profile: effectiveProfile })}</span>
                           <StatusChip
                             className={`settings-status ${isCredentialProfileConfigured(effectiveProfile) ? "available" : "unavailable"}`}
                             tone={isCredentialProfileConfigured(effectiveProfile) ? "success" : "error"}
