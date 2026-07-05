@@ -96,7 +96,7 @@ pub(super) struct SlashCommandSpec {
     command: SlashCommand,
 }
 
-const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5"];
+const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5", "reset"];
 
 const SLASH_COMMAND_SPECS: [SlashCommandSpec; 22] = [
     SlashCommandSpec {
@@ -200,8 +200,8 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 22] = [
     },
     SlashCommandSpec {
         name: "/display",
-        description: "set chat display mode",
-        usage: "/display <info|verbose|debug|3|4|5>",
+        description: "set or reset selected agent display mode",
+        usage: "/display <info|verbose|debug|3|4|5|reset>",
         arg_hint: SlashArgHint::Values(DISPLAY_MODE_ARGS),
         category: SlashCommandCategory::Runtime,
         arg_rule: SlashArgRule::ExactlyOne,
@@ -952,22 +952,41 @@ impl TuiApp {
                     .into_iter()
                     .next()
                     .expect("slash command /display requires one argument");
-                let display_mode = OperatorDisplayMode::parse(&level)
-                    .ok_or_else(|| anyhow!("/display expects info, verbose, debug, or 3, 4, 5"))?;
+                let agent_id = self
+                    .selected_agent_id()
+                    .ok_or_else(|| anyhow!("No agent selected"))?
+                    .to_string();
+                let reset = level.trim().eq_ignore_ascii_case("reset");
+                let display_mode = if reset {
+                    self.clear_agent_display_mode(&agent_id)
+                } else {
+                    OperatorDisplayMode::parse(&level).ok_or_else(|| {
+                        anyhow!("/display expects info, verbose, debug, 3, 4, 5, or reset")
+                    })?
+                };
                 self.display_mode = display_mode;
+                if !reset {
+                    self.persist_agent_display_mode(&agent_id, display_mode);
+                }
                 if let Some(projection) = self.projection.as_mut() {
                     projection.clear_event_history();
                 }
                 self.chat_text_cache.borrow_mut().take();
                 self.overlay = OverlayState::None;
-                self.status_line = format!(
-                    "Display mode set to {} ({})",
-                    display_mode.name(),
-                    display_mode.display_level()
-                );
-                if self.selected_agent_id().is_some() {
-                    self.begin_bootstrap_selected_agent();
-                }
+                self.status_line = if reset {
+                    format!(
+                        "Display mode reset to {} ({}) for {agent_id}",
+                        display_mode.name(),
+                        display_mode.display_level()
+                    )
+                } else {
+                    format!(
+                        "Display mode set to {} ({}) for {agent_id}",
+                        display_mode.name(),
+                        display_mode.display_level()
+                    )
+                };
+                self.begin_bootstrap_selected_agent();
             }
             SlashCommand::Abort => {
                 let agent_id = match self.selected_agent_id() {
@@ -2942,7 +2961,7 @@ mod tests {
             "/refresh",
             "/clear-status",
             "/debug-prompt",
-            "/display <info|verbose|debug|3|4|5>",
+            "/display <info|verbose|debug|3|4|5|reset>",
             "/abort",
             "/vim",
             "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",

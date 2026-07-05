@@ -72,9 +72,18 @@ impl TuiApp {
     pub(crate) fn new(client: LocalClient, log_writer: TuiLogWriter) -> Self {
         let connection_summary = client.connection_summary();
         let state_path = tui_state_path(&client);
-        let preferred_agent_id = TuiClientState::load(&state_path)
-            .ok()
-            .map(|state| state.last_selected_agent_id);
+        let tui_state = TuiClientState::load(&state_path).ok();
+        let preferred_agent_id = tui_state
+            .as_ref()
+            .map(|state| state.last_selected_agent_id.clone());
+        let display_mode = preferred_agent_id
+            .as_deref()
+            .and_then(|agent_id| {
+                tui_state
+                    .as_ref()
+                    .map(|state| state.effective_display_mode(agent_id))
+            })
+            .unwrap_or(OperatorDisplayMode::DEFAULT);
         let (runtime_tx, runtime_messages) = mpsc::unbounded_channel();
         Self {
             client,
@@ -121,7 +130,7 @@ impl TuiApp {
             overlay: OverlayState::None,
             last_refresh_at: None,
             last_event_at: None,
-            display_mode: OperatorDisplayMode::DEFAULT,
+            display_mode,
             status_line: format!("Connecting to {connection_summary}..."),
             should_quit: false,
             chat_text_cache: std::cell::RefCell::new(None),

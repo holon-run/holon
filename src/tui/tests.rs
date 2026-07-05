@@ -91,7 +91,9 @@ fn test_config() -> AppConfig {
 fn local_tui_restores_persisted_selected_agent_on_initial_agent_list() {
     let config = test_config();
     let state_path = config.home_dir.join("state").join("tui").join("local.json");
-    TuiClientState::new("beta").save(&state_path).unwrap();
+    let mut state = TuiClientState::new("beta");
+    state.set_agent_display_mode("beta", OperatorDisplayMode::Verbose);
+    state.save(&state_path).unwrap();
     let client = LocalClient::new(config).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -105,6 +107,7 @@ fn local_tui_restores_persisted_selected_agent_on_initial_agent_list() {
 
     assert_eq!(change, AgentListChange::RequiresBootstrap);
     assert_eq!(app.selected_agent_id(), Some("beta"));
+    assert_eq!(app.display_mode, OperatorDisplayMode::Verbose);
 }
 
 #[test]
@@ -148,6 +151,29 @@ fn remote_tui_state_scope_uses_hashed_connect_target_without_token() {
     assert!(raw.contains("beta"));
     assert!(!raw.contains("top-secret-token"));
     assert!(!raw.contains("example.test"));
+}
+
+#[test]
+fn recording_selected_agent_preserves_display_preferences() {
+    let config = test_config();
+    let state_path = config.home_dir.join("state").join("tui").join("local.json");
+    let mut state = TuiClientState::new("alpha");
+    state.set_agent_display_mode("alpha", OperatorDisplayMode::Debug);
+    state.save(&state_path).unwrap();
+    let client = LocalClient::new(config).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    app.record_selected_agent("beta");
+
+    let loaded = TuiClientState::load(&state_path).unwrap();
+    assert_eq!(loaded.last_selected_agent_id, "beta");
+    assert_eq!(
+        loaded.effective_display_mode("alpha"),
+        OperatorDisplayMode::Debug
+    );
 }
 
 fn sample_agent_summary(agent_id: &str) -> AgentSummary {
@@ -1911,10 +1937,12 @@ async fn agent_state_overlay_scrolls_and_esc_closes() {
 #[tokio::test]
 async fn slash_display_sets_chat_display_mode() {
     let client = LocalClient::new(test_config()).unwrap();
+    let state_path = tui_state_path(&client);
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
+    app.apply_agent_list(vec![sample_agent_summary("default")]);
     app.composer = ComposerState::from("/display 5");
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -1924,7 +1952,12 @@ async fn slash_display_sets_chat_display_mode() {
     assert_eq!(app.display_mode, OperatorDisplayMode::Debug);
     assert_eq!(app.overlay, OverlayState::None);
     assert_eq!(app.composer.as_str(), "");
-    assert_eq!(app.status_line, "Display mode set to debug (5)");
+    assert_eq!(app.status_line, "Loading agent state for default");
+    let loaded = TuiClientState::load(&state_path).unwrap();
+    assert_eq!(
+        loaded.effective_display_mode("default"),
+        OperatorDisplayMode::Debug
+    );
 }
 
 #[tokio::test]
@@ -1934,6 +1967,7 @@ async fn slash_display_accepts_named_modes() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
+    app.apply_agent_list(vec![sample_agent_summary("default")]);
     app.composer = ComposerState::from("/display VERBOSE");
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -1941,7 +1975,34 @@ async fn slash_display_accepts_named_modes() {
         .unwrap();
 
     assert_eq!(app.display_mode, OperatorDisplayMode::Verbose);
-    assert_eq!(app.status_line, "Display mode set to verbose (4)");
+    assert_eq!(app.status_line, "Loading agent state for default");
+}
+
+#[tokio::test]
+async fn slash_display_reset_clears_selected_agent_override() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let state_path = tui_state_path(&client);
+    let mut state = TuiClientState::new("default");
+    state.set_agent_display_mode("default", OperatorDisplayMode::Debug);
+    state.save(&state_path).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.apply_agent_list(vec![sample_agent_summary("default")]);
+    app.composer = ComposerState::from("/display reset");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.display_mode, OperatorDisplayMode::Info);
+    let loaded = TuiClientState::load(&state_path).unwrap();
+    assert_eq!(
+        loaded.effective_display_mode("default"),
+        OperatorDisplayMode::Info
+    );
+    assert!(loaded.display.per_agent.is_empty());
 }
 
 #[tokio::test]
