@@ -1,5 +1,6 @@
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
+import { useTranslation } from "react-i18next";
 import type {
   AgentTimelineActivity,
   AgentTimelineItemDetail,
@@ -19,7 +20,7 @@ function HydratedActivityDetails({ detailState }: { detailState?: InspectorActiv
       <section className="context-card inspector-card inspector-detail data">
         <div className="context-head">
           <span className="eyebrow">Full detail</span>
-          <strong>Loading…</strong>
+          <strong>{"Loading…"}</strong>
         </div>
         <pre>Fetching full tool/task detail from the runtime API.</pre>
       </section>
@@ -67,7 +68,10 @@ function ToolExecutionDetail({ record }: { record: RuntimeToolExecutionRecord })
   );
 }
 
-export function formatToolExecutionDetail(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+export function formatToolExecutionDetail(record: RuntimeToolExecutionRecord): {
+  text: string;
+  tone: "output" | "data";
+} {
   const knownToolDetail = formatKnownToolExecutionDetail(record);
   if (knownToolDetail) return knownToolDetail;
 
@@ -599,6 +603,7 @@ function formatInspectorJson(value: unknown): string {
 }
 
 export function ActivityInspectorPanel({ activity, detailState }: { activity: AgentTimelineActivity; detailState?: InspectorActivityDetailState }) {
+  const { t } = useTranslation();
   const detail = activity.detail;
   const rawEventText = formatInspectorJson(activity.rawEvent);
   const hydratedDetail = hasHydratedDetail(detailState);

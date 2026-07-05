@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
+import { useTranslation } from "react-i18next";
 import type {
   AgentDetail,
   AgentSummary,
@@ -102,6 +103,7 @@ export function AgentPage({
   onInspectActivity,
   selectedActivityId,
 }: AgentPageProps) {
+  const { t } = useTranslation();
   const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
@@ -304,7 +306,7 @@ export function AgentPage({
             {hasOlderEvents || hasHiddenTimelineItems ? (
               <div className="history-loader">
                 <Button type="button" size="sm" variant="secondary" disabled={loadingOlderEvents} onClick={handleLoadOlderEvents}>
-                  {loadingOlderEvents ? "Loading earlier…" : "Load earlier"}
+                  {loadingOlderEvents ? t("agent.loadingEarlier") : t("agent.loadEarlier")}
                 </Button>
               </div>
             ) : null}
@@ -337,7 +339,7 @@ export function AgentPage({
               <EmptyState
                 className="conversation-empty"
                 icon="↵"
-                title="No conversation activity yet"
+                title={t("agent.noActivity")}
                 description={
                   displayLevel === "info"
                     ? "Send the first operator message, or switch to Verbose/Debug if you want to inspect low-level runtime events."
@@ -416,11 +418,11 @@ export function AgentPage({
                     <div className="model-menu" role="dialog" aria-label="Switch agent model">
                       <div className="model-menu-header">
                         <div>
-                          <strong>Switch model</strong>
-                          <span>Applies immediately when idle; otherwise on the next run.</span>
+                          <strong>{t("agent.switchModel")}</strong>
+                          <span>{t("agent.switchModelHint")}</span>
                         </div>
                         <Button type="button" size="sm" variant="ghost" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
-                          {modelCatalogLoading ? "Loading…" : "Refresh"}
+                          {modelCatalogLoading ? t("common.loading") : t("common.refresh")}
                         </Button>
                       </div>
                       {modelCatalogError ? (
@@ -435,15 +437,15 @@ export function AgentPage({
                         onClick={handleClearModel}
                       >
                         <span>
-                          <strong>Runtime default</strong>
-                          <small>Clear agent override</small>
+                          <strong>{t("agent.runtimeDefault")}</strong>
+                          <small>{t("agent.clearOverride")}</small>
                         </span>
-                        {changingModel === "runtime-default" ? <em>Saving…</em> : null}
+                        {changingModel === "runtime-default" ? <em>{t("common.saving")}</em> : null}
                       </button>
                       <div className="model-picker-grid">
                         <div className="model-picker-section model-picker-providers" aria-label="Providers">
                           <span>
-                            <b>Step 1</b>
+                            <b>{t("agent.step1")}</b>
                             Provider
                           </span>
                           <div className="model-provider-list">
@@ -464,7 +466,7 @@ export function AgentPage({
                         </div>
                         <div className="model-picker-section model-picker-models" aria-label={`${currentProvider} models`}>
                           <span>
-                            <b>Step 2</b>
+                            <b>{t("agent.step2")}</b>
                             {currentProvider} models
                           </span>
                           <div className="model-options" role="listbox" aria-label={`${currentProvider} models`}>
@@ -484,7 +486,7 @@ export function AgentPage({
                                 <span className="model-option-meta">
                                   {option.supportsReasoningEffort ? <small>reasoning</small> : null}
                                   {!option.available ? <small>unavailable</small> : null}
-                                  {changingModel === option.model ? <em>Saving…</em> : null}
+                                  {changingModel === option.model ? <em>{t("common.saving")}</em> : null}
                                 </span>
                               </button>
                             ))}
@@ -495,14 +497,14 @@ export function AgentPage({
                         <EmptyState
                           className="model-picker-empty"
                           icon="⌁"
-                          title="No model catalog yet"
+                          title={t("agent.noModelCatalog")}
                           description="Refresh the runtime model list, or keep using the current agent model."
                         />
                       ) : null}
                     </div>
                   ) : null}
                 </div>
-                <Button className="send-button" type="submit" size="icon" variant="accent" aria-label="Send" disabled={!canSendPrompt}>
+                <Button className="send-button" type="submit" size="icon" variant="accent" aria-label={t("common.send")} disabled={!canSendPrompt}>
                   {sendingPrompt ? "…" : "↑"}
                 </Button>
               </div>
@@ -904,6 +906,7 @@ function WorkingIndicator({
   onInspectActivity: (activity: AgentTimelineActivity) => void;
   onOpenOverview: () => void;
 }) {
+  const { t } = useTranslation();
   const parts = [
     agent.currentWork?.objective,
     agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
@@ -913,7 +916,7 @@ function WorkingIndicator({
     return (
       <button className="working-indicator compact" type="button" onClick={onOpenOverview}>
         <span className="working-activity-dot" aria-hidden="true" />
-        <strong>Working</strong>
+        <strong>{t("agent.working")}</strong>
         {parts.length ? <span>{parts.join(" · ")}</span> : null}
       </button>
     );
@@ -923,7 +926,7 @@ function WorkingIndicator({
     <div className="working-indicator detail">
       <button className="working-activity-header" type="button" onClick={onOpenOverview}>
         <span className="working-activity-dot" aria-hidden="true" />
-        <strong>Working</strong>
+        <strong>{t("agent.working")}</strong>
         {parts.length ? <small>{parts.join(" · ")}</small> : null}
       </button>
       <div className="working-activity-list">

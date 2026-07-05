@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 
 import { parseSkillMarkdown } from "./parseSkillMarkdown";
 import { Button } from "../../components/ui/Button";
@@ -32,6 +33,7 @@ export function SkillsPage({
   onRemoveSkill,
   onOpenSkill,
 }: SkillsPageProps) {
+  const { t } = useTranslation();
   const skills = catalog.catalog;
   const [query, setQuery] = useState("");
   const [scopeFilter, setScopeFilter] = useState<"all" | SkillCatalogEntry["scope"]>("all");
@@ -73,21 +75,21 @@ export function SkillsPage({
     <div className="skills-inner scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
-          <span className="eyebrow">Skill Library</span>
-          <h1>Global Skill Library</h1>
+          <span className="eyebrow">{t("skillsPage.skillLibrary")}</span>
+          <h1>{t("skillsPage.title")}</h1>
           <p>
-            Install reusable skills into the Global Skill Library through the daemon API. Skills are stored under{" "}
-            <code>{libraryRoots.user}</code>; workspace and agent-scoped skills may also appear in the effective catalog.
+            {t("skillsPage.description")}
+            <code>{libraryRoots.user}</code>
           </p>
         </div>
-        <div className="skills-actions" aria-label="Skill library actions">
+        <div className="skills-actions" aria-label={t("skillsPage.skillLibrary")}>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
-            {loading ? "Refreshing…" : "Refresh"}
+            {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
         </div>
       </section>
 
-      <section className="skills-summary" aria-label="Skill library summary">
+      <section className="skills-summary" aria-label={t("skillsPage.librarySummary")}>
         {stats.map((stat) => (
           <Card className="skills-stat" key={stat.label}>
             <strong>{stat.value}</strong>
@@ -98,12 +100,12 @@ export function SkillsPage({
 
       {error ? (
         <div className="skills-error" role="alert">
-          <strong>Skill operation failed</strong>
+          <strong>{t("skillsPage.operationFailed")}</strong>
           <span>{error}</span>
         </div>
       ) : null}
       {installJobs.length > 0 ? (
-        <div className="skills-install-jobs" role="status" aria-label="Skill install jobs">
+        <div className="skills-install-jobs" role="status" aria-label={t("skillsPage.installJobs")}>
           {installJobs.map((job) => (
             <div key={job.jobId} className="skills-install-job">
               {(job.status === "queued" || job.status === "running") ? (
@@ -111,7 +113,7 @@ export function SkillsPage({
               ) : null}
               <span className="skills-install-job-source">{job.source}</span>
               <span className={`skills-install-job-status status-${job.status}`}>
-                {job.status === "failed" ? `failed: ${job.error ?? "unknown error"}` : job.status}
+                {job.status === "failed" ? t("skillsPage.installFailed", { error: job.error ?? t("skillsPage.unknownError") }) : job.status}
               </span>
             </div>
           ))}
@@ -122,7 +124,7 @@ export function SkillsPage({
         <CardHeader className="skills-library-head">
           <div>
             <p>
-              Showing {visibleSkills.length} of {skills.length} skills
+              {t("skillsPage.showingSkills", { visible: visibleSkills.length, total: skills.length })}
             </p>
           </div>
           <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
@@ -130,31 +132,31 @@ export function SkillsPage({
         <CardContent>
           <form className="skills-add-form" onSubmit={(event) => void handleAddSkill(event)}>
             <label>
-              <span>Install skill to Global Library</span>
+              <span>{t("skillsPage.installSkill")}</span>
               <select
                 value={addSourceType}
                 onChange={(event) => setAddSourceType(event.target.value as AddSourceType)}
                 disabled={loading}
               >
-                <option value="remote">Remote package</option>
-                <option value="local">Local folder</option>
+                <option value="remote">{t("skillsPage.remotePackage")}</option>
+                <option value="local">{t("skillsPage.localFolder")}</option>
               </select>
             </label>
             <label className="skills-add-source">
-              <span>Source</span>
+              <span>{t("skillsPage.source")}</span>
               <input
                 value={addSource}
-                placeholder={sourcePlaceholder(addSourceType)}
+                placeholder={addSourceType === "local" ? t("skillsPage.sourceLocalPlaceholder") : t("skillsPage.sourceRemotePlaceholder")}
                 onChange={(event) => setAddSource(event.target.value)}
                 disabled={loading}
               />
             </label>
             {addSourceType === "remote" ? (
               <label>
-                <span>Skill</span>
+                <span>{t("skillsPage.skill")}</span>
                 <input
                   value={addSkillName}
-                  placeholder="optional; leave empty to install all skills"
+                  placeholder={t("skillsPage.skillPlaceholder")}
                   onChange={(event) => setAddSkillName(event.target.value)}
                   disabled={loading}
                 />
@@ -162,48 +164,45 @@ export function SkillsPage({
             ) : null}
             {addSourceType === "local" ? (
               <label>
-                <span>Install mode</span>
+                <span>{t("skillsPage.installMode")}</span>
                 <select value={addMode} onChange={(event) => setAddMode(event.target.value as SkillInstallMode)} disabled={loading}>
-                  <option value="linked">Linked local ref</option>
-                  <option value="copied">Copied snapshot</option>
+                  <option value="linked">{t("skillsPage.linkedRef")}</option>
+                  <option value="copied">{t("skillsPage.copiedSnapshot")}</option>
                 </select>
               </label>
             ) : null}
             <Button type="submit" variant="accent" disabled={loading || !addSource.trim()}>
-              Install
+              {t("skillsPage.install")}
             </Button>
           </form>
           <p className="skills-add-help">
-            Remote packages are imported into the Global Library by the skill manager and do not need a link/copy choice here.
-            Leave Skill empty to import every skill under a GitHub repository's <code>skills/</code> directory,
-            or provide one concrete skill such as <code>docx</code>.
-            Local folders can be linked in place or copied as a snapshot.
+            {t("skillsPage.addHelp")}
           </p>
 
           <div className="skills-toolbar" role="search">
             <label className="skills-search">
-              <span>Search skills</span>
+              <span>{t("skillsPage.searchSkills")}</span>
               <input
                 id="skills-search"
                 name="skills-search"
                 type="search"
                 value={query}
-                placeholder="Name, description, or skill id"
+                placeholder={t("skillsPage.searchPlaceholder")}
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
             <label className="skills-scope-filter">
-              <span>Scope</span>
+              <span>{t("skillsPage.scope")}</span>
               <select
                 id="skills-scope"
                 name="skills-scope"
                 value={scopeFilter}
                 onChange={(event) => setScopeFilter(event.target.value as typeof scopeFilter)}
               >
-                <option value="all">All scopes</option>
-                <option value="user">Global</option>
-                <option value="workspace">Workspace</option>
-                <option value="agent">Agent</option>
+                <option value="all">{t("skillsPage.allScopes")}</option>
+                <option value="user">{t("skillsPage.global")}</option>
+                <option value="workspace">{t("skillsPage.workspace")}</option>
+                <option value="agent">{t("skillsPage.agent")}</option>
               </select>
             </label>
           </div>
@@ -223,11 +222,11 @@ export function SkillsPage({
           ) : (
             <EmptyState
               icon="◇"
-              title={loading ? "Loading skills…" : skills.length ? "No skills match the current filters" : "No skills in the global catalog"}
+              title={loading ? t("skillsPage.loading") : skills.length ? t("skillsPage.noMatch") : t("skillsPage.noSkills")}
               description={
                 skills.length
-                  ? "Try a different query or scope filter."
-                  : "Refresh after adding skills through the daemon API or CLI."
+                  ? t("skillsPage.tryDifferentFilter")
+                  : t("skillsPage.refreshAfterAdd")
               }
             />
           )}
@@ -248,20 +247,21 @@ function SkillRow({
   onRemove: (name: string) => void;
   onOpen: (skillId: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <li className="skills-row">
       <button type="button" className="skills-row-open" onClick={() => onOpen(skill.skillId)}>
         <div>
           <strong>{skill.name}</strong>
           <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
-            {skillScopeLabel(skill.scope)}
+            {normalizedSkillScope(skill.scope) === "user" ? t("skillsPage.global") : skill.scope === "workspace" ? t("skillsPage.workspace") : t("skillsPage.agent")}
           </StatusBadge>
         </div>
-        <p>{skill.description || "No description provided."}</p>
+        <p>{skill.description || t("skillsPage.noDescription")}</p>
       </button>
       <div className="skills-row-actions">
         <Button type="button" size="sm" variant="outline" disabled={loading || normalizedSkillScope(skill.scope) !== "user"} onClick={() => onRemove(skill.name)}>
-          Remove
+          {t("skillsPage.remove")}
         </Button>
       </div>
     </li>
@@ -283,12 +283,13 @@ export function SkillDetailPage({
   onBack: () => void;
   onRefresh: () => void;
 }) {
+  const { t } = useTranslation();
   const skill = detail?.skill;
   return (
     <section className="page skill-detail-route" aria-label="Skill detail">
       <nav className="skill-detail-breadcrumb" aria-label="Breadcrumb">
         <button type="button" className="breadcrumb-back" onClick={onBack}>
-          ← Skills
+          {t("skillsPage.back")}
         </button>
         <span className="breadcrumb-sep" aria-hidden="true">/</span>
         <span className="breadcrumb-current">{skill?.name ?? skillId}</span>
@@ -296,13 +297,13 @@ export function SkillDetailPage({
       <div className="skills-inner skill-detail-page scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
-          <span className="eyebrow">Skill detail</span>
+          <span className="eyebrow">{t("skillsPage.skillDetail")}</span>
           <h1>{skill?.name ?? skillId}</h1>
           {skill?.description ? <p>{skill.description}</p> : null}
         </div>
-        <div className="skills-actions" aria-label="Skill detail actions">
+        <div className="skills-actions" aria-label={t("skillsPage.skillDetail")}>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
-            {loading ? "Refreshing…" : "Refresh"}
+            {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
         </div>
       </section>
@@ -310,15 +311,15 @@ export function SkillDetailPage({
       {skill ? (
         <dl className="skills-detail-meta">
           <div className="skills-detail-meta-item">
-            <dt>Scope</dt>
+            <dt>{t("skillsPage.scope")}</dt>
             <dd><code>{skill.scope}</code></dd>
           </div>
           <div className="skills-detail-meta-item">
-            <dt>Skill directory</dt>
+            <dt>{t("skillsPage.skillDirectory")}</dt>
             <dd><code>{skill.skillDir}</code></dd>
           </div>
           <div className="skills-detail-meta-item">
-            <dt>Path</dt>
+            <dt>{t("skillsPage.path")}</dt>
             <dd><code>{collapseHome(skill.path)}</code></dd>
           </div>
         </dl>
@@ -326,7 +327,7 @@ export function SkillDetailPage({
 
       {error || detail?.error ? (
         <div className="skills-error" role="alert">
-          <strong>Skill detail failed</strong>
+          <strong>{t("skillsPage.detailFailed")}</strong>
           <span>{error ?? detail?.error}</span>
         </div>
       ) : null}
@@ -337,11 +338,11 @@ export function SkillDetailPage({
       ) : (
         <EmptyState
           icon="◇"
-          title={loading ? "Loading skill…" : "Skill not found"}
+          title={loading ? t("skillsPage.loadingSkill") : t("skillsPage.notFound")}
           description={
             loading
-              ? "Resolving the skill through the catalog."
-              : "The requested skill id was not found in the Global Skill Library."
+              ? t("skillsPage.resolving")
+              : t("skillsPage.notFoundDesc")
           }
         />
       )}

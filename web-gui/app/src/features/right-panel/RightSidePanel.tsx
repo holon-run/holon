@@ -5,6 +5,7 @@ import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, TaskDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { FileBrowserPanel } from "./FileBrowserPanel";
+import { useTranslation } from "react-i18next";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -57,6 +58,7 @@ export function RightSidePanel({
   onOpenPlanFile,
   onClose,
 }: RightSidePanelProps) {
+  const { t } = useTranslation();
   const PANEL_MIN = 320;
   const PANEL_MAX = typeof window !== "undefined" ? Math.floor(window.innerWidth * 0.7) : 900;
   const PANEL_KEY = "holon:panelWidth";
@@ -115,7 +117,7 @@ export function RightSidePanel({
           ? "Task detail"
           : activeView.kind === "file_browser"
             ? "File browser"
-          : "Agent overview";
+          : t("panel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail"
     ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
@@ -158,7 +160,7 @@ export function RightSidePanel({
               Agent Overview
             </button>
           ) : null}
-          <button type="button" aria-label="Close side panel" onClick={onClose}>
+          <button type="button" aria-label={t("panel.closePanel")} onClick={onClose}>
             ×
           </button>
         </div>

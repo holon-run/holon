@@ -4,6 +4,7 @@ import type React from "react";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import { useTranslation } from "react-i18next";
 
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
@@ -93,6 +94,7 @@ export function AgentOverviewPanel({
   onOpenSkillManager,
   onBrowseFiles,
 }: AgentOverviewPanelProps) {
+  const { t } = useTranslation();
   const workspace = agent.workspaceSummary;
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
@@ -119,15 +121,15 @@ export function AgentOverviewPanel({
         <h2>{agent.id}</h2>
         <dl className="inspector-facts">
           <div>
-            <dt>Model</dt>
+            <dt>{t("agent.model")}</dt>
             <dd>{agent.model}</dd>
           </div>
           <div>
-            <dt>Current work</dt>
+            <dt>{t("agent.currentWork")}</dt>
             <dd>{currentWorkLabel}</dd>
           </div>
           <div>
-            <dt>Scheduling</dt>
+            <dt>{t("agent.scheduling")}</dt>
             <dd>{compactMeta([agent.posture, agent.postureReason])}</dd>
           </div>
         </dl>
@@ -192,7 +194,7 @@ export function AgentOverviewPanel({
                   ) : null}
                 </dl>
                 <details className="inspector-details-list workspace-technical-details">
-                  <summary>Details</summary>
+                  <summary>{t("panel.details")}</summary>
                   <dl className="inspector-facts">
                     <div>
                       <dt>Mode</dt>
@@ -292,7 +294,7 @@ export function AgentOverviewPanel({
         )}
         <div className="agent-skill-actions">
           <button type="button" className="agent-skill-refresh" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
-            {skillCatalogLoading ? "Refreshing…" : "Refresh"}
+            {skillCatalogLoading ? "Refreshing…" : t("common.refresh")}
           </button>
           <button type="button" onClick={onOpenSkillManager}>
             Manage skills…
@@ -354,7 +356,7 @@ export function AgentOverviewPanel({
         <EmptyState
           className="inspector-empty"
           icon="◎"
-          title="No current work item"
+          title={t("panel.noCurrentWork")}
           description="Select a timeline activity to inspect tool output, or continue the conversation from the main pane."
         />
       )}
@@ -500,12 +502,13 @@ function WorkItemCard({
 }
 
 export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState; onOpenPlanFile?: (workspaceId: string, filePath: string) => void }) {
+  const { t } = useTranslation();
   const loading = detailState?.loading && !detailState.workItem;
   const plan = workItem.planArtifact;
   return (
     <article className="work-item-detail inspector-list-item featured">
       <div className="inspector-list-head">
-        <strong>Details</strong>
+        <strong>{t("panel.details")}</strong>
         {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}
       </div>
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
@@ -536,7 +539,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
         ) : null}
         {workItem.resultSummary ? (
           <div>
-            <dt>Result</dt>
+            <dt>{t("inspector.result")}</dt>
             <dd>{workItem.resultSummary}</dd>
           </div>
         ) : null}

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 
 import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtime/types";
 import { useRuntimeStore } from "../../runtime/runtime-store";
+import { useTranslation } from "react-i18next";
 
 interface FileBrowserPanelProps {
   workspaceId: string;
@@ -133,6 +134,7 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
 }
 
 export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, onClose }: FileBrowserPanelProps) {
+  const { t } = useTranslation();
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
   const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
@@ -338,7 +340,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       {error ? <p className="inspector-error">{error}</p> : null}
 
       {loading && !listing ? (
-        <p className="inspector-muted">Loading…</p>
+        <p className="inspector-muted">{t("common.loading")}</p>
       ) : sortedEntries.length === 0 ? (
         <p className="inspector-muted">Empty directory</p>
       ) : (

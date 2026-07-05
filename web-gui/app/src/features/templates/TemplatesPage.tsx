@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
@@ -56,6 +57,7 @@ export function TemplatesPage({
   onDismissDiagnostics,
   onDismissError,
 }: TemplatesPageProps) {
+  const { t } = useTranslation();
   const templates = catalog.catalog;
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | AgentTemplateSourceKind>("all");
@@ -103,15 +105,15 @@ export function TemplatesPage({
     const customId = customSourceId.trim();
     const id = customId ? sanitizeSourceId(customId) : suggestedSourceId;
     if (!id) {
-      setSourceFormError("Enter a GitHub URL so Holon can generate a source id.");
+      setSourceFormError(t("templatesPage.urlRequired"));
       return;
     }
     if (customId && id !== customId) {
-      setSourceFormError(`Custom source id was normalized to "${id}". Use that value or leave custom id empty.`);
+      setSourceFormError(t("templatesPage.idNormalized", { id }));
       return;
     }
     if (existingSourceIds.includes(id)) {
-      setSourceFormError(`Remote source "${id}" already exists.`);
+      setSourceFormError(t("templatesPage.sourceExists", { id }));
       return;
     }
     setSourceFormBusy(true);
@@ -123,7 +125,7 @@ export function TemplatesPage({
         setNewSourceUrl("");
         setNewSourceRef("");
       } else {
-        setSourceFormError("Failed to add remote source.");
+        setSourceFormError(t("templatesPage.addFailed"));
       }
     } catch (error) {
       setSourceFormError(error instanceof Error ? error.message : String(error));
@@ -136,28 +138,25 @@ export function TemplatesPage({
     <div className="templates-inner skills-inner scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
-          <span className="eyebrow">Agent Template Library</span>
-          <h1>Agent Templates</h1>
-          <p>
-            Browse read-only AgentTemplate definitions from global and remote sources. Install/remove user templates
-            through daemon APIs; source configuration can follow in a later settings phase.
-          </p>
+          <span className="eyebrow">{t("templatesPage.templateLibrary")}</span>
+          <h1>{t("templatesPage.title")}</h1>
+          <p>{t("templatesPage.description")}</p>
         </div>
-        <div className="skills-actions" aria-label="Template library actions">
+        <div className="skills-actions" aria-label={t("templatesPage.templateLibrary")}>
           <Button type="button" variant="outline" disabled={loading || syncInProgress} onClick={() => void onSyncSources()}>
-            {syncInProgress ? "Syncing…" : "Sync sources"}
+            {syncInProgress ? t("templatesPage.syncing") : t("templatesPage.syncSources")}
           </Button>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
-            {loading ? "Refreshing…" : "Refresh"}
+            {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
         </div>
       </section>
 
       {error ? (
         <div className="skills-error" role="alert">
-          <strong>Template operation failed</strong>
+          <strong>{t("templatesPage.operationFailed")}</strong>
           <span>{error}</span>
-          <button type="button" className="skills-error-dismiss" aria-label="Dismiss error" onClick={onDismissError}>×</button>
+          <button type="button" className="skills-error-dismiss" aria-label={t("common.dismiss")} onClick={onDismissError}>×</button>
         </div>
       ) : null}
 
@@ -169,14 +168,14 @@ export function TemplatesPage({
 
       {catalog.diagnostics.length > 0 ? (
         <div className="skills-error" role="status">
-          <strong>Catalog diagnostics</strong>
+          <strong>{t("templatesPage.catalogDiagnostics")}</strong>
           {catalog.diagnostics.map((diagnostic, index) => (
             <span key={`${diagnostic.sourceId ?? "catalog"}-${index}`}>
               {diagnostic.sourceId ? `${diagnostic.sourceId}: ` : ""}
               {diagnostic.message}
             </span>
           ))}
-          <button type="button" className="skills-error-dismiss" aria-label="Dismiss diagnostics" onClick={onDismissDiagnostics}>×</button>
+          <button type="button" className="skills-error-dismiss" aria-label={t("common.dismiss")} onClick={onDismissDiagnostics}>×</button>
         </div>
       ) : null}
 
@@ -184,7 +183,7 @@ export function TemplatesPage({
         <CardHeader className="skills-library-head">
           <div>
             <p>
-              Showing {visibleTemplates.length} of {templates.length} templates
+              {t("templatesPage.showingTemplates", { visible: visibleTemplates.length, total: templates.length })}
             </p>
           </div>
         </CardHeader>
@@ -193,42 +192,42 @@ export function TemplatesPage({
 
             <form className="skills-add-form" onSubmit={(event) => void handleInstall(event)}>
               <label className="skills-add-source">
-                <span>Install template</span>
+                <span>{t("templatesPage.installTemplate")}</span>
                 <input
                   value={githubUrl}
-                  placeholder="https://github.com/org/repo/tree/main/agent_templates/name"
+                  placeholder={t("templatesPage.installPlaceholder")}
                   onChange={(event) => setGithubUrl(event.target.value)}
                   disabled={loading}
                 />
               </label>
               <Button type="submit" variant="accent" disabled={loading || !githubUrl.trim()}>
-                Install
+                {t("templatesPage.install")}
               </Button>
             </form>
           </div>
           <p className="skills-add-help">
-            Template content is read-only. Use the + button in Active Agents to create an agent from a template. Removal targets user/global templates; remote entries remain owned by their source.
+            {t("templatesPage.addHelp")}
           </p>
 
           <div className="skills-toolbar" role="search">
             <label className="skills-search">
-              <span>Search templates</span>
+              <span>{t("templatesPage.searchTemplates")}</span>
               <input
                 id="templates-search"
                 name="templates-search"
                 type="search"
                 value={query}
-                placeholder="Name, description, template id, or skill"
+                placeholder={t("templatesPage.searchPlaceholder")}
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
             <label className="skills-scope-filter">
-              <span>Source</span>
+              <span>{t("templatesPage.source")}</span>
               <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}>
-                <option value="all">All sources</option>
-                <option value="user_global">Global</option>
-                <option value="remote">Remote</option>
-                <option value="agent_home">Agent</option>
+                <option value="all">{t("templatesPage.allSources")}</option>
+                <option value="user_global">{t("templatesPage.global")}</option>
+                <option value="remote">{t("templatesPage.remote")}</option>
+                <option value="agent_home">{t("templatesPage.agent")}</option>
               </select>
             </label>
           </div>
@@ -248,11 +247,11 @@ export function TemplatesPage({
           ) : (
             <EmptyState
               icon="▣"
-              title={loading ? "Loading templates…" : templates.length ? "No templates match the current filters" : "No templates in the catalog"}
+              title={loading ? t("templatesPage.loading") : templates.length ? t("templatesPage.noMatch") : t("templatesPage.noTemplates")}
               description={
                 templates.length
-                  ? "Try a different query or source filter."
-                  : "Refresh after installing templates or syncing remote sources."
+                  ? t("templatesPage.tryDifferentFilter")
+                  : t("templatesPage.refreshAfterSync")
               }
             />
           )}
@@ -261,13 +260,13 @@ export function TemplatesPage({
 
       <details className="template-remote-sources-collapse" open>
         <summary className="template-remote-sources-toggle">
-          Remote sources ({catalog.sources.length})
+          {t("templatesPage.remoteSources")} ({catalog.sources.length})
         </summary>
       <Card className="skills-library-card">
         <CardContent>
           <form className="skills-add-form template-remote-source-form" onSubmit={(event) => void handleAddSource(event)}>
             <label className="skills-add-source">
-              <span>GitHub URL</span>
+              <span>{t("templatesPage.githubUrl")}</span>
               <input
                 value={newSourceUrl}
                 placeholder="https://github.com/org/repo/tree/main/agent_templates"
@@ -276,7 +275,7 @@ export function TemplatesPage({
               />
             </label>
             <label>
-              <span>Ref (optional)</span>
+              <span>{t("templatesPage.refOptional")}</span>
               <input
                 value={newSourceRef}
                 placeholder="main"
@@ -285,13 +284,13 @@ export function TemplatesPage({
               />
             </label>
             <div className="template-source-id-preview">
-              <span>Generated source id</span>
-              <strong>{customSourceId.trim() || suggestedSourceId || "generated from GitHub URL"}</strong>
+              <span>{t("templatesPage.generatedSourceId")}</span>
+              <strong>{customSourceId.trim() || suggestedSourceId || t("templatesPage.generatedFromUrl")}</strong>
             </div>
             <details className="template-source-advanced">
-              <summary>Advanced: custom source id</summary>
+              <summary>{t("templatesPage.advancedCustomId")}</summary>
               <label>
-                <span>Custom source id</span>
+                <span>{t("templatesPage.customSourceId")}</span>
                 <input
                   value={customSourceId}
                   placeholder="org-repo"
@@ -301,7 +300,7 @@ export function TemplatesPage({
               </label>
             </details>
             <Button type="submit" variant="accent" disabled={sourceFormBusy || !newSourceUrl.trim()}>
-              Add
+              {t("templatesPage.add")}
             </Button>
           </form>
           {sourceFormError ? <span className="connection-error" role="alert">{sourceFormError}</span> : null}
@@ -323,14 +322,14 @@ export function TemplatesPage({
                   </div>
                   <div className="skills-row-actions">
                     <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void onRemoveRemoteSource(source.sourceId)}>
-                      Remove
+                      {t("templatesPage.remove")}
                     </Button>
                   </div>
                 </li>
               ))}
             </ul>
           ) : (
-            <EmptyState icon="⇄" title="No configured remote template sources" description="Add a GitHub remote source above to sync agent templates." />
+            <EmptyState icon="⇄" title={t("templatesPage.noSources")} description={t("templatesPage.noSourcesDesc")} />
           )}
         </CardContent>
       </Card>
@@ -350,6 +349,7 @@ export function TemplateDetailPage({
   onCreateAgent,
 }: TemplateDetailPageProps) {
   const template = detail?.detail;
+  const { t } = useTranslation();
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
 
   return (
@@ -357,11 +357,11 @@ export function TemplateDetailPage({
       <section className="skill-detail-hero context-card">
         <div>
           <button className="text-button" type="button" onClick={onBack}>
-            ← Agent Templates
+            {t("templatesPage.back")}
           </button>
-          <span className="eyebrow">{template?.schemaVersion ?? "AgentTemplate"}</span>
+          <span className="eyebrow">{template?.schemaVersion ?? t("templatesPage.agentTemplate")}</span>
           <h1>{template?.name ?? catalogId}</h1>
-          <p>{template?.summary || "Read-only template detail from the Holon daemon catalog."}</p>
+          <p>{template?.summary || t("templatesPage.readOnlyDetail")}</p>
           {template ? (
             <div className="template-detail-meta-bar">
               <StatusBadge className="state-chip" kind="connection" value={template.source} />
@@ -370,7 +370,7 @@ export function TemplateDetailPage({
                 <span className="template-detail-meta-path">{template.sourceLocation}</span>
               ) : null}
               {template.skills.length ? (
-                <span className="template-detail-meta-skills">{template.skills.length} skills</span>
+                <span className="template-detail-meta-skills">{t("templatesPage.skillsCount", { count: template.skills.length })}</span>
               ) : null}
             </div>
           ) : null}
@@ -378,15 +378,15 @@ export function TemplateDetailPage({
         <div className="skills-actions">
           {template ? (
             <Button type="button" variant="accent" onClick={() => onCreateAgent(template.template)}>
-              Create Agent
+              {t("templatesPage.createAgent")}
             </Button>
           ) : null}
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
-            {loading ? "Refreshing…" : "Refresh"}
+            {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
           {template?.source === "user_global" ? (
             <Button type="button" variant="outline" disabled={loading} onClick={() => void onRemoveTemplate(template.templateId)}>
-              Remove
+              {t("templatesPage.remove")}
             </Button>
           ) : null}
         </div>
@@ -394,7 +394,7 @@ export function TemplateDetailPage({
 
       {error || detail?.error ? (
         <div className="skills-error" role="alert">
-          <strong>Template detail failed</strong>
+          <strong>{t("templatesPage.detailFailed")}</strong>
           <span>{error ?? detail?.error}</span>
         </div>
       ) : null}
@@ -408,10 +408,10 @@ export function TemplateDetailPage({
               </div>
               <div className="skills-actions">
                 <Button type="button" size="sm" variant={viewMode === "rendered" ? "accent" : "outline"} onClick={() => setViewMode("rendered")}>
-                  Rendered
+                  {t("templatesPage.rendered")}
                 </Button>
                 <Button type="button" size="sm" variant={viewMode === "source" ? "accent" : "outline"} onClick={() => setViewMode("source")}>
-                  Source
+                  {t("templatesPage.sourceView")}
                 </Button>
               </div>
             </CardHeader>
@@ -429,7 +429,7 @@ export function TemplateDetailPage({
           <Card className="skills-library-card">
             <CardHeader className="skills-library-head">
               <div>
-                <p>Included skills</p>
+                <p>{t("templatesPage.includedSkills")}</p>
               </div>
             </CardHeader>
             <CardContent>
@@ -447,13 +447,13 @@ export function TemplateDetailPage({
                   ))}
                 </ul>
               ) : (
-                <EmptyState icon="◇" title="No declared skill dependencies" description="This template does not declare extra skills." />
+                <EmptyState icon="◇" title={t("templatesPage.noSkills")} description={t("templatesPage.noSkillsDesc")} />
               )}
             </CardContent>
           </Card>
         </>
       ) : (
-        <EmptyState icon="▣" title={loading ? "Loading template…" : "Template not found"} description={catalogId} />
+        <EmptyState icon="▣" title={loading ? t("templatesPage.loadingDetail") : t("templatesPage.notFound")} description={catalogId} />
       )}
     </div>
   );
@@ -470,6 +470,7 @@ function TemplateCard({
   onOpen: (catalogId: string) => void;
   onRemove: (templateId: string) => Promise<boolean>;
 }) {
+  const { t } = useTranslation();
   const canRemove = template.source === "user_global";
   return (
     <li className="template-card">
@@ -481,14 +482,14 @@ function TemplateCard({
         <span className="template-card-description">{template.description || template.template}</span>
         <span className="template-card-meta">
           <span>{template.catalogId}</span>
-          {template.includedSkills.length ? <span>{template.includedSkills.length} skills</span> : null}
+          {template.includedSkills.length ? <span>{t("templatesPage.skillsCount", { count: template.includedSkills.length })}</span> : null}
           {template.sourceId ? <span>{template.sourceId}</span> : null}
         </span>
       </button>
       <div className="template-card-actions">
         {canRemove ? (
           <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void onRemove(template.templateId)}>
-            Remove
+            {t("templatesPage.remove")}
           </Button>
         ) : null}
       </div>
