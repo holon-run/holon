@@ -100,10 +100,10 @@ export function AgentOverviewPanel({
   const currentWorkItems = workItems.filter((item) => item.current);
   const openWorkItems = workItems.filter((item) => !item.current && item.state !== "completed");
   const completedWorkItems = workItems.filter((item) => item.state === "completed");
-  const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? "No current work item";
+  const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? t("rightPanel.noCurrentWork");
   const workspaceName = workspace?.name ?? agent.workspace;
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
-  const modeLabel = workspace?.worktree ? "Managed worktree" : workspace?.projectionKind;
+  const modeLabel = workspace?.worktree ? t("rightPanel.managedWorktree") : workspace?.projectionKind;
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
   const hasActiveTasks = agent.activeTaskCount > 0 || Boolean(agent.tasks?.length);
   const selectWorkItem = (workItem: WorkItemSummary) => {
@@ -357,7 +357,7 @@ export function AgentOverviewPanel({
           className="inspector-empty"
           icon="◎"
           title={t("panel.noCurrentWork")}
-          description="Select a timeline activity to inspect tool output, or continue the conversation from the main pane."
+          description={t("rightPanel.noCurrentWorkDesc")}
         />
       )}
     </div>
@@ -602,6 +602,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
 }
 
 export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; detailState?: TaskDetailState }) {
+  const { t } = useTranslation();
   const loading = detailState?.loading && !detailState?.output;
   const output = detailState?.output;
   const taskRecord = output?.task;
@@ -629,7 +630,7 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
           <dd>{compactMeta([status, exitStatus != null ? `exit ${exitStatus}` : undefined])}</dd>
         </div>
         <div>
-          <dt>Kind</dt>
+          <dt>{t("rightPanel.kind")}</dt>
           <dd>{task.kind}</dd>
         </div>
         {task.command ? (
