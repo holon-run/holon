@@ -296,6 +296,9 @@ impl TuiApp {
             .or_else(|| find_agent_index(&agents, self.client.default_agent_id()))
             .unwrap_or_else(|| self.selected_agent.min(agents.len().saturating_sub(1)));
         self.agents = agents;
+        if let Some(agent_id) = self.selected_agent_id().map(ToString::to_string) {
+            self.apply_persisted_display_mode_for(&agent_id);
+        }
 
         if selected_missing {
             self.clear_projection_view();
@@ -442,7 +445,10 @@ impl TuiApp {
         self.status_line = format!("Loading agent state for {agent_id}");
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
-        let display_mode = self.display_mode.name().to_string();
+        let display_mode = self
+            .persisted_display_mode_for(&agent_id)
+            .name()
+            .to_string();
         tokio::spawn({
             let agent_id = agent_id.clone();
             async move {
@@ -538,6 +544,7 @@ impl TuiApp {
         self.stop_stream_task();
         self.selected_agent = target_index;
         self.record_selected_agent(&agent_id);
+        self.apply_persisted_display_mode_for(&agent_id);
         self.projection = Some(projection);
         self.apply_projection_view();
         self.last_refresh_at = Some(Local::now());
@@ -645,12 +652,58 @@ impl TuiApp {
 
     pub(super) fn record_selected_agent(&mut self, agent_id: &str) {
         self.preferred_agent_id = Some(agent_id.to_string());
-        if let Err(err) = TuiClientState::new(agent_id).save(&self.state_path) {
+        let mut state = TuiClientState::load_or_new(&self.state_path, agent_id);
+        state.set_selected_agent(agent_id);
+        if let Err(err) = state.save(&self.state_path) {
             tracing::warn!(
                 error = %err,
                 path = %self.state_path.display(),
                 "failed to persist TUI selected agent"
             );
+        }
+    }
+
+    pub(super) fn persist_agent_display_mode(
+        &mut self,
+        agent_id: &str,
+        display_mode: OperatorDisplayMode,
+    ) {
+        let mut state = TuiClientState::load_or_new(&self.state_path, agent_id);
+        state.set_selected_agent(agent_id);
+        state.set_agent_display_mode(agent_id, display_mode);
+        if let Err(err) = state.save(&self.state_path) {
+            tracing::warn!(
+                error = %err,
+                path = %self.state_path.display(),
+                "failed to persist TUI display mode"
+            );
+        }
+    }
+
+    pub(super) fn clear_agent_display_mode(&mut self, agent_id: &str) -> OperatorDisplayMode {
+        let mut state = TuiClientState::load_or_new(&self.state_path, agent_id);
+        state.set_selected_agent(agent_id);
+        state.clear_agent_display_mode(agent_id);
+        let display_mode = state.effective_display_mode(agent_id);
+        if let Err(err) = state.save(&self.state_path) {
+            tracing::warn!(
+                error = %err,
+                path = %self.state_path.display(),
+                "failed to persist TUI display reset"
+            );
+        }
+        display_mode
+    }
+
+    pub(super) fn apply_persisted_display_mode_for(&mut self, agent_id: &str) {
+        self.display_mode = self.persisted_display_mode_for(agent_id);
+    }
+
+    pub(super) fn persisted_display_mode_for(&self, agent_id: &str) -> OperatorDisplayMode {
+        if let Ok(state) = TuiClientState::load(&self.state_path) {
+            state.effective_display_mode(agent_id)
+        } else {
+            OperatorDisplayMode::DEFAULT
         }
     }
 
