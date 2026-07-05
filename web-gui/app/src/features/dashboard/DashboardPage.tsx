@@ -54,7 +54,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
             <div className="metric-strip" aria-label={t("dashboard.runtimeMetrics")}>
               {metrics.map((metric) => (
                 <div className={`metric-card ${metric.tone ?? "default"}`} key={metric.label}>
-                  <span>{metric.label}</span>
+                  <span>{t(metric.label)}</span>
                   <strong>{metric.value}</strong>
                 </div>
               ))}

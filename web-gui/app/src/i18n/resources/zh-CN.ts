@@ -102,6 +102,8 @@ const zh: Record<string, any> = {
     token: "Token",
   },
   dashboard: {
+    needsAttention: "需要关注",
+    activeTasks: "活跃任务",
     roster: "智能体列表",
     agents: "智能体",
     available: "本地运行时中有 {{count}} 个可用",
@@ -629,6 +631,9 @@ const zh: Record<string, any> = {
   },
 
   agent: {
+    model: "模型",
+    currentWork: "当前工作",
+    scheduling: "调度",
     switchModelHint: "空闲时立即生效；否则在下次运行时生效。",
     runtimeDefault: "运行时默认",
     clearOverride: "清除智能体覆盖",

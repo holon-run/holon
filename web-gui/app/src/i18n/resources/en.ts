@@ -99,6 +99,8 @@ const en = {
     token: "Token",
   },
   dashboard: {
+    needsAttention: "Needs attention",
+    activeTasks: "Active tasks",
     roster: "Roster",
     agents: "Agents",
     available: "{{count}} available in the local runtime",
@@ -626,6 +628,9 @@ const en = {
   },
 
   agent: {
+    model: "Model",
+    currentWork: "Current work",
+    scheduling: "Scheduling",
     switchModelHint: "Applies immediately when idle; otherwise on the next run.",
     runtimeDefault: "Runtime default",
     clearOverride: "Clear agent override",
