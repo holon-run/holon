@@ -3,6 +3,7 @@ use crate::tui::app::ComposerEditMode;
 use crate::tui::keymap::{
     resolve_key, ComposerAction, KeyContext, ScrollAction, SlashMenuAction, TuiKeyAction,
 };
+use crate::tui::overlay::{TemplateCatalogMode, TemplateUrlInputMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ enum SlashCommand {
     Agent,
     Skills,
     SkillCatalog,
+    Templates,
     SkillAdd,
     SkillRemove,
     SkillEnable,
@@ -96,7 +98,7 @@ pub(super) struct SlashCommandSpec {
 
 const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5"];
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 21] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 22] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -249,6 +251,15 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 21] = [
         category: SlashCommandCategory::Skills,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::SkillCatalog,
+    },
+    SlashCommandSpec {
+        name: "/templates",
+        description: "show agent template catalog",
+        usage: "/templates",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Agent,
+        arg_rule: SlashArgRule::None,
+        command: SlashCommand::Templates,
     },
     SlashCommandSpec {
         name: "/skill-add",
@@ -527,6 +538,12 @@ fn parse_skill_catalog_entries(value: &serde_json::Value) -> Option<Vec<SkillCat
     serde_json::from_value(value.get("catalog")?.clone()).ok()
 }
 
+fn parse_template_catalog_entries(
+    value: &serde_json::Value,
+) -> Option<Vec<AgentTemplateCatalogEntry>> {
+    serde_json::from_value(value.get("catalog")?.clone()).ok()
+}
+
 fn skill_install_mode_label(mode: &crate::types::SkillInstallMode) -> &'static str {
     match mode {
         crate::types::SkillInstallMode::Linked => "linked",
@@ -752,6 +769,9 @@ impl TuiApp {
                 );
             }
             OverlayState::DebugPromptInput { composer } => {
+                composer.insert_str(&paste_single_line_text(text));
+            }
+            OverlayState::TemplateUrlInput { composer, .. } => {
                 composer.insert_str(&paste_single_line_text(text));
             }
             _ => {}
@@ -982,10 +1002,11 @@ impl TuiApp {
                     self.status_line = format!("Switching to agent {requested_agent_id}");
                 }
                 AgentSlashAction::Create(agent_id) => {
-                    self.client.create_agent(&agent_id).await?;
-                    self.overlay = OverlayState::None;
-                    self.status_line = format!("Created agent {agent_id}");
-                    self.schedule_agent_list_refresh();
+                    self.open_template_catalog(
+                        TemplateCatalogMode::SelectForAgentCreate,
+                        Some(agent_id),
+                    )
+                    .await?;
                 }
                 AgentSlashAction::Control { action, agent_id } => {
                     let agent_id = agent_id
@@ -1055,6 +1076,10 @@ impl TuiApp {
                         true,
                     );
                 }
+            }
+            SlashCommand::Templates => {
+                self.open_template_catalog(TemplateCatalogMode::Manage, None)
+                    .await?;
             }
             SlashCommand::SkillAdd => {
                 let kind = parse_skill_add_kind(&args)?;
@@ -1298,6 +1323,63 @@ impl TuiApp {
                             catalog,
                             selected,
                             detail_scroll,
+                        };
+                    }
+                }
+                Ok(())
+            }
+            OverlayState::TemplateCatalog {
+                catalog,
+                selected,
+                detail_scroll,
+                mode,
+                pending_agent_id,
+            } => {
+                self.handle_template_catalog_overlay_key(
+                    key,
+                    catalog,
+                    selected,
+                    detail_scroll,
+                    mode,
+                    pending_agent_id,
+                )
+                .await
+            }
+            OverlayState::TemplateUrlInput {
+                mut composer,
+                mode,
+                pending_agent_id,
+            } => {
+                let action = resolve_key(KeyContext::Composer, key);
+                match apply_composer_key_action(action, &mut composer) {
+                    Some(BufferAction::Submit) => {
+                        let url = composer.as_str().trim().to_string();
+                        if url.is_empty() {
+                            self.status_line = "Template URL is empty".into();
+                            self.overlay = OverlayState::TemplateUrlInput {
+                                composer,
+                                mode,
+                                pending_agent_id,
+                            };
+                        } else {
+                            self.apply_template_url_input(mode, pending_agent_id, url)
+                                .await?;
+                        }
+                    }
+                    Some(BufferAction::Cancel) => {
+                        if let Some(agent_id) = pending_agent_id {
+                            self.open_template_catalog(
+                                TemplateCatalogMode::SelectForAgentCreate,
+                                Some(agent_id),
+                            )
+                            .await?;
+                        }
+                    }
+                    None => {
+                        self.overlay = OverlayState::TemplateUrlInput {
+                            composer,
+                            mode,
+                            pending_agent_id,
                         };
                     }
                 }
@@ -1923,6 +2005,33 @@ impl TuiApp {
         }
     }
 
+    async fn open_template_catalog(
+        &mut self,
+        mode: TemplateCatalogMode,
+        pending_agent_id: Option<String>,
+    ) -> Result<()> {
+        let response = self.client.templates_catalog().await?;
+        let Some(catalog) = parse_template_catalog_entries(&response) else {
+            self.status_line = "Failed to list agent templates".into();
+            self.append_command_output(
+                "Agent Templates",
+                "Failed to list agent templates: response did not include a catalog array.",
+                true,
+            );
+            return Ok(());
+        };
+        let count = catalog.len();
+        self.overlay = OverlayState::TemplateCatalog {
+            catalog,
+            selected: 0,
+            detail_scroll: 0,
+            mode,
+            pending_agent_id,
+        };
+        self.status_line = format!("Opened agent template catalog: {count} templates");
+        Ok(())
+    }
+
     async fn handle_agents_overlay_key(&mut self, key: KeyEvent, selected: usize) -> Result<()> {
         match resolve_key(KeyContext::AgentsOverlay, key) {
             TuiKeyAction::OverlayClose => Ok(()),
@@ -2255,6 +2364,211 @@ fn scroll_action_key_code(action: ScrollAction) -> KeyCode {
 }
 
 impl TuiApp {
+    async fn handle_template_catalog_overlay_key(
+        &mut self,
+        key: KeyEvent,
+        catalog: Vec<AgentTemplateCatalogEntry>,
+        selected: usize,
+        detail_scroll: u16,
+        mode: TemplateCatalogMode,
+        pending_agent_id: Option<String>,
+    ) -> Result<()> {
+        let mut selected = selected;
+        let mut detail_scroll = detail_scroll;
+        match resolve_key(KeyContext::TemplatesOverlay, key) {
+            TuiKeyAction::OverlayClose => {}
+            TuiKeyAction::OverlayAccept => {
+                if mode == TemplateCatalogMode::SelectForAgentCreate {
+                    let agent_id = pending_agent_id
+                        .ok_or_else(|| anyhow!("no pending agent id for template selection"))?;
+                    let template = catalog
+                        .get(selected)
+                        .ok_or_else(|| anyhow!("no template selected"))?
+                        .template
+                        .clone();
+                    self.create_agent_with_template(agent_id, Some(template))
+                        .await?;
+                } else {
+                    self.overlay = OverlayState::TemplateCatalog {
+                        catalog,
+                        selected,
+                        detail_scroll,
+                        mode,
+                        pending_agent_id,
+                    };
+                }
+            }
+            TuiKeyAction::Template(action) => {
+                self.handle_template_overlay_action(
+                    catalog,
+                    selected,
+                    detail_scroll,
+                    mode,
+                    pending_agent_id,
+                    action,
+                )
+                .await?;
+            }
+            TuiKeyAction::OverlayMoveUp => {
+                selected = selected.saturating_sub(1);
+                self.overlay = OverlayState::TemplateCatalog {
+                    catalog,
+                    selected,
+                    detail_scroll: 0,
+                    mode,
+                    pending_agent_id,
+                };
+            }
+            TuiKeyAction::OverlayMoveDown => {
+                let max = catalog.len().saturating_sub(1);
+                selected = (selected + 1).min(max);
+                self.overlay = OverlayState::TemplateCatalog {
+                    catalog,
+                    selected,
+                    detail_scroll: 0,
+                    mode,
+                    pending_agent_id,
+                };
+            }
+            TuiKeyAction::OverlayScroll(action) => {
+                detail_scroll = adjust_scroll_for_action(detail_scroll, action);
+                self.overlay = OverlayState::TemplateCatalog {
+                    catalog,
+                    selected,
+                    detail_scroll,
+                    mode,
+                    pending_agent_id,
+                };
+            }
+            _ => {
+                self.overlay = OverlayState::TemplateCatalog {
+                    catalog,
+                    selected,
+                    detail_scroll,
+                    mode,
+                    pending_agent_id,
+                };
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_template_overlay_action(
+        &mut self,
+        catalog: Vec<AgentTemplateCatalogEntry>,
+        selected: usize,
+        detail_scroll: u16,
+        mode: TemplateCatalogMode,
+        pending_agent_id: Option<String>,
+        action: crate::tui::keymap::TemplateOverlayAction,
+    ) -> Result<()> {
+        match action {
+            crate::tui::keymap::TemplateOverlayAction::UrlInput => {
+                self.overlay = OverlayState::TemplateUrlInput {
+                    composer: ComposerState::new(),
+                    mode: match mode {
+                        TemplateCatalogMode::Manage => TemplateUrlInputMode::Install,
+                        TemplateCatalogMode::SelectForAgentCreate => {
+                            TemplateUrlInputMode::CreateAgent
+                        }
+                    },
+                    pending_agent_id,
+                };
+            }
+            crate::tui::keymap::TemplateOverlayAction::Install => {
+                self.overlay = OverlayState::TemplateUrlInput {
+                    composer: ComposerState::new(),
+                    mode: TemplateUrlInputMode::Install,
+                    pending_agent_id,
+                };
+            }
+            crate::tui::keymap::TemplateOverlayAction::Remove => {
+                if let Some(template) = catalog.get(selected) {
+                    if template.source != AgentTemplateSourceKind::UserGlobal {
+                        self.status_line =
+                            "Only user_global templates can be removed from the TUI".into();
+                        self.overlay = OverlayState::TemplateCatalog {
+                            catalog,
+                            selected,
+                            detail_scroll,
+                            mode,
+                            pending_agent_id,
+                        };
+                    } else {
+                        let template_id = template.template_id.clone();
+                        self.client.remove_template(&template_id).await?;
+                        self.status_line = format!("Removed agent template: {template_id}");
+                        self.open_template_catalog(mode, pending_agent_id).await?;
+                    }
+                }
+            }
+            crate::tui::keymap::TemplateOverlayAction::Sync => {
+                self.client.sync_template_remote_sources().await?;
+                self.status_line = "Synced agent template remote sources".into();
+                self.open_template_catalog(mode, pending_agent_id).await?;
+            }
+            crate::tui::keymap::TemplateOverlayAction::CreateWithoutTemplate => {
+                if mode == TemplateCatalogMode::SelectForAgentCreate {
+                    let agent_id = pending_agent_id
+                        .ok_or_else(|| anyhow!("no pending agent id for agent create"))?;
+                    self.create_agent_with_template(agent_id, None).await?;
+                } else {
+                    self.overlay = OverlayState::TemplateCatalog {
+                        catalog,
+                        selected,
+                        detail_scroll,
+                        mode,
+                        pending_agent_id,
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_template_url_input(
+        &mut self,
+        mode: TemplateUrlInputMode,
+        pending_agent_id: Option<String>,
+        url: String,
+    ) -> Result<()> {
+        match mode {
+            TemplateUrlInputMode::CreateAgent => {
+                let agent_id = pending_agent_id
+                    .ok_or_else(|| anyhow!("no pending agent id for template URL"))?;
+                self.create_agent_with_template(agent_id, Some(url)).await?;
+            }
+            TemplateUrlInputMode::Install => {
+                let response = self.client.install_template(url).await?;
+                let template_id = response
+                    .get("template_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("template");
+                self.status_line = format!("Installed agent template: {template_id}");
+                self.open_template_catalog(TemplateCatalogMode::Manage, pending_agent_id)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_agent_with_template(
+        &mut self,
+        agent_id: String,
+        template: Option<String>,
+    ) -> Result<()> {
+        self.client
+            .create_agent_with_template(&agent_id, template.clone())
+            .await?;
+        self.overlay = OverlayState::None;
+        self.status_line = match template {
+            Some(template) => format!("Created agent {agent_id} with template {template}"),
+            None => format!("Created agent {agent_id} without template"),
+        };
+        self.schedule_agent_list_refresh();
+        Ok(())
+    }
+
     async fn handle_task_overlay_action(
         &mut self,
         selected: usize,

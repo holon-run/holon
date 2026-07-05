@@ -592,11 +592,19 @@ impl LocalClient {
     }
 
     pub async fn create_agent(&self, agent_id: &str) -> Result<Value> {
+        self.create_agent_with_template(agent_id, None).await
+    }
+
+    pub async fn create_agent_with_template(
+        &self,
+        agent_id: &str,
+        template: Option<String>,
+    ) -> Result<Value> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/create"),
             &CreateAgentRequest {
                 authority_class: Some(AuthorityClass::OperatorInstruction),
-                template: None,
+                template,
             },
         )
         .await
@@ -699,6 +707,44 @@ impl LocalClient {
         let body = self.send(RequestSpec::get(&path), false).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
+    }
+
+    pub async fn templates_catalog(&self) -> Result<Value> {
+        let path = api_path("/templates/catalog");
+        let body = self.send(RequestSpec::get(&path), false).await?;
+        serde_json::from_slice(&body)
+            .with_context(|| format!("failed to decode response body for GET {}", path))
+    }
+
+    pub async fn install_template(&self, github_url: impl Into<String>) -> Result<Value> {
+        self.post_control_json(
+            "/control/templates/install",
+            &crate::types::InstallTemplateRequest {
+                github_url: github_url.into(),
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_template(&self, template_id: &str) -> Result<Value> {
+        self.post_control_json(
+            "/control/templates/remove",
+            &crate::types::RemoveTemplateRequest {
+                template_id: template_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    pub async fn sync_template_remote_sources(&self) -> Result<Value> {
+        self.post_json(
+            "/templates/remote-sources/sync",
+            &crate::types::SyncTemplateRemoteSourcesRequest {
+                source_id: None,
+                force: false,
+            },
+        )
+        .await
     }
 
     pub async fn add_skill(&self, kind: crate::types::SkillInstallKind) -> Result<Value> {
