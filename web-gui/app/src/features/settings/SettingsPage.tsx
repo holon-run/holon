@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
+import { useI18nSettings } from "../../i18n";
+import { LANGUAGE_MODE_OPTIONS } from "../../i18n/types";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
@@ -190,6 +193,8 @@ export function SettingsPage({
   const groupedModels = groupModelsByProvider(modelCatalog.options);
   const availableCount = modelCatalog.options.filter((model) => model.available).length;
   const unavailableCount = modelCatalog.options.length - availableCount;
+  const { t } = useTranslation();
+  const { languageMode, resolvedLanguageLabel, setLanguageMode } = useI18nSettings();
   const surface = runtimeConfig.surface;
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState("");
@@ -629,6 +634,41 @@ export function SettingsPage({
                   <dd>{surface?.visionDefault ? surface.visionDefault : "auto-discovery"}</dd>
                 </div>
               </dl>
+            </Card>
+
+            {/* ── Language ── */}
+            <Card className="settings-card settings-primary-card">
+              <div className="settings-card-head">
+                <div>
+                  <span className="eyebrow">{t("settings.language.label")}</span>
+                  <h2>{t("settings.language.label")}</h2>
+                </div>
+              </div>
+              <p className="settings-muted">{t("settings.language.description")}</p>
+              <div className="settings-form-row">
+                <label>
+                  <span>{t("settings.language.label")}</span>
+                  <select
+                    value={languageMode}
+                    onChange={(event) => setLanguageMode(event.target.value as typeof languageMode)}
+                  >
+                    {LANGUAGE_MODE_OPTIONS.map((mode) => (
+                      <option key={mode} value={mode}>
+                        {mode === "system"
+                          ? t("settings.language.system")
+                          : mode === "en"
+                            ? t("settings.language.english")
+                            : t("settings.language.chineseSimplified")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {languageMode === "system" ? (
+                <p className="settings-muted">
+                  {t("settings.language.systemResolved", { language: resolvedLanguageLabel })}
+                </p>
+              ) : null}
             </Card>
           </div>
         ) : null}

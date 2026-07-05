@@ -11,8 +11,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false && tsc --noEmit -p tsconfig.node.json --pretty false"
   },
   "dependencies": {
+    "i18next": "^26.3.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-i18next": "^17.0.8",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.3.0",
