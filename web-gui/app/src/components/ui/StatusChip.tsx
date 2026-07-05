@@ -87,11 +87,7 @@ function statusLabel(kind: StatusKind, value: string, t: TFunction): string {
   if (value === "stopped") return t("badge.stopped");
   if (value === "disconnected") return t("badge.disconnected");
   // Try the badge namespace for common runtime values (scopes, states, etc.)
-  const badgeKey = `badge.${value}`;
-  const translated = t(badgeKey);
-  // i18next returns the key itself when no translation exists
-  if (translated !== badgeKey) return translated;
-  return prettify(value);
+  return t(`badge.${value}`, { defaultValue: prettify(value) });
 }
 
 function statusTone(kind: StatusKind, value: string): string {

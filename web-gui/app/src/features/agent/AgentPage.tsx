@@ -6,7 +6,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { useTranslation } from "react-i18next";
-import i18next from "i18next";
+import type { TFunction } from "i18next";
 import type {
   AgentDetail,
   AgentSummary,
@@ -134,7 +134,7 @@ export function AgentPage({
   );
   const isWorking = isAgentWorking(activeAgent, sendingPrompt);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
-  const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
+  const timelineTurns = useMemo(() => groupTimelineTurns(timeline, t), [timeline, t]);
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
@@ -629,7 +629,7 @@ interface TimelineTurn {
   items: AgentTimelineItem[];
 }
 
-function groupTimelineTurns(timeline: AgentTimelineItem[]): TimelineTurn[] {
+function groupTimelineTurns(timeline: AgentTimelineItem[], t: TFunction): TimelineTurn[] {
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
 
@@ -641,10 +641,10 @@ function groupTimelineTurns(timeline: AgentTimelineItem[]): TimelineTurn[] {
       current = {
         id: isOperatorBoundary || isTurnBoundary ? `turn:${item.id}` : `activity:${item.id}`,
         label: isOperatorBoundary
-          ? i18next.t("agent.operatorTurn")
+          ? t("agent.operatorTurn")
           : isTurnBoundary
-            ? triggerLabel || i18next.t("agent.turn")
-            : i18next.t("agent.runtimeActivity"),
+            ? triggerLabel || t("agent.turn")
+            : t("agent.runtimeActivity"),
         timestamp: item.timestamp,
         items: isTurnBoundary ? [] : [item],
       };
@@ -941,7 +941,7 @@ function WorkingIndicator({
             type="button"
             onClick={() => onInspectActivity(activity)}
           >
-            <span className="working-activity-icon" aria-label={workingActivityLabel(activity)} title={workingActivityLabel(activity)}>
+            <span className="working-activity-icon" aria-label={workingActivityLabel(activity, t)} title={workingActivityLabel(activity, t)}>
               {workingActivityIcon(activity)}
             </span>
             <span>{workingActivityBody(activity)}</span>
@@ -956,8 +956,8 @@ function workingActivitySlot(activity: AgentTimelineActivity): "assistant" | "ac
   return activity.kind === "assistant" ? "assistant" : "action";
 }
 
-function workingActivityLabel(activity: AgentTimelineActivity): string {
-  return workingActivitySlot(activity) === "assistant" ? i18next.t("agent.assistantMessage") : i18next.t("agent.action");
+function workingActivityLabel(activity: AgentTimelineActivity, t: TFunction): string {
+  return workingActivitySlot(activity) === "assistant" ? t("agent.assistantMessage") : t("agent.action");
 }
 
 function workingActivityIcon(activity: AgentTimelineActivity): string {

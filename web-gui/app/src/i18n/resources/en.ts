@@ -498,6 +498,12 @@ const en = {
     settingsSectionsAria: "Settings sections",
     openWebsite: "Open Holon website",
     openGithub: "Open Holon on GitHub",
+    searchProvidersReady_one: "{{configured}}/{{total}} search provider ready",
+    searchProvidersReady_other: "{{configured}}/{{total}} search providers ready",
+    noApiKeyHint: "DuckDuckGo and native search do not need API keys. Add keys only for API-backed providers below.",
+    visionAutoDiscover: "Leave empty to let ViewImage auto-discover an authenticated image-capable model.",
+    providerReady: "provider ready",
+    providerCredentialMissing: "provider credential missing",
   },
   rightPanel: {
     contextPanel: "Context side panel",

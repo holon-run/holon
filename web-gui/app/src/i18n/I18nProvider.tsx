@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
 import i18n from "./config";
+import { readStoredLanguageMode } from "./storage";
 import { resolveLanguage } from "./resolve";
-import { DEFAULT_LANGUAGE_MODE, LANGUAGE_MODE_STORAGE_KEY, type LanguageMode, type ResolvedLanguage } from "./types";
+import { LANGUAGE_MODE_STORAGE_KEY, type LanguageMode, type ResolvedLanguage } from "./types";
 
 interface I18nSettings {
   /** Persisted user preference (may be "system"). */
@@ -13,18 +14,6 @@ interface I18nSettings {
   resolvedLanguageLabel: string;
   /** Change the persisted mode; also switches i18next immediately. */
   setLanguageMode: (mode: LanguageMode) => void;
-}
-
-function readStoredMode(): LanguageMode {
-  try {
-    const raw = localStorage.getItem(LANGUAGE_MODE_STORAGE_KEY);
-    if (raw === "system" || raw === "en" || raw === "zh-CN") {
-      return raw;
-    }
-  } catch {
-    // localStorage unavailable
-  }
-  return DEFAULT_LANGUAGE_MODE;
 }
 
 const LANGUAGE_LABELS: Record<ResolvedLanguage, string> = {
@@ -40,8 +29,8 @@ const LANGUAGE_LABELS: Record<ResolvedLanguage, string> = {
  * bundled resources, so there is no async loading phase.
  */
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [languageMode, setLanguageModeState] = useState<LanguageMode>(readStoredMode);
-  const [resolvedLanguage, setResolvedLanguage] = useState<ResolvedLanguage>(() => resolveLanguage(readStoredMode()));
+  const [languageMode, setLanguageModeState] = useState<LanguageMode>(readStoredLanguageMode);
+  const [resolvedLanguage, setResolvedLanguage] = useState<ResolvedLanguage>(() => resolveLanguage(readStoredLanguageMode()));
 
   const handleModeChange = useCallback((mode: LanguageMode) => {
     const resolved = resolveLanguage(mode);

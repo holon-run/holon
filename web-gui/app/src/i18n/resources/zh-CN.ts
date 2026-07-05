@@ -500,6 +500,12 @@ const zh: Record<string, any> = {
     settingsSectionsAria: "设置分区",
     openWebsite: "打开 Holon 网站",
     openGithub: "在 GitHub 上打开 Holon",
+    searchProvidersReady_one: "{{configured}}/{{total}} 个搜索提供商就绪",
+    searchProvidersReady_other: "{{configured}}/{{total}} 个搜索提供商就绪",
+    noApiKeyHint: "DuckDuckGo 和原生搜索不需要 API 密钥。仅为下方的 API 提供商添加密钥。",
+    visionAutoDiscover: "留空以让 ViewImage 自动发现已认证的图像能力模型。",
+    providerReady: "提供商就绪",
+    providerCredentialMissing: "提供商凭证缺失",
   },
   rightPanel: {
     contextPanel: "上下文侧面板",

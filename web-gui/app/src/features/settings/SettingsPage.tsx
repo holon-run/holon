@@ -549,17 +549,17 @@ export function SettingsPage({
             <div>
               <span>{t("settings.modelProviders")}</span>
               <strong>
-                {configuredProviderCount}/{surface?.providers.length ?? 0} ready
+                {configuredProviderCount}/{surface?.providers.length ?? 0} {t("settings.readyLabel")}
               </strong>
               <small>{t("settings.credentialHotReload")}</small>
             </div>
             <div>
               <span>{t("settings.webSearch")}</span>
-              <strong>{surface?.webSearch?.enabled ? t("settings.enabled") : "Disabled"}</strong>
+              <strong>{surface?.webSearch?.enabled ? t("settings.enabled") : t("settings.disabled")}</strong>
               <small>
                 {searchProviderCount
-                  ? `${configuredSearchProviderCount}/${searchProviderCount} search provider${searchProviderCount === 1 ? "" : "s"} ready`
-                  : "Using builtin provider defaults"}
+                  ? t("settings.searchProvidersReady", { configured: configuredSearchProviderCount, total: searchProviderCount, count: searchProviderCount })
+                  : t("settings.usingDefaults")}
               </small>
             </div>
             <div>
@@ -738,7 +738,7 @@ export function SettingsPage({
                 </details>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : "Save"}
+                    {runtimeConfigSaving ? t("settings.saving") : t("settings.save")}
                   </Button>
                   {saveMessage ? <span>{saveMessage}</span> : null}
                 </div>
@@ -802,15 +802,15 @@ export function SettingsPage({
                   </datalist>
                 </label>
                 <p className="settings-hint">
-                  Leave empty to let ViewImage auto-discover an authenticated image-capable model.
+                  {t("settings.visionAutoDiscover")}
                 </p>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : "Save Vision"}
+                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveVision")}
                   </Button>
                   {visionDefault ? (
                     <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"}>
-                      {visionProviderReady ? "provider ready" : "provider credential missing"}
+                      {visionProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")}
                     </StatusChip>
                   ) : (
                     <StatusChip className="settings-status available" tone="success">
@@ -873,7 +873,7 @@ export function SettingsPage({
                   <span>{t("settings.allowModelNativeSearch")}</span>
                 </label>
                 <p className="settings-hint">
-                  DuckDuckGo and native search do not need API keys. Add keys only for API-backed providers below.
+                 {t("settings.noApiKeyHint")}
                 </p>
                 <details className="settings-advanced">
                   <summary>{t("settings.tabAdvanced")}</summary>
@@ -908,7 +908,7 @@ export function SettingsPage({
                 </details>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : "Save"}
+                   {runtimeConfigSaving ? t("settings.saving") : t("settings.save")}
                   </Button>
                   {searchSaveMessage ? <span>{searchSaveMessage}</span> : null}
                 </div>

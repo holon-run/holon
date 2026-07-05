@@ -4,7 +4,7 @@ import { initReactI18next } from "react-i18next";
 import en from "./resources/en";
 import zhCN from "./resources/zh-CN";
 import { resolveLanguage } from "./resolve";
-import { DEFAULT_LANGUAGE_MODE } from "./types";
+import { readStoredLanguageMode } from "./storage";
 
 const initialLanguage = readStoredLanguageMode();
 
@@ -34,14 +34,3 @@ export function changeLanguage(lng: "en" | "zh-CN"): Promise<unknown> {
   return i18n.changeLanguage(lng);
 }
 
-function readStoredLanguageMode() {
-  try {
-    const raw = localStorage.getItem("holon.webGui.languageMode.v1");
-    if (raw === "system" || raw === "en" || raw === "zh-CN") {
-      return raw;
-    }
-  } catch {
-    // localStorage unavailable
-  }
-  return DEFAULT_LANGUAGE_MODE;
-}
