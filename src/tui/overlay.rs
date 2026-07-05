@@ -30,6 +30,18 @@ pub(super) enum OverlayState {
         selected: usize,
         detail_scroll: u16,
     },
+    TemplateCatalog {
+        catalog: Vec<AgentTemplateCatalogEntry>,
+        selected: usize,
+        detail_scroll: u16,
+        mode: TemplateCatalogMode,
+        pending_agent_id: Option<String>,
+    },
+    TemplateUrlInput {
+        composer: ComposerState,
+        mode: TemplateUrlInputMode,
+        pending_agent_id: Option<String>,
+    },
     ModelPicker {
         provider: Option<String>,
         filter: String,
@@ -54,6 +66,18 @@ pub(super) enum OverlayState {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TemplateCatalogMode {
+    Manage,
+    SelectForAgentCreate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TemplateUrlInputMode {
+    CreateAgent,
+    Install,
+}
+
 pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
     match &app.overlay {
         OverlayState::None => {}
@@ -73,6 +97,48 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             selected,
             detail_scroll,
         } => draw_skill_catalog_overlay(frame, catalog, *selected, *detail_scroll),
+        OverlayState::TemplateCatalog {
+            catalog,
+            selected,
+            detail_scroll,
+            mode,
+            pending_agent_id,
+        } => draw_template_catalog_overlay(
+            frame,
+            catalog,
+            *selected,
+            *detail_scroll,
+            *mode,
+            pending_agent_id.as_deref(),
+        ),
+        OverlayState::TemplateUrlInput {
+            composer,
+            mode,
+            pending_agent_id,
+        } => {
+            let help = match mode {
+                TemplateUrlInputMode::CreateAgent => pending_agent_id
+                    .as_deref()
+                    .map(|agent_id| {
+                        format!("Enter a GitHub template URL to create agent `{agent_id}` with.")
+                    })
+                    .unwrap_or_else(|| "Enter a GitHub template URL.".into()),
+                TemplateUrlInputMode::Install => {
+                    "Enter a GitHub template URL to install into the user_global library.".into()
+                }
+            };
+            draw_input_modal(
+                frame,
+                match mode {
+                    TemplateUrlInputMode::CreateAgent => "Template URL",
+                    TemplateUrlInputMode::Install => "Install Template",
+                },
+                &help,
+                composer,
+                82,
+                7,
+            )
+        }
         OverlayState::ModelPicker {
             provider,
             filter,
@@ -398,6 +464,115 @@ fn render_skill_catalog_detail(skill: &SkillCatalogEntry) -> String {
             "Use /skill-remove {} to remove it from the Skill Library.",
             skill.name
         ),
+    ]);
+    lines.join("\n")
+}
+
+fn draw_template_catalog_overlay(
+    frame: &mut Frame<'_>,
+    catalog: &[AgentTemplateCatalogEntry],
+    selected: usize,
+    detail_scroll: u16,
+    mode: TemplateCatalogMode,
+    pending_agent_id: Option<&str>,
+) {
+    let popup = centered_rect(94, 82, frame.area());
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(44), Constraint::Min(0)])
+        .split(popup);
+    frame.render_widget(Clear, popup);
+
+    let items = if catalog.is_empty() {
+        vec![ListItem::new("No agent templates in catalog")]
+    } else {
+        catalog
+            .iter()
+            .map(|template| {
+                ListItem::new(format!(
+                    "[{}] {}\n  {}",
+                    template.source.label(),
+                    template.template_id,
+                    render::trim(&template.description, 64)
+                ))
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut state = ListState::default();
+    if !catalog.is_empty() {
+        state.select(Some(selected.min(catalog.len().saturating_sub(1))));
+    }
+    let title = match mode {
+        TemplateCatalogMode::Manage => format!("Agent Templates ({})", catalog.len()),
+        TemplateCatalogMode::SelectForAgentCreate => pending_agent_id
+            .map(|agent_id| format!("Create Agent `{agent_id}` · Select Template"))
+            .unwrap_or_else(|| "Create Agent · Select Template".into()),
+    };
+    let list = List::new(items)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, layout[0], &mut state);
+
+    let detail_text = catalog
+        .get(selected)
+        .map(render_template_catalog_detail)
+        .unwrap_or_else(|| "No template selected.".to_string());
+    let help = match mode {
+        TemplateCatalogMode::Manage => {
+            "Template Detail · Up/Down select · PgUp/PgDn scroll · g URL · i install · r remove · s sync · Esc close"
+        }
+        TemplateCatalogMode::SelectForAgentCreate => {
+            "Template Detail · Enter create · g URL · n no template · i install · r remove · s sync · Esc cancel"
+        }
+    };
+    let detail = Paragraph::new(detail_text)
+        .block(Block::default().title(help).borders(Borders::ALL))
+        .scroll((detail_scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(detail, layout[1]);
+}
+
+fn render_template_catalog_detail(template: &AgentTemplateCatalogEntry) -> String {
+    let mut lines = vec![
+        format!("Template: {}", template.template),
+        format!("Template id: {}", template.template_id),
+        format!("Catalog id: {}", template.catalog_id),
+        format!("Source: {}", template.source.label()),
+    ];
+    if !template.name.trim().is_empty() {
+        lines.push(format!("Name: {}", template.name));
+    }
+    if let Some(path) = &template.path {
+        lines.push(format!("Path: {}", path.display()));
+    }
+    if let Some(source_id) = &template.source_id {
+        lines.push(format!("Source id: {source_id}"));
+    }
+    if let Some(source_url) = &template.source_url {
+        lines.push(format!("Source URL: {source_url}"));
+    }
+    if let Some(resolved_ref) = &template.resolved_ref {
+        lines.push(format!("Resolved ref: {resolved_ref}"));
+    }
+    if let Some(revision) = &template.resolved_revision {
+        lines.push(format!("Revision: {revision}"));
+    }
+    if !template.included_skills.is_empty() {
+        lines.push(format!("Skills: {}", template.included_skills.join(", ")));
+    }
+    if !template.description.trim().is_empty() {
+        lines.extend([
+            "".into(),
+            "Description:".into(),
+            template.description.clone(),
+        ]);
+    }
+    lines.extend([
+        "".into(),
+        "Enter selects this template when creating an agent.".into(),
+        "Use g to paste a GitHub template URL directly.".into(),
+        "Use i/r/s to install, remove user_global templates, or sync remote sources.".into(),
     ]);
     lines.join("\n")
 }

@@ -3,6 +3,42 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::render::TaskOverlayAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TemplateOverlayAction {
+    Install,
+    Remove,
+    Sync,
+    UrlInput,
+    CreateWithoutTemplate,
+}
+
+fn resolve_templates_overlay_key(key: KeyEvent) -> TuiKeyAction {
+    match key.code {
+        KeyCode::Esc => TuiKeyAction::OverlayClose,
+        KeyCode::Enter => TuiKeyAction::OverlayAccept,
+        KeyCode::Up | KeyCode::Char('k') => TuiKeyAction::OverlayMoveUp,
+        KeyCode::Down | KeyCode::Char('j') => TuiKeyAction::OverlayMoveDown,
+        KeyCode::Char('g') | KeyCode::Char('G') => {
+            TuiKeyAction::Template(TemplateOverlayAction::UrlInput)
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            TuiKeyAction::Template(TemplateOverlayAction::Install)
+        }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            TuiKeyAction::Template(TemplateOverlayAction::Remove)
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            TuiKeyAction::Template(TemplateOverlayAction::Sync)
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            TuiKeyAction::Template(TemplateOverlayAction::CreateWithoutTemplate)
+        }
+        _ => scroll_action_for_key(key.code)
+            .map(TuiKeyAction::OverlayScroll)
+            .unwrap_or(TuiKeyAction::Ignore),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum KeyContext {
     Global,
     Main,
@@ -12,6 +48,7 @@ pub(super) enum KeyContext {
     EventsOverlay,
     ScrollOverlay,
     TasksOverlay,
+    TemplatesOverlay,
     ModelPicker,
     ModelEffortPicker,
     DebugPromptInput,
@@ -28,6 +65,7 @@ impl KeyContext {
             KeyContext::EventsOverlay => "events overlay",
             KeyContext::ScrollOverlay => "scroll overlays",
             KeyContext::TasksOverlay => "tasks overlay",
+            KeyContext::TemplatesOverlay => "templates overlay",
             KeyContext::ModelPicker => "model picker",
             KeyContext::ModelEffortPicker => "reasoning effort picker",
             KeyContext::DebugPromptInput => "debug prompt",
@@ -50,6 +88,7 @@ pub(super) enum TuiKeyAction {
     OverlayMoveDown,
     OverlayScroll(ScrollAction),
     Task(TaskOverlayAction),
+    Template(TemplateOverlayAction),
     ModelFilterBackspace,
     InsertChar(char),
     Ignore,
@@ -175,6 +214,7 @@ pub(super) fn resolve_key(context: KeyContext, key: KeyEvent) -> TuiKeyAction {
         KeyContext::EventsOverlay => resolve_events_overlay_key(key),
         KeyContext::ScrollOverlay => resolve_scroll_overlay_key(key),
         KeyContext::TasksOverlay => resolve_tasks_overlay_key(key),
+        KeyContext::TemplatesOverlay => resolve_templates_overlay_key(key),
         KeyContext::ModelPicker => resolve_model_picker_key(key),
         KeyContext::ModelEffortPicker => resolve_list_overlay_key(key),
     }
@@ -193,6 +233,9 @@ pub(super) fn status_hint(context: KeyContext, slash_menu_visible: bool) -> &'st
         KeyContext::EventsOverlay => "Events: Up/Down, PgUp/PgDn, Home/End, Esc",
         KeyContext::ScrollOverlay => "Up/Down, PgUp/PgDn, Home/End, Esc",
         KeyContext::TasksOverlay => "Tasks: Up/Down, PgUp/PgDn, Home/End, f/l/x/i actions, Esc",
+        KeyContext::TemplatesOverlay => {
+            "Templates: Up/Down, Enter select, g URL, i install, r remove, s sync, n no template, Esc"
+        }
         KeyContext::ModelPicker => {
             "Model: type filter, Backspace edit, Up/Down move, Enter select, Esc cancel"
         }
