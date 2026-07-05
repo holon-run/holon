@@ -1,7 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import i18next from "i18next";
+import en from "../../i18n/resources/en";
 
 import { canSearchSelection, formatSearchPreview, searchOptionsForSelection } from "./SearchPage";
 import type { AgentSummary } from "../../runtime/types";
+
+beforeAll(() => {
+  if (!i18next.isInitialized) {
+    i18next.init({ lng: "en", resources: { en: { translation: en } } });
+  }
+});
 
 function agent(id: string): AgentSummary {
   return {

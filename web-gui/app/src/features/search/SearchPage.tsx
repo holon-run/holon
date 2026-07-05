@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -281,10 +282,10 @@ interface FormattedSearchPreview {
 
 export function formatSearchPreview(value: string): FormattedSearchPreview {
   const text = value.trim();
-  if (!text) return { summary: "No preview available.", meta: [], isFormatted: false };
+  if (!text) return { summary: i18next.t("searchPage.noPreview"), meta: [], isFormatted: false };
 
   const messageBody = extractMessageBodyPreview(text);
-  if (messageBody) return { title: "Message body", summary: messageBody, meta: [], isFormatted: true };
+  if (messageBody) return { title: i18next.t("searchPage.messageBody"), summary: messageBody, meta: [], isFormatted: true };
 
   const parsed = parseJsonPreview(text);
   if (!parsed) return { summary: text, meta: [], isFormatted: false };
@@ -389,7 +390,7 @@ function summarizeJsonValue(value: unknown): string {
   const record = asRecord(value);
   if (!record) return String(value);
   const keys = Object.keys(record).slice(0, 6);
-  return keys.length ? `Structured runtime record with ${keys.join(", ")}.` : "Structured runtime record.";
+  return keys.length ? i18next.t("searchPage.structuredRecordWithKeys", { keys: keys.join(", ") }) : i18next.t("searchPage.structuredRecord");
 }
 
 function firstStringField(record: Record<string, unknown>, keys: string[]): string | undefined {

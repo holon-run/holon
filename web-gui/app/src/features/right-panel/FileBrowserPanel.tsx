@@ -330,7 +330,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         <button
           type="button"
           className="file-browser-refresh"
-          aria-label={selectedFile ? "Refresh file content" : "Refresh directory"}
+          aria-label={selectedFile ? t("fileBrowser.refreshFile") : t("fileBrowser.refreshDir")}
           onClick={() => void (selectedFile ? reloadFile() : loadDir(currentPath))}
         >
           ↻

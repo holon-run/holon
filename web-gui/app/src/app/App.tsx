@@ -376,8 +376,8 @@ export function App() {
             href="https://holon.run"
             target="_blank"
             rel="noreferrer"
-            aria-label="Open Holon website"
-            title="Open Holon website"
+            aria-label={t("common.openWebsite")}
+            title={t("common.openWebsite")}
           >
             <span className="brand-mark" aria-hidden="true">
               <img src={holonMarkUrl} alt="" />
@@ -389,8 +389,8 @@ export function App() {
             href="https://github.com/holon-run/holon"
             target="_blank"
             rel="noreferrer"
-            aria-label="Open Holon on GitHub"
-            title="Open Holon on GitHub"
+            aria-label={t("common.openGithub")}
+            title={t("common.openGithub")}
           >
             <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
               <path

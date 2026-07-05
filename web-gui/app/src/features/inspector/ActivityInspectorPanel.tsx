@@ -1,6 +1,7 @@
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 import type {
   AgentTimelineActivity,
   AgentTimelineItemDetail,
@@ -19,10 +20,10 @@ function HydratedActivityDetails({ detailState }: { detailState?: InspectorActiv
     return (
       <section className="context-card inspector-card inspector-detail data">
         <div className="context-head">
-          <span className="eyebrow">Full detail</span>
-          <strong>{"Loading…"}</strong>
+          <span className="eyebrow">{i18next.t("inspector.fullDetail")}</span>
+          <strong>{i18next.t("inspector.loading")}</strong>
         </div>
-        <pre>Fetching full tool/task detail from the runtime API.</pre>
+        <pre>{i18next.t("inspector.loadingDetail")}</pre>
       </section>
     );
   }
@@ -30,8 +31,8 @@ function HydratedActivityDetails({ detailState }: { detailState?: InspectorActiv
     return (
       <section className="context-card inspector-card inspector-detail data">
         <div className="context-head">
-          <span className="eyebrow">Full detail</span>
-          <strong>Unavailable</strong>
+          <span className="eyebrow">{i18next.t("inspector.fullDetail")}</span>
+          <strong>{i18next.t("inspector.unavailable")}</strong>
         </div>
         <pre>{detailState.error}</pre>
       </section>
@@ -53,14 +54,14 @@ function ToolExecutionDetail({ record }: { record: RuntimeToolExecutionRecord })
     <>
       <section className={`context-card inspector-card inspector-detail ${detail.tone}`}>
         <div className="context-head">
-          <span className="eyebrow">Tool execution</span>
+          <span className="eyebrow">{i18next.t("inspector.toolExecution")}</span>
           <strong>{compactMeta([record.tool_name, record.status])}</strong>
         </div>
         <pre>{detail.text}</pre>
       </section>
       {rawText ? (
         <details className="context-card inspector-card inspector-raw-detail">
-          <summary>Raw tool execution JSON</summary>
+          <summary>{i18next.t("inspector.rawJson")}</summary>
           <pre>{rawText}</pre>
         </details>
       ) : null}
@@ -569,7 +570,7 @@ function TaskOutputDetail({ output }: { output: RuntimeTaskOutputResult }) {
   return (
     <section className="context-card inspector-card inspector-detail output">
       <div className="context-head">
-        <span className="eyebrow">Task output</span>
+        <span className="eyebrow">{i18next.t("inspector.taskOutput")}</span>
         <strong>{compactMeta([output.task?.status ?? output.status, output.retrieval_status])}</strong>
       </div>
       <pre>{text}</pre>
@@ -614,25 +615,25 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
     <div className="inspector-stack">
       <section className="context-card inspector-card">
         <div className="context-head">
-          <span className="eyebrow">Timeline activity</span>
+          <span className="eyebrow">{t("inspector.timelineActivity")}</span>
           <StatusBadge className="state-chip" kind="connection" value={activity.kind} />
         </div>
         <h2>{activity.body || activity.label}</h2>
         <dl className="inspector-facts">
           <div>
-            <dt>Tool</dt>
+            <dt>{t("inspector.tool")}</dt>
             <dd>{activity.label}</dd>
           </div>
           <div>
-            <dt>Meta</dt>
+            <dt>{t("inspector.meta")}</dt>
             <dd>{activity.meta || "—"}</dd>
           </div>
           <div>
-            <dt>Time</dt>
+            <dt>{t("inspector.time")}</dt>
             <dd>{formatInspectorTime(activity.timestamp)}</dd>
           </div>
           <div>
-            <dt>Sources</dt>
+            <dt>{t("inspector.sources")}</dt>
             <dd>{activity.sourceIds.length ? activity.sourceIds.join(", ") : "—"}</dd>
           </div>
         </dl>
@@ -650,8 +651,8 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
         <EmptyState
           className="inspector-empty"
           icon="⌁"
-          title="No structured detail"
-          description="This activity has no projected detail yet. Use the raw event below for the source payload."
+          title={t("inspector.noStructuredDetail")}
+          description={t("inspector.noStructuredDetailDesc")}
         />
       ) : null}
 
@@ -659,7 +660,7 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
 
       {rawEventText ? (
         <details className="context-card inspector-card inspector-raw-detail" open={!structuredDetail}>
-          <summary>Raw event</summary>
+          <summary>{t("inspector.rawEvent")}</summary>
           <pre>{rawEventText}</pre>
         </details>
       ) : null}
@@ -668,17 +669,17 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
 }
 
 export function activityInspectorTitle(activity: AgentTimelineActivity): string {
-  if (activity.detail?.tone === "command") return "Command";
-  if (activity.detail?.tone === "diff") return "Patch";
-  if (activity.detail?.tone === "output") return "Output";
-  return activity.label || "Activity";
+  if (activity.detail?.tone === "command") return i18next.t("inspector.command");
+  if (activity.detail?.tone === "diff") return i18next.t("inspector.patch");
+  if (activity.detail?.tone === "output") return i18next.t("inspector.output");
+  return activity.label || i18next.t("inspector.activity");
 }
 
 function detailLabel(tone?: AgentTimelineItemDetail["tone"]): string {
-  if (tone === "command") return "Command";
-  if (tone === "diff") return "Patch diff";
-  if (tone === "output") return "Output";
-  return "Result";
+  if (tone === "command") return i18next.t("inspector.command");
+  if (tone === "diff") return i18next.t("inspector.patchDiff");
+  if (tone === "output") return i18next.t("inspector.output");
+  return i18next.t("inspector.result");
 }
 
 function formatInspectorTime(value: string): string {

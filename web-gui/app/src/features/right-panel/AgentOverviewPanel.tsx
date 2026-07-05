@@ -5,6 +5,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
@@ -33,6 +34,7 @@ function AgentSkillItem({
   onDisable: (name: string) => void;
   onOpen: (skillId: string) => void;
 }) {
+  const { t } = useTranslation();
   const canDisable = skill.scope === "agent";
   return (
     <li>
@@ -46,7 +48,7 @@ function AgentSkillItem({
       {canDisable ? (
         <div className="agent-skill-row-actions">
           <button type="button" disabled={disabled} onClick={() => onDisable(skill.name)}>
-            Disable
+            {t("rightPanel.disable")}
           </button>
         </div>
       ) : null}
@@ -63,6 +65,7 @@ function ManageAgentSkillItem({
   disabled?: boolean;
   onEnable: (name: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <li>
       <div className="inspector-list-head">
@@ -72,7 +75,7 @@ function ManageAgentSkillItem({
       <small>{skill.description || skill.skillId}</small>
       <div className="agent-skill-row-actions">
         <button type="button" disabled={disabled} onClick={() => onEnable(skill.name)}>
-          Enable
+          {t("rightPanel.enable")}
         </button>
       </div>
     </li>
@@ -114,8 +117,8 @@ export function AgentOverviewPanel({
   return (
     <div className="inspector-stack">
       <CollapsibleInspectorCard
-        title="Agent"
-        summary={`Lifecycle: ${agent.lifecycle}`}
+        title={t("rightPanel.agent")}
+        summary={t("rightPanel.lifecycle", { value: agent.lifecycle })}
         badge={<StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} />}
       >
         <h2>{agent.id}</h2>
@@ -148,7 +151,7 @@ export function AgentOverviewPanel({
           activePath != null && originPath != null && activePath !== originPath;
         return (
           <CollapsibleInspectorCard
-            title="Workspaces"
+            title={t("rightPanel.workspaces")}
             summary={`${wsCount} workspace${wsCount !== 1 ? "s" : ""}`}
             defaultOpen={true}
           >
@@ -160,7 +163,7 @@ export function AgentOverviewPanel({
                 <dl className="inspector-facts">
                   {activePath ? (
                     <div>
-                      <dt>{isWorktreePath ? "Worktree" : "Path"}</dt>
+                      <dt>{isWorktreePath ? t("rightPanel.worktree") : t("rightPanel.path")}</dt>
                       <dd>
                         <a
                           href="#"
@@ -177,7 +180,7 @@ export function AgentOverviewPanel({
                   ) : null}
                   {isWorktreePath && originPath ? (
                     <div>
-                      <dt>Origin</dt>
+                      <dt>{t("rightPanel.origin")}</dt>
                       <dd>
                         <a
                           href="#"
@@ -197,34 +200,34 @@ export function AgentOverviewPanel({
                   <summary>{t("panel.details")}</summary>
                   <dl className="inspector-facts">
                     <div>
-                      <dt>Mode</dt>
+                      <dt>{t("rightPanel.mode")}</dt>
                       <dd>{compactMeta([modeLabel, workspace.accessMode])}</dd>
                     </div>
                     <div>
-                      <dt>Name</dt>
+                      <dt>{t("rightPanel.name")}</dt>
                       <dd>{workspace.name}</dd>
                     </div>
                     <div>
-                      <dt>ID</dt>
+                      <dt>{t("rightPanel.id")}</dt>
                       <dd>{workspace.id}</dd>
                     </div>
                     <div>
-                      <dt>Projection</dt>
+                      <dt>{t("rightPanel.projection")}</dt>
                       <dd>{compactMeta([workspace.projectionKind, workspace.accessMode])}</dd>
                     </div>
                     <div>
-                      <dt>Execution root</dt>
+                      <dt>{t("rightPanel.executionRoot")}</dt>
                       <dd>{workspace.executionRoot ?? "—"}</dd>
                     </div>
                     {showCwd ? (
                       <div>
-                        <dt>Cwd</dt>
+                        <dt>{t("rightPanel.cwd")}</dt>
                         <dd>{workspace.cwd}</dd>
                       </div>
                     ) : null}
                     {workspace.worktree ? (
                       <div>
-                        <dt>Original branch</dt>
+                        <dt>{t("rightPanel.originalBranch")}</dt>
                         <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
                       </div>
                     ) : null}
@@ -232,7 +235,7 @@ export function AgentOverviewPanel({
                 </details>
               </div>
             ) : (
-              <p className="inspector-muted">No workspace bound.</p>
+              <p className="inspector-muted">{t("rightPanel.noWorkspace")}</p>
             )}
 
             {agent.attachedWorkspaces && agent.attachedWorkspaces.length > 0 ? (
@@ -268,13 +271,12 @@ export function AgentOverviewPanel({
       })()}
 
       <CollapsibleInspectorCard
-        title="Skills"
+        title={t("rightPanel.skills")}
         summary={`${skillCatalog?.catalog.length ?? 0} effective`}
         defaultOpen={false}
       >
         <p className="inspector-muted">
-          Agent skills are the effective set from user library, workspace skills, and agent-local overrides. Use Manage skills to
-          choose user-library skills for this agent.
+          {t("rightPanel.skillsDesc")}
         </p>
         {skillCatalogError ? <p className="inspector-error">{skillCatalogError}</p> : null}
         {skillCatalog?.catalog.length ? (
@@ -290,22 +292,22 @@ export function AgentOverviewPanel({
             ))}
           </ul>
         ) : (
-          <p className="inspector-muted">{skillCatalogLoading ? "Loading effective skills…" : "No effective skills reported for this agent."}</p>
+          <p className="inspector-muted">{skillCatalogLoading ? t("rightPanel.loadingSkills") : t("rightPanel.noSkills")}</p>
         )}
         <div className="agent-skill-actions">
           <button type="button" className="agent-skill-refresh" onClick={onRefreshAgentSkills} disabled={skillCatalogLoading}>
             {skillCatalogLoading ? "Refreshing…" : t("common.refresh")}
           </button>
           <button type="button" onClick={onOpenSkillManager}>
-            Manage skills…
+            {t("rightPanel.manageSkills")}…
           </button>
         </div>
       </CollapsibleInspectorCard>
 
       {hasActiveTasks ? (
         <CollapsibleInspectorCard
-          title="Tasks"
-          summary={`${agent.activeTaskCount} active`}
+          title={t("rightPanel.tasks")}
+          summary={t("rightPanel.activeCount", { count: agent.activeTaskCount })}
         >
           {agent.tasks?.length ? (
             <ul className="inspector-list">
@@ -327,8 +329,8 @@ export function AgentOverviewPanel({
 
       {workItems.length ? (
         <CollapsibleInspectorCard
-          title="Work items"
-          summary={`${openWorkItems.length + currentWorkItems.length} open`}
+          title={t("rightPanel.workItems")}
+          summary={t("rightPanel.openCount", { count: openWorkItems.length + currentWorkItems.length })}
           className="current-work"
         >
           {currentWorkItems.map((workItem) => (
@@ -343,7 +345,7 @@ export function AgentOverviewPanel({
           ) : null}
           {completedWorkItems.length ? (
             <details className="inspector-details-list">
-              <summary>{completedWorkItems.length} completed</summary>
+              <summary>{t("rightPanel.completedCount", { count: completedWorkItems.length })}</summary>
               <div className="inspector-nested-stack">
                 {completedWorkItems.map((workItem) => (
                   <WorkItemCard key={workItem.id} workItem={workItem} onSelect={selectWorkItem} />
@@ -379,7 +381,8 @@ export function AgentSkillManagerPanel({
   onRefreshAvailableSkills: () => void;
   onEnableAgentSkill: (name: string) => void;
 }) {
-  const [skillQuery, setSkillQuery] = useState("");
+
+  const { t } = useTranslation();  const [skillQuery, setSkillQuery] = useState("");
   const effectiveSkillNames = useMemo(
     () => new Set((skillCatalog?.catalog ?? []).map((skill) => skill.name)),
     [skillCatalog?.catalog],
@@ -395,35 +398,35 @@ export function AgentSkillManagerPanel({
   }, [availableSkillCatalog?.catalog, effectiveSkillNames, skillQuery]);
 
   return (
-    <section className="agent-skill-manager" aria-label="Manage agent skills">
+    <section className="agent-skill-manager" aria-label={t("rightPanel.manageSkills")}>
       <div className="agent-skill-manager-head">
         <div>
-          <span className="eyebrow">User library</span>
-          <h2>Manage agent skills</h2>
+          <span className="eyebrow">{t("rightPanel.userLibrary")}</span>
+          <h2>{t("rightPanel.manageSkills")}</h2>
           <p className="inspector-muted">
-            Enable adds a linked agent-local entry. Workspace skills are already effective and are not listed here.
+            t("rightPanel.manageSkillsDesc")
           </p>
         </div>
         <button type="button" onClick={onRefreshAvailableSkills} disabled={availableSkillCatalogLoading}>
-          {availableSkillCatalogLoading ? "Refreshing…" : "Refresh catalog"}
+          {availableSkillCatalogLoading ? t("common.refreshing") : t("rightPanel.refreshCatalog")}
         </button>
       </div>
       <label className="agent-skill-search">
-        <span>Search available skills</span>
+        <span>{t("rightPanel.searchAvailable")}</span>
         <input
           type="search"
           value={skillQuery}
-          placeholder="Search by name, description, or id"
-          aria-label="Search available skills"
+          placeholder={t("rightPanel.searchPlaceholder")}
+          aria-label={t("rightPanel.searchAvailable")}
           onChange={(event) => setSkillQuery(event.target.value)}
         />
       </label>
       {availableSkillCatalog?.error ? <p className="inspector-error">{availableSkillCatalog.error}</p> : null}
-      {availableSkillCatalogLoading ? <p className="inspector-muted">Loading available skills…</p> : null}
+      {availableSkillCatalogLoading ? <p className="inspector-muted">{t("rightPanel.loadingAvailable")}</p> : null}
       {availableAgentSkills.length ? (
         <>
           <p className="inspector-muted">
-            Showing {availableAgentSkills.length} available user-library skill{availableAgentSkills.length === 1 ? "" : "s"}.
+            {t("rightPanel.showing", { count: availableAgentSkills.length })}
           </p>
           <ul className="inspector-list agent-skill-list agent-skill-manager-list">
             {availableAgentSkills.map((skill) => (
@@ -439,8 +442,8 @@ export function AgentSkillManagerPanel({
       ) : !availableSkillCatalogLoading ? (
         <p className="inspector-muted">
           {availableSkillCatalog
-            ? "No user-library skills are available to enable for this agent."
-            : "Refresh the catalog to load available skills."}
+            ? t("rightPanel.noAvailableUser")
+            : t("rightPanel.refreshToLoad")}
         </p>
       ) : null}
     </section>
@@ -514,26 +517,26 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
         <div>
-          <dt>Objective</dt>
+          <dt>{t("rightPanel.objective")}</dt>
           <dd>{workItem.objective}</dd>
         </div>
         <div>
-          <dt>Work item</dt>
+          <dt>{t("rightPanel.workItem")}</dt>
           <dd>{workItem.id}</dd>
         </div>
         <div>
-          <dt>Status</dt>
+          <dt>{t("common.status")}</dt>
           <dd>{compactMeta([workItem.current ? "current" : undefined, workItem.state, workItem.planStatus])}</dd>
         </div>
         {workItem.revision != null ? (
           <div>
-            <dt>Revision</dt>
+            <dt>{t("rightPanel.revision")}</dt>
             <dd>{workItem.revision}</dd>
           </div>
         ) : null}
         {workItem.blockedBy ? (
           <div>
-            <dt>Blocked by</dt>
+            <dt>{t("rightPanel.blockedBy")}</dt>
             <dd>{workItem.blockedBy}</dd>
           </div>
         ) : null}
@@ -545,14 +548,14 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
         ) : null}
         {workItem.updatedAt ? (
           <div>
-            <dt>Updated</dt>
+            <dt>{t("rightPanel.updated")}</dt>
             <dd>{formatDateTime(workItem.updatedAt)}</dd>
           </div>
         ) : null}
       </dl>
       {plan?.preview || plan?.path ? (
         <section className="work-item-detail-section">
-          <h3>Plan</h3>
+          <h3>{t("rightPanel.plan")}</h3>
           {plan.path ? (
             onOpenPlanFile && plan.workspaceId && plan.relativePath ? (
               <a href="#" className="workspace-path-link" onClick={(e) => { e.preventDefault(); onOpenPlanFile(plan.workspaceId!, plan.relativePath!); }}>
@@ -567,7 +570,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
       ) : null}
       {workItem.todoList?.length ? (
         <section className="work-item-detail-section">
-          <h3>Todo</h3>
+          <h3>{t("rightPanel.todo")}</h3>
           <ul className="inspector-list">
             {workItem.todoList.map((item, index) => (
               <li key={`${item.state}-${index}`}>
@@ -582,7 +585,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
       ) : null}
       {workItem.workRefs?.length ? (
         <details className="work-item-detail-section work-item-detail-refs">
-          <summary>Refs</summary>
+          <summary>{t("rightPanel.refs")}</summary>
           <ul className="inspector-list">
             {workItem.workRefs.map((ref) => (
               <li key={`${ref.kind}-${ref.ref}`}>
@@ -626,7 +629,7 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
         <div>
-          <dt>Status</dt>
+          <dt>{t("common.status")}</dt>
           <dd>{compactMeta([status, exitStatus != null ? `exit ${exitStatus}` : undefined])}</dd>
         </div>
         <div>
@@ -635,26 +638,26 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
         </div>
         {task.command ? (
           <div>
-            <dt>Command</dt>
+            <dt>{t("rightPanel.command")}</dt>
             <dd><code>{task.command}</code></dd>
           </div>
         ) : null}
         {task.workdir ? (
           <div>
-            <dt>Workdir</dt>
+            <dt>{t("rightPanel.workdir")}</dt>
             <dd><code>{task.workdir}</code></dd>
           </div>
         ) : null}
       </dl>
       {outputText ? (
         <section className="work-item-detail-section">
-          <h3>Output{truncated ? " (truncated)" : ""}</h3>
+          <h3>{truncated ? t("rightPanel.outputTruncated") : t("rightPanel.output")}</h3>
           <pre>{outputText}</pre>
         </section>
       ) : null}
       {stderrText ? (
         <section className="work-item-detail-section">
-          <h3>Stderr</h3>
+          <h3>{t("rightPanel.stderr")}</h3>
           <pre>{stderrText}</pre>
         </section>
       ) : null}

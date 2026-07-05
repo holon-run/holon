@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 
 import { parseSkillMarkdown } from "./parseSkillMarkdown";
 import { Button } from "../../components/ui/Button";
@@ -362,8 +363,8 @@ function sourcePlaceholder(type: AddSourceType) {
 }
 
 function skillScopeLabel(scope: SkillCatalogEntry["scope"]) {
-  if (normalizedSkillScope(scope) === "user") return "Global";
-  if (scope === "workspace") return "Workspace";
+  if (normalizedSkillScope(scope) === "user") return i18next.t("skillsPage.global");
+  if (scope === "workspace") return i18next.t("skillsPage.workspace");
   return "Agent";
 }
 

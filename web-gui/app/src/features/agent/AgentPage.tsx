@@ -6,6 +6,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 import type {
   AgentDetail,
   AgentSummary,
@@ -299,7 +300,7 @@ export function AgentPage({
   }
 
   return (
-    <section className="page agent-page" aria-label="Agent conversation">
+    <section className="page agent-page" aria-label={t("agent.conversationAria")}>
       <div className="agent-workbench">
         <section className="conversation-pane">
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
@@ -342,18 +343,18 @@ export function AgentPage({
                 title={t("agent.noActivity")}
                 description={
                   displayLevel === "info"
-                    ? "Send the first operator message, or switch to Verbose/Debug if you want to inspect low-level runtime events."
-                    : "No runtime events are available for this agent yet. Try refreshing the session or sending an operator message."
+                    ? t("agent.conversationEmpty")
+                    : t("agent.noEventsYet")
                 }
               />
             ) : null}
           </div>
 
-          <form className="composer" aria-label={`Send operator input to ${activeAgent.id}`} onSubmit={handleSubmit}>
+          <form className="composer" aria-label={t("agent.sendInputAria", { id: activeAgent.id })} onSubmit={handleSubmit}>
             <textarea
               ref={composerTextareaRef}
               rows={2}
-              placeholder={`Send operator input to ${activeAgent.id}...`}
+              placeholder={t("agent.sendInputPlaceholder", { id: activeAgent.id })}
               value={prompt}
               disabled={sendingPrompt}
               onChange={(event) => handlePromptChange(event.target.value)}
@@ -386,8 +387,8 @@ export function AgentPage({
                         type="button"
                         variant="ghost"
                         aria-expanded={reasoningPopoverOpen}
-                        aria-label={`Thinking: ${activeReasoningBadge ?? "auto"}`}
-                        title={`Thinking level: ${activeReasoningBadge ?? "auto"}`}
+                        aria-label={t("agent.thinkingAria", { level: activeReasoningBadge ?? "auto" })}
+                        title={t("agent.thinkingLevelValue", { level: activeReasoningBadge ?? "auto" })}
                         onClick={() => setReasoningPopoverOpen((prev) => !prev)}
                       >
                         <svg className="thinking-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -396,7 +397,7 @@ export function AgentPage({
                         <small>{titleCase(activeReasoningBadge ?? "auto")}</small>
                       </Button>
                       {reasoningPopoverOpen ? (
-                        <div className="thinking-popover" role="dialog" aria-label="Thinking level">
+                        <div className="thinking-popover" role="dialog" aria-label={t("agent.thinkingLevel")}>
                           <div className="reasoning-options">
                             {["auto", "low", "medium", "high", "xhigh"].map((effort) => (
                               <button
@@ -415,7 +416,7 @@ export function AgentPage({
                     </div>
                   ) : null}
                   {modelPickerOpen ? (
-                    <div className="model-menu" role="dialog" aria-label="Switch agent model">
+                    <div className="model-menu" role="dialog" aria-label={t("agent.switchModelAria")}>
                       <div className="model-menu-header">
                         <div>
                           <strong>{t("agent.switchModel")}</strong>
@@ -443,7 +444,7 @@ export function AgentPage({
                         {changingModel === "runtime-default" ? <em>{t("common.saving")}</em> : null}
                       </button>
                       <div className="model-picker-grid">
-                        <div className="model-picker-section model-picker-providers" aria-label="Providers">
+                        <div className="model-picker-section model-picker-providers" aria-label={t("agent.providersAria")}>
                           <span>
                             <b>{t("agent.step1")}</b>
                             Provider
@@ -458,18 +459,18 @@ export function AgentPage({
                               >
                                 <strong>{group.provider}</strong>
                                 <small>
-                                  {group.availableCount}/{group.models.length} available
+                                  {group.availableCount}/{group.models.length} {t("agent.available")}
                                 </small>
                               </button>
                             ))}
                           </div>
                         </div>
-                        <div className="model-picker-section model-picker-models" aria-label={`${currentProvider} models`}>
+                        <div className="model-picker-section model-picker-models" aria-label={t("agent.providerModelsAria", { provider: currentProvider })}>
                           <span>
                             <b>{t("agent.step2")}</b>
                             {currentProvider} models
                           </span>
-                          <div className="model-options" role="listbox" aria-label={`${currentProvider} models`}>
+                          <div className="model-options" role="listbox" aria-label={t("agent.providerModelsAria", { provider: currentProvider })}>
                             {currentProviderModels.map((option) => (
                               <button
                                 className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
@@ -484,8 +485,8 @@ export function AgentPage({
                                   <small>{option.model}</small>
                                 </span>
                                 <span className="model-option-meta">
-                                  {option.supportsReasoningEffort ? <small>reasoning</small> : null}
-                                  {!option.available ? <small>unavailable</small> : null}
+                                  {option.supportsReasoningEffort ? <small>{t("agent.reasoningMeta")}</small> : null}
+                                  {!option.available ? <small>{t("agent.unavailableMeta")}</small> : null}
                                   {changingModel === option.model ? <em>{t("common.saving")}</em> : null}
                                 </span>
                               </button>
@@ -498,7 +499,7 @@ export function AgentPage({
                           className="model-picker-empty"
                           icon="⌁"
                           title={t("agent.noModelCatalog")}
-                          description="Refresh the runtime model list, or keep using the current agent model."
+                          description={t("agent.modelRefreshDesc")}
                         />
                       ) : null}
                     </div>
@@ -640,10 +641,10 @@ function groupTimelineTurns(timeline: AgentTimelineItem[]): TimelineTurn[] {
       current = {
         id: isOperatorBoundary || isTurnBoundary ? `turn:${item.id}` : `activity:${item.id}`,
         label: isOperatorBoundary
-          ? "Operator turn"
+          ? i18next.t("agent.operatorTurn")
           : isTurnBoundary
-            ? triggerLabel || "Turn"
-            : "Runtime activity",
+            ? triggerLabel || i18next.t("agent.turn")
+            : i18next.t("agent.runtimeActivity"),
         timestamp: item.timestamp,
         items: isTurnBoundary ? [] : [item],
       };
@@ -694,6 +695,7 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
   selectedActivityId?: string;
   targetTimelineItemId?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <section className="timeline-turn" aria-label={turn.label}>
       <div className="timeline-turn-rail" aria-hidden="true" />
@@ -736,6 +738,7 @@ const TimelineMessage = memo(function TimelineMessage({
   selectedActivityId?: string;
   targetTimelineItemId?: string;
 }) {
+  const { t } = useTranslation();
   const isRuntimeItem = isRuntimeActivityItem(item);
   const activities =
     isRuntimeItem && item.meta === "activity"
@@ -774,11 +777,11 @@ const TimelineMessage = memo(function TimelineMessage({
         <TimelineItemContent item={item} />
         <TimelineItemDetail detail={item.detail} />
       </div>
-      <div className="message-actions" aria-label="Message actions">
-        <button className="message-action" type="button" title="Copy message" onClick={() => copyMessageText(item.body)}>
+      <div className="message-actions" aria-label={t("agent.messageActions")}>
+        <button className="message-action" type="button" title={t("agent.copyMessage")} onClick={() => copyMessageText(item.body)}>
           ⧉
         </button>
-        <button className="message-action" type="button" title="Inspect message" onClick={inspectItem}>
+        <button className="message-action" type="button" title={t("agent.inspectMessage")} onClick={inspectItem}>
           ⓘ
         </button>
       </div>
@@ -844,11 +847,12 @@ function ActivityTrail({
   onInspectActivity: (activity: AgentTimelineActivity) => void;
   selectedActivityId?: string;
 }) {
+  const { t } = useTranslation();
   const visibleActivities = activities;
   const hiddenCount = activities.length - visibleActivities.length;
 
   return (
-    <div className="activity-trail" aria-label="Agent activity">
+    <div className="activity-trail" aria-label={t("agent.agentActivity")}>
       {visibleActivities.map((activity) => {
         const row = (
           <button
@@ -876,7 +880,7 @@ function ActivityTrail({
           </div>
         );
       })}
-      {hiddenCount > 0 ? <div className="activity-more">+{hiddenCount} earlier activities</div> : null}
+      {hiddenCount > 0 ? <div className="activity-more">{t("agent.earlierActivities", { count: hiddenCount })}</div> : null}
     </div>
   );
 }
@@ -909,7 +913,7 @@ function WorkingIndicator({
   const { t } = useTranslation();
   const parts = [
     agent.currentWork?.objective,
-    agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
+    agent.activeTaskCount ? `` : undefined,
   ].filter(Boolean);
 
   if (displayLevel !== "info" || activities.length === 0) {
@@ -953,7 +957,7 @@ function workingActivitySlot(activity: AgentTimelineActivity): "assistant" | "ac
 }
 
 function workingActivityLabel(activity: AgentTimelineActivity): string {
-  return workingActivitySlot(activity) === "assistant" ? "Assistant message" : "Action";
+  return workingActivitySlot(activity) === "assistant" ? i18next.t("agent.assistantMessage") : i18next.t("agent.action");
 }
 
 function workingActivityIcon(activity: AgentTimelineActivity): string {

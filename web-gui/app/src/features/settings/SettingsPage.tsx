@@ -534,13 +534,13 @@ export function SettingsPage({
   }
 
   return (
-    <section className="page settings-page" aria-label="Settings">
+    <section className="page settings-page" aria-label={t("settings.settingsAria")}>
       <div className="page-inner settings-inner">
         <Card className="summary-panel settings-hero">
           <span className="eyebrow">{t("settings.runtimeConfig")}</span>
           <h1>{t("settings.title")}</h1>
           <p>{t("settings.subtitle")}</p>
-          <div className="settings-quickstart" aria-label="Settings overview">
+          <div className="settings-quickstart" aria-label={t("settings.settingsOverviewAria")}>
             <div>
               <span>{t("settings.connection")}</span>
               <strong>{connection.source === "http" ? t("settings.liveRuntime") : t("settings.previewData")}</strong>
@@ -570,7 +570,7 @@ export function SettingsPage({
           </div>
         </Card>
 
-        <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+        <div className="settings-tabs" role="tablist" aria-label={t("settings.settingsSectionsAria")}>
           {settingsTabs.map((tab) => (
             <button
               aria-selected={activeTab === tab.key}
@@ -780,7 +780,7 @@ export function SettingsPage({
             {!surface ? (
               <div className="settings-callout">
                 <strong>{t("settings.visionConfigUnavailable")}</strong>
-                <span>Connect to a live runtime and refresh this page to edit the Vision default model.</span>
+                <span>{t("settings.connectLiveVision")}</span>
               </div>
             ) : (
               <form
@@ -870,7 +870,7 @@ export function SettingsPage({
                     checked={searchBuiltinProviderEnabled}
                     onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
                   />
-                  <span>Allow model-native search when available</span>
+                  <span>{t("settings.allowModelNativeSearch")}</span>
                 </label>
                 <p className="settings-hint">
                   DuckDuckGo and native search do not need API keys. Add keys only for API-backed providers below.
@@ -928,7 +928,7 @@ export function SettingsPage({
           {!surface ? (
             <div className="settings-callout">
               <strong>{t("settings.searchProviderConfigUnavailable")}</strong>
-              <span>Connect to a live runtime and refresh this page to edit web search provider credentials.</span>
+              <span>{t("settings.connectLiveSearchCreds")}</span>
             </div>
           ) : (
             <div className="settings-provider-list">
@@ -991,7 +991,7 @@ export function SettingsPage({
                     ) : null}
                     {definition.requiresApiKey ? (
                       <label>
-                        <span>Credential profile</span>
+                        <span>{t("settings.credentialProfile")}</span>
                         <input
                           value={credentialProfile}
                           onChange={(event) => updateSearchProviderDraft(definition.id, { credentialProfile: event.target.value })}
@@ -1015,7 +1015,7 @@ export function SettingsPage({
                             <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
                             <input
                               type="password"
-                              placeholder="Paste API key for this search provider"
+                              placeholder={t("settings.pasteApiKeySearch")}
                               value={searchApiKeyDrafts[definition.id] ?? ""}
                               onChange={(event) => setSearchApiKeyDrafts((prev) => ({ ...prev, [definition.id]: event.target.value }))}
                             />
@@ -1119,7 +1119,7 @@ export function SettingsPage({
                           <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { baseUrl: event.target.value })} />
                         </label>
                         <label>
-                          <span>Credential profile</span>
+                          <span>{t("settings.credentialProfile")}</span>
                           <input value={draft.credentialProfile ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { credentialProfile: event.target.value })} />
                         </label>
                       </div>
@@ -1132,12 +1132,12 @@ export function SettingsPage({
                   );
                 })}
               <details className="settings-advanced">
-                <summary>Advanced custom provider</summary>
+                <summary>{t("settings.advancedCustomProvider")}</summary>
                 <div className="settings-provider-editor">
                   <header>
                     <div>
-                      <strong>Add custom search provider</strong>
-                      <small>Only use this for custom ids, command providers, or experimental provider kinds.</small>
+                      <strong>{t("settings.addCustomSearchProvider")}</strong>
+                      <small>{t("settings.customSearchProviderHint")}</small>
                     </div>
                   </header>
                   <div className="settings-form-row">
@@ -1178,8 +1178,8 @@ export function SettingsPage({
           </div>
           {!surface ? (
             <div className="settings-callout">
-              <strong>Provider config unavailable</strong>
-              <span>Connect to a live runtime and refresh this page to edit model provider credentials.</span>
+              <strong>{t("settings.providerConfigUnavailable")}</strong>
+              <span>{t("settings.connectLiveModelCreds")}</span>
             </div>
           ) : (
             <div className="settings-provider-list">
@@ -1212,7 +1212,7 @@ export function SettingsPage({
                     </header>
                     {provider.credentialConfigured && !providersWithModels.has(provider.id) ? (
                       <p className="settings-provider-hint">
-                        No models in catalog for this provider — it will not appear in the model selector. Add model entries under <strong>Model overrides</strong> or configure model discovery to make its models available.
+                        {t("settings.noModelsForProvider")}
                       </p>
                     ) : null}
                     {/* Primary: API Key management */}
@@ -1232,7 +1232,7 @@ export function SettingsPage({
                             <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
                             <input
                               type="password"
-                              placeholder="Paste API key for this credential profile"
+                              placeholder={t("settings.pasteApiKeyProfile")}
                               value={apiKeyDrafts[provider.id] ?? ""}
                               onChange={(event) => setApiKeyDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))}
                             />
@@ -1400,7 +1400,7 @@ export function SettingsPage({
 
           {modelCatalogError ? <div className="settings-error-banner">{modelCatalogError}</div> : null}
           {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
-            <EmptyState className="settings-empty" title="No models returned" description="The runtime has not returned a model catalog yet." />
+            <EmptyState className="settings-empty" title={t("settings.noModelsReturned")} description={t("settings.noModelsReturnedDesc")} />
           ) : null}
 
           <p className="settings-muted">The editable provider accounts above are the primary configuration surface. Use this catalog only to inspect runtime model availability.</p>

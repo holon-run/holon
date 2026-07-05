@@ -28,7 +28,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
   const agentCountLabel = t("dashboard.agentsCount", { count: agents.length });
 
   return (
-    <section className="page dashboard-page" aria-label="Dashboard">
+    <section className="page dashboard-page" aria-label={t("dashboard.dashboardAria")}>
       <div className="page-inner dashboard-inner">
         <section className="dashboard-section dashboard-roster-section">
           <div className="section-head dashboard-head">
@@ -51,7 +51,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
           {dashboardState ? <DashboardStateCard state={dashboardState} detail={connection.error ?? connection.summary} /> : null}
 
           {metrics.length > 0 ? (
-            <div className="metric-strip" aria-label="Runtime metrics">
+            <div className="metric-strip" aria-label={t("dashboard.runtimeMetrics")}>
               {metrics.map((metric) => (
                 <div className={`metric-card ${metric.tone ?? "default"}`} key={metric.label}>
                   <span>{metric.label}</span>
@@ -68,7 +68,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
           ) : null}
 
           {isBootstrapping ? (
-            <div className="agent-roster" aria-label="Loading agents">
+            <div className="agent-roster" aria-label={t("dashboard.loadingAgents")}>
               {Array.from({ length: 4 }, (_, index) => (
                 <Card className="agent-card skeleton-card" aria-hidden="true" key={index}>
                   <Skeleton className="skeleton-line short" />
