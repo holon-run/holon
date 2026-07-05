@@ -294,10 +294,47 @@ TUI debug instrumentation is controlled by environment variables:
 | `web.search.providers` | string_list | `[]` | Explicit auto-mode provider attempt order |
 | `web.search.max_results` | integer | `5` | Max results returned |
 | `web.search.max_provider_attempts` | integer | `3` | Max providers attempted by fallback/aggregate routing |
-| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `tavily`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, or `gemini_native` |
+| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `bing`, `searxng`, `brave`, `tavily`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, or `gemini_native` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
 | `web.providers.<name>.capabilities` | json_object | derived | Read-only capability metadata surfaced by `holon config get` and routing diagnostics |
+
+## Agent Template Remote Sources
+
+Configure remote Git repositories that Holon syncs to populate the agent
+template catalog:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `agent_templates.remote_sources` | json_object | `{}` | Map of source IDs to remote source configs |
+| `agent_templates.remote_sources.<id>.url` | string | required | Git repository URL (HTTPS) |
+| `agent_templates.remote_sources.<id>.ref` | string | unset | Git ref (branch, tag, or commit); defaults to repository default branch |
+| `agent_templates.remote_sources.<id>.enabled` | boolean | `true` | Whether this source is enabled for sync |
+| `agent_templates.remote_sources.<id>.credential_profile` | string | unset | Credential profile for private repositories |
+
+The daemon runs a sync job at startup to fetch remote source templates into
+the local template library (`~/.agents/agent_templates`). Re-syncs reuse
+recorded install mappings and refuse to overwrite locally-edited templates.
+
+## HTTP Addressing
+
+Holon separates the **listen address** from the **advertised address**:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `http_addr` | string | `127.0.0.1:7878` | TCP listen address for the HTTP/control API |
+| `advertise_url` | string | unset | Publicly reachable URL advertised to clients (e.g., `https://holon.example.com`) |
+| `callback_base_url` | string | derived | Local loopback URL for same-host webhook callbacks |
+
+`advertise_url` is the URL remote clients (CLI, Web GUI) use to reach the
+daemon. Set it when the daemon is behind a reverse proxy, tunnel, or on a
+different network interface than the default localhost address.
+
+`callback_base_url` is always derived from the listen port as
+`http://127.0.0.1:<port>` unless overridden via the
+`HOLON_CALLBACK_BASE_URL` environment variable. This keeps same-host
+webhook callbacks working even when `advertise_url` is set to a remote
+address.
 
 ## See Also
 

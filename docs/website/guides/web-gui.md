@@ -67,6 +67,25 @@ Results include:
 - **Agent filtering** — Scope results to one or more agent IDs.
 - **Full-text search** — Query the runtime memory index across agents.
 
+### Agent Templates
+
+Browse, install, and create agents from templates directly in the Web GUI.
+Available at `/app/templates`:
+
+- **Template catalog** — Browse installed templates with display name,
+  description, and source information (local, remote URL, or synced source).
+- **Create Agent** — Click a template to open the Create Agent dialog
+  pre-filled with the template selector. The agent is initialized with the
+  template's role contract and pre-installed skills.
+- **Remote sources** — View and manage configured remote template sources
+  (GitHub repositories). The daemon syncs templates from these sources at
+  startup.
+- **Template detail** — Click a template to view its full metadata including
+  the template manifest, pre-installed skills, and source provenance.
+
+For CLI-based template management, see
+[Agent Templates Guide](/guides/agent-templates.md).
+
 ### Skill Management
 
 Manage the Skill Library and agent skills from the browser:
@@ -74,7 +93,7 @@ Manage the Skill Library and agent skills from the browser:
 - **Library catalog** — Browse all skills registered in the local Skill
   Library with name, description, and source information.
 - **Add skill** — Import a skill from a local path, remote URL, or
-  built-in catalog.
+  GitHub `uses` shorthand.
 - **Remove skill** — Remove a skill from the library.
 - **Enable/disable** — Enable or disable individual skills per agent
   with a toggle. View which skills are active for each agent.
@@ -112,6 +131,24 @@ The file browser uses the workspace file browsing API
 (`GET /api/workspaces/{id}/files` and `GET /api/workspaces/{id}/files/{path}`).
 Path traversal and symlink escapes are blocked; file reads are capped
 at 1 MB.
+
+### Navigation improvements
+
+The Web GUI includes several navigation and usability enhancements:
+
+- **Navigation stack** — Pages maintain a history stack so the Back button
+  returns to the previous view with its scroll position and state preserved,
+  rather than resetting to the Dashboard.
+- **File-level refresh** — The file browser supports per-file refresh
+  without reloading the entire page. A refresh button in the file toolbar
+  re-fetches the selected file's content.
+- **Toolbar** — File viewer pages include a toolbar with actions including
+  refresh and markdown source/rendered toggle.
+- **Auto-scroll** — The file viewer auto-scrolls to the bottom when new
+  content arrives (e.g., streaming log output).
+- **Markdown rendered view** — When viewing a `.md` file, a toggle switches
+  between rendered HTML and raw markdown source. The rendered view supports
+  syntax-highlighted code blocks, tables, and links.
 
 ### Settings
 
