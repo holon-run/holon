@@ -34,6 +34,7 @@ const TEMPLATE_PROVENANCE_FILENAME: &str = "template-provenance.json";
 const MANAGED_TEMPLATE_STATE_FILENAME: &str = ".holon-template.json";
 const TEMPLATE_REGISTRY_FILENAME: &str = ".registry.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
+pub const GITHUB_SOLVE_AGENT_TEMPLATE_ID: &str = "holon-github-solve";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID: &str = "official";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL: &str = "https://github.com/holon-run/holon";
 const GITHUB_TEMPLATE_API_BASE_ENV: &str = "HOLON_TEMPLATE_GITHUB_API_BASE";
@@ -65,7 +66,19 @@ const DEFAULT_BUILTIN_TEMPLATE: BuiltinTemplate = BuiltinTemplate {
     template_toml: include_str!("../builtin_templates/holon-default/template.toml"),
     skill_names: &[],
 };
-const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[DEFAULT_BUILTIN_TEMPLATE];
+const GITHUB_SOLVE_BUILTIN_TEMPLATE: BuiltinTemplate = BuiltinTemplate {
+    template_id: GITHUB_SOLVE_AGENT_TEMPLATE_ID,
+    agents_md: include_str!("../agent_templates/holon-github-solve/AGENTS.md"),
+    template_toml: include_str!("../agent_templates/holon-github-solve/template.toml"),
+    skill_names: &[
+        "ghx",
+        "github-issue-solve",
+        "github-pr-fix",
+        "github-review",
+    ],
+};
+const BUILTIN_TEMPLATES: &[BuiltinTemplate] =
+    &[DEFAULT_BUILTIN_TEMPLATE, GITHUB_SOLVE_BUILTIN_TEMPLATE];
 
 struct BuiltinTemplate {
     template_id: &'static str,
@@ -1713,9 +1726,16 @@ fn resolve_template_catalog_entry(
 
     validate_template_install_id(template)?;
     let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
-    catalog
+    if let Some(entry) = catalog
         .into_iter()
         .find(|entry| entry.template_id == template || entry.template == template)
+    {
+        return Ok(entry);
+    }
+    BUILTIN_TEMPLATES
+        .iter()
+        .find(|builtin| builtin.template_id == template)
+        .map(builtin_template_catalog_entry)
         .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home))
 }
 
@@ -1785,11 +1805,10 @@ async fn resolve_catalog_template(
 }
 
 fn resolve_builtin_template(template_id: &str, home_dir: &Path) -> Result<ResolvedTemplate> {
-    let builtin = if template_id == DEFAULT_AGENT_TEMPLATE_ID {
-        &DEFAULT_BUILTIN_TEMPLATE
-    } else {
-        bail!("unknown builtin template id {template_id}");
-    };
+    let builtin = BUILTIN_TEMPLATES
+        .iter()
+        .find(|template| template.template_id == template_id)
+        .ok_or_else(|| anyhow!("unknown builtin template id {template_id}"))?;
     let skill_refs: Vec<TemplateSkillRef> = builtin
         .skill_names
         .iter()
@@ -3561,6 +3580,35 @@ mod tests {
         assert!(!catalog
             .iter()
             .any(|entry| entry.catalog_id == "builtin:holon-default"));
+    }
+
+    #[test]
+    fn github_solve_builtin_template_resolves_without_user_catalog() {
+        let user_home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+
+        let entry = resolve_template_catalog_entry(
+            GITHUB_SOLVE_AGENT_TEMPLATE_ID,
+            user_home.path(),
+            agent_home.path(),
+        )
+        .unwrap();
+        assert_eq!(entry.catalog_id, "builtin:holon-github-solve");
+        assert_eq!(entry.source, AgentTemplateSourceKind::Builtin);
+        assert_eq!(
+            entry.included_skills,
+            vec![
+                "ghx",
+                "github-issue-solve",
+                "github-pr-fix",
+                "github-review"
+            ]
+        );
+
+        let resolved =
+            resolve_builtin_template(GITHUB_SOLVE_AGENT_TEMPLATE_ID, user_home.path()).unwrap();
+        assert!(resolved.agents_md.contains("Holon GitHub Solve"));
+        assert_eq!(resolved.skill_refs.len(), 4);
     }
 
     #[tokio::test]

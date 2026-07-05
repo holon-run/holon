@@ -7,13 +7,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
 use crate::{
+    agent_template::GITHUB_SOLVE_AGENT_TEMPLATE_ID,
     config::AppConfig,
     run_once::{run_once, RunFinalStatus, RunOnceRequest, RunOnceResponse},
     types::AuthorityClass,
 };
 
 pub const DEFAULT_SOLVE_AGENT_ID: &str = "github-solve";
-pub const DEFAULT_SOLVE_TEMPLATE_ID: &str = "holon-github-solve";
+pub const DEFAULT_SOLVE_TEMPLATE_ID: &str = GITHUB_SOLVE_AGENT_TEMPLATE_ID;
 
 #[derive(Debug, Clone)]
 pub struct SolveRequest {
