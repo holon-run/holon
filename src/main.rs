@@ -947,17 +947,8 @@ fn spawn_stale_agent_template_remote_source_sync(config: &AppConfig, host: &Runt
     }
 
     let db = host.runtime_db().clone();
+    let user_home = config.home_dir.clone();
     tokio::spawn(async move {
-        let user_home = match holon::agent_template::user_home_dir() {
-            Ok(path) => path,
-            Err(error) => {
-                warn!(
-                    error = %error,
-                    "failed to resolve user home for agent template remote source startup sync"
-                );
-                return;
-            }
-        };
         for (source_id, source_config) in sync_candidates {
             if let Err(error) = holon::agent_template::sync_agent_template_remote_source(
                 &db,

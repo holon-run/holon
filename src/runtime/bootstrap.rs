@@ -87,7 +87,7 @@ impl ConfigSnapshot {
 
 #[derive(Debug, Clone)]
 pub(super) struct ProviderReconfigurator {
-    config: AppConfig,
+    pub(super) config: AppConfig,
 }
 
 impl RuntimeHandle {

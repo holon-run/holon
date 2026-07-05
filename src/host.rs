@@ -22,7 +22,8 @@ use crate::{
     agent_template::{
         discover_agent_templates_catalog, ensure_agent_home_agents_md_without_template_with_home,
         initialize_agent_home_from_template_with_catalog,
-        initialize_agent_home_from_template_with_home, initialize_agent_home_without_template,
+        initialize_agent_home_from_template_with_home,
+        initialize_agent_home_without_template_with_home,
     },
     agents_md::load_agents_md,
     callbacks::hash_callback_token,
@@ -636,7 +637,7 @@ impl RuntimeHost {
         }
         if let Some(template) = template {
             let agent_home = self.agent_data_dir(agent_id);
-            let user_home = crate::agent_template::user_home_dir()?;
+            let user_home = self.config().home_dir.clone();
             if let Some(catalog_agent_home) = catalog_agent_home {
                 initialize_agent_home_from_template_with_catalog(
                     &agent_home,
@@ -650,7 +651,12 @@ impl RuntimeHost {
                     .await?;
             }
         } else {
-            initialize_agent_home_without_template(&self.agent_data_dir(agent_id)).await?;
+            let user_home = self.config().home_dir.clone();
+            initialize_agent_home_without_template_with_home(
+                &self.agent_data_dir(agent_id),
+                &user_home,
+            )
+            .await?;
         }
         let record = AgentIdentityRecord::new(
             agent_id,
@@ -1057,20 +1063,20 @@ impl RuntimeHost {
         .snapshot();
         let agent_home = self.agent_data_dir(&identity.agent_id);
         let loaded_agents_md = load_agents_md(
-            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+            Some(self.config().home_dir.as_path()),
             agent_home.as_path(),
             crate::runtime::workspace::workspace_anchor_for_state_ref(&state),
         )?;
         let loaded_agent_memory = load_agent_memory(agent_home.as_path())?;
         let skill_visibility = skill_visibility(&identity_view);
-        let user_home = std::env::var_os("HOME").map(PathBuf::from);
+        let user_home = self.config().home_dir.clone();
         let workspace_anchor = state
             .active_workspace_entry
             .as_ref()
             .map(|entry| entry.workspace_anchor.as_path());
         let skill_roots = effective_skill_root_registrations(
             skill_visibility,
-            user_home.as_deref(),
+            Some(user_home.as_path()),
             &state.id,
             agent_home.as_path(),
             workspace_anchor,
@@ -1083,7 +1089,7 @@ impl RuntimeHost {
             &state.active_skills,
         );
         skills.agent_templates_catalog = discover_agent_templates_catalog(
-            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+            Some(self.config().home_dir.as_path()),
             agent_home.as_path(),
         );
         let config = self.config();
@@ -1247,7 +1253,7 @@ impl RuntimeHost {
 
     async fn ensure_default_agent_home_initialized(&self) -> Result<()> {
         let agent_home = self.agent_data_dir(&self.config().default_agent_id);
-        let user_home = crate::agent_template::user_home_dir()?;
+        let user_home = self.config().home_dir.clone();
         let _ =
             ensure_agent_home_agents_md_without_template_with_home(&agent_home, &user_home).await?;
         Ok(())
@@ -1263,7 +1269,7 @@ impl RuntimeHost {
         let child_agent_id = ids::runtime_id(TEMP_CHILD_AGENT_PREFIX.trim_end_matches('_'));
         self.validate_agent_id(&child_agent_id)?;
         if let Some(template) = template {
-            let user_home = crate::agent_template::user_home_dir()?;
+            let user_home = self.config().home_dir.clone();
             initialize_agent_home_from_template_with_catalog(
                 &self.agent_data_dir(&child_agent_id),
                 &user_home,
@@ -1272,7 +1278,12 @@ impl RuntimeHost {
             )
             .await?;
         } else {
-            initialize_agent_home_without_template(&self.agent_data_dir(&child_agent_id)).await?;
+            let user_home = self.config().home_dir.clone();
+            initialize_agent_home_without_template_with_home(
+                &self.agent_data_dir(&child_agent_id),
+                &user_home,
+            )
+            .await?;
         }
         let record = AgentIdentityRecord::new(
             child_agent_id,
@@ -2446,6 +2457,50 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(listed.contains(&host.config().default_agent_id));
         assert!(listed.contains(&"release-bot".to_string()));
+    }
+
+    #[tokio::test]
+    async fn named_agent_template_resolution_uses_config_home_not_os_home() {
+        struct HomeGuard(Option<String>);
+
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+
+        let config_home = tempdir().unwrap();
+        let os_home = tempdir().unwrap();
+        write_test_model_config(config_home.path());
+
+        let worker = config_home
+            .path()
+            .join(".agents")
+            .join("agent_templates")
+            .join("worker");
+        fs::create_dir_all(&worker).unwrap();
+        fs::write(
+            worker.join("AGENTS.md"),
+            "# Config worker\n\nfrom config home\n",
+        )
+        .unwrap();
+
+        let _home_guard = HomeGuard(std::env::var("HOME").ok());
+        std::env::set_var("HOME", os_home.path());
+        let config = AppConfig::load_with_home(Some(config_home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+
+        host.create_named_agent("worker-bot", Some("worker"))
+            .await
+            .unwrap();
+
+        let agents_md =
+            fs::read_to_string(host.agent_data_dir("worker-bot").join("AGENTS.md")).unwrap();
+        assert!(agents_md.starts_with("# Config worker\n\nfrom config home\n"));
     }
 
     #[tokio::test]
