@@ -148,14 +148,14 @@ function StatusBadgeIcon({ kind, value }: { kind: StatusKind; value: string }) {
 export function StatusChip({ tone = "idle", iconOnly, children, title, ...props }: StatusChipProps) {
   if (iconOnly) {
     const { Icon, spin } = toneIcon(tone);
-    const resolvedTitle = title ?? (typeof children === "string" ? children : undefined);
+    const resolvedTitle = title ?? (typeof children === "string" ? children : undefined) ?? undefined;
     return (
-      <Badge tone={toneToBadge(tone)} title={resolvedTitle} {...props}>
+      <Badge tone={toneToBadge(tone)} title={resolvedTitle} data-tooltip={resolvedTitle} {...props}>
         <Icon size={13} className={spin ? "animate-spin" : undefined} />
       </Badge>
     );
   }
-  return <Badge tone={toneToBadge(tone)} {...props}>{children}</Badge>;
+  return <Badge tone={toneToBadge(tone)} {...props} title={title} data-tooltip={title}>{children}</Badge>;
 }
 
 export function StatusBadge({ kind = "runtime", value, children, title, ...props }: StatusBadgeProps) {
