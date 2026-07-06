@@ -3619,6 +3619,9 @@ code {
   font-size: 0.75rem;
   padding: 2px 8px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .file-browser-breadcrumb {

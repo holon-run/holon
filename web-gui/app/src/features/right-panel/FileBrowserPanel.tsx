@@ -315,7 +315,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       <div className="file-browser-toolbar">
         <button type="button" className="file-browser-back-btn" onClick={() => onClose?.()}>
           <ArrowLeft size={14} />
-          {t("common.back")}
+          {t("fileBrowser.back")}
         </button>
         <nav className="file-browser-breadcrumb" aria-label="Path breadcrumb">
           <button
