@@ -1,3 +1,4 @@
+import { Bot } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
@@ -626,6 +627,7 @@ function timelineItemToWorkingActivity(item: AgentTimelineItem): AgentTimelineAc
 interface TimelineTurn {
   id: string;
   label: string;
+  kind: "operator" | "runtime";
   timestamp: string;
   items: AgentTimelineItem[];
 }
@@ -641,6 +643,7 @@ function groupTimelineTurns(timeline: AgentTimelineItem[]): TimelineTurn[] {
       const triggerLabel = isTurnBoundary ? item.body : undefined;
       current = {
         id: isOperatorBoundary || isTurnBoundary ? `turn:${item.id}` : `activity:${item.id}`,
+        kind: isOperatorBoundary ? "operator" : "runtime",
         label: isOperatorBoundary
           ? i18next.t("agent.operatorTurn")
           : isTurnBoundary
@@ -702,7 +705,17 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
       <div className="timeline-turn-rail" aria-hidden="true" />
       <div className="timeline-turn-body">
         <div className="timeline-turn-header">
-          <span className="timeline-turn-label">{turn.label}</span>
+          {turn.kind === "runtime" ? (
+            <span
+              className="timeline-turn-icon"
+              data-tooltip={turn.label}
+              data-tooltip-pos="bottom"
+            >
+              <Bot size={14} aria-label={turn.label} />
+            </span>
+          ) : (
+            <span className="timeline-turn-label">{turn.label}</span>
+          )}
           <time>{formatDisplayTime(turn.timestamp)}</time>
         </div>
         {turn.items.map((item, index) => (

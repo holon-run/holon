@@ -1685,6 +1685,13 @@ code {
   letter-spacing: 0.04em;
 }
 
+.timeline-turn-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+  line-height: 1;
+}
+
 .message {
   max-width: 100%;
 }
