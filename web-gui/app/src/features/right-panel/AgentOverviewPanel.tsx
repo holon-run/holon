@@ -271,8 +271,7 @@ export function AgentOverviewPanel({
       })()}
 
       <CollapsibleInspectorCard
-        title={t("rightPanel.skills")}
-        summary={t("rightPanel.effectiveCount", { count: skillCatalog?.catalog.length ?? 0 })}
+        title={t("rightPanel.skillsWithCount", { count: skillCatalog?.catalog.length ?? 0 })}
         defaultOpen={false}
       >
         <p className="inspector-muted">

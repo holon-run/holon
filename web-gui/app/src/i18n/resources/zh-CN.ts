@@ -531,7 +531,7 @@ const zh: Record<string, any> = {
     workspaceCountPlural: "{{count}} 个工作区",
     noWorkspace: "未绑定工作区。",
     skills: "技能",
-    effectiveCount: "有效 {{count}} 个",
+    skillsWithCount: "技能({{count}})",
     skillsDesc: "智能体技能是用户库、工作区技能和智能体本地覆盖的有效集合。使用「管理技能」为此智能体选择用户库技能。",
     loadingSkills: "正在加载有效技能…",
     noSkills: "此智能体未报告有效技能。",

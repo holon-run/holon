@@ -529,7 +529,7 @@ const en = {
     workspaceCountPlural: "{{count}} workspaces",
     noWorkspace: "No workspace bound.",
     skills: "Skills",
-    effectiveCount: "{{count}} effective",
+    skillsWithCount: "Skills ({{count}})",
     skillsDesc: "Agent skills are the effective set from user library, workspace skills, and agent-local overrides. Use Manage skills to choose user-library skills for this agent.",
     loadingSkills: "Loading effective skills…",
     noSkills: "No effective skills reported for this agent.",
