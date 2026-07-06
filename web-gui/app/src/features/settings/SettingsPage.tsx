@@ -312,21 +312,21 @@ export function SettingsPage({
     ]);
     const result = await onSetCredential(credentialProfile, credentialKind, key);
     if (result) {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "API key saved to credential store." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
       setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
     } else {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to save API key." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
     }
   }
 
   async function removeApiKey(providerId: string, credentialProfile: string) {
     if (!credentialProfile) return;
-    setCredentialMessages((prev) => ({ ...prev, [providerId]: "Removing…" }));
+    setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.removingKey") }));
     try {
       await onDeleteCredential(credentialProfile);
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "API key removed from credential store." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeyRemoved") }));
     } catch {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to remove API key." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedRemoveKey") }));
     }
   }
 
@@ -418,7 +418,7 @@ export function SettingsPage({
 
   async function removeSearchProviderConfig(providerId: string) {
     const confirmed = window.confirm(
-      `Remove ${providerId} from web.providers in config.json? This does not delete credentials.`,
+      t("settings.confirmRemoveSearchProvider", { provider: providerId }),
     );
     if (!confirmed) return;
 
@@ -430,32 +430,32 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} search provider removal${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Removed ${providerId} search provider config from config.json. Credentials were not deleted.`
-          : `No persisted ${providerId} search provider config was removed.`,
+          ? t("settings.removedSearchProviderConfig", { provider: providerId })
+          : t("settings.noSearchProviderConfigRemoved", { provider: providerId }),
     );
   }
 
   async function saveSearchApiKey(providerId: string, credentialProfile: string) {
     const key = searchApiKeyDrafts[providerId]?.trim();
     if (!key || !credentialProfile) return;
-    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
+    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.savingKey") }));
     const result = await onSetCredential(credentialProfile, "api_key", key);
     if (result) {
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "API key saved to credential store." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
       setSearchApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
     } else {
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to save API key." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
     }
   }
 
   async function removeSearchApiKey(providerId: string, credentialProfile: string) {
     if (!credentialProfile) return;
-    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Removing…" }));
+    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.removingKey") }));
     try {
       await onDeleteCredential(credentialProfile);
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "API key removed from credential store." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeyRemoved") }));
     } catch {
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to remove API key." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedRemoveKey") }));
     }
   }
 
@@ -516,7 +516,7 @@ export function SettingsPage({
 
   async function removeProviderConfig(providerId: string) {
     const confirmed = window.confirm(
-      `Remove ${providerId} from config.json? This only removes persisted provider config; it does not delete credentials or disable built-in provider defaults.`,
+      t("settings.confirmRemoveProvider", { provider: providerId }),
     );
     if (!confirmed) return;
 
@@ -528,8 +528,8 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} provider config removal${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Removed ${providerId} provider config from config.json. Built-in providers may fall back to defaults; credentials were not deleted.`
-          : `No persisted ${providerId} provider config was removed.`,
+          ? t("settings.removedProviderConfig", { provider: providerId })
+          : t("settings.noProviderConfigRemoved", { provider: providerId }),
     );
   }
 
@@ -802,11 +802,11 @@ export function SettingsPage({
                   </datalist>
                 </label>
                 <p className="settings-hint">
-                  Leave empty to let ViewImage auto-discover an authenticated image-capable model.
+                  {t("settings.visionAutoDiscoverHint")}
                 </p>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : "Save Vision"}
+                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveVision")}
                   </Button>
                   {visionDefault ? (
                     <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"} iconOnly title={visionProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")} />
@@ -917,7 +917,6 @@ export function SettingsPage({
         <Card className="settings-card" hidden={activeTab !== "search"}>
           <div className="settings-card-head">
             <div>
-              <span className="eyebrow">Provider accounts</span>
               <h2>{t("settings.webSearchProviders")}</h2>
             </div>
           </div>
@@ -974,7 +973,7 @@ export function SettingsPage({
                           <input
                             value={draft.baseUrl ?? ""}
                             onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })}
-                            placeholder={definition.baseUrlPlaceholder ?? "Optional provider base URL"}
+                            placeholder={definition.baseUrlPlaceholder ?? t("settings.optionalBaseUrl")}
                           />
                         </label>
                       </div>
@@ -1018,11 +1017,11 @@ export function SettingsPage({
                             disabled={!searchApiKeyDrafts[definition.id]?.trim()}
                             onClick={() => void saveSearchApiKey(definition.id, credentialProfile)}
                           >
-                            Save API Key
+                            {t("settings.saveApiKey")}
                           </Button>
                           {credentialReady ? (
                             <Button type="button" variant="secondary" onClick={() => void removeSearchApiKey(definition.id, credentialProfile)}>
-                              Remove Key
+                              {t("settings.removeKey")}
                             </Button>
                           ) : null}
                           {searchCredentialMessages[definition.id] ? (
@@ -1045,14 +1044,14 @@ export function SettingsPage({
                         {definition.requiresApiKey ? (
                           <label>
                             <span>{t("settings.baseUrl")}</span>
-                            <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder="Optional provider default" />
+                            <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder={t("settings.optionalProviderDefault")} />
                           </label>
                         ) : null}
                       </div>
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? t("settings.saving") : provider ? `Save ${definition.label}` : `Enable ${definition.label}`}
+                        {runtimeConfigSaving ? t("settings.saving") : provider ? t("settings.saveProvider", { name: definition.label }) : t("settings.enableProvider", { name: definition.label })}
                       </Button>
                       {provider ? (
                         <Button
@@ -1061,7 +1060,7 @@ export function SettingsPage({
                           disabled={runtimeConfigSaving || runtimeConfigLoading}
                           onClick={() => void removeSearchProviderConfig(definition.id)}
                         >
-                          Remove Config
+                          {t("settings.removeConfig")}
                         </Button>
                       ) : null}
                     </div>
@@ -1113,7 +1112,7 @@ export function SettingsPage({
                       </div>
                       <div className="settings-actions">
                         <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                          {runtimeConfigSaving ? t("settings.saving") : `Save ${providerId}`}
+                         {runtimeConfigSaving ? t("settings.saving") : t("settings.saveProvider", { name: providerId })}
                         </Button>
                       </div>
                     </form>
@@ -1160,7 +1159,6 @@ export function SettingsPage({
         <Card className="settings-card" hidden={activeTab !== "models"}>
           <div className="settings-card-head">
             <div>
-              <span className="eyebrow">Provider accounts</span>
               <h2>{t("settings.modelProviders")}</h2>
             </div>
           </div>
@@ -1172,7 +1170,7 @@ export function SettingsPage({
           ) : (
             <div className="settings-provider-list">
               <p className="settings-muted">
-                Configure each provider account. Enter the API key in the primary section; expand Advanced for transport and credential details.
+               {t("settings.providerDesc")}
               </p>
               {sortedProviders.map((provider) => {
                 const draft = providerDrafts[provider.id];
@@ -1231,7 +1229,7 @@ export function SettingsPage({
                             disabled={!apiKeyDrafts[provider.id]?.trim()}
                             onClick={() => void saveApiKey(provider.id, effectiveProfile, draft.credentialKind)}
                           >
-                            Save API Key
+                           {t("settings.saveApiKey")}
                           </Button>
                           {isCredentialProfileConfigured(effectiveProfile) ? (
                             <Button
@@ -1239,7 +1237,7 @@ export function SettingsPage({
                               variant="secondary"
                               onClick={() => void removeApiKey(provider.id, effectiveProfile)}
                             >
-                              Remove Key
+                             {t("settings.removeKey")}
                             </Button>
                           ) : null}
                           {credentialMessages[provider.id] ? (
@@ -1314,7 +1312,7 @@ export function SettingsPage({
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? t("settings.saving") : `Save ${provider.id}`}
+                       {runtimeConfigSaving ? t("settings.saving") : t("settings.saveProvider", { name: provider.id })}
                       </Button>
                       <Button
                         type="button"
@@ -1322,12 +1320,12 @@ export function SettingsPage({
                         disabled={runtimeConfigSaving || runtimeConfigLoading || !provider.configuredInConfig}
                         title={
                           provider.configuredInConfig
-                            ? "Remove this provider from config.json"
-                            : "This provider is currently using built-in defaults; no persisted config exists to remove."
+                           ? t("settings.removeConfigHint")
+                           : t("settings.removeConfigDisabled")
                         }
                         onClick={() => void removeProviderConfig(provider.id)}
                       >
-                        Remove Config
+                       {t("settings.removeConfig")}
                       </Button>
                     </div>
                   </form>
@@ -1387,7 +1385,7 @@ export function SettingsPage({
             <EmptyState className="settings-empty" title={t("settings.noModelsReturned")} description={t("settings.noModelsReturnedDesc")} />
           ) : null}
 
-          <p className="settings-muted">The editable provider accounts above are the primary configuration surface. Use this catalog only to inspect runtime model availability.</p>
+          <p className="settings-muted">{t("settings.modelCatalogDesc")}</p>
           <details className="settings-diagnostics">
             <summary>
               Show {t("settings.modelCatalogSummary", { models: modelCatalog.options.length, providers: groupedModels.length })}
