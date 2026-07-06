@@ -327,7 +327,7 @@ export function AgentOverviewPanel({
 
       {workItems.length ? (
         <CollapsibleInspectorCard
-          title={t("rightPanel.workItemsWithCount", { count: workItems.length })}
+          title={t("rightPanel.workItemsWithCount", { count: currentWorkItems.length + openWorkItems.length })}
           className="current-work"
         >
           {currentWorkItems.map((workItem) => (
