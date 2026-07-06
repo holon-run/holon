@@ -1,3 +1,4 @@
+import { Unplug } from "lucide-react";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import { useTranslation } from "react-i18next";
@@ -650,7 +651,7 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
       ) : !hydratedDetail ? (
         <EmptyState
           className="inspector-empty"
-          icon="⌁"
+          icon={<Unplug size={20} />}
           title={t("inspector.noStructuredDetail")}
           description={t("inspector.noStructuredDetailDesc")}
         />

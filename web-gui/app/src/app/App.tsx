@@ -1,6 +1,25 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
+import {
+  ArrowLeft,
+  Boxes,
+  ChevronLeft,
+  Circle,
+  CircleAlert,
+  CircleCheck,
+  CircleX,
+  Clock,
+  LayoutDashboard,
+  LayoutTemplate,
+  LoaderCircle,
+  RefreshCw,
+  Search as SearchIcon,
+  Settings as SettingsIcon,
+  type LucideIcon,
+  type LucideProps,
+} from "lucide-react";
+import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
@@ -22,12 +41,12 @@ import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
 import { pushBrowserRoute, routeFromLocation } from "./routes";
 
-const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: string }> = [
-  { key: "dashboard", labelKey: "nav.dashboard", icon: "◎" },
-  { key: "search", labelKey: "nav.search", icon: "⌕" },
-  { key: "skills", labelKey: "nav.skills", icon: "◇" },
-  { key: "templates", labelKey: "nav.templates", icon: "▣" },
-  { key: "settings", labelKey: "nav.settings", icon: "⚙" },
+const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
+  { key: "dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
+  { key: "search", labelKey: "nav.search", icon: SearchIcon },
+  { key: "skills", labelKey: "nav.skills", icon: Boxes },
+  { key: "templates", labelKey: "nav.templates", icon: LayoutTemplate },
+  { key: "settings", labelKey: "nav.settings", icon: SettingsIcon },
 ];
 
 const APP_WINDOW_TITLE = "Holon";
@@ -163,8 +182,7 @@ export function App() {
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
-  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent) : undefined;
-  const selectedAgentContext = selectedAgentStatus?.label ?? "loading agent";
+  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
       ? "syncing"
@@ -173,23 +191,21 @@ export function App() {
         : "preview";
   const agentTopControls =
     route === "agent" ? (
-      <div className="agent-top-controls" aria-label="Agent conversation controls">
-        <div className="agent-stream-controls" aria-label="Agent stream status">
+      <div className="agent-top-controls" aria-label={t("app.conversationControls")}>
+        <div className="agent-stream-controls" aria-label={t("app.streamStatus")}>
           <StatusBadge
             kind="connection"
             value={selectedAgentSourceStatus}
             className={`source-chip ${selectedAgentSourceStatus}`}
-          >
-            {selectedAgentSourceStatus}
-          </StatusBadge>
+            data-tooltip-pos="bottom"
+          />
           <StatusBadge
             kind="stream"
             value={selectedAgentLiveStatus}
             className={`source-chip live-status ${selectedAgentLiveStatus}`}
             title={selectedAgentLiveTitle}
-          >
-            {liveStatusLabel(selectedAgentLiveStatus, t)}
-          </StatusBadge>
+            data-tooltip-pos="bottom"
+          />
           <Button
             type="button"
             size="icon"
@@ -199,7 +215,7 @@ export function App() {
             disabled={agentDetailLoading}
             onClick={() => void refreshAgentDetail()}
           >
-            ↻
+            <RefreshCw size={16} />
           </Button>
         </div>
         <SegmentedControl className="display-level" label={t("app.displayLevel")}>
@@ -404,11 +420,11 @@ export function App() {
           <button
             className="nav-collapse"
             type="button"
-            aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
-            title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+            aria-label={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
+            title={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
             onClick={toggleNavCollapsed}
           >
-            ‹
+            <ChevronLeft size={18} />
           </button>
         </div>
 
@@ -422,7 +438,7 @@ export function App() {
               title={t(item.labelKey)}
               onClick={() => navigateRoute(item.key)}
             >
-              <span>{item.icon}</span>
+              <item.icon size={16} />
               <strong>{t(item.labelKey)}</strong>
             </button>
           ))}
@@ -454,7 +470,7 @@ export function App() {
             </div>
           ) : (
             bootstrap.agents.map((agent) => {
-              const status = deriveAgentDisplayStatus(agent);
+              const status = deriveAgentDisplayStatus(agent, t);
               const workSummary = agent.currentWork?.objective;
               const unreadCount = rosterActivityByAgentId[agent.id]?.unreadCount ?? 0;
 
@@ -471,12 +487,12 @@ export function App() {
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
                       {unreadCount > 0 ? (
-                        <span className="agent-row-unread" aria-label={`${unreadCount} unread updates`} title={`${unreadCount} unread updates`}>
+                        <span className="agent-row-unread" aria-label={t("app.unreadUpdates", { count: unreadCount })} title={t("app.unreadUpdates", { count: unreadCount })}>
                           {formatUnreadCount(unreadCount)}
                         </span>
                       ) : null}
-                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={`${status.label} · ${status.title}`}>
-                        {agentStatusIcon(status.tone)}
+                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
+                        <StatusDotIcon tone={status.tone} />
                       </span>
                     </span>
                     {workSummary ? (
@@ -509,26 +525,22 @@ export function App() {
                   aria-label={t("nav.dashboard")}
                   onClick={() => navigateRoute("dashboard")}
                 >
-                  ←
+                  <ArrowLeft size={16} />
                 </Button>
               ) : null}
               <div>
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
-                <span title={route === "agent" ? selectedAgentStatus?.title : undefined}>
-                  {route === "agent"
-                    ? selectedAgentContext
-                    : route === "search"
-                      ? t("app.subtitleSearch")
-                      : route === "skills" || route === "skillDetail"
-                        ? t("app.subtitleSkills")
-                        : route === "templates" || route === "templateDetail"
-                          ? t("app.subtitleTemplates")
-                          : route === "settings"
-                            ? t("app.subtitleSettings")
-                            : bootstrap.attentionCount > 0
-                              ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: bootstrap.attentionCount })
-                              : t("app.subtitleDashboardAllClear", { count: bootstrap.agents.length })}
-                </span>
+                {route === "agent" && selectedAgentStatus ? (
+                  <span className={`header-status ${selectedAgentStatus.tone}`} title={selectedAgentStatus.title} data-tooltip={selectedAgentStatus.title} data-tooltip-pos="bottom">
+                    <StatusDotIcon tone={selectedAgentStatus.tone} />
+                  </span>
+                ) : route === "dashboard" ? (
+                  <span>
+                    {bootstrap.attentionCount > 0
+                      ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: bootstrap.attentionCount })
+                      : t("app.subtitleDashboardAllClear", { count: bootstrap.agents.length })}
+                  </span>
+                ) : null}
               </div>
             </div>
             <div className="top-actions">
@@ -1060,13 +1072,15 @@ function formatUnreadCount(count: number): string {
   return count > 99 ? "99+" : String(count);
 }
 
-function agentStatusIcon(tone: string): string {
-  if (tone === "running") return "●";
-  if (tone === "needs-input") return "!";
-  if (tone === "waiting") return "◌";
-  if (tone === "ready") return "✓";
-  if (tone === "stopped") return "×";
-  return "·";
+function StatusDotIcon({ tone, size = 13 }: { tone: string; size?: number }) {
+  const Icon: ComponentType<LucideProps> =
+    tone === "running" ? LoaderCircle :
+    tone === "needs-input" ? CircleAlert :
+    tone === "waiting" ? Clock :
+    tone === "ready" ? CircleCheck :
+    tone === "stopped" ? CircleX :
+    Circle;
+  return <Icon size={size} className={tone === "running" ? "animate-spin" : undefined} />;
 }
 
 
@@ -1082,17 +1096,17 @@ function liveStatusLabel(status: string, t: TFunction): string {
 
 function liveStatusTitle(status: string, t: TFunction, lastActivityAt?: string, error?: string): string {
   const parts = [liveStatusLabel(status, t)];
-  if (lastActivityAt) parts.push(`last activity ${formatRelativeTime(lastActivityAt)}`);
+  if (lastActivityAt) parts.push(`${t("common.lastActivity")} ${formatRelativeTime(lastActivityAt, t)}`);
   if (error) parts.push(error);
   return parts.join(" · ");
 }
 
-function formatRelativeTime(value: string): string {
+function formatRelativeTime(value: string, t: TFunction): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
   const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return t("common.secondsAgo", { seconds });
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return t("common.minutesAgo", { minutes });
   return new Date(timestamp).toLocaleString();
 }

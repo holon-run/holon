@@ -7,6 +7,7 @@ help: ## Show this help message
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 web: ## Build the web GUI (requires Node.js). Produces web-gui/app/dist
+	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
 	cd $(WEB_DIR) && npm ci && npm run build
 
 build: ## Build all Rust targets (cargo build --all-targets)

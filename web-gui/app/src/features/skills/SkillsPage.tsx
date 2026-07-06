@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
+import { ArrowLeft, PackageOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -43,7 +44,6 @@ export function SkillsPage({
   const [addSkillName, setAddSkillName] = useState("");
   const [addMode, setAddMode] = useState<SkillInstallMode>("linked");
   const stats = useMemo(() => skillStats(skills), [skills]);
-  const libraryRoots = useMemo(() => summarizeLibraryRoots(skills), [skills]);
   const visibleSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return skills.filter((skill) => {
@@ -78,10 +78,6 @@ export function SkillsPage({
         <div className="skills-hero-copy">
           <span className="eyebrow">{t("skillsPage.skillLibrary")}</span>
           <h1>{t("skillsPage.title")}</h1>
-          <p>
-            {t("skillsPage.description")}
-            <code>{libraryRoots.user}</code>
-          </p>
         </div>
         <div className="skills-actions" aria-label={t("skillsPage.skillLibrary")}>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
@@ -222,7 +218,7 @@ export function SkillsPage({
             </ul>
           ) : (
             <EmptyState
-              icon="◇"
+              icon={<PackageOpen size={20} />}
               title={loading ? t("skillsPage.loading") : skills.length ? t("skillsPage.noMatch") : t("skillsPage.noSkills")}
               description={
                 skills.length
@@ -254,9 +250,7 @@ function SkillRow({
       <button type="button" className="skills-row-open" onClick={() => onOpen(skill.skillId)}>
         <div>
           <strong>{skill.name}</strong>
-          <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
-            {normalizedSkillScope(skill.scope) === "user" ? t("skillsPage.global") : skill.scope === "workspace" ? t("skillsPage.workspace") : t("skillsPage.agent")}
-          </StatusBadge>
+          <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
         </div>
         <p>{skill.description || t("skillsPage.noDescription")}</p>
       </button>
@@ -290,7 +284,7 @@ export function SkillDetailPage({
     <section className="page skill-detail-route" aria-label="Skill detail">
       <nav className="skill-detail-breadcrumb" aria-label="Breadcrumb">
         <button type="button" className="breadcrumb-back" onClick={onBack}>
-          {t("skillsPage.back")}
+          <ArrowLeft size={14} /> {t("skillsPage.back")}
         </button>
         <span className="breadcrumb-sep" aria-hidden="true">/</span>
         <span className="breadcrumb-current">{skill?.name ?? skillId}</span>
@@ -338,7 +332,7 @@ export function SkillDetailPage({
         </div>
       ) : (
         <EmptyState
-          icon="◇"
+          icon={<PackageOpen size={20} />}
           title={loading ? t("skillsPage.loadingSkill") : t("skillsPage.notFound")}
           description={
             loading

@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
@@ -38,10 +39,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
               <p>{t("dashboard.available", { count: agents.length })}</p>
             </div>
             <div className="dashboard-actions">
-              <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source}>
-                <span className="runtime-dot" />
-                {connectionLabel}
-              </StatusBadge>
+              <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source} />
               <Button type="button" variant="secondary" disabled={loading} onClick={onRefresh}>
                 {loading ? t("common.refreshing") : t("common.refresh")}
               </Button>
@@ -107,7 +105,6 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                       <AgentStateBadge className={`state-chip ${agent.lifecycle}`} lifecycle={agent.lifecycle} posture={agent.posture} />
                       {agent.attention !== "none" ? (
                         <StatusBadge className="state-chip" kind="attention" value={agent.attention}>
-                          {agent.attention}
                         </StatusBadge>
                       ) : null}
                     </div>
@@ -134,7 +131,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                   <footer>
                     <span>{agent.footer}</span>
                     <Button size="icon" variant="secondary" aria-label={t("dashboard.openAgent", { id: agent.id })} onClick={() => onOpenAgent(agent.id)}>
-                      →
+                      <ArrowRight size={16} />
                     </Button>
                   </footer>
                 </Card>
@@ -175,9 +172,7 @@ function DashboardStateCard({ state, detail }: { state: DashboardState; detail: 
 
   return (
     <aside className={`dashboard-state ${state}`} role="status">
-      <StatusBadge kind="runtime" value={state}>
-        {t(labelKey)}
-      </StatusBadge>
+      <StatusBadge kind="runtime" value={state} />
       <div>
         <strong>{t(titleKey)}</strong>
         <p>{t(bodyKey)}</p>

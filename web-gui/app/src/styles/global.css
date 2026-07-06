@@ -841,6 +841,18 @@ button {
   font-size: 12px;
 }
 
+.header-status {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+.header-status.running { color: var(--accent); }
+.header-status.needs-input { color: var(--warning); }
+.header-status.waiting { color: var(--muted); }
+.header-status.ready { color: var(--success); }
+.header-status.stopped { color: var(--faint); }
+.header-status.muted { color: var(--muted); }
+
 .back-button,
 .top-actions button,
 .display-level button,
@@ -1683,6 +1695,13 @@ code {
   color: var(--faint);
   text-transform: capitalize;
   letter-spacing: 0.04em;
+}
+
+.timeline-turn-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+  line-height: 1;
 }
 
 .message {
@@ -3600,6 +3619,9 @@ code {
   font-size: 0.75rem;
   padding: 2px 8px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .file-browser-breadcrumb {
@@ -5112,4 +5134,59 @@ code {
 .side-heading-add:hover {
   color: var(--fg);
   border-color: var(--fg-dim);
+}
+
+/* ---- CSS tooltip for icon-only badges ---- */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  animation: tooltip-fade-in 0.12s 0.25s forwards;
+}
+
+[data-tooltip]:hover::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 6px;
+  height: 6px;
+  background: var(--text);
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  animation: tooltip-fade-in 0.12s 0.25s forwards;
+}
+
+/* Tooltip shows below the element (for icons near the top of the page) */
+[data-tooltip-pos="bottom"]:hover::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+[data-tooltip-pos="bottom"]:hover::before {
+  top: calc(100% + 2px);
+  bottom: auto;
+}
+
+@keyframes tooltip-fade-in {
+  to { opacity: 1; }
 }

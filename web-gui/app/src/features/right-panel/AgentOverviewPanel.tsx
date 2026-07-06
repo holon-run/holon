@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Inbox } from "lucide-react";
 import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -151,8 +152,7 @@ export function AgentOverviewPanel({
           activePath != null && originPath != null && activePath !== originPath;
         return (
           <CollapsibleInspectorCard
-            title={t("rightPanel.workspaces")}
-            summary={wsCount === 1 ? t("rightPanel.workspaceCount", { count: wsCount }) : t("rightPanel.workspaceCountPlural", { count: wsCount })}
+           title={t("rightPanel.workspacesWithCount", { count: wsCount })}
             defaultOpen={true}
           >
             {workspace ? (
@@ -271,8 +271,7 @@ export function AgentOverviewPanel({
       })()}
 
       <CollapsibleInspectorCard
-        title={t("rightPanel.skills")}
-        summary={t("rightPanel.effectiveCount", { count: skillCatalog?.catalog.length ?? 0 })}
+        title={t("rightPanel.skillsWithCount", { count: skillCatalog?.catalog.length ?? 0 })}
         defaultOpen={false}
       >
         <p className="inspector-muted">
@@ -329,8 +328,7 @@ export function AgentOverviewPanel({
 
       {workItems.length ? (
         <CollapsibleInspectorCard
-          title={t("rightPanel.workItems")}
-          summary={t("rightPanel.openCount", { count: openWorkItems.length + currentWorkItems.length })}
+          title={t("rightPanel.workItemsWithCount", { count: currentWorkItems.length + openWorkItems.length })}
           className="current-work"
         >
           {currentWorkItems.map((workItem) => (
@@ -357,7 +355,7 @@ export function AgentOverviewPanel({
       ) : (
         <EmptyState
           className="inspector-empty"
-          icon="◎"
+          icon={<Inbox size={20} />}
           title={t("panel.noCurrentWork")}
           description={t("rightPanel.noCurrentWorkDesc")}
         />

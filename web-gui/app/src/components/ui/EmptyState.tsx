@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { PackageOpen } from "lucide-react";
 
 import { cn } from "../../lib/utils";
 
@@ -10,7 +11,7 @@ interface EmptyStateProps {
   className?: string;
 }
 
-export function EmptyState({ title, description, icon = "◇", action, className }: EmptyStateProps) {
+export function EmptyState({ title, description, icon = <PackageOpen size={20} />, action, className }: EmptyStateProps) {
   return (
     <div
       className={cn(

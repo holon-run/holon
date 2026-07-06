@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
@@ -312,21 +313,21 @@ export function SettingsPage({
     ]);
     const result = await onSetCredential(credentialProfile, credentialKind, key);
     if (result) {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "API key saved to credential store." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
       setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
     } else {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to save API key." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
     }
   }
 
   async function removeApiKey(providerId: string, credentialProfile: string) {
     if (!credentialProfile) return;
-    setCredentialMessages((prev) => ({ ...prev, [providerId]: "Removing…" }));
+    setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.removingKey") }));
     try {
       await onDeleteCredential(credentialProfile);
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "API key removed from credential store." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeyRemoved") }));
     } catch {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to remove API key." }));
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedRemoveKey") }));
     }
   }
 
@@ -418,7 +419,7 @@ export function SettingsPage({
 
   async function removeSearchProviderConfig(providerId: string) {
     const confirmed = window.confirm(
-      `Remove ${providerId} from web.providers in config.json? This does not delete credentials.`,
+      t("settings.confirmRemoveSearchProvider", { provider: providerId }),
     );
     if (!confirmed) return;
 
@@ -430,32 +431,32 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} search provider removal${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Removed ${providerId} search provider config from config.json. Credentials were not deleted.`
-          : `No persisted ${providerId} search provider config was removed.`,
+          ? t("settings.removedSearchProviderConfig", { provider: providerId })
+          : t("settings.noSearchProviderConfigRemoved", { provider: providerId }),
     );
   }
 
   async function saveSearchApiKey(providerId: string, credentialProfile: string) {
     const key = searchApiKeyDrafts[providerId]?.trim();
     if (!key || !credentialProfile) return;
-    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
+    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.savingKey") }));
     const result = await onSetCredential(credentialProfile, "api_key", key);
     if (result) {
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "API key saved to credential store." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
       setSearchApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
     } else {
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to save API key." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
     }
   }
 
   async function removeSearchApiKey(providerId: string, credentialProfile: string) {
     if (!credentialProfile) return;
-    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Removing…" }));
+    setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.removingKey") }));
     try {
       await onDeleteCredential(credentialProfile);
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "API key removed from credential store." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeyRemoved") }));
     } catch {
-      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to remove API key." }));
+      setSearchCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedRemoveKey") }));
     }
   }
 
@@ -516,7 +517,7 @@ export function SettingsPage({
 
   async function removeProviderConfig(providerId: string) {
     const confirmed = window.confirm(
-      `Remove ${providerId} from config.json? This only removes persisted provider config; it does not delete credentials or disable built-in provider defaults.`,
+      t("settings.confirmRemoveProvider", { provider: providerId }),
     );
     if (!confirmed) return;
 
@@ -528,8 +529,8 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} provider config removal${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Removed ${providerId} provider config from config.json. Built-in providers may fall back to defaults; credentials were not deleted.`
-          : `No persisted ${providerId} provider config was removed.`,
+          ? t("settings.removedProviderConfig", { provider: providerId })
+          : t("settings.noProviderConfigRemoved", { provider: providerId }),
     );
   }
 
@@ -539,7 +540,6 @@ export function SettingsPage({
         <Card className="summary-panel settings-hero">
           <span className="eyebrow">{t("settings.runtimeConfig")}</span>
           <h1>{t("settings.title")}</h1>
-          <p>{t("settings.subtitle")}</p>
           <div className="settings-quickstart" aria-label={t("settings.settingsOverviewAria")}>
             <div>
               <span>{t("settings.connection")}</span>
@@ -802,20 +802,16 @@ export function SettingsPage({
                   </datalist>
                 </label>
                 <p className="settings-hint">
-                  Leave empty to let ViewImage auto-discover an authenticated image-capable model.
+                  {t("settings.visionAutoDiscoverHint")}
                 </p>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : "Save Vision"}
+                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveVision")}
                   </Button>
                   {visionDefault ? (
-                    <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"}>
-                      {visionProviderReady ? "provider ready" : "provider credential missing"}
-                    </StatusChip>
+                    <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"} iconOnly title={visionProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")} />
                   ) : (
-                    <StatusChip className="settings-status available" tone="success">
-                      auto-discovery
-                    </StatusChip>
+                    <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
                   )}
                   {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
                 </div>
@@ -921,7 +917,6 @@ export function SettingsPage({
         <Card className="settings-card" hidden={activeTab !== "search"}>
           <div className="settings-card-head">
             <div>
-              <span className="eyebrow">Provider accounts</span>
               <h2>{t("settings.webSearchProviders")}</h2>
             </div>
           </div>
@@ -940,16 +935,12 @@ export function SettingsPage({
                   <strong>{t("settings.nativeSearch")}</strong>
                   <span>{t("settings.nativeSearchDesc")}</span>
                 </div>
-                <StatusChip className={`settings-status ${searchBuiltinProviderEnabled ? "available" : "unavailable"}`} tone={searchBuiltinProviderEnabled ? "success" : "error"}>
-                  {searchBuiltinProviderEnabled ? t("settings.allowedLabel") : t("settings.disabled")}
-                </StatusChip>
+                <StatusChip className={`settings-status ${searchBuiltinProviderEnabled ? "available" : "unavailable"}`} tone={searchBuiltinProviderEnabled ? "success" : "error"} iconOnly title={searchBuiltinProviderEnabled ? t("settings.allowedLabel") : t("settings.disabled")} />
                 <div>
                   <strong>DuckDuckGo</strong>
                   <span>{t("settings.duckDuckGoDesc")}</span>
                 </div>
-                <StatusChip className="settings-status available" tone="success">
-                  {t("settings.readyLabel")}
-                </StatusChip>
+                <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.readyLabel")} />
               </div>
               {standardSearchProviders.map((definition) => {
                 const provider = surface.webSearchProviders.find((entry) => entry.id === definition.id);
@@ -973,9 +964,7 @@ export function SettingsPage({
                           {definition.description}
                         </small>
                       </div>
-                      <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"}>
-                        {providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")}
-                      </StatusChip>
+                      <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"} iconOnly title={providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")} />
                     </header>
                     {!definition.requiresApiKey ? (
                       <div className="settings-form-row">
@@ -984,7 +973,7 @@ export function SettingsPage({
                           <input
                             value={draft.baseUrl ?? ""}
                             onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })}
-                            placeholder={definition.baseUrlPlaceholder ?? "Optional provider base URL"}
+                            placeholder={definition.baseUrlPlaceholder ?? t("settings.optionalBaseUrl")}
                           />
                         </label>
                       </div>
@@ -1006,9 +995,9 @@ export function SettingsPage({
                           <StatusChip
                             className={`settings-status ${credentialReady ? "available" : "unavailable"}`}
                             tone={credentialReady ? "success" : "error"}
-                          >
-                            {credentialReady ? t("settings.keySet") : "no key"}
-                          </StatusChip>
+                            iconOnly
+                            title={credentialReady ? t("settings.keySet") : t("settings.noKey")}
+                          />
                         </div>
                         <div className="settings-form-row">
                           <label>
@@ -1028,11 +1017,11 @@ export function SettingsPage({
                             disabled={!searchApiKeyDrafts[definition.id]?.trim()}
                             onClick={() => void saveSearchApiKey(definition.id, credentialProfile)}
                           >
-                            Save API Key
+                            {t("settings.saveApiKey")}
                           </Button>
                           {credentialReady ? (
                             <Button type="button" variant="secondary" onClick={() => void removeSearchApiKey(definition.id, credentialProfile)}>
-                              Remove Key
+                              {t("settings.removeKey")}
                             </Button>
                           ) : null}
                           {searchCredentialMessages[definition.id] ? (
@@ -1055,14 +1044,14 @@ export function SettingsPage({
                         {definition.requiresApiKey ? (
                           <label>
                             <span>{t("settings.baseUrl")}</span>
-                            <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder="Optional provider default" />
+                            <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder={t("settings.optionalProviderDefault")} />
                           </label>
                         ) : null}
                       </div>
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? t("settings.saving") : provider ? `Save ${definition.label}` : `Enable ${definition.label}`}
+                        {runtimeConfigSaving ? t("settings.saving") : provider ? t("settings.saveProvider", { name: definition.label }) : t("settings.enableProvider", { name: definition.label })}
                       </Button>
                       {provider ? (
                         <Button
@@ -1071,7 +1060,7 @@ export function SettingsPage({
                           disabled={runtimeConfigSaving || runtimeConfigLoading}
                           onClick={() => void removeSearchProviderConfig(definition.id)}
                         >
-                          Remove Config
+                          {t("settings.removeConfig")}
                         </Button>
                       ) : null}
                     </div>
@@ -1099,9 +1088,7 @@ export function SettingsPage({
                           <strong>{providerId}</strong>
                           <small>{t("settings.unsavedSearchProvider")}</small>
                         </div>
-                        <StatusChip className="settings-status unavailable" tone="error">
-                          {t("settings.notSaved")}
-                        </StatusChip>
+                        <StatusChip className="settings-status unavailable" tone="error" iconOnly title={t("settings.notSaved")} />
                       </header>
                       <div className="settings-form-row">
                         <label>
@@ -1125,7 +1112,7 @@ export function SettingsPage({
                       </div>
                       <div className="settings-actions">
                         <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                          {runtimeConfigSaving ? t("settings.saving") : `Save ${providerId}`}
+                         {runtimeConfigSaving ? t("settings.saving") : t("settings.saveProvider", { name: providerId })}
                         </Button>
                       </div>
                     </form>
@@ -1172,7 +1159,6 @@ export function SettingsPage({
         <Card className="settings-card" hidden={activeTab !== "models"}>
           <div className="settings-card-head">
             <div>
-              <span className="eyebrow">Provider accounts</span>
               <h2>{t("settings.modelProviders")}</h2>
             </div>
           </div>
@@ -1184,7 +1170,7 @@ export function SettingsPage({
           ) : (
             <div className="settings-provider-list">
               <p className="settings-muted">
-                Configure each provider account. Enter the API key in the primary section; expand Advanced for transport and credential details.
+               {t("settings.providerDesc")}
               </p>
               {sortedProviders.map((provider) => {
                 const draft = providerDrafts[provider.id];
@@ -1206,9 +1192,7 @@ export function SettingsPage({
                           {provider.transport}
                         </small>
                       </div>
-                      <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
-                        {provider.credentialConfigured ? t("settings.credReady") : "credential missing"}
-                      </StatusChip>
+                      <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"} iconOnly title={provider.credentialConfigured ? t("settings.credReady") : t("settings.credMissing")} />
                     </header>
                     {provider.credentialConfigured && !providersWithModels.has(provider.id) ? (
                       <p className="settings-provider-hint">
@@ -1223,9 +1207,9 @@ export function SettingsPage({
                           <StatusChip
                             className={`settings-status ${isCredentialProfileConfigured(effectiveProfile) ? "available" : "unavailable"}`}
                             tone={isCredentialProfileConfigured(effectiveProfile) ? "success" : "error"}
-                          >
-                            {isCredentialProfileConfigured(effectiveProfile) ? t("settings.keySet") : "no key"}
-                          </StatusChip>
+                            iconOnly
+                            title={isCredentialProfileConfigured(effectiveProfile) ? t("settings.keySet") : t("settings.noKey")}
+                          />
                         </div>
                         <div className="settings-form-row">
                           <label>
@@ -1245,7 +1229,7 @@ export function SettingsPage({
                             disabled={!apiKeyDrafts[provider.id]?.trim()}
                             onClick={() => void saveApiKey(provider.id, effectiveProfile, draft.credentialKind)}
                           >
-                            Save API Key
+                           {t("settings.saveApiKey")}
                           </Button>
                           {isCredentialProfileConfigured(effectiveProfile) ? (
                             <Button
@@ -1253,7 +1237,7 @@ export function SettingsPage({
                               variant="secondary"
                               onClick={() => void removeApiKey(provider.id, effectiveProfile)}
                             >
-                              Remove Key
+                             {t("settings.removeKey")}
                             </Button>
                           ) : null}
                           {credentialMessages[provider.id] ? (
@@ -1268,9 +1252,7 @@ export function SettingsPage({
                         {provider.credentialConfigured ? (
                           <div className="settings-device-login-header">
                             <span>{t("settings.connectedViaOAuth")}</span>
-                            <StatusChip className="settings-status available" tone="success">
-                              {t("settings.credReady")}
-                            </StatusChip>
+                            <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.credReady")} />
                           </div>
                         ) : null}
                         {codexDeviceLogin.status === "idle" || codexDeviceLogin.status === "failed" ? (
@@ -1293,7 +1275,7 @@ export function SettingsPage({
                           <div className="settings-device-login-panel">
                             <Button type="button" variant="secondary"
                               onClick={() => window.open(codexDeviceLogin.verificationUrl, "_blank", "noopener,noreferrer")}>
-                              Open Device Login Page →
+                              Open Device Login Page <ArrowRight size={14} />
                             </Button>
                             <p className="settings-hint">Enter this code on the page:</p>
                             <div className="settings-device-login-code">{codexDeviceLogin.userCode}</div>
@@ -1303,7 +1285,7 @@ export function SettingsPage({
                         ) : null}
                         {codexDeviceLogin.status === "completed" ? (
                           <div className="settings-device-login-panel">
-                            <StatusChip className="settings-status available" tone="success">Login successful</StatusChip>
+                            <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.loginSuccessful")} />
                             <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>{t("common.dismiss")}</Button>
                           </div>
                         ) : null}
@@ -1330,7 +1312,7 @@ export function SettingsPage({
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? t("settings.saving") : `Save ${provider.id}`}
+                       {runtimeConfigSaving ? t("settings.saving") : t("settings.saveProvider", { name: provider.id })}
                       </Button>
                       <Button
                         type="button"
@@ -1338,12 +1320,12 @@ export function SettingsPage({
                         disabled={runtimeConfigSaving || runtimeConfigLoading || !provider.configuredInConfig}
                         title={
                           provider.configuredInConfig
-                            ? "Remove this provider from config.json"
-                            : "This provider is currently using built-in defaults; no persisted config exists to remove."
+                           ? t("settings.removeConfigHint")
+                           : t("settings.removeConfigDisabled")
                         }
                         onClick={() => void removeProviderConfig(provider.id)}
                       >
-                        Remove Config
+                       {t("settings.removeConfig")}
                       </Button>
                     </div>
                   </form>
@@ -1403,7 +1385,7 @@ export function SettingsPage({
             <EmptyState className="settings-empty" title={t("settings.noModelsReturned")} description={t("settings.noModelsReturnedDesc")} />
           ) : null}
 
-          <p className="settings-muted">The editable provider accounts above are the primary configuration surface. Use this catalog only to inspect runtime model availability.</p>
+          <p className="settings-muted">{t("settings.modelCatalogDesc")}</p>
           <details className="settings-diagnostics">
             <summary>
               Show {t("settings.modelCatalogSummary", { models: modelCatalog.options.length, providers: groupedModels.length })}
@@ -1427,9 +1409,7 @@ export function SettingsPage({
                           <span>{model.model}</span>
                         </div>
                         <div role="cell">
-                          <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"}>
-                            {model.available ? "available" : "unavailable"}
-                          </StatusChip>
+                          <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"} iconOnly title={model.available ? t("settings.availableLabel") : t("settings.unavailableLabel")} />
                         </div>
                         <div role="cell">
                           {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
