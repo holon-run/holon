@@ -100,6 +100,18 @@ pub(crate) struct CallbackResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ControlPromptRequest {
     pub text: String,
+    #[serde(default)]
+    pub attachments: Vec<ControlPromptAttachment>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ControlPromptAttachment {
+    Image {
+        name: Option<String>,
+        media_type: String,
+        data_base64: String,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]

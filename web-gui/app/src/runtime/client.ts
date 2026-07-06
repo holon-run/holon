@@ -48,6 +48,13 @@ export interface RuntimeClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface OperatorPromptAttachment {
+  kind: "image";
+  name?: string;
+  mediaType: string;
+  dataBase64: string;
+}
+
 const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
@@ -1061,11 +1068,19 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) return undefined;
       return streamGlobalEvents(baseUrl, fetchImpl, requestHeaders, options);
     },
-    async sendOperatorPrompt(agentId: string, text: string): Promise<void> {
+    async sendOperatorPrompt(agentId: string, text: string, attachments: OperatorPromptAttachment[] = []): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text }, requestHeaders);
+      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, {
+        text,
+        attachments: attachments.map((attachment) => ({
+          kind: attachment.kind,
+          name: attachment.name,
+          media_type: attachment.mediaType,
+          data_base64: attachment.dataBase64,
+        })),
+      }, requestHeaders);
     },
     async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
       if (!baseUrl) {

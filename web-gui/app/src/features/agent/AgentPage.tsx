@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Equal,
   LoaderCircle,
+  Paperclip,
   Sparkles,
   RefreshCw,
   Unplug,
@@ -32,6 +33,7 @@ import type {
   RuntimeModelCatalog,
   RuntimeModelOption,
 } from "../../runtime/types";
+import type { OperatorPromptAttachment } from "../../runtime/client";
 
 interface AgentPageProps {
   agent: AgentSummary;
@@ -50,7 +52,7 @@ interface AgentPageProps {
   onSetModel: (model: string, reasoningEffort?: string) => Promise<void>;
   onClearModel: () => Promise<void>;
   onLoadOlderEvents: () => Promise<void>;
-  onSendPrompt: (text: string) => Promise<void>;
+  onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   onOpenInspector: () => void;
   onInspectActivity: (activity: AgentTimelineActivity) => void;
   selectedActivityId?: string;
@@ -91,6 +93,18 @@ export function writeStoredComposerDraft(agentId: string, prompt: string): void 
   }
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      resolve(result.includes(",") ? result.slice(result.indexOf(",") + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
   textarea.style.height = "auto";
   const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_TEXTAREA_MAX_HEIGHT);
@@ -122,6 +136,7 @@ export function AgentPage({
 }: AgentPageProps) {
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
+  const [attachments, setAttachments] = useState<OperatorPromptAttachment[]>([]);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -130,6 +145,7 @@ export function AgentPage({
   const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
@@ -153,7 +169,7 @@ export function AgentPage({
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
   const trimmedPrompt = prompt.trim();
-  const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
+  const canSendPrompt = (trimmedPrompt.length > 0 || attachments.length > 0) && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
@@ -175,6 +191,7 @@ export function AgentPage({
 
   useEffect(() => {
     setPrompt(readStoredComposerDraft(activeAgent.id));
+    setAttachments([]);
   }, [activeAgent.id]);
 
   useLayoutEffect(() => {
@@ -212,9 +229,10 @@ export function AgentPage({
   async function sendDraftPrompt() {
     if (!canSendPrompt) return;
     try {
-      await onSendPrompt(trimmedPrompt);
+      await onSendPrompt(trimmedPrompt, attachments);
       writeStoredComposerDraft(activeAgent.id, "");
       setPrompt("");
+      setAttachments([]);
     } catch {
       // Keep the draft in place; runtime-store exposes the user-facing error.
     }
@@ -234,6 +252,26 @@ export function AgentPage({
   function handlePromptChange(value: string) {
     setPrompt(value);
     writeStoredComposerDraft(activeAgent.id, value);
+  }
+
+  async function handleAttachmentFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const next: OperatorPromptAttachment[] = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) continue;
+      next.push({
+        kind: "image",
+        name: file.name,
+        mediaType: file.type,
+        dataBase64: await fileToBase64(file),
+      });
+    }
+    if (next.length > 0) {
+      setAttachments((current) => [...current, ...next]);
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   }
 
   function handleMessageListScroll() {
@@ -376,6 +414,31 @@ export function AgentPage({
               onChange={(event) => handlePromptChange(event.target.value)}
               onKeyDown={handleComposerKeyDown}
             />
+            <input
+              ref={fileInputRef}
+              className="composer-file-input"
+              type="file"
+              accept="image/*"
+              multiple
+              disabled={sendingPrompt}
+              onChange={(event) => void handleAttachmentFiles(event.target.files)}
+            />
+            {attachments.length > 0 ? (
+              <div className="composer-attachments" aria-label="Image attachments">
+                {attachments.map((attachment, index) => (
+                  <span className="composer-attachment" key={`${attachment.name ?? "image"}:${index}`}>
+                    {attachment.name ?? `image ${index + 1}`}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${attachment.name ?? `image ${index + 1}`}`}
+                      onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             {promptError ? (
               <div className="composer-status" role="alert">
                 {promptError}
@@ -383,6 +446,17 @@ export function AgentPage({
             ) : null}
             <div className="composer-toolbar">
               <div className="composer-right">
+                <Button
+                  className="attachment-button"
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Attach image"
+                  disabled={sendingPrompt}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Paperclip size={16} />
+                </Button>
                 <div className="model-picker">
                   <Button
                     className="model-button"

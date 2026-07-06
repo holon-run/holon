@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context as _;
 
 pub async fn runtime_status(
     State(state): State<Arc<AppState>>,
@@ -705,6 +706,13 @@ pub async fn control_prompt(
     Json(request): Json<ControlPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let text = control_prompt_text_with_attachments(&agent_id, &runtime.agent_home(), request)
+        .map_err(|err| bad_request(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     enqueue_internal(
         state,
@@ -713,7 +721,7 @@ pub async fn control_prompt(
             kind: Some(MessageKind::OperatorPrompt),
             priority: Some(Priority::Interject),
             authority_class: Some(AuthorityClass::OperatorInstruction),
-            body: Some(MessageBody::Text { text: request.text }),
+            body: Some(MessageBody::Text { text }),
             text: None,
             json: None,
             metadata: Some(json!({ "control": true })),
@@ -729,6 +737,113 @@ pub async fn control_prompt(
         },
     )
     .await
+}
+
+fn control_prompt_text_with_attachments(
+    agent_id: &str,
+    agent_home: &std::path::Path,
+    request: ControlPromptRequest,
+) -> Result<String> {
+    if request.attachments.is_empty() {
+        return Ok(request.text);
+    }
+
+    let inbox = agent_home.join("media").join("inbox");
+    std::fs::create_dir_all(&inbox)
+        .with_context(|| format!("create media inbox at {}", inbox.display()))?;
+
+    let mut text = request.text;
+    for (index, attachment) in request.attachments.into_iter().enumerate() {
+        match attachment {
+            ControlPromptAttachment::Image {
+                name,
+                media_type,
+                data_base64,
+            } => {
+                let bytes = BASE64_STANDARD
+                    .decode(data_base64.as_bytes())
+                    .with_context(|| format!("decode image attachment {}", index + 1))?;
+                if bytes.is_empty() {
+                    return Err(anyhow!("image attachment {} is empty", index + 1));
+                }
+                if bytes.len() as u64 > crate::tool::tools::view_image::MAX_IMAGE_BYTES {
+                    return Err(anyhow!(
+                        "image attachment {} exceeds {} bytes",
+                        index + 1,
+                        crate::tool::tools::view_image::MAX_IMAGE_BYTES
+                    ));
+                }
+                let extension = image_extension_for_media_type(&media_type)
+                    .ok_or_else(|| anyhow!("unsupported image media type: {media_type}"))?;
+                let stem = safe_media_stem(name.as_deref()).unwrap_or_else(|| "image".to_string());
+                let file_name = format!(
+                    "{}-{}-{}.{}",
+                    Utc::now().format("%Y%m%dT%H%M%S%3fZ"),
+                    index + 1,
+                    stem,
+                    extension
+                );
+                let path = inbox.join(&file_name);
+                std::fs::write(&path, bytes)
+                    .with_context(|| format!("write image attachment to {}", path.display()))?;
+                if !text.ends_with('\n') && !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&format!(
+                    "\n![{}](workspace://{}/media/inbox/{})",
+                    markdown_alt_text(name.as_deref())
+                        .unwrap_or_else(|| format!("image {}", index + 1)),
+                    crate::types::agent_home_workspace_id(agent_id),
+                    percent_encode_path_segment(&file_name)
+                ));
+            }
+        }
+    }
+
+    Ok(text)
+}
+
+fn image_extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn safe_media_stem(name: Option<&str>) -> Option<String> {
+    let name = name?;
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    let safe = stem
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(48)
+        .collect::<String>();
+    (!safe.is_empty()).then_some(safe)
+}
+
+fn markdown_alt_text(name: Option<&str>) -> Option<String> {
+    let alt = name?
+        .chars()
+        .filter(|ch| !matches!(ch, '[' | ']' | '(' | ')' | '\n' | '\r'))
+        .collect::<String>();
+    (!alt.trim().is_empty()).then(|| alt.trim().to_string())
+}
+
+fn percent_encode_path_segment(segment: &str) -> String {
+    percent_encoding::utf8_percent_encode(segment, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
 pub async fn create_operator_transport_binding(

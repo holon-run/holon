@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
+import {
+  createRuntimeClient,
+  type AgentEventStreamSubscription,
+  type OperatorPromptAttachment,
+  type StreamEventEnvelopeDto,
+} from "./client";
 import { cacheClearRemote } from "./idb-cache";
 import {
   currentRemoteKey,
@@ -268,7 +273,7 @@ export interface RuntimeStoreState {
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
-  sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
+  sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
   clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
@@ -1801,9 +1806,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
-  sendOperatorPrompt: async (agentId, text, displayLevel) => {
+  sendOperatorPrompt: async (agentId, text, displayLevel, attachments = []) => {
     const prompt = text.trim();
-    if (!agentId || !prompt) {
+    if (!agentId || (!prompt && attachments.length === 0)) {
       return;
     }
 
@@ -1833,7 +1838,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     });
 
     try {
-      await runtimeClient.sendOperatorPrompt(agentId, prompt);
+      await runtimeClient.sendOperatorPrompt(agentId, prompt, attachments);
       scheduleBootstrapRefresh(get, 250);
       set((state) => ({
         sessionsByAgentId: {
