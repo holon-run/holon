@@ -1296,6 +1296,20 @@ pub async fn control_runtime_readiness_is_open_over_unix_socket_when_auth_requir
     Ok(())
 }
 
+pub async fn control_prompt_rejects_oversized_body() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+    let oversized_text = "x".repeat(33 * 1024 * 1024);
+    let response = client
+        .post(format!("{base}/api/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": oversized_text }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    server.abort();
+    Ok(())
+}
+
 pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<()> {
     let config = test_config_with_paths(
         tempdir().unwrap().keep(),
