@@ -841,6 +841,18 @@ button {
   font-size: 12px;
 }
 
+.header-status {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+.header-status.running { color: var(--accent); }
+.header-status.needs-input { color: var(--warning); }
+.header-status.waiting { color: var(--muted); }
+.header-status.ready { color: var(--success); }
+.header-status.stopped { color: var(--faint); }
+.header-status.muted { color: var(--muted); }
+
 .back-button,
 .top-actions button,
 .display-level button,

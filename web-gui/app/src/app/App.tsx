@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
+import { Circle, CircleAlert, CircleCheck, CircleX, Clock, LoaderCircle, type LucideProps } from "lucide-react";
+import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
@@ -164,7 +166,6 @@ export function App() {
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
   const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
-  const selectedAgentContext = selectedAgentStatus?.label ?? "loading agent";
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
       ? "syncing"
@@ -474,7 +475,7 @@ export function App() {
                         </span>
                       ) : null}
                       <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
-                        {agentStatusIcon(status.tone)}
+                        <StatusDotIcon tone={status.tone} />
                       </span>
                     </span>
                     {workSummary ? (
@@ -512,14 +513,17 @@ export function App() {
               ) : null}
               <div>
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
-                <span title={route === "agent" ? selectedAgentStatus?.title : undefined}>
-                  {(route === "agent" || route === "dashboard") &&
-                    (route === "agent"
-                      ? selectedAgentContext
-                      : bootstrap.attentionCount > 0
-                        ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: bootstrap.attentionCount })
-                        : t("app.subtitleDashboardAllClear", { count: bootstrap.agents.length }))}
-                </span>
+                {route === "agent" && selectedAgentStatus ? (
+                  <span className={`header-status ${selectedAgentStatus.tone}`} title={selectedAgentStatus.title} data-tooltip={selectedAgentStatus.title}>
+                    <StatusDotIcon tone={selectedAgentStatus.tone} />
+                  </span>
+                ) : route === "dashboard" ? (
+                  <span>
+                    {bootstrap.attentionCount > 0
+                      ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: bootstrap.attentionCount })
+                      : t("app.subtitleDashboardAllClear", { count: bootstrap.agents.length })}
+                  </span>
+                ) : null}
               </div>
             </div>
             <div className="top-actions">
@@ -1051,13 +1055,15 @@ function formatUnreadCount(count: number): string {
   return count > 99 ? "99+" : String(count);
 }
 
-function agentStatusIcon(tone: string): string {
-  if (tone === "running") return "●";
-  if (tone === "needs-input") return "!";
-  if (tone === "waiting") return "◌";
-  if (tone === "ready") return "✓";
-  if (tone === "stopped") return "×";
-  return "·";
+function StatusDotIcon({ tone, size = 13 }: { tone: string; size?: number }) {
+  const Icon: ComponentType<LucideProps> =
+    tone === "running" ? LoaderCircle :
+    tone === "needs-input" ? CircleAlert :
+    tone === "waiting" ? Clock :
+    tone === "ready" ? CircleCheck :
+    tone === "stopped" ? CircleX :
+    Circle;
+  return <Icon size={size} className={tone === "running" ? "animate-spin" : undefined} />;
 }
 
 
