@@ -20,6 +20,7 @@ import remarkGfm from "remark-gfm";
 import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtime/types";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import { useTranslation } from "react-i18next";
+import { parseWorkspaceImageRef, resolveWorkspaceRelativePath, WorkspaceImage } from "../../components/MarkdownContent";
 
 interface FileBrowserPanelProps {
   workspaceId: string;
@@ -297,6 +298,33 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
 
   const markdownComponents: Components = {
     a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+    img: ({ src, alt, ...props }) => {
+      const workspaceRef = parseWorkspaceImageRef(src);
+      if (workspaceRef) {
+        return (
+          <WorkspaceImage
+            {...props}
+            workspaceId={workspaceRef.workspaceId}
+            path={workspaceRef.path}
+            alt={alt ?? workspaceRef.path}
+          />
+        );
+      }
+
+      const relativePath = resolveWorkspaceRelativePath(selectedFile?.path ?? "", src);
+      if (!relativePath) {
+        return <img {...props} src={src} alt={alt ?? ""} />;
+      }
+      return (
+        <WorkspaceImage
+          {...props}
+          workspaceId={workspaceId}
+          path={relativePath}
+          executionRootId={executionRootId}
+          alt={alt ?? relativePath}
+        />
+      );
+    },
   };
 
   const entries = listing?.entries ?? [];
@@ -417,9 +445,11 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
           ) : selectedFile.error ? (
             <p className="inspector-error">{selectedFile.error}</p>
           ) : isImageFile(selectedFile.mimeType) ? (
-            <img
+            <WorkspaceImage
               className="file-browser-image"
-              src={workspaceFileUrl(workspaceId, selectedFile.path, undefined, executionRootId)}
+              workspaceId={workspaceId}
+              path={selectedFile.path}
+              executionRootId={executionRootId}
               alt={selectedFile.path}
             />
           ) : selectedFile.content != null ? (

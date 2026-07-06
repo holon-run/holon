@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseWorkspaceImageRef } from "./MarkdownContent";
+import { parseWorkspaceImageRef, resolveWorkspaceRelativePath } from "./MarkdownContent";
 
 describe("parseWorkspaceImageRef", () => {
   it("parses workspace image URIs", () => {
@@ -16,5 +16,19 @@ describe("parseWorkspaceImageRef", () => {
       path: "out dir/chart 1.png",
     });
     expect(parseWorkspaceImageRef("https://example.com/chart.png")).toBeUndefined();
+  });
+});
+
+describe("resolveWorkspaceRelativePath", () => {
+  it("resolves markdown image paths relative to the current file", () => {
+    expect(resolveWorkspaceRelativePath("docs/report.md", "images/chart.png")).toBe("docs/images/chart.png");
+    expect(resolveWorkspaceRelativePath("docs/nested/report.md", "../images/chart%201.png")).toBe("docs/images/chart 1.png");
+    expect(resolveWorkspaceRelativePath("docs/report.md", "/assets/logo.png")).toBe("assets/logo.png");
+  });
+
+  it("does not rewrite external or escaping image URLs", () => {
+    expect(resolveWorkspaceRelativePath("docs/report.md", "https://example.com/chart.png")).toBeUndefined();
+    expect(resolveWorkspaceRelativePath("docs/report.md", "data:image/png;base64,abc")).toBeUndefined();
+    expect(resolveWorkspaceRelativePath("report.md", "../secret.png")).toBeUndefined();
   });
 });

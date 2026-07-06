@@ -1153,6 +1153,19 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         content: response.content,
       };
     },
+    async fetchWorkspaceFileBlob(workspaceId: string, path: string, executionRootId?: string): Promise<Blob> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+      const query = executionRootId ? `?execution_root_id=${encodeURIComponent(executionRootId)}` : "";
+      return getBlob(
+        fetchImpl,
+        baseUrl,
+        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query}`,
+        { headers: requestHeaders },
+      );
+    },
     workspaceFileUrl(workspaceId: string, path: string, download?: boolean, executionRootId?: string): string {
       const encodedPath = path.split("/").map(encodeURIComponent).join("/");
       const params = new URLSearchParams();
@@ -1537,6 +1550,24 @@ async function getJson<T>(
     throw await httpRequestError("GET", path, response);
   }
   return (await response.json()) as T;
+}
+
+async function getBlob(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+): Promise<Blob> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    headers: { Accept: "*/*", ...options.headers },
+    signal: controller.signal,
+  }).finally(() => globalThis.clearTimeout(timeout));
+  if (!response.ok) {
+    throw await httpRequestError("GET", path, response);
+  }
+  return response.blob();
 }
 
 async function postJson<T>(
