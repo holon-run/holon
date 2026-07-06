@@ -559,7 +559,10 @@ impl LocalClient {
     ) -> Result<ControlPromptResponse> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/prompt"),
-            &ControlPromptRequest { text: text.into() },
+            &ControlPromptRequest {
+                text: text.into(),
+                attachments: Vec::new(),
+            },
         )
         .await
     }

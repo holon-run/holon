@@ -589,7 +589,7 @@ export function App() {
             onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, displayLevel, reasoningEffort)}
             onClearModel={() => clearAgentModel(activeAgent.id, displayLevel)}
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, displayLevel)}
-            onSendPrompt={(text) => sendOperatorPrompt(activeAgent.id, text, displayLevel)}
+            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, displayLevel, attachments)}
             onOpenInspector={() => {
               showAgentOverview(activeAgent.id);
             }}

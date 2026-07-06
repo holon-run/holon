@@ -28,7 +28,7 @@ use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 pub(crate) const NAME: &str = crate::tool::names::VIEW_IMAGE;
 const VISUAL_OBSERVATION_SCHEMA: &str = "visual_observation.v1";
 const VIEW_IMAGE_OBSERVATION_GENERATION_POLICY: &str = "openai-compatible-image-input.v1";
-const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -368,12 +368,12 @@ fn optional_uncertainties(value: Option<&Value>) -> Result<Vec<String>> {
 }
 
 #[derive(Debug, Clone)]
-struct ReadImage {
-    visual_reference: ViewImageVisualReference,
-    bytes: Vec<u8>,
+pub(crate) struct ReadImage {
+    pub(crate) visual_reference: ViewImageVisualReference,
+    pub(crate) bytes: Vec<u8>,
 }
 
-fn read_visual_reference(path: &Path) -> Result<ReadImage> {
+pub(crate) fn read_visual_reference(path: &Path) -> Result<ReadImage> {
     let file_metadata = fs::metadata(path).map_err(|error| {
         invalid_tool_input(
             NAME,

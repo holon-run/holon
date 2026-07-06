@@ -48,6 +48,13 @@ export interface RuntimeClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface OperatorPromptAttachment {
+  kind: "image";
+  name?: string;
+  mediaType: string;
+  dataBase64: string;
+}
+
 const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
@@ -1061,11 +1068,19 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) return undefined;
       return streamGlobalEvents(baseUrl, fetchImpl, requestHeaders, options);
     },
-    async sendOperatorPrompt(agentId: string, text: string): Promise<void> {
+    async sendOperatorPrompt(agentId: string, text: string, attachments: OperatorPromptAttachment[] = []): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text }, requestHeaders);
+      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, {
+        text,
+        attachments: attachments.map((attachment) => ({
+          kind: attachment.kind,
+          name: attachment.name,
+          media_type: attachment.mediaType,
+          data_base64: attachment.dataBase64,
+        })),
+      }, requestHeaders);
     },
     async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
       if (!baseUrl) {
@@ -1137,6 +1152,19 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         totalSize: response.total_size,
         content: response.content,
       };
+    },
+    async fetchWorkspaceFileBlob(workspaceId: string, path: string, executionRootId?: string): Promise<Blob> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+      const query = executionRootId ? `?execution_root_id=${encodeURIComponent(executionRootId)}` : "";
+      return getBlob(
+        fetchImpl,
+        baseUrl,
+        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query}`,
+        { headers: requestHeaders },
+      );
     },
     workspaceFileUrl(workspaceId: string, path: string, download?: boolean, executionRootId?: string): string {
       const encodedPath = path.split("/").map(encodeURIComponent).join("/");
@@ -1522,6 +1550,24 @@ async function getJson<T>(
     throw await httpRequestError("GET", path, response);
   }
   return (await response.json()) as T;
+}
+
+async function getBlob(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+): Promise<Blob> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    headers: { Accept: "*/*", ...options.headers },
+    signal: controller.signal,
+  }).finally(() => globalThis.clearTimeout(timeout));
+  if (!response.ok) {
+    throw await httpRequestError("GET", path, response);
+  }
+  return response.blob();
 }
 
 async function postJson<T>(

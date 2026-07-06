@@ -30,8 +30,12 @@ use crate::{
         ConversationMessage, PromptContentBlock, ProviderNativeWebSearchRequest,
         ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
     },
+    system::ExecutionSnapshot,
     tool::ToolSpec,
 };
+use base64::Engine as _;
+use std::path::{Path, PathBuf};
+use tracing::debug;
 
 pub fn build_provider_prompt_frame(effective_prompt: &EffectivePrompt) -> ProviderPromptFrame {
     let (system_blocks, context_blocks) = build_prompt_content_blocks(
@@ -56,6 +60,12 @@ pub fn build_provider_turn_request(
         &effective_prompt.system_sections,
         &effective_prompt.context_sections,
     );
+    let mut conversation = vec![ConversationMessage::UserBlocks(context_blocks.clone())];
+    conversation.extend(markdown_image_messages_from_sections(
+        &effective_prompt.context_sections,
+        &effective_prompt.execution,
+    ));
+
     ProviderTurnRequest {
         prompt_frame: ProviderPromptFrame::structured(
             effective_prompt.rendered_system_prompt.clone(),
@@ -63,7 +73,7 @@ pub fn build_provider_turn_request(
             context_blocks.clone(),
             Some(prompt_cache_from_effective_prompt(effective_prompt)),
         ),
-        conversation: vec![ConversationMessage::UserBlocks(context_blocks)],
+        conversation,
         tools: available_tools,
         native_web_search,
         response_format: None,
@@ -117,6 +127,186 @@ fn build_prompt_content_blocks(
     );
 
     (system_blocks, context_blocks)
+}
+
+fn markdown_image_messages_from_sections(
+    sections: &[PromptSection],
+    execution: &ExecutionSnapshot,
+) -> Vec<ConversationMessage> {
+    sections
+        .iter()
+        .flat_map(|section| markdown_image_messages_from_text(&section.content, execution))
+        .collect()
+}
+
+fn markdown_image_messages_from_text(
+    text: &str,
+    execution: &ExecutionSnapshot,
+) -> Vec<ConversationMessage> {
+    markdown_image_refs(text)
+        .into_iter()
+        .filter_map(|image| markdown_image_message(image, execution))
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MarkdownImageRef<'a> {
+    alt: &'a str,
+    src: &'a str,
+}
+
+fn markdown_image_refs(text: &str) -> Vec<MarkdownImageRef<'_>> {
+    let mut refs = Vec::new();
+    let mut offset = 0usize;
+    while offset + 4 <= text.len() {
+        let Some(start) = text[offset..].find("![") else {
+            break;
+        };
+        let alt_start = offset + start + 2;
+        let Some(alt_end_rel) = text[alt_start..].find(']') else {
+            break;
+        };
+        let alt_end = alt_start + alt_end_rel;
+        let src_open = alt_end + 1;
+        if text[src_open..].starts_with('(') {
+            let src_start = src_open + 1;
+            if let Some(src_end_rel) = text[src_start..].find(')') {
+                let src_end = src_start + src_end_rel;
+                let src = text[src_start..src_end]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default();
+                if !src.is_empty() {
+                    refs.push(MarkdownImageRef {
+                        alt: &text[alt_start..alt_end],
+                        src,
+                    });
+                }
+                offset = src_end + 1;
+                continue;
+            }
+        }
+        offset = alt_end + 1;
+    }
+    refs
+}
+
+fn markdown_image_message(
+    image: MarkdownImageRef<'_>,
+    execution: &ExecutionSnapshot,
+) -> Option<ConversationMessage> {
+    let path = resolve_markdown_image_src(image.src, execution)?;
+    match crate::tool::tools::view_image::read_visual_reference(&path) {
+        Ok(read_image) => Some(ConversationMessage::UserImage {
+            prompt: if image.alt.trim().is_empty() {
+                format!("Image from {}", image.src)
+            } else {
+                image.alt.trim().to_string()
+            },
+            media_type: read_image.visual_reference.mime,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(read_image.bytes),
+        }),
+        Err(error) => {
+            debug!(
+                image_src = image.src,
+                path = %path.display(),
+                error = %error,
+                "skipping unresolved markdown image provider input"
+            );
+            None
+        }
+    }
+}
+
+fn resolve_markdown_image_src(src: &str, execution: &ExecutionSnapshot) -> Option<PathBuf> {
+    if let Some(rest) = src.strip_prefix("workspace://") {
+        let (workspace_id, relative) = rest.split_once('/')?;
+        let root = workspace_root_for_id(workspace_id, execution)?;
+        return resolve_relative_path(root, relative);
+    }
+    if src.contains("://") {
+        return None;
+    }
+    let path = PathBuf::from(percent_decode_path(src));
+    if path.is_absolute() {
+        path_is_allowed(&path, execution).then_some(path)
+    } else {
+        resolve_relative_path(&execution.cwd, src)
+    }
+}
+
+fn workspace_root_for_id<'a>(
+    workspace_id: &str,
+    execution: &'a ExecutionSnapshot,
+) -> Option<&'a Path> {
+    if execution.workspace_id.as_deref() == Some(workspace_id) {
+        return Some(&execution.workspace_anchor);
+    }
+    execution
+        .attached_workspaces
+        .iter()
+        .find(|(id, _)| id == workspace_id)
+        .map(|(_, path)| path.as_path())
+}
+
+fn resolve_relative_path(root: &Path, relative: &str) -> Option<PathBuf> {
+    let decoded = percent_decode_path(relative);
+    let relative_path = Path::new(decoded.trim_start_matches('/'));
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let path = root.join(relative_path);
+    path_is_within(&path, root).then_some(path)
+}
+
+fn path_is_allowed(path: &Path, execution: &ExecutionSnapshot) -> bool {
+    path_is_within(path, &execution.workspace_anchor)
+        || execution
+            .attached_workspaces
+            .iter()
+            .any(|(_, root)| path_is_within(path, root))
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    let Ok(normalized) = crate::system::workspace::normalize_path(path) else {
+        return false;
+    };
+    let Ok(normalized_root) = crate::system::workspace::normalize_path(root) else {
+        return false;
+    };
+    if !normalized.starts_with(&normalized_root) {
+        return false;
+    }
+    if let (Ok(canonical), Ok(canonical_root)) = (
+        std::fs::canonicalize(&normalized),
+        std::fs::canonicalize(&normalized_root),
+    ) {
+        return canonical.starts_with(canonical_root);
+    }
+    true
+}
+
+fn percent_decode_path(path: &str) -> String {
+    let mut decoded = String::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &path[index + 1..index + 3];
+            if let Ok(value) = u8::from_str_radix(hex, 16) {
+                decoded.push(value as char);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index] as char);
+        index += 1;
+    }
+    decoded
 }
 
 fn section_slice_to_prompt_blocks(sections: &[PromptSection]) -> Vec<PromptContentBlock> {
@@ -257,6 +447,75 @@ mod tests {
                 .map(|cache| cache.compression_epoch),
             Some(2)
         );
+    }
+
+    #[test]
+    fn build_provider_turn_request_adds_workspace_markdown_image_input() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir(workspace.path().join("outputs")).expect("outputs dir");
+        std::fs::write(workspace.path().join("outputs/chart.png"), fixture_png())
+            .expect("write png");
+
+        let mut effective_prompt = fixture_prompt();
+        effective_prompt.execution.workspace_id = Some("ws_test".to_string());
+        effective_prompt.execution.workspace_anchor = workspace.path().to_path_buf();
+        effective_prompt.execution.execution_root = workspace.path().to_path_buf();
+        effective_prompt.execution.cwd = workspace.path().to_path_buf();
+        effective_prompt.context_sections = vec![PromptSection {
+            name: "current_input".to_string(),
+            id: "current_input".to_string(),
+            content: "Please inspect ![Chart](workspace://ws_test/outputs/chart.png).".to_string(),
+            stability: PromptStability::TurnScoped,
+        }];
+
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None);
+
+        assert_eq!(request.conversation.len(), 2);
+        let ConversationMessage::UserImage {
+            prompt,
+            media_type,
+            data_base64,
+        } = &request.conversation[1]
+        else {
+            panic!("expected resolved markdown image to become UserImage");
+        };
+        assert_eq!(prompt, "Chart");
+        assert_eq!(media_type, "image/png");
+        assert!(!data_base64.is_empty());
+    }
+
+    #[test]
+    fn markdown_image_resolver_ignores_remote_urls_and_workspace_escapes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut effective_prompt = fixture_prompt();
+        effective_prompt.execution.workspace_id = Some("ws_test".to_string());
+        effective_prompt.execution.workspace_anchor = workspace.path().to_path_buf();
+        effective_prompt.execution.execution_root = workspace.path().to_path_buf();
+        effective_prompt.execution.cwd = workspace.path().to_path_buf();
+        effective_prompt.context_sections = vec![PromptSection {
+            name: "current_input".to_string(),
+            id: "current_input".to_string(),
+            content: concat!(
+                "Ignore ![remote](https://example.com/chart.png) ",
+                "and ![escape](workspace://ws_test/../chart.png)."
+            )
+            .to_string(),
+            stability: PromptStability::TurnScoped,
+        }];
+
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None);
+
+        assert_eq!(request.conversation.len(), 1);
+    }
+
+    fn fixture_png() -> &'static [u8] {
+        &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ]
     }
 
     fn fixture_prompt() -> EffectivePrompt {

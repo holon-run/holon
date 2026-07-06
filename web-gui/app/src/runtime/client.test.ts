@@ -120,6 +120,39 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/handshake"]);
   });
 
+  it("fetches workspace file blobs with bearer token headers", async () => {
+    const seen: Array<{ url: string; authorization: string | null; accept: string | null }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen.push({
+        url: String(input),
+        authorization: headers.get("Authorization"),
+        accept: headers.get("Accept"),
+      });
+      return new Response(new Blob(["png"], { type: "image/png" }), {
+        headers: { "Content-Type": "image/png" },
+      });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      token: "secret-token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const blob = await client.fetchWorkspaceFileBlob("ws/one", "outputs/chart 1.png", "root:ws");
+
+    expect(blob.type).toBe("image/png");
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/workspaces/ws%2Fone/files/outputs/chart%201.png?execution_root_id=root%3Aws",
+        authorization: "Bearer secret-token",
+        accept: "*/*",
+      },
+    ]);
+  });
+
   it("fetches full tool execution detail for inspector hydration", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {

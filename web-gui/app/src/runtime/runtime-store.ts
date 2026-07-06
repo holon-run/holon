@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
+import {
+  createRuntimeClient,
+  type AgentEventStreamSubscription,
+  type OperatorPromptAttachment,
+  type StreamEventEnvelopeDto,
+} from "./client";
 import { cacheClearRemote } from "./idb-cache";
 import {
   currentRemoteKey,
@@ -229,6 +234,7 @@ export interface RuntimeStoreState {
   showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
   readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
+  fetchWorkspaceFileBlob: (workspaceId: string, path: string, executionRootId?: string) => Promise<Blob>;
   navigateBack: () => void;
   workspaceFileUrl: (workspaceId: string, path: string, download?: boolean, executionRootId?: string) => string;
   toggleRightPanel: () => void;
@@ -268,7 +274,7 @@ export interface RuntimeStoreState {
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
-  sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
+  sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
   clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
@@ -831,6 +837,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }),
   browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
   readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
+  fetchWorkspaceFileBlob: (workspaceId, path, executionRootId) => runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId),
   workspaceFileUrl: (workspaceId, path, download, executionRootId) => runtimeClient.workspaceFileUrl(workspaceId, path, download, executionRootId),
   inspectActivity: (agentId, activity) => {
     set((state) => {
@@ -1801,9 +1808,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
-  sendOperatorPrompt: async (agentId, text, displayLevel) => {
+  sendOperatorPrompt: async (agentId, text, displayLevel, attachments = []) => {
     const prompt = text.trim();
-    if (!agentId || !prompt) {
+    if (!agentId || (!prompt && attachments.length === 0)) {
       return;
     }
 
@@ -1833,7 +1840,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     });
 
     try {
-      await runtimeClient.sendOperatorPrompt(agentId, prompt);
+      await runtimeClient.sendOperatorPrompt(agentId, prompt, attachments);
       scheduleBootstrapRefresh(get, 250);
       set((state) => ({
         sessionsByAgentId: {
