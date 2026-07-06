@@ -513,19 +513,12 @@ export function App() {
               <div>
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
                 <span title={route === "agent" ? selectedAgentStatus?.title : undefined}>
-                  {route === "agent"
-                    ? selectedAgentContext
-                    : route === "search"
-                      ? t("app.subtitleSearch")
-                      : route === "skills" || route === "skillDetail"
-                        ? t("app.subtitleSkills")
-                        : route === "templates" || route === "templateDetail"
-                          ? t("app.subtitleTemplates")
-                          : route === "settings"
-                            ? t("app.subtitleSettings")
-                            : bootstrap.attentionCount > 0
-                              ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: bootstrap.attentionCount })
-                              : t("app.subtitleDashboardAllClear", { count: bootstrap.agents.length })}
+                  {(route === "agent" || route === "dashboard") &&
+                    (route === "agent"
+                      ? selectedAgentContext
+                      : bootstrap.attentionCount > 0
+                        ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: bootstrap.attentionCount })
+                        : t("app.subtitleDashboardAllClear", { count: bootstrap.agents.length }))}
                 </span>
               </div>
             </div>
