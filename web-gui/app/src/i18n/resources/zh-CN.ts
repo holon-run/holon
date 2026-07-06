@@ -62,6 +62,9 @@ const zh: Record<string, any> = {
     posture: "姿态",
     currentWork: "当前工作",
     dismiss: "关闭",
+    lastActivity: "最后活动",
+    secondsAgo: "{{seconds}}秒前",
+    minutesAgo: "{{minutes}}分钟前",
   },
   app: {
     newAgent: "新建智能体",
@@ -81,6 +84,11 @@ const zh: Record<string, any> = {
     agent: "个智能体",
     loadingAgent: "正在加载智能体…",
     agentNotFound: "未找到智能体",
+    unreadUpdates: "{{count}} 条未读更新",
+    expandNav: "展开导航",
+    collapseNav: "折叠导航",
+    conversationControls: "智能体对话控制",
+    streamStatus: "智能体流状态",
     noAgentId: "当前路由中未提供智能体 ID。",
     subtitleDashboard: "{{count}} 个智能体 · {{attention}} 需要关注",
     subtitleDashboardAllClear: "{{count}} 个智能体 · 一切正常",
@@ -740,6 +748,17 @@ const zh: Record<string, any> = {
     closePanel: "关闭侧面板",
     details: "详情",
     noCurrentWork: "无当前工作项",
+  },
+
+  statusDetail: {
+    posture: "姿态",
+    reason: "原因",
+    lifecycle: "生命周期",
+    run: "运行",
+    queuedInputs: "{{count}} 个排队输入",
+    activeTasks: "{{count}} 个活动任务",
+    waitingConditions: "{{count}} 个等待条件",
+    noDetails: "无状态详情",
   },
 };
 

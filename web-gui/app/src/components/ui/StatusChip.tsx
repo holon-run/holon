@@ -179,7 +179,7 @@ function describeStatus(kind: StatusKind, rawValue: string | null | undefined, t
   const label = statusLabel(kind, value, t);
   return {
     label,
-    title: label === value || label === prettify(value) ? value : `${label} · ${value}`,
+    title: label,
     tone: statusTone(kind, value),
   };
 }

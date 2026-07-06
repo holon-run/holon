@@ -60,6 +60,9 @@ const en = {
     posture: "Posture",
     currentWork: "Current work",
     dismiss: "Dismiss",
+    lastActivity: "Last activity",
+    secondsAgo: "{{seconds}}s ago",
+    minutesAgo: "{{minutes}}m ago",
   },
   app: {
     newAgent: "New Agent",
@@ -79,6 +82,11 @@ const en = {
     agent: "agent",
     loadingAgent: "Loading agent…",
     agentNotFound: "Agent not found",
+    unreadUpdates: "{{count}} unread update(s)",
+    expandNav: "Expand navigation",
+    collapseNav: "Collapse navigation",
+    conversationControls: "Agent conversation controls",
+    streamStatus: "Agent stream status",
     noAgentId: "No agent id was provided in the current route.",
     subtitleDashboard: "{{count}} agents · {{attention}} need attention",
     subtitleDashboardAllClear: "{{count}} agents · all clear",
@@ -738,6 +746,17 @@ const en = {
     closePanel: "Close side panel",
     details: "Details",
     noCurrentWork: "No current work item",
+  },
+
+  statusDetail: {
+    posture: "posture",
+    reason: "reason",
+    lifecycle: "lifecycle",
+    run: "run",
+    queuedInputs: "{{count}} queued input(s)",
+    activeTasks: "{{count}} active task(s)",
+    waitingConditions: "{{count}} waiting condition(s)",
+    noDetails: "No status details",
   },
 };
 

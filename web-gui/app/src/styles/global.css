@@ -5154,6 +5154,17 @@ code {
   animation: tooltip-fade-in 0.12s 0.25s forwards;
 }
 
+/* Tooltip shows below the element (for icons near the top of the page) */
+[data-tooltip-pos="bottom"]:hover::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+[data-tooltip-pos="bottom"]:hover::before {
+  top: calc(100% + 2px);
+  bottom: auto;
+}
+
 @keyframes tooltip-fade-in {
   to { opacity: 1; }
 }

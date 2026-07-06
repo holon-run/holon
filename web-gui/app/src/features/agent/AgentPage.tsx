@@ -7,6 +7,7 @@ import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
+import type { TFunction } from "i18next";
 import type {
   AgentDetail,
   AgentSummary,
@@ -132,7 +133,7 @@ export function AgentPage({
     },
     [displayLevel, sourceEvents, sourceTimeline, visibleTimelineItemLimit],
   );
-  const isWorking = isAgentWorking(activeAgent, sendingPrompt);
+  const isWorking = isAgentWorking(activeAgent, sendingPrompt, t);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
@@ -555,8 +556,8 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
   return DEFAULT_INFO_TIMELINE_ITEM_LIMIT;
 }
 
-function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
-  return sendingPrompt || deriveAgentDisplayStatus(agent).label === "Running";
+function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean, t: TFunction): boolean {
+  return sendingPrompt || deriveAgentDisplayStatus(agent, t).tone === "running";
 }
 
 function collectWorkingActivitiesForCurrentTurn(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {

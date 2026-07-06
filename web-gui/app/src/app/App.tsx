@@ -163,7 +163,7 @@ export function App() {
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
-  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent) : undefined;
+  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
   const selectedAgentContext = selectedAgentStatus?.label ?? "loading agent";
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
@@ -173,18 +173,20 @@ export function App() {
         : "preview";
   const agentTopControls =
     route === "agent" ? (
-      <div className="agent-top-controls" aria-label="Agent conversation controls">
-        <div className="agent-stream-controls" aria-label="Agent stream status">
+      <div className="agent-top-controls" aria-label={t("app.conversationControls")}>
+        <div className="agent-stream-controls" aria-label={t("app.streamStatus")}>
           <StatusBadge
             kind="connection"
             value={selectedAgentSourceStatus}
             className={`source-chip ${selectedAgentSourceStatus}`}
+            data-tooltip-pos="bottom"
           />
           <StatusBadge
             kind="stream"
             value={selectedAgentLiveStatus}
             className={`source-chip live-status ${selectedAgentLiveStatus}`}
             title={selectedAgentLiveTitle}
+            data-tooltip-pos="bottom"
           />
           <Button
             type="button"
@@ -400,8 +402,8 @@ export function App() {
           <button
             className="nav-collapse"
             type="button"
-            aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
-            title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+            aria-label={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
+            title={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
             onClick={toggleNavCollapsed}
           >
             ‹
@@ -450,7 +452,7 @@ export function App() {
             </div>
           ) : (
             bootstrap.agents.map((agent) => {
-              const status = deriveAgentDisplayStatus(agent);
+              const status = deriveAgentDisplayStatus(agent, t);
               const workSummary = agent.currentWork?.objective;
               const unreadCount = rosterActivityByAgentId[agent.id]?.unreadCount ?? 0;
 
@@ -467,11 +469,11 @@ export function App() {
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
                       {unreadCount > 0 ? (
-                        <span className="agent-row-unread" aria-label={`${unreadCount} unread updates`} title={`${unreadCount} unread updates`}>
+                        <span className="agent-row-unread" aria-label={t("app.unreadUpdates", { count: unreadCount })} title={t("app.unreadUpdates", { count: unreadCount })}>
                           {formatUnreadCount(unreadCount)}
                         </span>
                       ) : null}
-                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={`${status.label} · ${status.title}`}>
+                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
                         {agentStatusIcon(status.tone)}
                       </span>
                     </span>
@@ -1078,17 +1080,17 @@ function liveStatusLabel(status: string, t: TFunction): string {
 
 function liveStatusTitle(status: string, t: TFunction, lastActivityAt?: string, error?: string): string {
   const parts = [liveStatusLabel(status, t)];
-  if (lastActivityAt) parts.push(`last activity ${formatRelativeTime(lastActivityAt)}`);
+  if (lastActivityAt) parts.push(`${t("common.lastActivity")} ${formatRelativeTime(lastActivityAt, t)}`);
   if (error) parts.push(error);
   return parts.join(" · ");
 }
 
-function formatRelativeTime(value: string): string {
+function formatRelativeTime(value: string, t: TFunction): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
   const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return t("common.secondsAgo", { seconds });
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return t("common.minutesAgo", { minutes });
   return new Date(timestamp).toLocaleString();
 }
