@@ -539,7 +539,6 @@ export function SettingsPage({
         <Card className="summary-panel settings-hero">
           <span className="eyebrow">{t("settings.runtimeConfig")}</span>
           <h1>{t("settings.title")}</h1>
-          <p>{t("settings.subtitle")}</p>
           <div className="settings-quickstart" aria-label={t("settings.settingsOverviewAria")}>
             <div>
               <span>{t("settings.connection")}</span>

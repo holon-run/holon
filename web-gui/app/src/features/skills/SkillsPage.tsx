@@ -43,7 +43,6 @@ export function SkillsPage({
   const [addSkillName, setAddSkillName] = useState("");
   const [addMode, setAddMode] = useState<SkillInstallMode>("linked");
   const stats = useMemo(() => skillStats(skills), [skills]);
-  const libraryRoots = useMemo(() => summarizeLibraryRoots(skills), [skills]);
   const visibleSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return skills.filter((skill) => {
@@ -78,10 +77,6 @@ export function SkillsPage({
         <div className="skills-hero-copy">
           <span className="eyebrow">{t("skillsPage.skillLibrary")}</span>
           <h1>{t("skillsPage.title")}</h1>
-          <p>
-            {t("skillsPage.description")}
-            <code>{libraryRoots.user}</code>
-          </p>
         </div>
         <div className="skills-actions" aria-label={t("skillsPage.skillLibrary")}>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>

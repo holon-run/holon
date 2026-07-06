@@ -85,7 +85,6 @@ export function SearchPage({
         <section className="search-hero">
           <span className="eyebrow">{t("searchPage.runtimeSearch")}</span>
           <h1>{t("searchPage.title")}</h1>
-          <p>{t("searchPage.description")}</p>
         </section>
 
         <form className="search-form" onSubmit={submit}>

@@ -140,7 +140,6 @@ export function TemplatesPage({
         <div className="skills-hero-copy">
           <span className="eyebrow">{t("templatesPage.templateLibrary")}</span>
           <h1>{t("templatesPage.title")}</h1>
-          <p>{t("templatesPage.description")}</p>
         </div>
         <div className="skills-actions" aria-label={t("templatesPage.templateLibrary")}>
           <Button type="button" variant="outline" disabled={loading || syncInProgress} onClick={() => void onSyncSources()}>
