@@ -200,11 +200,12 @@ function statusLabel(kind: StatusKind, value: string, t: TFunction): string {
   if (value === "http" || value === "live") return t("badge.live");
   if (value === "fixture" || value === "preview") return t("badge.preview");
   if (value === "syncing") return t("badge.syncing");
-  if (value === "running") return t("badge.running");
+  if (value === "running" || value === "awake-running" || value === "active-turn") return t("badge.running");
   if (value === "waiting") return t("badge.waiting");
   if (value === "stale") return t("badge.stale");
   if (value === "stopped") return t("badge.stopped");
   if (value === "disconnected") return t("badge.disconnected");
+  if (value === "awake-idle" || value === "has-queued-input" || value === "has-runnable-work") return t("badge.ready");
   const badgeKey = `badge.${value}`;
   const translated = t(badgeKey);
   if (translated !== badgeKey) return translated;
