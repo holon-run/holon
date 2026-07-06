@@ -1,4 +1,4 @@
-import { Bot } from "lucide-react";
+import { Bot, User } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
@@ -714,7 +714,13 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
               <Bot size={14} aria-label={turn.label} />
             </span>
           ) : (
-            <span className="timeline-turn-label">{turn.label}</span>
+            <span
+              className="timeline-turn-icon"
+              data-tooltip={turn.label}
+              data-tooltip-pos="bottom"
+            >
+              <User size={14} aria-label={turn.label} />
+            </span>
           )}
           <time>{formatDisplayTime(turn.timestamp)}</time>
         </div>
