@@ -151,8 +151,7 @@ export function AgentOverviewPanel({
           activePath != null && originPath != null && activePath !== originPath;
         return (
           <CollapsibleInspectorCard
-            title={t("rightPanel.workspaces")}
-            summary={wsCount === 1 ? t("rightPanel.workspaceCount", { count: wsCount }) : t("rightPanel.workspaceCountPlural", { count: wsCount })}
+           title={t("rightPanel.workspacesWithCount", { count: wsCount })}
             defaultOpen={true}
           >
             {workspace ? (
@@ -328,8 +327,7 @@ export function AgentOverviewPanel({
 
       {workItems.length ? (
         <CollapsibleInspectorCard
-          title={t("rightPanel.workItems")}
-          summary={t("rightPanel.openCount", { count: openWorkItems.length + currentWorkItems.length })}
+          title={t("rightPanel.workItemsWithCount", { count: workItems.length })}
           className="current-work"
         >
           {currentWorkItems.map((workItem) => (
