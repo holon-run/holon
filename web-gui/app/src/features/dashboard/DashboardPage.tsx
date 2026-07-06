@@ -38,10 +38,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
               <p>{t("dashboard.available", { count: agents.length })}</p>
             </div>
             <div className="dashboard-actions">
-              <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source}>
-                <span className="runtime-dot" />
-                {connectionLabel}
-              </StatusBadge>
+              <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source} />
               <Button type="button" variant="secondary" disabled={loading} onClick={onRefresh}>
                 {loading ? t("common.refreshing") : t("common.refresh")}
               </Button>
@@ -175,9 +172,7 @@ function DashboardStateCard({ state, detail }: { state: DashboardState; detail: 
 
   return (
     <aside className={`dashboard-state ${state}`} role="status">
-      <StatusBadge kind="runtime" value={state}>
-        {t(labelKey)}
-      </StatusBadge>
+      <StatusBadge kind="runtime" value={state} />
       <div>
         <strong>{t(titleKey)}</strong>
         <p>{t(bodyKey)}</p>

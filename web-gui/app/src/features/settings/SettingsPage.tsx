@@ -809,13 +809,9 @@ export function SettingsPage({
                     {runtimeConfigSaving ? t("settings.saving") : "Save Vision"}
                   </Button>
                   {visionDefault ? (
-                    <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"}>
-                      {visionProviderReady ? "provider ready" : "provider credential missing"}
-                    </StatusChip>
+                    <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"} iconOnly title={visionProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")} />
                   ) : (
-                    <StatusChip className="settings-status available" tone="success">
-                      auto-discovery
-                    </StatusChip>
+                    <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
                   )}
                   {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
                 </div>
@@ -940,16 +936,12 @@ export function SettingsPage({
                   <strong>{t("settings.nativeSearch")}</strong>
                   <span>{t("settings.nativeSearchDesc")}</span>
                 </div>
-                <StatusChip className={`settings-status ${searchBuiltinProviderEnabled ? "available" : "unavailable"}`} tone={searchBuiltinProviderEnabled ? "success" : "error"}>
-                  {searchBuiltinProviderEnabled ? t("settings.allowedLabel") : t("settings.disabled")}
-                </StatusChip>
+                <StatusChip className={`settings-status ${searchBuiltinProviderEnabled ? "available" : "unavailable"}`} tone={searchBuiltinProviderEnabled ? "success" : "error"} iconOnly title={searchBuiltinProviderEnabled ? t("settings.allowedLabel") : t("settings.disabled")} />
                 <div>
                   <strong>DuckDuckGo</strong>
                   <span>{t("settings.duckDuckGoDesc")}</span>
                 </div>
-                <StatusChip className="settings-status available" tone="success">
-                  {t("settings.readyLabel")}
-                </StatusChip>
+                <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.readyLabel")} />
               </div>
               {standardSearchProviders.map((definition) => {
                 const provider = surface.webSearchProviders.find((entry) => entry.id === definition.id);
@@ -973,9 +965,7 @@ export function SettingsPage({
                           {definition.description}
                         </small>
                       </div>
-                      <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"}>
-                        {providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")}
-                      </StatusChip>
+                      <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"} iconOnly title={providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")} />
                     </header>
                     {!definition.requiresApiKey ? (
                       <div className="settings-form-row">
@@ -1006,9 +996,9 @@ export function SettingsPage({
                           <StatusChip
                             className={`settings-status ${credentialReady ? "available" : "unavailable"}`}
                             tone={credentialReady ? "success" : "error"}
-                          >
-                            {credentialReady ? t("settings.keySet") : "no key"}
-                          </StatusChip>
+                            iconOnly
+                            title={credentialReady ? t("settings.keySet") : t("settings.noKey")}
+                          />
                         </div>
                         <div className="settings-form-row">
                           <label>
@@ -1099,9 +1089,7 @@ export function SettingsPage({
                           <strong>{providerId}</strong>
                           <small>{t("settings.unsavedSearchProvider")}</small>
                         </div>
-                        <StatusChip className="settings-status unavailable" tone="error">
-                          {t("settings.notSaved")}
-                        </StatusChip>
+                        <StatusChip className="settings-status unavailable" tone="error" iconOnly title={t("settings.notSaved")} />
                       </header>
                       <div className="settings-form-row">
                         <label>
@@ -1206,9 +1194,7 @@ export function SettingsPage({
                           {provider.transport}
                         </small>
                       </div>
-                      <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
-                        {provider.credentialConfigured ? t("settings.credReady") : "credential missing"}
-                      </StatusChip>
+                      <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"} iconOnly title={provider.credentialConfigured ? t("settings.credReady") : t("settings.credMissing")} />
                     </header>
                     {provider.credentialConfigured && !providersWithModels.has(provider.id) ? (
                       <p className="settings-provider-hint">
@@ -1223,9 +1209,9 @@ export function SettingsPage({
                           <StatusChip
                             className={`settings-status ${isCredentialProfileConfigured(effectiveProfile) ? "available" : "unavailable"}`}
                             tone={isCredentialProfileConfigured(effectiveProfile) ? "success" : "error"}
-                          >
-                            {isCredentialProfileConfigured(effectiveProfile) ? t("settings.keySet") : "no key"}
-                          </StatusChip>
+                            iconOnly
+                            title={isCredentialProfileConfigured(effectiveProfile) ? t("settings.keySet") : t("settings.noKey")}
+                          />
                         </div>
                         <div className="settings-form-row">
                           <label>
@@ -1268,9 +1254,7 @@ export function SettingsPage({
                         {provider.credentialConfigured ? (
                           <div className="settings-device-login-header">
                             <span>{t("settings.connectedViaOAuth")}</span>
-                            <StatusChip className="settings-status available" tone="success">
-                              {t("settings.credReady")}
-                            </StatusChip>
+                            <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.credReady")} />
                           </div>
                         ) : null}
                         {codexDeviceLogin.status === "idle" || codexDeviceLogin.status === "failed" ? (
@@ -1303,7 +1287,7 @@ export function SettingsPage({
                         ) : null}
                         {codexDeviceLogin.status === "completed" ? (
                           <div className="settings-device-login-panel">
-                            <StatusChip className="settings-status available" tone="success">Login successful</StatusChip>
+                            <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.loginSuccessful")} />
                             <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>{t("common.dismiss")}</Button>
                           </div>
                         ) : null}
@@ -1427,9 +1411,7 @@ export function SettingsPage({
                           <span>{model.model}</span>
                         </div>
                         <div role="cell">
-                          <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"}>
-                            {model.available ? "available" : "unavailable"}
-                          </StatusChip>
+                          <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"} iconOnly title={model.available ? t("settings.availableLabel") : t("settings.unavailableLabel")} />
                         </div>
                         <div role="cell">
                           {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}

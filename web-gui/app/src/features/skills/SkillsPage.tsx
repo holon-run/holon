@@ -254,9 +254,7 @@ function SkillRow({
       <button type="button" className="skills-row-open" onClick={() => onOpen(skill.skillId)}>
         <div>
           <strong>{skill.name}</strong>
-          <StatusBadge className="state-chip" kind="connection" value={skill.scope}>
-            {normalizedSkillScope(skill.scope) === "user" ? t("skillsPage.global") : skill.scope === "workspace" ? t("skillsPage.workspace") : t("skillsPage.agent")}
-          </StatusBadge>
+          <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
         </div>
         <p>{skill.description || t("skillsPage.noDescription")}</p>
       </button>

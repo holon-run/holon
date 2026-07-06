@@ -179,17 +179,13 @@ export function App() {
             kind="connection"
             value={selectedAgentSourceStatus}
             className={`source-chip ${selectedAgentSourceStatus}`}
-          >
-            {selectedAgentSourceStatus}
-          </StatusBadge>
+          />
           <StatusBadge
             kind="stream"
             value={selectedAgentLiveStatus}
             className={`source-chip live-status ${selectedAgentLiveStatus}`}
             title={selectedAgentLiveTitle}
-          >
-            {liveStatusLabel(selectedAgentLiveStatus, t)}
-          </StatusBadge>
+          />
           <Button
             type="button"
             size="icon"
