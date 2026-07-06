@@ -104,7 +104,6 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                       <AgentStateBadge className={`state-chip ${agent.lifecycle}`} lifecycle={agent.lifecycle} posture={agent.posture} />
                       {agent.attention !== "none" ? (
                         <StatusBadge className="state-chip" kind="attention" value={agent.attention}>
-                          {agent.attention}
                         </StatusBadge>
                       ) : null}
                     </div>
