@@ -770,6 +770,13 @@ mod tests {
         assert!(section.content.contains("agent_home"));
         assert!(section
             .content
+            .contains("`workspace://<workspace_id>/<relative/path>`"));
+        assert!(section.content.contains("not a remote URL"));
+        assert!(section
+            .content
+            .contains("must not be absolute or escape with `..`"));
+        assert!(section
+            .content
             .contains("Shell `cd` affects only that shell command"));
         assert!(section.content.contains("AGENTS.md loading scope"));
         assert!(section.content.contains("relative ApplyPatch base"));
