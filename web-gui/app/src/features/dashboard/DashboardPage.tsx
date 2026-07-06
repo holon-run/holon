@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
@@ -130,7 +131,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                   <footer>
                     <span>{agent.footer}</span>
                     <Button size="icon" variant="secondary" aria-label={t("dashboard.openAgent", { id: agent.id })} onClick={() => onOpenAgent(agent.id)}>
-                      →
+                      <ArrowRight size={16} />
                     </Button>
                   </footer>
                 </Card>

@@ -1,4 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  Braces,
+  File as FileIcon,
+  FileCode2,
+  FileCog,
+  FileImage,
+  FileText,
+  Folder,
+  Link,
+  RefreshCw,
+  type LucideIcon,
+} from "lucide-react";
 import { createHighlighter, type Highlighter } from "shiki";
 import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -26,20 +39,25 @@ interface SelectedFile {
   error?: string;
 }
 
-function fileIcon(entry: WorkspaceFileEntry): string {
-  if (entry.type === "directory") return "📁";
-  if (entry.type === "symlink") return "🔗";
+function fileIcon(entry: WorkspaceFileEntry): LucideIcon {
+  if (entry.type === "directory") return Folder;
+  if (entry.type === "symlink") return Link;
   const ext = entry.name.split(".").pop()?.toLowerCase();
   switch (ext) {
-    case "rs": return "🦀";
-    case "ts": case "tsx": return "📘";
-    case "js": case "jsx": return "📙";
-    case "json": return "📋";
-    case "md": return "📝";
-    case "png": case "jpg": case "jpeg": case "gif": case "svg": case "webp": return "🖼️";
-    case "toml": case "yaml": case "yml": return "⚙️";
-    default: return "📄";
+    case "rs": return FileCode2;
+    case "ts": case "tsx": return FileCode2;
+    case "js": case "jsx": return FileCode2;
+    case "json": return Braces;
+    case "md": return FileText;
+    case "png": case "jpg": case "jpeg": case "gif": case "svg": case "webp": return FileImage;
+    case "toml": case "yaml": case "yml": return FileCog;
+    default: return FileIcon;
   }
+}
+
+function FileEntryIcon({ entry }: { entry: WorkspaceFileEntry }) {
+  const Icon = fileIcon(entry);
+  return <Icon size={16} />;
 }
 
 function isTextFile(mimeType?: string, name?: string): boolean {
@@ -295,7 +313,10 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   return (
     <div className="file-browser">
       <div className="file-browser-toolbar">
-        <button type="button" className="file-browser-back-btn" onClick={() => onClose?.()}>← Back</button>
+        <button type="button" className="file-browser-back-btn" onClick={() => onClose?.()}>
+          <ArrowLeft size={14} />
+          {t("common.back")}
+        </button>
         <nav className="file-browser-breadcrumb" aria-label="Path breadcrumb">
           <button
             type="button"
@@ -333,7 +354,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
           aria-label={selectedFile ? t("fileBrowser.refreshFile") : t("fileBrowser.refreshDir")}
           onClick={() => void (selectedFile ? reloadFile() : loadDir(currentPath))}
         >
-          ↻
+          <RefreshCw size={14} />
         </button>
       </div>
 
@@ -354,7 +375,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                 data-selected={selectedFile?.path === (currentPath ? `${currentPath}/${entry.name}` : entry.name)}
                 onClick={() => void openEntry(entry)}
               >
-                <span className="file-browser-entry-icon">{fileIcon(entry)}</span>
+                <span className="file-browser-entry-icon"><FileEntryIcon entry={entry} /></span>
                 <span className="file-browser-entry-name">{entry.name}</span>
                 {entry.type === "file" ? (
                   <small className="file-browser-entry-size">{formatSize(entry.size)}</small>

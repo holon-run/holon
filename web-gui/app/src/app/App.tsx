@@ -1,7 +1,24 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Circle, CircleAlert, CircleCheck, CircleX, Clock, LoaderCircle, type LucideProps } from "lucide-react";
+import {
+  ArrowLeft,
+  Boxes,
+  ChevronLeft,
+  Circle,
+  CircleAlert,
+  CircleCheck,
+  CircleX,
+  Clock,
+  LayoutDashboard,
+  LayoutTemplate,
+  LoaderCircle,
+  RefreshCw,
+  Search as SearchIcon,
+  Settings as SettingsIcon,
+  type LucideIcon,
+  type LucideProps,
+} from "lucide-react";
 import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
@@ -24,12 +41,12 @@ import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
 import { pushBrowserRoute, routeFromLocation } from "./routes";
 
-const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: string }> = [
-  { key: "dashboard", labelKey: "nav.dashboard", icon: "◎" },
-  { key: "search", labelKey: "nav.search", icon: "⌕" },
-  { key: "skills", labelKey: "nav.skills", icon: "◇" },
-  { key: "templates", labelKey: "nav.templates", icon: "▣" },
-  { key: "settings", labelKey: "nav.settings", icon: "⚙" },
+const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
+  { key: "dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
+  { key: "search", labelKey: "nav.search", icon: SearchIcon },
+  { key: "skills", labelKey: "nav.skills", icon: Boxes },
+  { key: "templates", labelKey: "nav.templates", icon: LayoutTemplate },
+  { key: "settings", labelKey: "nav.settings", icon: SettingsIcon },
 ];
 
 const APP_WINDOW_TITLE = "Holon";
@@ -198,7 +215,7 @@ export function App() {
             disabled={agentDetailLoading}
             onClick={() => void refreshAgentDetail()}
           >
-            ↻
+            <RefreshCw size={16} />
           </Button>
         </div>
         <SegmentedControl className="display-level" label={t("app.displayLevel")}>
@@ -407,7 +424,7 @@ export function App() {
             title={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
             onClick={toggleNavCollapsed}
           >
-            ‹
+            <ChevronLeft size={18} />
           </button>
         </div>
 
@@ -421,7 +438,7 @@ export function App() {
               title={t(item.labelKey)}
               onClick={() => navigateRoute(item.key)}
             >
-              <span>{item.icon}</span>
+              <item.icon size={16} />
               <strong>{t(item.labelKey)}</strong>
             </button>
           ))}
@@ -508,13 +525,13 @@ export function App() {
                   aria-label={t("nav.dashboard")}
                   onClick={() => navigateRoute("dashboard")}
                 >
-                  ←
+                  <ArrowLeft size={16} />
                 </Button>
               ) : null}
               <div>
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
                 {route === "agent" && selectedAgentStatus ? (
-                  <span className={`header-status ${selectedAgentStatus.tone}`} title={selectedAgentStatus.title} data-tooltip={selectedAgentStatus.title}>
+                  <span className={`header-status ${selectedAgentStatus.tone}`} title={selectedAgentStatus.title} data-tooltip={selectedAgentStatus.title} data-tooltip-pos="bottom">
                     <StatusDotIcon tone={selectedAgentStatus.tone} />
                   </span>
                 ) : route === "dashboard" ? (

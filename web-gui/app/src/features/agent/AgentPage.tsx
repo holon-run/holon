@@ -1,5 +1,19 @@
-import { Bot, User } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  ArrowUp,
+  Bot,
+  CircleAlert,
+  Clock,
+  Diamond,
+  ChevronRight,
+  Equal,
+  LoaderCircle,
+  Sparkles,
+  RefreshCw,
+  Unplug,
+  User,
+  Zap,
+} from "lucide-react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
@@ -499,7 +513,7 @@ export function AgentPage({
                       {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
                         <EmptyState
                           className="model-picker-empty"
-                          icon="⌁"
+                          icon={<Unplug size={20} />}
                           title={t("agent.noModelCatalog")}
                           description={t("agent.modelRefreshDesc")}
                         />
@@ -508,7 +522,7 @@ export function AgentPage({
                   ) : null}
                 </div>
                 <Button className="send-button" type="submit" size="icon" variant="accent" aria-label={t("common.send")} disabled={!canSendPrompt}>
-                  {sendingPrompt ? "…" : "↑"}
+                  {sendingPrompt ? <LoaderCircle size={16} className="animate-spin" /> : <ArrowUp size={16} />}
                 </Button>
               </div>
             </div>
@@ -905,16 +919,16 @@ function ActivityTrail({
   );
 }
 
-function activityIcon(activity: AgentTimelineActivity): string {
+function activityIcon(activity: AgentTimelineActivity): ReactNode {
   const text = `${activity.label} ${activity.meta} ${activity.detail?.tone ?? ""}`;
-  if (/failed|error|exit\s+[1-9]/i.test(text)) return "!";
-  if (/wait/i.test(text)) return "…";
-  if (activity.detail?.tone === "diff" || /patch/i.test(text)) return "◇";
-  if (activity.detail?.tone === "command" || /command|exec/i.test(text)) return "›";
-  if (activity.detail?.tone === "output") return "≡";
-  if (activity.kind === "tool") return "⌁";
-  if (activity.kind === "event") return "↻";
-  return "·";
+  if (/failed|error|exit\s+[1-9]/i.test(text)) return <CircleAlert size={12} />;
+  if (/wait/i.test(text)) return <Clock size={12} />;
+  if (activity.detail?.tone === "diff" || /patch/i.test(text)) return <Diamond size={12} />;
+  if (activity.detail?.tone === "command" || /command|exec/i.test(text)) return <ChevronRight size={12} />;
+  if (activity.detail?.tone === "output") return <Equal size={12} />;
+  if (activity.kind === "tool") return <Zap size={12} />;
+  if (activity.kind === "event") return <RefreshCw size={12} />;
+  return <CircleAlert size={12} />;
 }
 
 function WorkingIndicator({
@@ -980,8 +994,8 @@ function workingActivityLabel(activity: AgentTimelineActivity): string {
   return workingActivitySlot(activity) === "assistant" ? i18next.t("agent.assistantMessage") : i18next.t("agent.action");
 }
 
-function workingActivityIcon(activity: AgentTimelineActivity): string {
-  return workingActivitySlot(activity) === "assistant" ? "✦" : "›";
+function workingActivityIcon(activity: AgentTimelineActivity): ReactNode {
+  return workingActivitySlot(activity) === "assistant" ? <Sparkles size={12} /> : <ChevronRight size={12} />;
 }
 
 function workingActivityBody(activity: AgentTimelineActivity): string {

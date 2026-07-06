@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -122,7 +123,7 @@ export function SearchPage({
         <section className="search-results" aria-live="polite">
           {!search && !loading && !error ? (
             <EmptyState
-              icon="⌕"
+              icon={<Search size={20} />}
               title={t("searchPage.searchRuntimeMessages")}
               description={t("searchPage.searchDescription")}
             />

@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
+import { ArrowLeft, LayoutTemplate, PackageOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
@@ -245,7 +246,7 @@ export function TemplatesPage({
             </ul>
           ) : (
             <EmptyState
-              icon="▣"
+              icon={<LayoutTemplate size={20} />}
               title={loading ? t("templatesPage.loading") : templates.length ? t("templatesPage.noMatch") : t("templatesPage.noTemplates")}
               description={
                 templates.length
@@ -356,7 +357,7 @@ export function TemplateDetailPage({
       <section className="skill-detail-hero context-card">
         <div>
           <button className="text-button" type="button" onClick={onBack}>
-            {t("templatesPage.back")}
+            <ArrowLeft size={14} /> {t("templatesPage.back")}
           </button>
           <span className="eyebrow">{template?.schemaVersion ?? t("templatesPage.agentTemplate")}</span>
           <h1>{template?.name ?? catalogId}</h1>
@@ -446,13 +447,13 @@ export function TemplateDetailPage({
                   ))}
                 </ul>
               ) : (
-                <EmptyState icon="◇" title={t("templatesPage.noSkills")} description={t("templatesPage.noSkillsDesc")} />
+                <EmptyState icon={<PackageOpen size={20} />} title={t("templatesPage.noSkills")} description={t("templatesPage.noSkillsDesc")} />
               )}
             </CardContent>
           </Card>
         </>
       ) : (
-        <EmptyState icon="▣" title={loading ? t("templatesPage.loadingDetail") : t("templatesPage.notFound")} description={catalogId} />
+        <EmptyState icon={<LayoutTemplate size={20} />} title={loading ? t("templatesPage.loadingDetail") : t("templatesPage.notFound")} description={catalogId} />
       )}
     </div>
   );

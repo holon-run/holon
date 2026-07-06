@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Inbox } from "lucide-react";
 import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -354,7 +355,7 @@ export function AgentOverviewPanel({
       ) : (
         <EmptyState
           className="inspector-empty"
-          icon="◎"
+          icon={<Inbox size={20} />}
           title={t("panel.noCurrentWork")}
           description={t("rightPanel.noCurrentWorkDesc")}
         />

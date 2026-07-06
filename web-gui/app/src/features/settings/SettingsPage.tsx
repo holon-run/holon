@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
@@ -1274,7 +1275,7 @@ export function SettingsPage({
                           <div className="settings-device-login-panel">
                             <Button type="button" variant="secondary"
                               onClick={() => window.open(codexDeviceLogin.verificationUrl, "_blank", "noopener,noreferrer")}>
-                              Open Device Login Page →
+                              Open Device Login Page <ArrowRight size={14} />
                             </Button>
                             <p className="settings-hint">Enter this code on the page:</p>
                             <div className="settings-device-login-code">{codexDeviceLogin.userCode}</div>

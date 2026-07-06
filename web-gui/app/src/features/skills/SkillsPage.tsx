@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
+import { ArrowLeft, PackageOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -217,7 +218,7 @@ export function SkillsPage({
             </ul>
           ) : (
             <EmptyState
-              icon="◇"
+              icon={<PackageOpen size={20} />}
               title={loading ? t("skillsPage.loading") : skills.length ? t("skillsPage.noMatch") : t("skillsPage.noSkills")}
               description={
                 skills.length
@@ -283,7 +284,7 @@ export function SkillDetailPage({
     <section className="page skill-detail-route" aria-label="Skill detail">
       <nav className="skill-detail-breadcrumb" aria-label="Breadcrumb">
         <button type="button" className="breadcrumb-back" onClick={onBack}>
-          {t("skillsPage.back")}
+          <ArrowLeft size={14} /> {t("skillsPage.back")}
         </button>
         <span className="breadcrumb-sep" aria-hidden="true">/</span>
         <span className="breadcrumb-current">{skill?.name ?? skillId}</span>
@@ -331,7 +332,7 @@ export function SkillDetailPage({
         </div>
       ) : (
         <EmptyState
-          icon="◇"
+          icon={<PackageOpen size={20} />}
           title={loading ? t("skillsPage.loadingSkill") : t("skillsPage.notFound")}
           description={
             loading
