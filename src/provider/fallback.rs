@@ -14,7 +14,8 @@ use super::{
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
-    ProviderNativeWebSearchRequest, ProviderTurnRequest, ProviderTurnResponse,
+    ProviderGenerateImageRequest, ProviderGenerateImageResponse, ProviderNativeWebSearchRequest,
+    ProviderTurnRequest, ProviderTurnResponse,
 };
 use crate::prompt::PromptStability;
 
@@ -53,6 +54,9 @@ mod tests {
     struct SearchProvider {
         capability: Option<ProviderBuiltinWebSearchCapability>,
     }
+
+    #[derive(Clone)]
+    struct ImageProvider;
 
     #[async_trait]
     impl AgentProvider for PolicyProvider {
@@ -136,6 +140,39 @@ mod tests {
 
         fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
             self.capability.clone()
+        }
+    }
+
+    #[async_trait]
+    impl AgentProvider for ImageProvider {
+        async fn complete_turn(
+            &self,
+            _request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text { text: "ok".into() }],
+                stop_reason: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: Some(ProviderCacheUsage {
+                    read_input_tokens: 0,
+                    creation_input_tokens: 0,
+                }),
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            })
+        }
+
+        async fn generate_image(
+            &self,
+            request: ProviderGenerateImageRequest,
+        ) -> Result<ProviderGenerateImageResponse> {
+            Ok(ProviderGenerateImageResponse {
+                provider: "test".into(),
+                model: request.prompt,
+                images: Vec::new(),
+            })
         }
     }
 
@@ -228,6 +265,30 @@ mod tests {
         assert_eq!(capability.provider_id, "zai");
         assert_eq!(capability.provider_model_ref, "zai/glm-4.7");
         assert_eq!(capability.backend_kind, "zai_web_search_prime");
+    }
+
+    #[tokio::test]
+    async fn generate_image_uses_current_turn_candidate() {
+        let provider = FallbackProvider {
+            candidates: vec![ProviderCandidate {
+                model_ref: "openai-codex/gpt-5.5".into(),
+                provider_name: "openai-codex".into(),
+                provider: Arc::new(ImageProvider),
+            }],
+        };
+
+        let response = provider
+            .generate_image(ProviderGenerateImageRequest {
+                prompt: "holon".into(),
+                size: None,
+                background: None,
+                output_format: None,
+            })
+            .await
+            .expect("image request should be forwarded");
+
+        assert_eq!(response.provider, "test");
+        assert_eq!(response.model, "holon");
     }
 
     #[tokio::test]
@@ -573,6 +634,18 @@ impl AgentProvider for FallbackProvider {
 
     fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
         self.candidates.first()?.provider.builtin_web_search()
+    }
+
+    async fn generate_image(
+        &self,
+        request: ProviderGenerateImageRequest,
+    ) -> Result<ProviderGenerateImageResponse> {
+        self.candidates
+            .first()
+            .ok_or_else(|| anyhow!("fallback provider has no candidates"))?
+            .provider
+            .generate_image(request)
+            .await
     }
 
     async fn probe_builtin_web_search(
