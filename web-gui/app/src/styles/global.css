@@ -1636,6 +1636,16 @@ code {
   align-self: center;
 }
 
+.message-list-virtual-wrapper {
+  width: 100%;
+}
+
+.message-list-virtual-item {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 12px;
+}
+
 .timeline-turn-rail {
   position: relative;
   min-height: 100%;

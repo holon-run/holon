@@ -15,6 +15,7 @@ import {
   Zap,
 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
@@ -168,6 +169,13 @@ export function AgentPage({
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
+  const rowVirtualizer = useVirtualizer({
+    count: timelineTurns.length,
+    getScrollElement: () => messageListRef.current,
+    estimateSize: () => 320,
+    overscan: 4,
+    getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
+  });
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = (trimmedPrompt.length > 0 || attachments.length > 0) && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
@@ -220,10 +228,24 @@ export function AgentPage({
   useLayoutEffect(() => {
     if (!targetTimelineItemId) return;
     const list = messageListRef.current;
-    const target = list?.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`);
-    if (!target) return;
+    if (!list) return;
     stickToBottomRef.current = false;
-    target.scrollIntoView({ block: "center" });
+
+    // Target item already in DOM — scroll directly.
+    const target = list.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`);
+    if (target) {
+      target.scrollIntoView({ block: "center" });
+      return;
+    }
+
+    // Target item is virtualized out of view — scroll its turn into view first.
+    const turnIndex = timelineTurns.findIndex((turn) => turn.items.some((item) => item.id === targetTimelineItemId));
+    if (turnIndex < 0) return;
+    rowVirtualizer.scrollToIndex(turnIndex, { align: "center" });
+    const timer = setTimeout(() => {
+      list.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`)?.scrollIntoView({ block: "center" });
+    }, 0);
+    return () => clearTimeout(timer);
   }, [targetTimelineItemId, timelineVersion]);
 
   async function sendDraftPrompt() {
@@ -370,17 +392,41 @@ export function AgentPage({
                 {historyError}
               </div>
             ) : null}
-            {timelineTurns.map((turn) => (
-              <TimelineTurnGroup
-                displayLevel={displayLevel}
-                key={turn.id}
-                onOpenInspector={onOpenInspector}
-                onInspectActivity={onInspectActivity}
-                selectedActivityId={selectedActivityId}
-                targetTimelineItemId={targetTimelineItemId}
-                turn={turn}
-              />
-            ))}
+            {timelineTurns.length > 0 ? (
+              <div
+                className="message-list-virtual-wrapper"
+                style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}
+              >
+                {rowVirtualizer.getVirtualItems().map((vi) => {
+                  const turn = timelineTurns[vi.index];
+                  if (!turn) return null;
+                  return (
+                    <div
+                      key={vi.key}
+                      className="message-list-virtual-item"
+                      data-index={vi.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${vi.start}px)`,
+                      }}
+                    >
+                      <TimelineTurnGroup
+                        displayLevel={displayLevel}
+                        onOpenInspector={onOpenInspector}
+                        onInspectActivity={onInspectActivity}
+                        selectedActivityId={selectedActivityId}
+                        targetTimelineItemId={targetTimelineItemId}
+                        turn={turn}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             {isWorking ? (
               <WorkingIndicator
                 activities={workingActivities}
