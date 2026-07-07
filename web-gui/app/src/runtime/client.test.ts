@@ -153,6 +153,42 @@ describe("createRuntimeClient", () => {
     ]);
   });
 
+  it("sends generic file attachments in operator prompts", async () => {
+    let requestBody: unknown;
+    const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+      return new Response(null, { status: 204 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      token: "secret-token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.sendOperatorPrompt("agent-one", "see attached", [
+      {
+        kind: "file",
+        name: "report.pdf",
+        mediaType: "application/pdf",
+        dataBase64: "JVBERi0xLjc=",
+      },
+    ]);
+
+    expect(requestBody).toEqual({
+      text: "see attached",
+      attachments: [
+        {
+          kind: "file",
+          name: "report.pdf",
+          media_type: "application/pdf",
+          data_base64: "JVBERi0xLjc=",
+        },
+      ],
+    });
+  });
+
   it("fetches full tool execution detail for inspector hydration", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {
