@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
@@ -79,6 +79,28 @@ pub struct WebSearchResult {
     pub snippet: Option<String>,
     pub source: String,
     pub published_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_type: Option<WebSearchResultType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchResultType {
+    Web,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,6 +185,18 @@ struct ProviderSearchOutput {
     diagnostics: Option<ProviderSearchDiagnostics>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ProviderRawSearchResult {
+    title: String,
+    url: String,
+    snippet: Option<String>,
+    published_at: Option<String>,
+    result_type: Option<WebSearchResultType>,
+    language: Option<String>,
+    region: Option<String>,
+    metadata: BTreeMap<String, Value>,
+}
+
 #[derive(Debug)]
 enum ProviderSearchDiagnostics {
     Command(WebSearchCommandAttempt),
@@ -182,6 +216,80 @@ impl ProviderSearchOutput {
             diagnostics: Some(ProviderSearchDiagnostics::Command(command)),
         }
     }
+}
+
+fn normalize_search_result(
+    provider_id: &str,
+    rank: usize,
+    raw: ProviderRawSearchResult,
+) -> Option<WebSearchResult> {
+    let title = raw.title.trim().to_string();
+    let url = raw.url.trim().to_string();
+    if title.is_empty() || url.is_empty() {
+        return None;
+    }
+    let parsed_url = Url::parse(&url).ok()?;
+    let canonical_url = canonicalize_search_url(parsed_url.clone());
+    let display_url = display_search_url(&parsed_url);
+    let snippet = raw.snippet.and_then(normalize_optional_string);
+    let published_at = raw.published_at.and_then(normalize_optional_string);
+    let language = raw.language.and_then(normalize_optional_string);
+    let region = raw.region.and_then(normalize_optional_string);
+    let metadata = (!raw.metadata.is_empty()).then_some(raw.metadata);
+
+    Some(WebSearchResult {
+        title,
+        url,
+        snippet,
+        source: provider_id.to_string(),
+        published_at,
+        canonical_url: Some(canonical_url),
+        display_url: Some(display_url),
+        source_provider: Some(provider_id.to_string()),
+        rank: Some(rank),
+        result_type: Some(raw.result_type.unwrap_or(WebSearchResultType::Web)),
+        language,
+        region,
+        metadata,
+    })
+}
+
+fn normalize_optional_string(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn canonicalize_search_url(mut url: Url) -> String {
+    url.set_fragment(None);
+    url.to_string()
+}
+
+fn display_search_url(url: &Url) -> String {
+    let mut display = String::new();
+    if let Some(host) = url.host_str() {
+        display.push_str(host);
+    }
+    let path = url.path();
+    if path != "/" {
+        display.push_str(path);
+    }
+    if let Some(query) = url.query() {
+        display.push('?');
+        display.push_str(query);
+    }
+    if display.is_empty() {
+        url.as_str().to_string()
+    } else {
+        display
+    }
+}
+
+fn search_result_dedupe_key(result: &WebSearchResult) -> String {
+    result
+        .canonical_url
+        .as_deref()
+        .unwrap_or(&result.url)
+        .to_string()
 }
 
 fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
@@ -326,7 +434,7 @@ async fn search_aggregate(
                     output.diagnostics,
                 ));
                 for result in output.results {
-                    if seen_urls.insert(result.url.clone()) {
+                    if seen_urls.insert(search_result_dedupe_key(&result)) {
                         results.push(result);
                     }
                     if results.len() >= max_results {
@@ -525,8 +633,12 @@ async fn search_configured_provider(
         WebProviderKind::Brave => {
             brave_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
-        WebProviderKind::Bing => {
-            bing_search(query, max_results, provider_id, provider_config, fetch_config).await
+        WebProviderKind::TencentCloudWsa => {
+            tencent_cloud_wsa_search(query, max_results, provider_id, provider_config, fetch_config)
+                .await
+        }
+        WebProviderKind::Bocha => {
+            bocha_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
         WebProviderKind::Tavily => {
             tavily_search(query, max_results, provider_id, provider_config, fetch_config).await
@@ -547,7 +659,7 @@ async fn search_configured_provider(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
             provider_id,
-            "configure a duckduckgo, searxng, brave, tavily, exa, perplexity, or firecrawl provider for this Holon version",
+            "configure a duckduckgo, searxng, brave, tencent_cloud_wsa, bocha, tavily, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }?;
     Ok(ProviderSearchOutput::new(results))
@@ -842,23 +954,24 @@ async fn searxng_search(
         .and_then(|value| value.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(index, entry)| {
             let title = entry.get("title")?.as_str()?.trim().to_string();
             let url = entry.get("url")?.as_str()?.trim().to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            Some(WebSearchResult {
-                title,
-                url,
-                snippet: entry
-                    .get("content")
-                    .and_then(|value| value.as_str())
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-                source: provider_id.to_string(),
-                published_at: None,
-            })
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: entry
+                        .get("content")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    published_at: None,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
         })
         .take(max_results)
         .collect::<Vec<_>>();
@@ -945,23 +1058,24 @@ async fn brave_search(
         .and_then(|results| results.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(index, entry)| {
             let title = entry.get("title")?.as_str()?.trim().to_string();
             let url = entry.get("url")?.as_str()?.trim().to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            Some(WebSearchResult {
-                title,
-                url,
-                snippet: entry
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty()),
-                source: provider_id.to_string(),
-                published_at: None,
-            })
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: entry
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    published_at: None,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
         })
         .take(max_results)
         .collect::<Vec<_>>();
@@ -976,7 +1090,7 @@ async fn brave_search(
     Ok(results)
 }
 
-async fn bing_search(
+async fn tencent_cloud_wsa_search(
     query: &str,
     max_results: usize,
     provider_id: &str,
@@ -987,38 +1101,40 @@ async fn bing_search(
     if api_key.is_empty() {
         return Err(search_error(
             "provider_unavailable",
-            "Bing Search requires an API key (set credential_profile on the provider)",
+            "Tencent Cloud WSA SearchPro requires an API key (set credential_profile on the provider)",
             provider_id,
             "add a credential_profile with an api_key in the credential store",
         ));
     }
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let body = serde_json::json!({
+        "Query": query,
+        "Cnt": tencent_cloud_wsa_count(max_results),
+    });
     let base_url = provider
         .base_url
         .as_deref()
-        .unwrap_or("https://api.bing.microsoft.com");
-    let url = format!(
-        "{}/v7.0/search?q={}&count={}",
-        base_url.trim_end_matches('/'),
-        form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>(),
-        max_results.min(50),
-    );
+        .unwrap_or("https://api.wsa.cloud.tencent.com");
     let response = client
-        .get(&url)
-        .header("Ocp-Apim-Subscription-Key", api_key.as_str())
+        .post(format!("{}/SearchPro", base_url.trim_end_matches('/')))
+        .header("Content-Type", "application/json; charset=UTF-8")
+        .bearer_auth(api_key.as_str())
+        .json(&body)
         .send()
         .await
         .map_err(|error| {
             search_error(
                 "network_failed",
-                format!("Bing Search request failed: {error}"),
+                format!("Tencent Cloud WSA SearchPro request failed: {error}"),
                 provider_id,
                 "retry later or check the API key",
             )
         })?;
     let status = response.status();
     if !status.is_success() {
-        let kind = if status == reqwest::StatusCode::UNAUTHORIZED {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
             "provider_unavailable"
         } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             "rate_limited"
@@ -1027,7 +1143,7 @@ async fn bing_search(
         };
         return Err(search_error(
             kind,
-            format!("Bing Search returned HTTP {status}"),
+            format!("Tencent Cloud WSA SearchPro returned HTTP {status}"),
             provider_id,
             "check the API key or retry later",
         ));
@@ -1036,46 +1152,248 @@ async fn bing_search(
     let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
         search_error(
             "parse_failed",
-            format!("Bing Search returned invalid JSON: {error}"),
+            format!("Tencent Cloud WSA SearchPro returned invalid JSON: {error}"),
             provider_id,
             "check the API key or retry later",
         )
     })?;
+    if let Some(error) = payload.get("Error") {
+        let code = error
+            .get("Code")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let kind = if code == "RequestLimitExceeded" {
+            "rate_limited"
+        } else if matches!(
+            code,
+            "UnauthorizedOperation" | "ResourceNotFound" | "ResourceUnavailable"
+        ) {
+            "provider_unavailable"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("Tencent Cloud WSA SearchPro returned error code `{code}`"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
     let results = payload
-        .get("webPages")
-        .and_then(|web| web.get("value"))
-        .and_then(|value| value.as_array())
+        .get("Pages")
+        .and_then(|pages| pages.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|entry| {
-            let title = entry.get("name")?.as_str()?.trim().to_string();
+        .enumerate()
+        .filter_map(|(index, page)| {
+            let entry = page
+                .as_str()
+                .and_then(|page| serde_json::from_str::<Value>(page).ok())?;
+            let title = entry.get("title")?.as_str()?.trim().to_string();
             let url = entry.get("url")?.as_str()?.trim().to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
+            let mut metadata = BTreeMap::new();
+            if let Some(site) = entry.get("site").and_then(|value| value.as_str()) {
+                metadata.insert("site".to_string(), Value::String(site.to_string()));
             }
-            Some(WebSearchResult {
-                title,
-                url,
-                snippet: entry
-                    .get("snippet")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty()),
-                source: provider_id.to_string(),
-                published_at: None,
-            })
+            if let Some(score) = entry.get("score").cloned() {
+                metadata.insert("score".to_string(), score);
+            }
+            if let Some(favicon) = entry.get("favicon").and_then(|value| value.as_str()) {
+                metadata.insert("favicon".to_string(), Value::String(favicon.to_string()));
+            }
+            if let Some(images) = entry.get("images").cloned() {
+                metadata.insert("images".to_string(), images);
+            }
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: entry
+                        .get("passage")
+                        .or_else(|| entry.get("content"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    published_at: entry
+                        .get("date")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    metadata,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
         })
         .take(max_results)
         .collect::<Vec<_>>();
     if results.is_empty() {
         return Err(search_error(
             "parse_failed",
-            "Bing Search returned no parseable search results",
+            "Tencent Cloud WSA SearchPro returned no parseable search results",
             provider_id,
             "try a different query or check the API subscription",
         ));
     }
     Ok(results)
+}
+
+fn tencent_cloud_wsa_count(max_results: usize) -> usize {
+    match max_results {
+        0..=10 => 10,
+        11..=20 => 20,
+        21..=30 => 30,
+        31..=40 => 40,
+        _ => 50,
+    }
+}
+
+async fn bocha_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let api_key = &provider.api_key;
+    if api_key.is_empty() {
+        return Err(search_error(
+            "provider_unavailable",
+            "Bocha AI Web Search requires an API key (set credential_profile on the provider)",
+            provider_id,
+            "add a credential_profile with an api_key in the credential store",
+        ));
+    }
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let body = serde_json::json!({
+        "query": query,
+        "freshness": "noLimit",
+        "summary": true,
+        "count": max_results.min(50),
+    });
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.bochaai.com");
+    let response = client
+        .post(bocha_search_url(base_url))
+        .header("Content-Type", "application/json")
+        .bearer_auth(api_key.as_str())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            search_error(
+                "network_failed",
+                format!("Bocha AI Web Search request failed: {error}"),
+                provider_id,
+                "retry later or check the API key",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            "provider_unavailable"
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("Bocha AI Web Search returned HTTP {status}"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("Bocha AI Web Search returned invalid JSON: {error}"),
+            provider_id,
+            "check the API key or retry later",
+        )
+    })?;
+    let entries = payload
+        .get("webPages")
+        .or_else(|| payload.get("data").and_then(|data| data.get("webPages")))
+        .and_then(|web_pages| web_pages.get("value"))
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| {
+            search_error(
+                "parse_failed",
+                "Bocha AI Web Search response did not include webPages.value",
+                provider_id,
+                "check the API key or retry later",
+            )
+        })?;
+    let results = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let title = entry.get("name")?.as_str()?.trim().to_string();
+            let url = entry.get("url")?.as_str()?.trim().to_string();
+            let mut metadata = BTreeMap::new();
+            if let Some(site_name) = entry.get("siteName").and_then(|value| value.as_str()) {
+                metadata.insert(
+                    "site_name".to_string(),
+                    Value::String(site_name.to_string()),
+                );
+            }
+            if let Some(site_icon) = entry.get("siteIcon").and_then(|value| value.as_str()) {
+                metadata.insert(
+                    "site_icon".to_string(),
+                    Value::String(site_icon.to_string()),
+                );
+            }
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: entry
+                        .get("summary")
+                        .or_else(|| entry.get("snippet"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    published_at: entry
+                        .get("datePublished")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    language: entry
+                        .get("language")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    metadata,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "Bocha AI Web Search returned no parseable search results",
+            provider_id,
+            "try a different query or check the API subscription",
+        ));
+    }
+    Ok(results)
+}
+
+fn bocha_search_url(base_url: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    if base_url.ends_with("/v1/web-search") {
+        base_url.to_string()
+    } else if base_url.ends_with("/v1") {
+        format!("{base_url}/web-search")
+    } else {
+        format!("{base_url}/v1/web-search")
+    }
 }
 
 async fn tavily_search(
@@ -1149,23 +1467,24 @@ async fn tavily_search(
         .and_then(|results| results.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(index, entry)| {
             let title = entry.get("title")?.as_str()?.trim().to_string();
             let url = entry.get("url")?.as_str()?.trim().to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            Some(WebSearchResult {
-                title,
-                url,
-                snippet: entry
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty()),
-                source: provider_id.to_string(),
-                published_at: None,
-            })
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: entry
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    published_at: None,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
         })
         .take(max_results)
         .collect::<Vec<_>>();
@@ -1248,7 +1567,8 @@ async fn exa_search(
         .and_then(|results| results.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(index, entry)| {
             let title = entry
                 .get("title")
                 .and_then(|v| v.as_str())
@@ -1261,24 +1581,23 @@ async fn exa_search(
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            Some(WebSearchResult {
-                title,
-                url,
-                snippet: entry
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty()),
-                source: provider_id.to_string(),
-                published_at: entry
-                    .get("publishedDate")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty()),
-            })
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: entry
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    published_at: entry
+                        .get("publishedDate")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    ..ProviderRawSearchResult::default()
+                },
+            )
         })
         .take(max_results)
         .collect::<Vec<_>>();
@@ -1382,7 +1701,8 @@ async fn perplexity_search(
         .and_then(|results| results.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(index, entry)| {
             let title = entry
                 .get("title")
                 .and_then(|value| value.as_str())
@@ -1395,20 +1715,20 @@ async fn perplexity_search(
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            Some(WebSearchResult {
-                title,
-                url,
-                snippet: summary.clone(),
-                source: provider_id.to_string(),
-                published_at: entry
-                    .get("date")
-                    .and_then(|value| value.as_str())
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-            })
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: summary.clone(),
+                    published_at: entry
+                        .get("date")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    ..ProviderRawSearchResult::default()
+                },
+            )
         })
         .take(max_results)
         .collect::<Vec<_>>();
@@ -1493,24 +1813,25 @@ async fn firecrawl_search(
         .and_then(|results| results.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(index, entry)| {
             let title = entry.get("title")?.as_str()?.trim().to_string();
             let url = entry.get("url")?.as_str()?.trim().to_string();
-            if title.is_empty() || url.is_empty() {
-                return None;
-            }
-            Some(WebSearchResult {
-                title,
-                url,
-                snippet: entry
-                    .get("description")
-                    .or_else(|| entry.get("markdown"))
-                    .and_then(|value| value.as_str())
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty()),
-                source: provider_id.to_string(),
-                published_at: None,
-            })
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet: entry
+                        .get("description")
+                        .or_else(|| entry.get("markdown"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    published_at: None,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
         })
         .take(max_results)
         .collect::<Vec<_>>();
@@ -1558,7 +1879,10 @@ fn parse_command_results(
         })?;
     let results = entries
         .into_iter()
-        .filter_map(|entry| command_result_from_entry(entry, &output.mapping, provider_id))
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            command_result_from_entry(entry, &output.mapping, provider_id, index + 1)
+        })
         .take(max_results)
         .collect::<Vec<_>>();
     if results.is_empty() {
@@ -1576,31 +1900,29 @@ fn command_result_from_entry(
     entry: &Value,
     mapping: &WebCommandResultMapping,
     provider_id: &str,
+    rank: usize,
 ) -> Option<WebSearchResult> {
     let title = mapped_json_string(entry, &mapping.title)?
         .trim()
         .to_string();
     let url = mapped_json_string(entry, &mapping.url)?.trim().to_string();
-    if title.is_empty() || url.is_empty() {
-        return None;
-    }
-    Some(WebSearchResult {
-        title,
-        url,
-        snippet: mapping
-            .snippet
-            .as_deref()
-            .and_then(|path| mapped_json_string(entry, path))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-        source: provider_id.to_string(),
-        published_at: mapping
-            .published_at
-            .as_deref()
-            .and_then(|path| mapped_json_string(entry, path))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-    })
+    normalize_search_result(
+        provider_id,
+        rank,
+        ProviderRawSearchResult {
+            title,
+            url,
+            snippet: mapping
+                .snippet
+                .as_deref()
+                .and_then(|path| mapped_json_string(entry, path)),
+            published_at: mapping
+                .published_at
+                .as_deref()
+                .and_then(|path| mapped_json_string(entry, path)),
+            ..ProviderRawSearchResult::default()
+        },
+    )
 }
 
 fn normalize_max_results(requested: Option<usize>, configured: usize) -> Result<usize> {
@@ -1739,14 +2061,18 @@ fn parse_duckduckgo_lite_results(html: &str, max_results: usize) -> Vec<WebSearc
         };
         let title = decode_html_entities(&strip_tags(&after_text_start[..text_end]));
         if let Some(url) = normalize_duckduckgo_url(&href) {
-            if !title.trim().is_empty() {
-                results.push(WebSearchResult {
-                    title: title.trim().to_string(),
+            if let Some(result) = normalize_search_result(
+                DUCKDUCKGO_PROVIDER_ID,
+                results.len() + 1,
+                ProviderRawSearchResult {
+                    title,
                     url,
                     snippet: None,
-                    source: DUCKDUCKGO_PROVIDER_ID.into(),
                     published_at: None,
-                });
+                    ..ProviderRawSearchResult::default()
+                },
+            ) {
+                results.push(result);
             }
         }
         if results.len() >= max_results {
@@ -1912,6 +2238,50 @@ mod tests {
         let error = normalize_max_results(Some(0), 5).unwrap_err();
         let tool_error = ToolError::from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
+    }
+
+    #[test]
+    fn normalize_search_result_populates_standard_fields() {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("engine".to_string(), json!("mock"));
+        let result = normalize_search_result(
+            "mock_provider",
+            2,
+            ProviderRawSearchResult {
+                title: "  Example Result  ".to_string(),
+                url: "https://example.com/docs?q=holon#section".to_string(),
+                snippet: Some("  useful context  ".to_string()),
+                published_at: Some(" 2026-07-07 ".to_string()),
+                language: Some(" en ".to_string()),
+                region: Some(" US ".to_string()),
+                metadata,
+                ..ProviderRawSearchResult::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.title, "Example Result");
+        assert_eq!(result.url, "https://example.com/docs?q=holon#section");
+        assert_eq!(result.snippet.as_deref(), Some("useful context"));
+        assert_eq!(result.source, "mock_provider");
+        assert_eq!(result.source_provider.as_deref(), Some("mock_provider"));
+        assert_eq!(
+            result.canonical_url.as_deref(),
+            Some("https://example.com/docs?q=holon")
+        );
+        assert_eq!(
+            result.display_url.as_deref(),
+            Some("example.com/docs?q=holon")
+        );
+        assert_eq!(result.rank, Some(2));
+        assert_eq!(result.result_type, Some(WebSearchResultType::Web));
+        assert_eq!(result.published_at.as_deref(), Some("2026-07-07"));
+        assert_eq!(result.language.as_deref(), Some("en"));
+        assert_eq!(result.region.as_deref(), Some("US"));
+        assert_eq!(
+            result.metadata.as_ref().unwrap().get("engine"),
+            Some(&json!("mock"))
+        );
     }
 
     #[tokio::test]
@@ -2129,12 +2499,12 @@ mod tests {
     #[tokio::test]
     async fn aggregate_mode_deduplicates_urls_and_keeps_provenance() {
         let first_url = searxng_mock_base_url(searxng_results_json(&[
-            ("Shared", "https://example.com/shared", "from one"),
+            ("Shared", "https://example.com/shared#one", "from one"),
             ("One", "https://example.com/one", "only one"),
         ]))
         .await;
         let second_url = searxng_mock_base_url(searxng_results_json(&[
-            ("Shared", "https://example.com/shared", "from two"),
+            ("Shared", "https://example.com/shared#two", "from two"),
             ("Two", "https://example.com/two", "only two"),
         ]))
         .await;
@@ -2169,14 +2539,19 @@ mod tests {
             response
                 .results
                 .iter()
-                .filter(|result| result.url == "https://example.com/shared")
+                .filter(|result| {
+                    result.canonical_url.as_deref() == Some("https://example.com/shared")
+                })
                 .count(),
             1
         );
-        assert!(response
-            .results
-            .iter()
-            .any(|result| result.url == "https://example.com/shared" && result.source == "one"));
+        assert!(
+            response
+                .results
+                .iter()
+                .any(|result| result.url == "https://example.com/shared#one"
+                    && result.source == "one")
+        );
         assert!(response
             .results
             .iter()
@@ -2217,6 +2592,12 @@ mod tests {
         assert_eq!(results.results[0].url, "https://example.com/3");
         assert_eq!(results.results[0].snippet.as_deref(), Some("Snippet"));
         assert_eq!(results.results[0].source, "cmd");
+        assert_eq!(results.results[0].source_provider.as_deref(), Some("cmd"));
+        assert_eq!(
+            results.results[0].canonical_url.as_deref(),
+            Some("https://example.com/3")
+        );
+        assert_eq!(results.results[0].rank, Some(1));
     }
 
     #[tokio::test]
@@ -2435,27 +2816,45 @@ mod tests {
         })
     }
 
-    fn bing_results_json() -> serde_json::Value {
+    fn tencent_cloud_wsa_results_json() -> serde_json::Value {
         serde_json::json!({
-            "webPages": {
-                "value": [
-                    {
-                        "name": "Bing Search",
-                        "url": "https://www.bing.com",
-                        "snippet": "Bing search engine by Microsoft"
-                    },
-                    {
-                        "name": "Bing Webmaster Tools",
-                        "url": "https://www.bing.com/webmasters",
-                        "snippet": "Tools for website owners"
-                    }
-                ]
+            "Pages": [
+                r#"{"title":"Tencent Cloud Search","url":"https://cloud.tencent.com/product/wsa","passage":"Tencent Cloud WSA SearchPro","date":"2026-07-01","site":"cloud.tencent.com","score":0.9}"#,
+                r#"{"title":"SearchPro Docs","url":"https://cloud.tencent.com/document/api/1806/121821","passage":"API documentation","site":"cloud.tencent.com"}"#
+            ]
+        })
+    }
+
+    fn empty_tencent_cloud_wsa_results_json() -> serde_json::Value {
+        serde_json::json!({ "Pages": [] })
+    }
+
+    fn bocha_results_json() -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "webPages": {
+                    "value": [
+                        {
+                            "name": "Bocha Search",
+                            "url": "https://bochaai.com",
+                            "summary": "AI web search API",
+                            "datePublished": "2026-07-02",
+                            "siteName": "Bocha"
+                        },
+                        {
+                            "name": "Bocha Docs",
+                            "url": "https://open.bochaai.com",
+                            "snippet": "Bocha API documentation",
+                            "language": "zh"
+                        }
+                    ]
+                }
             }
         })
     }
 
-    fn empty_bing_results_json() -> serde_json::Value {
-        serde_json::json!({ "webPages": { "value": [] } })
+    fn empty_bocha_results_json() -> serde_json::Value {
+        serde_json::json!({ "data": { "webPages": { "value": [] } } })
     }
 
     fn tavily_results_json() -> serde_json::Value {
@@ -3046,10 +3445,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bing_search_integration_success() {
+    async fn tencent_cloud_wsa_search_integration_success() {
         let router = axum::Router::new().route(
-            "/v7.0/search",
-            axum::routing::get(|| async { axum::Json(bing_results_json()) }),
+            "/SearchPro",
+            axum::routing::post(|| async { axum::Json(tencent_cloud_wsa_results_json()) }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3058,26 +3457,35 @@ mod tests {
         });
         let base_url = format!("http://{}", addr);
 
-        let provider = test_provider(WebProviderKind::Bing, &base_url);
-        let results = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
-            .await
-            .unwrap();
+        let provider = test_provider(WebProviderKind::TencentCloudWsa, &base_url);
+        let results =
+            tencent_cloud_wsa_search("test", 5, "tencent_test", &provider, &test_fetch_config())
+                .await
+                .unwrap();
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].title, "Bing Search");
-        assert_eq!(results[0].url, "https://www.bing.com");
+        assert_eq!(results[0].title, "Tencent Cloud Search");
+        assert_eq!(results[0].url, "https://cloud.tencent.com/product/wsa");
         assert_eq!(
             results[0].snippet.as_deref(),
-            Some("Bing search engine by Microsoft")
+            Some("Tencent Cloud WSA SearchPro")
         );
-        assert_eq!(results[0].source, "bing_test");
-        assert_eq!(results[1].title, "Bing Webmaster Tools");
+        assert_eq!(results[0].source, "tencent_test");
+        assert_eq!(results[0].published_at.as_deref(), Some("2026-07-01"));
+        assert_eq!(
+            results[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("site")),
+            Some(&json!("cloud.tencent.com"))
+        );
+        assert_eq!(results[1].title, "SearchPro Docs");
     }
 
     #[tokio::test]
-    async fn bing_search_empty_results_is_error() {
+    async fn tencent_cloud_wsa_search_empty_results_is_error() {
         let router = axum::Router::new().route(
-            "/v7.0/search",
-            axum::routing::get(|| async { axum::Json(empty_bing_results_json()) }),
+            "/SearchPro",
+            axum::routing::post(|| async { axum::Json(empty_tencent_cloud_wsa_results_json()) }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3086,8 +3494,126 @@ mod tests {
         });
         let base_url = format!("http://{}", addr);
 
-        let provider = test_provider(WebProviderKind::Bing, &base_url);
-        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+        let provider = test_provider(WebProviderKind::TencentCloudWsa, &base_url);
+        let err =
+            tencent_cloud_wsa_search("test", 5, "tencent_test", &provider, &test_fetch_config())
+                .await
+                .unwrap_err();
+        assert!(
+            format!("{err}").contains("no parseable search results"),
+            "expected empty results error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tencent_cloud_wsa_search_http_401_is_error() {
+        let router = axum::Router::new().route(
+            "/SearchPro",
+            axum::routing::post(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::TencentCloudWsa, &base_url);
+        let err =
+            tencent_cloud_wsa_search("test", 5, "tencent_test", &provider, &test_fetch_config())
+                .await
+                .unwrap_err();
+        assert!(
+            format!("{err}").contains("HTTP 401"),
+            "expected HTTP 401 error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tencent_cloud_wsa_search_http_429_is_error() {
+        let router = axum::Router::new().route(
+            "/SearchPro",
+            axum::routing::post(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::TencentCloudWsa, &base_url);
+        let err =
+            tencent_cloud_wsa_search("test", 5, "tencent_test", &provider, &test_fetch_config())
+                .await
+                .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn tencent_cloud_wsa_search_missing_api_key_is_error() {
+        let provider = WebProviderConfig {
+            kind: WebProviderKind::TencentCloudWsa,
+            base_url: Some("http://localhost:1".to_string()),
+            api_key: String::new(),
+            command: None,
+            output: None,
+            limits: Default::default(),
+        };
+        let err =
+            tencent_cloud_wsa_search("test", 5, "tencent_test", &provider, &test_fetch_config())
+                .await
+                .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "provider_unavailable");
+        assert!(
+            format!("{err}").contains("API key"),
+            "expected API key error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bocha_search_integration_success() {
+        let router = axum::Router::new().route(
+            "/v1/web-search",
+            axum::routing::post(|| async { axum::Json(bocha_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Bocha, &base_url);
+        let results = bocha_search("test", 5, "bocha_test", &provider, &test_fetch_config())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Bocha Search");
+        assert_eq!(results[0].url, "https://bochaai.com");
+        assert_eq!(results[0].snippet.as_deref(), Some("AI web search API"));
+        assert_eq!(results[0].published_at.as_deref(), Some("2026-07-02"));
+        assert_eq!(results[0].source, "bocha_test");
+        assert_eq!(results[1].language.as_deref(), Some("zh"));
+    }
+
+    #[tokio::test]
+    async fn bocha_search_empty_results_is_error() {
+        let router = axum::Router::new().route(
+            "/v1/web-search",
+            axum::routing::post(|| async { axum::Json(empty_bocha_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Bocha, &base_url);
+        let err = bocha_search("test", 5, "bocha_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
         assert!(
@@ -3097,10 +3623,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bing_search_http_401_is_error() {
+    async fn bocha_search_http_401_is_error() {
         let router = axum::Router::new().route(
-            "/v7.0/search",
-            axum::routing::get(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+            "/v1/web-search",
+            axum::routing::post(|| async { axum::http::StatusCode::UNAUTHORIZED }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3109,8 +3635,8 @@ mod tests {
         });
         let base_url = format!("http://{}", addr);
 
-        let provider = test_provider(WebProviderKind::Bing, &base_url);
-        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+        let provider = test_provider(WebProviderKind::Bocha, &base_url);
+        let err = bocha_search("test", 5, "bocha_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
         assert!(
@@ -3120,10 +3646,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bing_search_http_429_is_error() {
+    async fn bocha_search_http_429_is_error() {
         let router = axum::Router::new().route(
-            "/v7.0/search",
-            axum::routing::get(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
+            "/v1/web-search",
+            axum::routing::post(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3132,8 +3658,8 @@ mod tests {
         });
         let base_url = format!("http://{}", addr);
 
-        let provider = test_provider(WebProviderKind::Bing, &base_url);
-        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+        let provider = test_provider(WebProviderKind::Bocha, &base_url);
+        let err = bocha_search("test", 5, "bocha_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
         let tool_error = ToolError::from_anyhow(&err);
@@ -3141,16 +3667,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bing_search_missing_api_key_is_error() {
+    async fn bocha_search_missing_api_key_is_error() {
         let provider = WebProviderConfig {
-            kind: WebProviderKind::Bing,
+            kind: WebProviderKind::Bocha,
             base_url: Some("http://localhost:1".to_string()),
             api_key: String::new(),
             command: None,
             output: None,
             limits: Default::default(),
         };
-        let err = bing_search("test", 5, "bing_test", &provider, &test_fetch_config())
+        let err = bocha_search("test", 5, "bocha_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
         let tool_error = ToolError::from_anyhow(&err);

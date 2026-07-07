@@ -380,9 +380,9 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "web.providers.<name>.kind",
             kind: "string",
-            description: "Web search provider kind: duck_duck_go, searxng, brave, tavily, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native, command.",
+            description: "Web search provider kind: duck_duck_go, searxng, brave, tencent_cloud_wsa, bocha, tavily, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native, command.",
             default: Value::Null,
-            allowed_values: vec!["duck_duck_go", "searxng", "brave", "tavily", "exa", "perplexity", "firecrawl", "open_ai_native", "anthropic_native", "gemini_native", "command"],
+            allowed_values: vec!["duck_duck_go", "searxng", "brave", "tencent_cloud_wsa", "bocha", "tavily", "exa", "perplexity", "firecrawl", "open_ai_native", "anthropic_native", "gemini_native", "command"],
         },
         ConfigSchemaEntry {
             key: "web.providers.<name>.base_url",
