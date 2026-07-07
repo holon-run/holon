@@ -68,6 +68,7 @@ const TOP_SCROLL_THRESHOLD = 16;
 const BOTTOM_SCROLL_THRESHOLD = 96;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
+const MESSAGE_LIST_BOTTOM_SAFE_SPACE = 96;
 
 export function storedComposerDraftKey(agentId: string): string {
   return `${COMPOSER_DRAFT_STORAGE_PREFIX}:${encodeURIComponent(agentId)}`;
@@ -178,6 +179,7 @@ export function AgentPage({
     count: timelineTurns.length,
     getScrollElement: () => messageListRef.current,
     estimateSize: () => 320,
+    paddingEnd: MESSAGE_LIST_BOTTOM_SAFE_SPACE,
     overscan: 4,
     getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
   });
