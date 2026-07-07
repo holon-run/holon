@@ -1,4 +1,4 @@
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { memo, useEffect, useState, type ImgHTMLAttributes } from "react";
 
@@ -39,6 +39,11 @@ export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageR
   } catch {
     return undefined;
   }
+}
+
+export function markdownUrlTransform(url: string, key: string): string {
+  if (key === "src" && parseWorkspaceImageRef(url)) return url;
+  return defaultUrlTransform(url);
 }
 
 export function resolveWorkspaceRelativePath(baseFilePath: string, src: string | undefined): string | undefined {
@@ -121,6 +126,7 @@ function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
     <div className={`markdown-content${compact ? " compact" : ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={markdownUrlTransform}
         components={{
           a: ({ children, ...props }) => (
             <a {...props} rel="noreferrer" target="_blank">
