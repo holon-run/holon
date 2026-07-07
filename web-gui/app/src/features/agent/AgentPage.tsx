@@ -4,6 +4,7 @@ import {
   CircleAlert,
   Clock,
   Diamond,
+  ImageIcon,
   ChevronRight,
   Equal,
   LoaderCircle,
@@ -17,10 +18,11 @@ import {
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import { MarkdownContent } from "../../components/MarkdownContent";
+import { MarkdownContent, parseWorkspaceImageRef, type WorkspaceImageRef } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
+import { useRuntimeStore } from "../../runtime/runtime-store";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
@@ -970,6 +972,8 @@ const TimelineMessage = memo(function TimelineMessage({
 }) {
   const { t } = useTranslation();
   const isRuntimeItem = isRuntimeActivityItem(item);
+  const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
+  const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
   const activities =
     isRuntimeItem && item.meta === "activity"
       ? (item.activities ?? [])
@@ -997,7 +1001,15 @@ const TimelineMessage = memo(function TimelineMessage({
 
   const timelineMeta = formatTimelineMeta(item.meta, displayLevel);
   const inspectItem = () => onInspectActivity(timelineItemToWorkingActivity(item));
-
+  const workspaceImageRefs = useMemo(
+    () => extractWorkspaceImageRefs(item.body),
+    [item.body],
+  );
+  const openFirstImage = () => {
+    const first = workspaceImageRefs[0];
+    if (!first || !selectedAgentId) return;
+    showFileBrowser(selectedAgentId, first.workspaceId, undefined, undefined, first.path);
+  };
   return (
     <article
       className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}${targetTimelineItemId === item.id ? " is-targeted" : ""}`}
@@ -1011,6 +1023,11 @@ const TimelineMessage = memo(function TimelineMessage({
         <button className="message-action" type="button" title={t("agent.copyMessage")} onClick={() => copyMessageText(item.body)}>
           ⧉
         </button>
+        {workspaceImageRefs.length > 0 ? (
+          <button className="message-action" type="button" title={t("fileBrowser.openInFileBrowser")} onClick={openFirstImage}>
+            <ImageIcon size={14} />
+          </button>
+        ) : null}
         <button className="message-action" type="button" title={t("agent.inspectMessage")} onClick={inspectItem}>
           ⓘ
         </button>
@@ -1037,7 +1054,16 @@ function copyMessageText(text: string): void {
   if (!navigator.clipboard) return;
   void navigator.clipboard.writeText(text);
 }
-
+function extractWorkspaceImageRefs(text: string): WorkspaceImageRef[] {
+  const refs: WorkspaceImageRef[] = [];
+  const re = /workspace:\/\/[^\s"')\]]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const ref = parseWorkspaceImageRef(match[0]);
+    if (ref) refs.push(ref);
+  }
+  return refs;
+}
 function TimelineItemContent({ item }: { item: AgentTimelineItem }) {
   return <MarkdownContent text={item.body} compact={false} />;
 }

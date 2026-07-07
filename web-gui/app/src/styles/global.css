@@ -1123,35 +1123,6 @@ code {
 .workspace-image-frame img {
   max-width: 100%;
   height: auto;
-  cursor: context-menu;
-}
-
-.workspace-image-context-menu {
-  position: fixed;
-  min-width: 180px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-}
-
-.workspace-image-context-menu-item {
-  width: 100%;
-  padding: 8px 12px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.workspace-image-context-menu-item:hover {
-  background: var(--surface-soft);
 }
 .markdown-content th,
 .markdown-content td {
