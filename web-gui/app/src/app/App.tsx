@@ -575,6 +575,7 @@ export function App() {
           <AgentPage
             agent={activeAgent}
             detail={selectedAgentDetail}
+            detailLoading={agentDetailLoading}
             displayLevel={displayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             promptError={selectedAgentSession?.promptError}

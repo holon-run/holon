@@ -121,6 +121,49 @@ function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, Age
   return agentsById;
 }
 
+/**
+ * Build a provisional AgentDetail from IndexedDB-cached events when the real
+ * HTTP detail hasn't loaded yet. This eliminates the blank/flash period when
+ * switching agents that have cached data.
+ */
+function rebuildProvisionalDetailsWithAgents(
+  agents: AgentSummary[],
+  sessionsByAgentId: Record<string, AgentSessionState>,
+): Record<string, AgentSessionState> | null {
+  const agentsById = Object.fromEntries(agents.map((agent) => [agent.id, agent]));
+  let changed = false;
+  const updated = { ...sessionsByAgentId };
+  for (const [agentId, session] of Object.entries(updated)) {
+    if (session.detail || session.eventSeqs.length === 0) continue;
+    const agent = agentsById[agentId];
+    if (!agent) continue;
+    const events = session.eventSeqs
+      .map((seq) => session.eventsBySeq[seq])
+      .filter(isStreamEventEnvelope);
+    if (events.length === 0) continue;
+    const timeline = reduceAgentSessionTimeline({
+      events: { events },
+      eventDisplayLevel: "debug",
+      messagesById: session.messagesById,
+      transcriptEntriesById: session.transcriptEntriesById,
+      briefRecordsById: session.briefRecordsById,
+    });
+    updated[agentId] = {
+      ...session,
+      detail: {
+        agent,
+        timeline,
+        source: "http",
+        events,
+        newestEventSeq: highestSeq(session.eventSeqs),
+        oldestEventSeq: session.eventSeqs[0],
+      },
+    };
+    changed = true;
+  }
+  return changed ? updated : null;
+}
+
 export interface AgentRosterActivity {
   operatorAt?: string;
   briefAt?: string;
@@ -700,7 +743,11 @@ function initSessionCacheForRemote(set: StoreSet): void {
           ...partial,
         };
       }
-      return { sessionsByAgentId };
+      const withProvisional = rebuildProvisionalDetailsWithAgents(
+        state.bootstrap.agents,
+        sessionsByAgentId,
+      );
+      return { sessionsByAgentId: withProvisional ?? sessionsByAgentId };
     });
   })();
 }
@@ -1003,6 +1050,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             bootstrapLoading: false,
             bootstrapError: bootstrap.connection.error,
           };
+        });
+        // After bootstrap agents are available, build provisional details
+        // for sessions that have cached events but no HTTP detail yet.
+        useRuntimeStore.setState((state) => {
+          const updated = rebuildProvisionalDetailsWithAgents(
+            state.bootstrap.agents,
+            state.sessionsByAgentId,
+          );
+          return updated ? { sessionsByAgentId: updated } : {};
         });
         syncGlobalEventRoster(get, set);
       } catch (error) {

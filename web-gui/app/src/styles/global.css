@@ -2253,6 +2253,19 @@ code {
   color: var(--text);
 }
 
+.conversation-loading {
+  align-self: center;
+  margin: auto 0;
+  padding: 24px;
+  color: var(--muted);
+  display: flex;
+  justify-content: center;
+}
+
+.conversation-loading .spin {
+  animation: spin 0.8s linear infinite;
+}
+
 .copy-action {
   border: 0;
   background: transparent;

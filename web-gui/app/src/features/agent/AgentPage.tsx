@@ -39,6 +39,7 @@ import type { OperatorPromptAttachment } from "../../runtime/client";
 interface AgentPageProps {
   agent: AgentSummary;
   detail: AgentDetail | null;
+  detailLoading?: boolean;
   displayLevel: DisplayLevel;
   sendingPrompt: boolean;
   hasOlderEvents: boolean;
@@ -116,6 +117,7 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
 export function AgentPage({
   agent,
   detail,
+  detailLoading,
   displayLevel,
   sendingPrompt,
   hasOlderEvents,
@@ -437,6 +439,11 @@ export function AgentPage({
               />
             ) : null}
             {timeline.length === 0 ? (
+              detailLoading ? (
+                <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
+                  <LoaderCircle size={24} className="spin" />
+                </div>
+              ) : (
               <EmptyState
                 className="conversation-empty"
                 icon="↵"
@@ -447,6 +454,7 @@ export function AgentPage({
                     : t("agent.noEventsYet")
                 }
               />
+              )
             ) : null}
           </div>
 
