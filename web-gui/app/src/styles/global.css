@@ -1118,6 +1118,28 @@ code {
   height: auto;
 }
 
+.workspace-image-frame {
+  display: inline-flex;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.workspace-image-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.82em;
+  cursor: pointer;
+}
+
+.workspace-image-open:hover {
+  text-decoration: underline;
+}
+
 .markdown-content th,
 .markdown-content td {
   padding: 6px 8px;

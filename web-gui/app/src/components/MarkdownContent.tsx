@@ -1,6 +1,7 @@
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { memo, useEffect, useState, type ImgHTMLAttributes } from "react";
+import { useTranslation } from "react-i18next";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
 
@@ -78,9 +79,17 @@ interface WorkspaceImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 
 }
 
 export function WorkspaceImage({ workspaceId, path, executionRootId, alt, ...props }: WorkspaceImageProps) {
+  const { t } = useTranslation();
   const fetchWorkspaceFileBlob = useRuntimeStore((s) => s.fetchWorkspaceFileBlob);
+  const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
+  const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
   const [objectUrl, setObjectUrl] = useState<string>();
   const [error, setError] = useState<string>();
+
+  const openInFileBrowser = () => {
+    if (!selectedAgentId) return;
+    showFileBrowser(selectedAgentId, workspaceId, undefined, executionRootId, path);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -118,7 +127,16 @@ export function WorkspaceImage({ workspaceId, path, executionRootId, alt, ...pro
   if (!objectUrl) {
     return <span className="workspace-image-loading">Loading image…</span>;
   }
-  return <img {...props} src={objectUrl} alt={alt ?? path} />;
+  return (
+    <span className="workspace-image-frame">
+      <img {...props} src={objectUrl} alt={alt ?? path} />
+      {selectedAgentId ? (
+        <button type="button" className="workspace-image-open" onClick={openInFileBrowser}>
+          {t("fileBrowser.openInFileBrowser")}
+        </button>
+      ) : null}
+    </span>
+  );
 }
 
 function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
