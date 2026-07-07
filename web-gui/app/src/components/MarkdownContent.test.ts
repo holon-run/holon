@@ -8,6 +8,10 @@ describe("parseWorkspaceImageRef", () => {
       workspaceId: "ws_123",
       path: "outputs/chart.png",
     });
+    expect(parseWorkspaceImageRef("workspace://agent_home:holon-pm/media/inbox/screenshot.png")).toEqual({
+      workspaceId: "agent_home:holon-pm",
+      path: "media/inbox/screenshot.png",
+    });
   });
 
   it("decodes path segments without accepting non-workspace URLs", () => {
@@ -16,6 +20,7 @@ describe("parseWorkspaceImageRef", () => {
       path: "out dir/chart 1.png",
     });
     expect(parseWorkspaceImageRef("https://example.com/chart.png")).toBeUndefined();
+    expect(parseWorkspaceImageRef("workspace://agent_home:holon-pm/../secret.png")).toBeUndefined();
   });
 });
 

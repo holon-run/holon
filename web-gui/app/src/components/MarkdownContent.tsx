@@ -16,15 +16,25 @@ export interface WorkspaceImageRef {
 
 export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageRef | undefined {
   if (!src?.startsWith("workspace://")) return undefined;
+  const value = src.slice("workspace://".length);
+  const pathStart = value.indexOf("/");
+  if (pathStart <= 0) return undefined;
+
+  const workspaceId = value.slice(0, pathStart);
+  const rawPath = value.slice(pathStart + 1).split(/[?#]/, 1)[0];
+  if (!workspaceId || !rawPath) return undefined;
+
   try {
-    const url = new URL(src);
-    const workspaceId = url.hostname;
-    const path = url.pathname
+    const path = rawPath
       .split("/")
       .filter(Boolean)
-      .map((part) => decodeURIComponent(part))
+      .map((part) => {
+        const decoded = decodeURIComponent(part);
+        if (decoded === "..") throw new Error("workspace image path escapes workspace");
+        return decoded;
+      })
       .join("/");
-    if (!workspaceId || !path) return undefined;
+    if (!path) return undefined;
     return { workspaceId, path };
   } catch {
     return undefined;
