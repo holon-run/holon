@@ -3340,6 +3340,52 @@ pub struct ViewImageResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct GenerateImageSize {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct GeneratedImageReference {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
+    pub workspace_id: String,
+    pub path: PathBuf,
+    pub uri: String,
+    pub sha256: String,
+    pub mime: String,
+    pub byte_count: u64,
+    pub size: GenerateImageSize,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct GenerateImageParameters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct GenerateImageResult {
+    pub images: Vec<GeneratedImageReference>,
+    pub provider: String,
+    pub model: String,
+    pub prompt: String,
+    pub parameters: GenerateImageParameters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ViewImageVisionCandidate {
     pub provider: String,
     pub model: String,

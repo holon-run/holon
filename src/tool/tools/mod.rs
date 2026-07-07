@@ -17,6 +17,7 @@ pub(crate) mod create_work_item;
 pub(crate) mod enqueue;
 pub(crate) mod exec_command;
 pub(crate) mod exec_command_batch;
+pub(crate) mod generate_image;
 pub(crate) mod get_work_item;
 pub(crate) mod list_model_providers;
 pub(crate) mod list_provider_models;
@@ -63,6 +64,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         create_work_item::definition()?,
         pick_work_item::definition()?,
         get_work_item::definition()?,
+        generate_image::definition()?,
         list_work_items::definition()?,
         update_work_item::definition()?,
         complete_work_item::definition()?,
@@ -142,6 +144,9 @@ pub(crate) async fn execute_builtin_tool(
         get_work_item::NAME => {
             get_work_item::execute(runtime, agent_id, authority_class, &call.input).await
         }
+        generate_image::NAME => {
+            generate_image::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         list_work_items::NAME => {
             list_work_items::execute(runtime, agent_id, authority_class, &call.input).await
         }
@@ -201,6 +206,7 @@ pub(crate) fn render_tool_result_for_model(result: &ToolResult) -> Result<String
         exec_command::NAME => exec_command::render_for_model(result),
         exec_command_batch::NAME => exec_command_batch::render_for_model(result),
         task_output::NAME => task_output::render_for_model(result),
+        generate_image::NAME => generate_image::render_for_model(result),
         view_image::NAME => view_image::render_for_model(result),
         _ => canonical_json_render(result),
     }

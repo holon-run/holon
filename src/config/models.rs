@@ -312,6 +312,32 @@ impl RuntimeModelCatalog {
                     && transport.supports_view_image_observation_generation()
             })
     }
+
+    pub fn select_generate_image_model(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRef>,
+        pending_fallback_model: Option<&ModelRef>,
+    ) -> Option<ModelRef> {
+        for model_ref in self.provider_chain_for_turn(model_override, pending_fallback_model) {
+            let policy = self.built_in_catalog.resolve_policy(
+                &model_ref,
+                &self.model_overrides,
+                &self.discovered_models,
+                self.unknown_model_fallback.as_ref(),
+                base_context_config,
+                self.configured_runtime_max_output_tokens,
+            );
+            let supported_transport = self
+                .provider_transports
+                .get(&model_ref.provider)
+                .is_some_and(|transport| transport.supports_image_generation());
+            if policy.capabilities.image_generation && supported_transport {
+                return Some(model_ref);
+            }
+        }
+        None
+    }
 }
 
 impl Default for RuntimeModelCatalog {

@@ -34,6 +34,8 @@ pub struct ModelCapabilityFlags {
     #[serde(default)]
     pub image_input: bool,
     #[serde(default)]
+    pub image_generation: bool,
+    #[serde(default)]
     pub supports_reasoning: bool,
     #[serde(default)]
     pub interactive_exec: bool,
@@ -46,6 +48,8 @@ pub struct ModelCapabilityOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_generation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_reasoning: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interactive_exec: Option<bool>,
@@ -55,6 +59,7 @@ impl ModelCapabilityOverride {
     pub fn is_empty(&self) -> bool {
         self.parallel_tool_calls.is_none()
             && self.image_input.is_none()
+            && self.image_generation.is_none()
             && self.supports_reasoning.is_none()
             && self.interactive_exec.is_none()
     }
@@ -65,6 +70,9 @@ impl ModelCapabilityOverride {
         }
         if let Some(value) = self.image_input {
             base.image_input = value;
+        }
+        if let Some(value) = self.image_generation {
+            base.image_generation = value;
         }
         if let Some(value) = self.supports_reasoning {
             base.supports_reasoning = value;
@@ -634,6 +642,23 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 image_input: true,
                 interactive_exec: true,
                 supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::openai(), "gpt-image-1"),
+            display_name: "GPT Image 1".into(),
+            description: "OpenAI image generation model for the Images API.".into(),
+            context_window_tokens: None,
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_generation: true,
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,

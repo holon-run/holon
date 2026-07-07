@@ -18,6 +18,7 @@ pub mod tool_names {
     pub const EXEC_COMMAND: &str = "ExecCommand";
     pub const EXEC_COMMAND_BATCH: &str = "ExecCommandBatch";
     pub const GET_WORK_ITEM: &str = "GetWorkItem";
+    pub const GENERATE_IMAGE: &str = "GenerateImage";
     pub const LIST_MODEL_PROVIDERS: &str = "ListModelProviders";
     pub const LIST_PROVIDER_MODELS: &str = "ListProviderModels";
     pub const LIST_TASKS: &str = "ListTasks";
@@ -55,6 +56,7 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     EXEC_COMMAND,
     EXEC_COMMAND_BATCH,
     GET_WORK_ITEM,
+    GENERATE_IMAGE,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
     LIST_TASKS,
@@ -82,6 +84,7 @@ pub const CUSTOM_TEXT_RECEIPT_TOOLS: &[&str] = &[
     EXEC_COMMAND,
     EXEC_COMMAND_BATCH,
     TASK_OUTPUT,
+    GENERATE_IMAGE,
     VIEW_IMAGE,
 ];
 
@@ -106,6 +109,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     EXEC_COMMAND,
     EXEC_COMMAND_BATCH,
     GET_WORK_ITEM,
+    GENERATE_IMAGE,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
     LIST_TASKS,
