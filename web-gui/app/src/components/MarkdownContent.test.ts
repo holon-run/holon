@@ -43,7 +43,7 @@ describe("markdownUrlTransform", () => {
     const src = "workspace://agent_home:holon-pm/media/inbox/screenshot.png";
 
     expect(markdownUrlTransform(src, "src")).toBe(src);
-    expect(markdownUrlTransform(src, "href")).toBe("");
+    expect(markdownUrlTransform(src, "href")).toBe(src);
     expect(markdownUrlTransform("javascript:alert(1)", "src")).toBe("");
     expect(markdownUrlTransform("https://example.com/chart.png", "src")).toBe("https://example.com/chart.png");
   });

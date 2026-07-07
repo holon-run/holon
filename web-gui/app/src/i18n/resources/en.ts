@@ -707,7 +707,7 @@ const en = {
     // Composer
     sendInputAria: "Send operator input to {{id}}",
     sendInputPlaceholder: "Send operator input to {{id}}…",
-    dropImageHint: "Drop images to attach",
+    dropImageHint: "Drop files to attach",
     // Thinking
     thinkingAria: "Thinking: {{level}}",
     thinkingLevelValue: "Thinking level: {{level}}",

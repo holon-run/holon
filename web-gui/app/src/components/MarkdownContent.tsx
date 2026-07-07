@@ -1,6 +1,6 @@
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { memo, useEffect, useState, type ImgHTMLAttributes } from "react";
+import { memo, useEffect, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
 
@@ -42,7 +42,7 @@ export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageR
 }
 
 export function markdownUrlTransform(url: string, key: string): string {
-  if (key === "src" && parseWorkspaceImageRef(url)) return url;
+  if ((key === "src" || key === "href") && parseWorkspaceImageRef(url)) return url;
   return defaultUrlTransform(url);
 }
 
@@ -135,6 +135,36 @@ export function WorkspaceImage({
   );
 }
 
+interface WorkspaceFileLinkProps {
+  href: string;
+  children?: ReactNode;
+}
+
+function WorkspaceFileLink({ href, children }: WorkspaceFileLinkProps) {
+  const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
+  const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
+  const workspaceRef = parseWorkspaceImageRef(href);
+  if (!workspaceRef) {
+    return (
+      <a href={href} rel="noreferrer" target="_blank">
+        {children}
+      </a>
+    );
+  }
+  return (
+    <a
+      href={href}
+      onClick={(e) => {
+        e.preventDefault();
+        showFileBrowser(selectedAgentId, workspaceRef.workspaceId, undefined, undefined, workspaceRef.path);
+      }}
+      rel="noreferrer"
+    >
+      {children}
+    </a>
+  );
+}
+
 function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
   return (
     <div className={`markdown-content${compact ? " compact" : ""}`}>
@@ -142,11 +172,14 @@ function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
         remarkPlugins={[remarkGfm]}
         urlTransform={markdownUrlTransform}
         components={{
-          a: ({ children, ...props }) => (
-            <a {...props} rel="noreferrer" target="_blank">
-              {children}
-            </a>
-          ),
+          a: ({ children, href, ...props }) =>
+            href && parseWorkspaceImageRef(href) ? (
+              <WorkspaceFileLink href={href}>{children}</WorkspaceFileLink>
+            ) : (
+              <a {...props} href={href} rel="noreferrer" target="_blank">
+                {children}
+              </a>
+            ),
           img: ({ src, alt, ...props }) => {
             const workspaceRef = parseWorkspaceImageRef(src);
             if (!workspaceRef) {
