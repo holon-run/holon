@@ -297,6 +297,7 @@ pub fn test_config(
             .map(|value| ModelRef::parse(value).unwrap())
             .collect(),
         vision_model: None,
+        image_generation_model: None,
         vision_candidate_models: Vec::new(),
         runtime_max_output_tokens: 8192,
         default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,

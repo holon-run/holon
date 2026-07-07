@@ -6,11 +6,32 @@ pub struct ModelRef {
     pub model: String,
 }
 
+pub(crate) fn resolve_image_generation_model(
+    stored_config: &HolonConfigFile,
+) -> Result<Option<ModelRef>> {
+    if let Ok(value) = env::var("HOLON_IMAGE_GENERATION_MODEL") {
+        return parse_image_generation_model_ref(&value);
+    }
+    if let Some(value) = &stored_config.image_generation.default {
+        return parse_image_generation_model_ref(value);
+    }
+    Ok(None)
+}
+
+fn parse_image_generation_model_ref(value: &str) -> Result<Option<ModelRef>> {
+    if value.trim().eq_ignore_ascii_case("auto") {
+        Ok(None)
+    } else {
+        ModelRef::parse(value).map(Some)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeModelCatalog {
     pub default_model: ModelRef,
     pub fallback_models: Vec<ModelRef>,
     pub vision_model: Option<ModelRef>,
+    pub image_generation_model: Option<ModelRef>,
     pub vision_candidate_models: Vec<ModelRef>,
     pub disable_provider_fallback: bool,
     pub provider_transports: HashMap<ProviderId, ProviderTransportKind>,
@@ -27,6 +48,7 @@ impl RuntimeModelCatalog {
             default_model: config.default_model.clone(),
             fallback_models: config.fallback_models.clone(),
             vision_model: config.vision_model.clone(),
+            image_generation_model: config.image_generation_model.clone(),
             vision_candidate_models: config.vision_candidate_models.clone(),
             disable_provider_fallback: config.provider_fallback_disabled(),
             provider_transports: config
@@ -319,7 +341,14 @@ impl RuntimeModelCatalog {
         model_override: Option<&ModelRef>,
         pending_fallback_model: Option<&ModelRef>,
     ) -> Option<ModelRef> {
-        for model_ref in self.provider_chain_for_turn(model_override, pending_fallback_model) {
+        let candidates = self
+            .image_generation_model
+            .clone()
+            .map(|model_ref| vec![model_ref])
+            .unwrap_or_else(|| {
+                self.provider_chain_for_turn(model_override, pending_fallback_model)
+            });
+        for model_ref in candidates {
             let policy = self.built_in_catalog.resolve_policy(
                 &model_ref,
                 &self.model_overrides,
@@ -346,6 +375,7 @@ impl Default for RuntimeModelCatalog {
             default_model: ModelRef::parse("openai/gpt-5.4").expect("valid default model ref"),
             fallback_models: Vec::new(),
             vision_model: None,
+            image_generation_model: None,
             vision_candidate_models: Vec::new(),
             disable_provider_fallback: false,
             provider_transports: HashMap::new(),
@@ -372,6 +402,9 @@ pub(crate) fn merged_model_capabilities(
         }
         if let Some(value) = override_config.image_input {
             capabilities.image_input = value;
+        }
+        if let Some(value) = override_config.image_generation {
+            capabilities.image_generation = value;
         }
         if let Some(value) = override_config.interactive_exec {
             capabilities.interactive_exec = value;

@@ -241,7 +241,7 @@ impl BuiltInModelCatalog {
             preferred_models
                 .entry(entry.model_ref.provider.clone())
                 .or_insert_with(|| entry.model_ref.clone());
-            entries.insert(entry.model_ref.clone(), entry);
+            entries.entry(entry.model_ref.clone()).or_insert(entry);
         }
         Self {
             entries,
@@ -583,6 +583,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
+                image_generation: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -602,6 +603,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
+                image_generation: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -621,6 +623,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
+                image_generation: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -640,6 +643,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
+                image_generation: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -647,8 +651,8 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
         },
         BuiltInModelMetadata {
-            model_ref: ModelRef::new(ProviderId::openai(), "gpt-image-1"),
-            display_name: "GPT Image 1".into(),
+            model_ref: ModelRef::new(ProviderId::openai(), "gpt-image-2"),
+            display_name: "GPT Image 2".into(),
             description: "OpenAI image generation model for the Images API.".into(),
             context_window_tokens: None,
             effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,

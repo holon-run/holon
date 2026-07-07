@@ -279,7 +279,10 @@ impl ProviderTransportKind {
     }
 
     pub fn supports_image_generation(self) -> bool {
-        matches!(self, Self::OpenAiResponses | Self::OpenAiChatCompletions)
+        matches!(
+            self,
+            Self::OpenAiCodexResponses | Self::OpenAiResponses | Self::OpenAiChatCompletions
+        )
     }
 }
 
