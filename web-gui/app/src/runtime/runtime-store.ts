@@ -3244,8 +3244,8 @@ function scheduleBriefHydration(
 
   void runtimeClient
     .getAgentBriefsById(agentId, requestIds)
-    .then((recordsById) => {
-      set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, requestIds, displayLevel));
+    .then(({ recordsById, notFoundIds }) => {
+      set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, notFoundIds, displayLevel));
     })
     .catch((error) => {
       set((state) => ({
@@ -3464,7 +3464,7 @@ function mergeHydratedBriefRecordsIntoSession(
   state: RuntimeStoreState,
   agentId: string,
   recordsById: Record<string, RuntimeBriefRecord>,
-  requestedBriefIds: string[],
+  notFoundBriefIds: string[],
   displayLevel: DisplayLevel,
 ): Partial<RuntimeStoreState> {
   const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -3477,7 +3477,7 @@ function mergeHydratedBriefRecordsIntoSession(
   }
 
   const missingById = { ...current.missingBriefIds };
-  for (const briefId of requestedBriefIds) {
+  for (const briefId of notFoundBriefIds) {
     if (!briefId || recordsById[briefId]) continue;
     missingById[briefId] = true;
     changed = true;
