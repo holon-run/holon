@@ -112,6 +112,11 @@ pub enum ControlPromptAttachment {
         media_type: String,
         data_base64: String,
     },
+    File {
+        name: Option<String>,
+        media_type: String,
+        data_base64: String,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]

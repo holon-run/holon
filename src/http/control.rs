@@ -1,6 +1,9 @@
 use super::*;
 use anyhow::Context as _;
 
+const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+
 pub async fn runtime_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -754,45 +757,63 @@ fn control_prompt_text_with_attachments(
 
     let mut text = request.text;
     for (index, attachment) in request.attachments.into_iter().enumerate() {
+        let position = index + 1;
         match attachment {
             ControlPromptAttachment::Image {
                 name,
                 media_type,
                 data_base64,
             } => {
-                let bytes = BASE64_STANDARD
-                    .decode(data_base64.as_bytes())
-                    .with_context(|| format!("decode image attachment {}", index + 1))?;
-                if bytes.is_empty() {
-                    return Err(anyhow!("image attachment {} is empty", index + 1));
-                }
-                if bytes.len() as u64 > crate::tool::tools::view_image::MAX_IMAGE_BYTES {
-                    return Err(anyhow!(
-                        "image attachment {} exceeds {} bytes",
-                        index + 1,
-                        crate::tool::tools::view_image::MAX_IMAGE_BYTES
-                    ));
-                }
+                let bytes = decode_control_prompt_attachment(
+                    "image",
+                    position,
+                    &data_base64,
+                    MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES,
+                )?;
                 let extension = image_extension_for_media_type(&media_type)
                     .ok_or_else(|| anyhow!("unsupported image media type: {media_type}"))?;
-                let stem = safe_media_stem(name.as_deref()).unwrap_or_else(|| "image".to_string());
-                let file_name = format!(
-                    "{}-{}-{}.{}",
-                    Utc::now().format("%Y%m%dT%H%M%S%3fZ"),
-                    index + 1,
-                    stem,
-                    extension
-                );
-                let path = inbox.join(&file_name);
-                std::fs::write(&path, bytes)
-                    .with_context(|| format!("write image attachment to {}", path.display()))?;
-                if !text.ends_with('\n') && !text.is_empty() {
-                    text.push('\n');
-                }
+                let file_name = write_control_prompt_attachment(
+                    &inbox,
+                    "image",
+                    position,
+                    name.as_deref(),
+                    extension,
+                    bytes,
+                )?;
+                append_attachment_separator(&mut text);
                 text.push_str(&format!(
                     "\n![{}](workspace://{}/media/inbox/{})",
                     markdown_alt_text(name.as_deref())
-                        .unwrap_or_else(|| format!("image {}", index + 1)),
+                        .unwrap_or_else(|| format!("image {}", position)),
+                    crate::types::agent_home_workspace_id(agent_id),
+                    percent_encode_path_segment(&file_name)
+                ));
+            }
+            ControlPromptAttachment::File {
+                name,
+                media_type,
+                data_base64,
+            } => {
+                let bytes = decode_control_prompt_attachment(
+                    "file",
+                    position,
+                    &data_base64,
+                    MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES,
+                )?;
+                let extension = file_extension_for_attachment(name.as_deref(), &media_type);
+                let file_name = write_control_prompt_attachment(
+                    &inbox,
+                    "file",
+                    position,
+                    name.as_deref(),
+                    &extension,
+                    bytes,
+                )?;
+                append_attachment_separator(&mut text);
+                text.push_str(&format!(
+                    "\n[{}](workspace://{}/media/inbox/{})",
+                    markdown_alt_text(name.as_deref())
+                        .unwrap_or_else(|| format!("file {}", position)),
                     crate::types::agent_home_workspace_id(agent_id),
                     percent_encode_path_segment(&file_name)
                 ));
@@ -803,12 +824,86 @@ fn control_prompt_text_with_attachments(
     Ok(text)
 }
 
+fn decode_control_prompt_attachment(
+    label: &str,
+    position: usize,
+    data_base64: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
+    let bytes = BASE64_STANDARD
+        .decode(data_base64.as_bytes())
+        .with_context(|| format!("decode {label} attachment {position}"))?;
+    if bytes.is_empty() {
+        return Err(anyhow!("{label} attachment {position} is empty"));
+    }
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "{label} attachment {position} exceeds {max_bytes} bytes"
+        ));
+    }
+    Ok(bytes)
+}
+
+fn write_control_prompt_attachment(
+    inbox: &std::path::Path,
+    label: &str,
+    position: usize,
+    name: Option<&str>,
+    extension: &str,
+    bytes: Vec<u8>,
+) -> Result<String> {
+    let stem = safe_media_stem(name).unwrap_or_else(|| label.to_string());
+    let file_name = format!(
+        "{}-{}-{}.{}",
+        Utc::now().format("%Y%m%dT%H%M%S%3fZ"),
+        position,
+        stem,
+        extension
+    );
+    let path = inbox.join(&file_name);
+    std::fs::write(&path, bytes)
+        .with_context(|| format!("write {label} attachment to {}", path.display()))?;
+    Ok(file_name)
+}
+
+fn append_attachment_separator(text: &mut String) {
+    if !text.ends_with('\n') && !text.is_empty() {
+        text.push('\n');
+    }
+}
+
 fn image_extension_for_media_type(media_type: &str) -> Option<&'static str> {
     match media_type {
         "image/png" => Some("png"),
         "image/jpeg" | "image/jpg" => Some("jpg"),
         "image/gif" => Some("gif"),
         "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn file_extension_for_attachment(name: Option<&str>, media_type: &str) -> String {
+    safe_media_extension(name)
+        .map(str::to_ascii_lowercase)
+        .or_else(|| file_extension_for_media_type(media_type).map(str::to_string))
+        .unwrap_or_else(|| "bin".to_string())
+}
+
+fn file_extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type.split(';').next().unwrap_or(media_type).trim() {
+        "application/pdf" => Some("pdf"),
+        "text/plain" => Some("txt"),
+        "text/markdown" | "text/x-markdown" => Some("md"),
+        "application/json" | "application/ld+json" => Some("json"),
+        "text/csv" => Some("csv"),
+        "text/html" => Some("html"),
+        "application/javascript" | "text/javascript" => Some("js"),
+        "application/typescript" | "text/typescript" => Some("ts"),
+        "text/x-rust" => Some("rs"),
+        "text/x-python" | "application/x-python-code" => Some("py"),
+        "application/xml" | "text/xml" => Some("xml"),
+        "application/zip" => Some("zip"),
+        "application/gzip" => Some("gz"),
         _ => None,
     }
 }
@@ -834,6 +929,20 @@ fn safe_media_stem(name: Option<&str>) -> Option<String> {
     (!safe.is_empty()).then_some(safe)
 }
 
+fn safe_media_extension(name: Option<&str>) -> Option<&str> {
+    let name = name?;
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let (_, extension) = name.rsplit_once('.')?;
+    let extension = extension.trim();
+    if extension.is_empty() || extension.len() > 16 {
+        return None;
+    }
+    extension
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric())
+        .then_some(extension)
+}
+
 fn markdown_alt_text(name: Option<&str>) -> Option<String> {
     let alt = name?
         .chars()
@@ -844,6 +953,139 @@ fn markdown_alt_text(name: Option<&str>) -> Option<String> {
 
 fn percent_encode_path_segment(segment: &str) -> String {
     percent_encoding::utf8_percent_encode(segment, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encoded(bytes: &[u8]) -> String {
+        BASE64_STANDARD.encode(bytes)
+    }
+
+    fn inbox_files(home: &std::path::Path) -> Vec<String> {
+        let inbox = home.join("media").join("inbox");
+        let mut files = std::fs::read_dir(inbox)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn image_attachment_still_generates_markdown_preview() {
+        let home = tempfile::tempdir().unwrap();
+        let text = control_prompt_text_with_attachments(
+            "agent-one",
+            home.path(),
+            ControlPromptRequest {
+                text: "look".into(),
+                attachments: vec![ControlPromptAttachment::Image {
+                    name: Some("diagram.png".into()),
+                    media_type: "image/png".into(),
+                    data_base64: encoded(b"png"),
+                }],
+            },
+        )
+        .unwrap();
+
+        let files = inbox_files(home.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("-diagram.png"));
+        assert!(
+            text.contains("look\n\n![diagram.png](workspace://agent_home:agent-one/media/inbox/")
+        );
+        assert!(text.contains(&percent_encode_path_segment(&files[0])));
+    }
+
+    #[test]
+    fn file_attachment_generates_plain_workspace_link_and_file() {
+        let home = tempfile::tempdir().unwrap();
+        let text = control_prompt_text_with_attachments(
+            "agent-one",
+            home.path(),
+            ControlPromptRequest {
+                text: "read this".into(),
+                attachments: vec![ControlPromptAttachment::File {
+                    name: Some("report.pdf".into()),
+                    media_type: "application/pdf".into(),
+                    data_base64: encoded(b"%PDF-1.7"),
+                }],
+            },
+        )
+        .unwrap();
+
+        let files = inbox_files(home.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("-report.pdf"));
+        assert_eq!(
+            std::fs::read(home.path().join("media").join("inbox").join(&files[0])).unwrap(),
+            b"%PDF-1.7"
+        );
+        assert!(text
+            .contains("read this\n\n[report.pdf](workspace://agent_home:agent-one/media/inbox/"));
+        assert!(!text.contains("![report.pdf]"));
+    }
+
+    #[test]
+    fn file_attachment_infers_extension_from_media_type_or_uses_bin() {
+        assert_eq!(
+            file_extension_for_attachment(Some("README"), "text/markdown; charset=utf-8"),
+            "md"
+        );
+        assert_eq!(
+            file_extension_for_attachment(Some("blob"), "application/octet-stream"),
+            "bin"
+        );
+        assert_eq!(
+            file_extension_for_attachment(Some("../../src/main.rs"), "text/plain"),
+            "rs"
+        );
+    }
+
+    #[test]
+    fn file_attachment_rejects_empty_content() {
+        let home = tempfile::tempdir().unwrap();
+        let error = control_prompt_text_with_attachments(
+            "agent-one",
+            home.path(),
+            ControlPromptRequest {
+                text: String::new(),
+                attachments: vec![ControlPromptAttachment::File {
+                    name: Some("empty.txt".into()),
+                    media_type: "text/plain".into(),
+                    data_base64: encoded(b""),
+                }],
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("file attachment 1 is empty"));
+    }
+
+    #[test]
+    fn dangerous_file_names_stay_inside_inbox() {
+        let home = tempfile::tempdir().unwrap();
+        let _ = control_prompt_text_with_attachments(
+            "agent-one",
+            home.path(),
+            ControlPromptRequest {
+                text: String::new(),
+                attachments: vec![ControlPromptAttachment::File {
+                    name: Some("../../secret[name].md".into()),
+                    media_type: "text/markdown".into(),
+                    data_base64: encoded(b"# secret"),
+                }],
+            },
+        )
+        .unwrap();
+
+        let files = inbox_files(home.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("-secret-name.md"));
+        assert!(!home.path().join("secret[name].md").exists());
+    }
 }
 
 pub async fn create_operator_transport_binding(

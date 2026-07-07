@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { readStoredComposerDraft, resizeComposerTextarea, storedComposerDraftKey, writeStoredComposerDraft } from "./AgentPage";
+import {
+  attachmentKindForFile,
+  readStoredComposerDraft,
+  resizeComposerTextarea,
+  storedComposerDraftKey,
+  writeStoredComposerDraft,
+} from "./AgentPage";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -80,5 +86,16 @@ describe("composer textarea resize", () => {
 
     expect(textarea.style.height).toBe("320px");
     expect(textarea.style.overflowY).toBe("auto");
+  });
+});
+
+describe("composer attachments", () => {
+  it("keeps image files as image attachments", () => {
+    expect(attachmentKindForFile({ type: "image/png" })).toBe("image");
+  });
+
+  it("classifies non-image files as generic file attachments", () => {
+    expect(attachmentKindForFile({ type: "application/pdf" })).toBe("file");
+    expect(attachmentKindForFile({ type: "" })).toBe("file");
   });
 });

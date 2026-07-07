@@ -108,6 +108,10 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+export function attachmentKindForFile(file: Pick<File, "type">): OperatorPromptAttachment["kind"] {
+  return file.type.startsWith("image/") ? "image" : "file";
+}
+
 export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
   textarea.style.height = "auto";
   const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_TEXTAREA_MAX_HEIGHT);
@@ -337,9 +341,8 @@ export function AgentPage({
     if (!files || files.length === 0) return;
     const next: OperatorPromptAttachment[] = [];
     for (const file of Array.from(files)) {
-      if (!file.type.startsWith("image/")) continue;
       next.push({
-        kind: "image",
+        kind: attachmentKindForFile(file),
         name: file.name,
         mediaType: file.type,
         dataBase64: await fileToBase64(file),
@@ -534,19 +537,18 @@ export function AgentPage({
               ref={fileInputRef}
               className="composer-file-input"
               type="file"
-              accept="image/*"
               multiple
               disabled={sendingPrompt}
               onChange={(event) => void handleAttachmentFiles(event.target.files)}
             />
             {attachments.length > 0 ? (
-              <div className="composer-attachments" aria-label="Image attachments">
+              <div className="composer-attachments" aria-label="Attachments">
                 {attachments.map((attachment, index) => (
-                  <span className="composer-attachment" key={`${attachment.name ?? "image"}:${index}`}>
-                    {attachment.name ?? `image ${index + 1}`}
+                  <span className="composer-attachment" key={`${attachment.name ?? attachment.kind}:${index}`}>
+                    {attachment.name ?? `${attachment.kind} ${index + 1}`}
                     <button
                       type="button"
-                      aria-label={`Remove ${attachment.name ?? `image ${index + 1}`}`}
+                      aria-label={`Remove ${attachment.name ?? `${attachment.kind} ${index + 1}`}`}
                       onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
                     >
                       ×
@@ -567,7 +569,7 @@ export function AgentPage({
                   type="button"
                   size="icon"
                   variant="ghost"
-                  aria-label="Attach image"
+                  aria-label="Attach files"
                   disabled={sendingPrompt}
                   onClick={() => fileInputRef.current?.click()}
                 >

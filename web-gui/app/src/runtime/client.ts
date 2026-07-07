@@ -49,7 +49,7 @@ export interface RuntimeClientOptions {
 }
 
 export interface OperatorPromptAttachment {
-  kind: "image";
+  kind: "image" | "file";
   name?: string;
   mediaType: string;
   dataBase64: string;
