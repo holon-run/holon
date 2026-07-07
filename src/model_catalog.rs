@@ -238,9 +238,11 @@ impl BuiltInModelCatalog {
         let mut entries = HashMap::new();
         let mut preferred_models = HashMap::new();
         for entry in built_in_entries() {
-            preferred_models
-                .entry(entry.model_ref.provider.clone())
-                .or_insert_with(|| entry.model_ref.clone());
+            if is_turn_default_candidate(&entry) {
+                preferred_models
+                    .entry(entry.model_ref.provider.clone())
+                    .or_insert_with(|| entry.model_ref.clone());
+            }
             entries.entry(entry.model_ref.clone()).or_insert(entry);
         }
         Self {
@@ -509,6 +511,14 @@ fn catalog_model(
         },
         source: ModelMetadataSource::BuiltInCatalog,
     }
+}
+
+fn is_turn_default_candidate(entry: &BuiltInModelMetadata) -> bool {
+    entry.context_window_tokens.is_some()
+        || entry.capabilities.parallel_tool_calls
+        || entry.capabilities.image_input
+        || entry.capabilities.supports_reasoning
+        || entry.capabilities.interactive_exec
 }
 
 fn mirror_catalog_models(

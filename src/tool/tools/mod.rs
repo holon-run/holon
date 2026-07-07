@@ -250,6 +250,7 @@ mod tests {
             "Enqueue" => "src/tool/tool_descriptions/enqueue.md",
             "ExecCommand" => "src/tool/tool_descriptions/exec_command.md",
             "ExecCommandBatch" => "src/tool/tool_descriptions/exec_command_batch.md",
+            "GenerateImage" => "src/tool/tool_descriptions/generate_image.md",
             "GetWorkItem" => "src/tool/tool_descriptions/get_work_item.md",
             "ListModelProviders" => "src/tool/tool_descriptions/list_model_providers.md",
             "ListProviderModels" => "src/tool/tool_descriptions/list_provider_models.md",
