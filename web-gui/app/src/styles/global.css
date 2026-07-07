@@ -1532,7 +1532,7 @@ code {
   --conversation-content-max: 980px;
 
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   min-height: 0;
 }
 
@@ -2041,6 +2041,15 @@ code {
   cursor: pointer;
   font: inherit;
   text-align: left;
+}
+
+.working-indicator-slot {
+  width: min(var(--conversation-content-max), calc(100% - 60px));
+  margin: 0 auto 10px;
+}
+
+.working-indicator-slot .working-indicator {
+  max-width: 100%;
 }
 
 .working-indicator.detail {

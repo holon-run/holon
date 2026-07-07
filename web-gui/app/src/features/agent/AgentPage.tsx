@@ -488,15 +488,6 @@ export function AgentPage({
                 })}
               </div>
             ) : null}
-            {isWorking ? (
-              <WorkingIndicator
-                activities={workingActivities}
-                agent={activeAgent}
-                displayLevel={displayLevel}
-                onInspectActivity={onInspectActivity}
-                onOpenOverview={onOpenInspector}
-              />
-            ) : null}
             {timeline.length === 0 ? (
               detailLoading ? (
                 <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
@@ -516,6 +507,18 @@ export function AgentPage({
               )
             ) : null}
           </div>
+
+          {isWorking ? (
+            <div className="working-indicator-slot">
+              <WorkingIndicator
+                activities={workingActivities}
+                agent={activeAgent}
+                displayLevel={displayLevel}
+                onInspectActivity={onInspectActivity}
+                onOpenOverview={onOpenInspector}
+              />
+            </div>
+          ) : null}
 
           <form className="composer" aria-label={t("agent.sendInputAria", { id: activeAgent.id })} onSubmit={handleSubmit}>
             <textarea
