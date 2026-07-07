@@ -1596,7 +1596,6 @@ code {
     radial-gradient(circle at 20% 10%, rgba(8, 126, 164, 0.05), transparent 28rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 260px);
   overscroll-behavior: contain;
-  scroll-behavior: smooth;
 }
 
 .history-loader,

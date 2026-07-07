@@ -65,6 +65,7 @@ const DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT = 160;
 const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
 const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
 const TOP_SCROLL_THRESHOLD = 16;
+const BOTTOM_SCROLL_THRESHOLD = 96;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
 
@@ -151,6 +152,8 @@ export function AgentPage({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
+  const autoStickToBottomRef = useRef(false);
+  const scheduledBottomScrollRef = useRef<number | null>(null);
   const activeAgent = detail?.agent ?? agent;
   const sourceTimeline = detail?.timeline ?? [];
   const sourceEvents = detail?.events ?? [];
@@ -200,6 +203,14 @@ export function AgentPage({
   }, [activeAgent.id, displayLevel]);
 
   useEffect(() => {
+    return () => {
+      if (scheduledBottomScrollRef.current !== null) {
+        window.cancelAnimationFrame(scheduledBottomScrollRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     setPrompt(readStoredComposerDraft(activeAgent.id));
     setAttachments([]);
   }, [activeAgent.id]);
@@ -210,6 +221,50 @@ export function AgentPage({
       resizeComposerTextarea(textarea);
     }
   }, [prompt, activeAgent.id]);
+
+  function scrollToConversationBottom() {
+    const list = messageListRef.current;
+    if (!list) return;
+
+    stickToBottomRef.current = true;
+    autoStickToBottomRef.current = true;
+
+    const lastTurnIndex = timelineTurns.length - 1;
+    const scrollNow = () => {
+      const currentList = messageListRef.current;
+      if (!currentList) return;
+      if (lastTurnIndex >= 0) {
+        rowVirtualizer.scrollToIndex(lastTurnIndex, { align: "end", behavior: "auto" });
+      }
+      currentList.scrollTop = currentList.scrollHeight;
+    };
+
+    if (scheduledBottomScrollRef.current !== null) {
+      window.cancelAnimationFrame(scheduledBottomScrollRef.current);
+      scheduledBottomScrollRef.current = null;
+    }
+
+    scrollNow();
+    scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
+      scrollNow();
+      scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
+        scrollNow();
+        scheduledBottomScrollRef.current = null;
+        autoStickToBottomRef.current = false;
+        const currentList = messageListRef.current;
+        if (currentList) {
+          stickToBottomRef.current = isScrolledNearBottom(currentList);
+        }
+      });
+    });
+  }
+
+  useLayoutEffect(() => {
+    preserveScrollRef.current = null;
+    stickToBottomRef.current = true;
+    rowVirtualizer.measure();
+    scrollToConversationBottom();
+  }, [activeAgent.id]);
 
   useLayoutEffect(() => {
     const list = messageListRef.current;
@@ -223,7 +278,7 @@ export function AgentPage({
     }
 
     if (stickToBottomRef.current) {
-      list.scrollTop = list.scrollHeight;
+      scrollToConversationBottom();
     }
   }, [timelineVersion]);
 
@@ -301,7 +356,11 @@ export function AgentPage({
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
-    stickToBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 96;
+    if (autoStickToBottomRef.current) {
+      stickToBottomRef.current = true;
+      return;
+    }
+    stickToBottomRef.current = isScrolledNearBottom(list);
   }
 
   async function handleLoadOlderEvents() {
@@ -691,6 +750,10 @@ function groupModelOptionsByProvider(options: RuntimeModelOption[]): Array<{ pro
 
 function titleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function isScrolledNearBottom(list: HTMLElement): boolean {
+  return list.scrollHeight - list.scrollTop - list.clientHeight < BOTTOM_SCROLL_THRESHOLD;
 }
 
 function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {

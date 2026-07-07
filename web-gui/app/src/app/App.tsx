@@ -573,6 +573,7 @@ export function App() {
         ) : null}
         {route === "agent" && activeAgent ? (
           <AgentPage
+            key={activeAgent.id}
             agent={activeAgent}
             detail={selectedAgentDetail}
             detailLoading={agentDetailLoading}
