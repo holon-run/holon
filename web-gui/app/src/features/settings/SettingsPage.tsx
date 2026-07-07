@@ -138,6 +138,27 @@ const standardSearchProviders: StandardSearchProviderDefinition[] = [
     requiresApiKey: false,
     baseUrlPlaceholder: "https://search.example.com",
   },
+  {
+    id: "openai-native",
+    kind: "open_ai_native",
+    label: "OpenAI Native Search",
+    description: "Use OpenAI's built-in web search (e.g. web_search_preview). No separate API key — uses the OpenAI model provider credentials.",
+    requiresApiKey: false,
+  },
+  {
+    id: "anthropic-native",
+    kind: "anthropic_native",
+    label: "Anthropic Native Search",
+    description: "Use Anthropic's built-in web search tool. No separate API key — uses the Anthropic model provider credentials.",
+    requiresApiKey: false,
+  },
+  {
+    id: "gemini-native",
+    kind: "gemini_native",
+    label: "Gemini Native Search",
+    description: "Use Google Gemini's grounding with Google Search. No separate API key — uses the Gemini model provider credentials.",
+    requiresApiKey: false,
+  },
 ];
 
 const standardSearchProviderById = new Map(standardSearchProviders.map((provider) => [provider.id, provider]));
