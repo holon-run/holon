@@ -1,6 +1,6 @@
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { memo, useEffect, useState, type ImgHTMLAttributes } from "react";
+import { memo, useCallback, useEffect, useState, useRef, type ImgHTMLAttributes } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
@@ -76,17 +76,29 @@ interface WorkspaceImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 
   workspaceId: string;
   path: string;
   executionRootId?: string;
+  showOpenInBrowser?: boolean;
 }
 
-export function WorkspaceImage({ workspaceId, path, executionRootId, alt, ...props }: WorkspaceImageProps) {
+export function WorkspaceImage({
+  workspaceId,
+  path,
+  executionRootId,
+  alt,
+  showOpenInBrowser = true,
+  ...props
+}: WorkspaceImageProps) {
   const { t } = useTranslation();
   const fetchWorkspaceFileBlob = useRuntimeStore((s) => s.fetchWorkspaceFileBlob);
   const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
   const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
   const [objectUrl, setObjectUrl] = useState<string>();
   const [error, setError] = useState<string>();
+  const [showContextMenu, setShowContextMenu] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const openInFileBrowser = () => {
+    setShowContextMenu(false);
     if (!selectedAgentId) return;
     showFileBrowser(selectedAgentId, workspaceId, undefined, executionRootId, path);
   };
@@ -117,6 +129,26 @@ export function WorkspaceImage({ workspaceId, path, executionRootId, alt, ...pro
     };
   }, [fetchWorkspaceFileBlob, workspaceId, path, executionRootId]);
 
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setShowContextMenu(false);
+      }
+    };
+    if (showContextMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [showContextMenu]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!showOpenInBrowser || !selectedAgentId) return;
+    e.preventDefault();
+    setMenuPosition({ x: e.clientX, y: e.clientY });
+    setShowContextMenu(true);
+  }, [showOpenInBrowser, selectedAgentId]);
+
   if (error) {
     return (
       <span className="workspace-image-error" title={error}>
@@ -129,11 +161,26 @@ export function WorkspaceImage({ workspaceId, path, executionRootId, alt, ...pro
   }
   return (
     <span className="workspace-image-frame">
-      <img {...props} src={objectUrl} alt={alt ?? path} />
-      {selectedAgentId ? (
-        <button type="button" className="workspace-image-open" onClick={openInFileBrowser}>
-          {t("fileBrowser.openInFileBrowser")}
-        </button>
+      <img
+        {...props}
+        src={objectUrl}
+        alt={alt ?? path}
+        onContextMenu={handleContextMenu}
+      />
+      {showContextMenu && menuPosition && showOpenInBrowser ? (
+        <div
+          ref={menuRef}
+          className="workspace-image-context-menu"
+          style={{ position: "fixed", left: menuPosition.x, top: menuPosition.y, zIndex: 1000 }}
+        >
+          <button
+            type="button"
+            className="workspace-image-context-menu-item"
+            onClick={openInFileBrowser}
+          >
+            {t("fileBrowser.openInFileBrowser")}
+          </button>
+        </div>
       ) : null}
     </span>
   );
