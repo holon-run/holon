@@ -307,7 +307,6 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             workspaceId={workspaceRef.workspaceId}
             path={workspaceRef.path}
             alt={alt ?? workspaceRef.path}
-            showOpenInBrowser={false}
           />
         );
       }
@@ -323,7 +322,6 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
           path={relativePath}
           executionRootId={executionRootId}
           alt={alt ?? relativePath}
-          showOpenInBrowser={false}
         />
       );
     },
@@ -450,10 +448,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             <WorkspaceImage
               className="file-browser-image"
               workspaceId={workspaceId}
-            path={selectedFile.path}
-            executionRootId={executionRootId}
-            alt={selectedFile.path}
-            showOpenInBrowser={false}
+              path={selectedFile.path}
+              executionRootId={executionRootId}
+              alt={selectedFile.path}
             />
           ) : selectedFile.content != null ? (
             <>

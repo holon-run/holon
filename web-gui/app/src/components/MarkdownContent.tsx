@@ -75,7 +75,6 @@ interface WorkspaceImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 
   workspaceId: string;
   path: string;
   executionRootId?: string;
-  showOpenInBrowser?: boolean;
 }
 
 export function WorkspaceImage({
@@ -83,10 +82,8 @@ export function WorkspaceImage({
   path,
   executionRootId,
   alt,
-  showOpenInBrowser = true,
   ...props
 }: WorkspaceImageProps) {
-  void showOpenInBrowser;
   const fetchWorkspaceFileBlob = useRuntimeStore((s) => s.fetchWorkspaceFileBlob);
   const [objectUrl, setObjectUrl] = useState<string>();
   const [error, setError] = useState<string>();
