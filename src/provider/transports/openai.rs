@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use reqwest::{header::HeaderMap, Client, RequestBuilder, Response};
 use serde_json::{json, Value};
@@ -27,7 +28,8 @@ use crate::{
         builtin_web_search_probe_turn_request, emitted_tool_json_schema,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
         AgentProvider, ConversationMessage, ModelBlock, ProviderBuiltinWebSearchCapability,
-        ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
+        ProviderCacheUsage, ProviderGenerateImageRequest, ProviderGenerateImageResponse,
+        ProviderGeneratedImage, ProviderIncrementalContinuationDiagnostics,
         ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest, ProviderOpenAiRemoteCompactionDiagnostics,
         ProviderOpenAiRequestControlsDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
@@ -84,6 +86,7 @@ pub struct OpenAiCodexProvider {
 #[derive(Clone)]
 pub struct OpenAiChatCompletionsProvider {
     client: Client,
+    provider_id: String,
     base_url: String,
     api_key: Option<String>,
     model: String,
@@ -786,6 +789,7 @@ impl OpenAiChatCompletionsProvider {
         };
         Ok(Self {
             client,
+            provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
             model: model.to_string(),
@@ -872,6 +876,33 @@ impl AgentProvider for OpenAiProvider {
             .await;
         }
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
+    }
+
+    async fn generate_image(
+        &self,
+        request: ProviderGenerateImageRequest,
+    ) -> Result<ProviderGenerateImageResponse> {
+        let body = build_openai_images_request(&self.model, &request);
+        let headers = self
+            .api_key
+            .as_ref()
+            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
+            .unwrap_or_default();
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let images = send_openai_images_request(
+            &self.client,
+            openai_images_generations_url(&self.base_url),
+            body,
+            headers,
+            trace.as_ref(),
+            None,
+        )
+        .await?;
+        Ok(ProviderGenerateImageResponse {
+            provider: self.provider_id.clone(),
+            model: self.model.clone(),
+            images,
+        })
     }
 
     #[cfg(test)]
@@ -1089,6 +1120,96 @@ impl AgentProvider for OpenAiCodexProvider {
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
+    async fn generate_image(
+        &self,
+        request: ProviderGenerateImageRequest,
+    ) -> Result<ProviderGenerateImageResponse> {
+        let model_ref = format!("{}/{}", self.provider_id, self.model);
+        let credential = self.resolve_fresh_credential().await.map_err(|error| {
+            openai_codex_auth_error(
+                "credential_resolution",
+                &model_ref,
+                vec![
+                    error.to_string(),
+                    "OpenAI Codex image generation uses Codex OAuth credentials through the Responses image_generation tool.".into(),
+                ],
+                "OpenAI Codex image generation authentication failed: no usable OAuth credentials are available.",
+            )
+        })?;
+        if let Some(expires_at) = credential.expires_at {
+            if expires_at <= Utc::now() + chrono::Duration::seconds(60) {
+                return Err(openai_codex_auth_error(
+                    "credential_expired",
+                    &model_ref,
+                    vec![
+                        format!(
+                            "OpenAI Codex OAuth access token is expired: credential source {} expired at {}",
+                            credential.source,
+                            expires_at.to_rfc3339()
+                        ),
+                        "Run Holon onboarding login for openai-codex to configure or refresh Holon-managed OAuth, or run `codex login` if intentionally using external CLI credentials.".into(),
+                    ],
+                    "OpenAI Codex image generation authentication failed: OAuth access token is expired.",
+                ));
+            }
+        }
+
+        let body = build_openai_codex_image_generation_request(&self.model, &request);
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let mut credential = credential;
+        let mut headers = openai_codex_headers(&credential, &self.originator);
+        let images = match send_openai_codex_image_generation_request(
+            &self.client,
+            openai_codex_responses_url(&self.base_url),
+            body.clone(),
+            headers.clone(),
+            trace.as_ref(),
+            None,
+        )
+        .await
+        {
+            Ok(images) => images,
+            Err(error) => {
+                if is_openai_codex_auth_status_error(&error) {
+                    if let Some(refreshed) = self.refresh_after_auth_failure(&credential).await.map_err(|refresh_error| {
+                        openai_codex_auth_error(
+                            "credential_refresh_after_auth_failure",
+                            &model_ref,
+                            vec![
+                                error.to_string(),
+                                refresh_error.to_string(),
+                                "OpenAI Codex returned an auth error for image generation; Holon attempted to refresh the Holon-managed profile before retrying.".into(),
+                            ],
+                            "OpenAI Codex image generation authentication failed and Holon-managed OAuth refresh did not recover it.",
+                        )
+                    })? {
+                        credential = refreshed;
+                        headers = openai_codex_headers(&credential, &self.originator);
+                        send_openai_codex_image_generation_request(
+                            &self.client,
+                            openai_codex_responses_url(&self.base_url),
+                            body,
+                            headers,
+                            trace.as_ref(),
+                            None,
+                        )
+                        .await?
+                    } else {
+                        return Err(error);
+                    }
+                } else {
+                    return Err(error);
+                }
+            }
+        };
+
+        Ok(ProviderGenerateImageResponse {
+            provider: self.provider_id.clone(),
+            model: self.model.clone(),
+            images,
+        })
+    }
+
     #[cfg(test)]
     fn configured_model_refs(&self) -> Vec<String> {
         vec![format!("openai-codex/{}", self.model)]
@@ -1203,6 +1324,33 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
+    async fn generate_image(
+        &self,
+        request: ProviderGenerateImageRequest,
+    ) -> Result<ProviderGenerateImageResponse> {
+        let body = build_openai_images_request(&self.model, &request);
+        let headers = self
+            .api_key
+            .as_ref()
+            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
+            .unwrap_or_default();
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let images = send_openai_images_request(
+            &self.client,
+            openai_images_generations_url(&self.base_url),
+            body,
+            headers,
+            trace.as_ref(),
+            None,
+        )
+        .await?;
+        Ok(ProviderGenerateImageResponse {
+            provider: self.provider_id.clone(),
+            model: self.model.clone(),
+            images,
+        })
+    }
+
     #[cfg(test)]
     fn configured_model_refs(&self) -> Vec<String> {
         vec![format!("openai/{}", self.model)]
@@ -1225,6 +1373,97 @@ fn chat_completions_url(base_url: &str) -> String {
     } else {
         format!("{trimmed}/v1/chat/completions")
     }
+}
+
+fn openai_images_generations_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/images/generations") {
+        trimmed.to_string()
+    } else if has_trailing_version_segment(trimmed) {
+        format!("{trimmed}/images/generations")
+    } else {
+        format!("{trimmed}/v1/images/generations")
+    }
+}
+
+fn build_openai_images_request(model: &str, request: &ProviderGenerateImageRequest) -> Value {
+    let mut body = json!({
+        "model": model,
+        "prompt": request.prompt,
+        "n": 1,
+        "response_format": "b64_json",
+    });
+    if let Some(size) = request
+        .size
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        body["size"] = Value::String(size.clone());
+    }
+    if let Some(background) = request
+        .background
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        body["background"] = Value::String(background.clone());
+    }
+    if let Some(output_format) = request
+        .output_format
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        body["output_format"] = Value::String(output_format.clone());
+    }
+    body
+}
+
+fn build_openai_codex_image_generation_request(
+    model: &str,
+    request: &ProviderGenerateImageRequest,
+) -> Value {
+    let mut body = json!({
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": request.prompt,
+                    }
+                ],
+            }
+        ],
+        "tools": [
+            {
+                "type": "image_generation",
+                "output_format": request
+                    .output_format
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("png"),
+            }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false,
+        "store": false,
+        "stream": true,
+    });
+    if let Some(size) = request
+        .size
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        body["tools"][0]["size"] = Value::String(size.clone());
+    }
+    if let Some(background) = request
+        .background
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        body["tools"][0]["background"] = Value::String(background.clone());
+    }
+    body
 }
 
 fn has_trailing_version_segment(url: &str) -> bool {
@@ -4191,6 +4430,158 @@ async fn send_openai_responses_request(
         .map(|parsed| parsed.with_provider_request_id(provider_request_id))
 }
 
+async fn send_openai_images_request(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+) -> Result<Vec<ProviderGeneratedImage>> {
+    let model_ref = provider_model_ref("openai", &body);
+    let request_trace = trace.and_then(|trace| {
+        trace.begin_request(
+            agent_id,
+            "openai",
+            Some(&model_ref),
+            url.as_str(),
+            "images_generations",
+            &headers,
+            &body,
+        )
+    });
+    let mut request = client.post(&url).header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    let response = send_openai_request(
+        request.json(&body),
+        "OpenAI Images request failed",
+        "request_send",
+        "openai",
+        Some(&model_ref),
+        Some(url.as_str()),
+        false,
+        request_trace.as_ref(),
+    )
+    .await?;
+    trace_response_headers(
+        request_trace.as_ref(),
+        response.status(),
+        response.headers(),
+    );
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            _ => String::new(),
+        };
+        trace_response_body(request_trace.as_ref(), &body);
+        return Err(classify_status_error_with_trace(
+            "OpenAI Images request failed",
+            "response_status",
+            Some("openai"),
+            Some(&model_ref),
+            Some(url.as_str()),
+            status,
+            body,
+            request_trace.as_ref(),
+        ));
+    }
+    let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => {
+            return Err(classify_reqwest_transport_error_with_trace(
+                "OpenAI Images response body failed",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                error,
+                request_trace.as_ref(),
+            ));
+        }
+        Err(_elapsed) => {
+            return Err(timeout_transport_error_with_trace(
+                "OpenAI Images response body read timed out",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                format!("timed out after {:?}", response_body_timeout()),
+                request_trace.as_ref(),
+            ));
+        }
+    };
+    trace_response_body(request_trace.as_ref(), &body);
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|error| invalid_response_error("invalid OpenAI Images JSON", error))?;
+    parse_openai_images_response(parsed)
+}
+
+fn parse_openai_images_response(value: Value) -> Result<Vec<ProviderGeneratedImage>> {
+    let data = value.get("data").and_then(Value::as_array).ok_or_else(|| {
+        invalid_response_error("OpenAI Images response missing data", "missing data")
+    })?;
+    let mut images = Vec::new();
+    for item in data {
+        let b64 = item
+            .get("b64_json")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                invalid_response_error(
+                    "OpenAI Images response item missing b64_json",
+                    "missing b64_json",
+                )
+            })?;
+        let bytes = BASE64_STANDARD.decode(b64).map_err(|error| {
+            invalid_response_error("invalid OpenAI Images base64 payload", error)
+        })?;
+        images.push(ProviderGeneratedImage { bytes, mime: None });
+    }
+    if images.is_empty() {
+        return Err(invalid_response_error(
+            "OpenAI Images response contained no images",
+            "empty data",
+        ));
+    }
+    Ok(images)
+}
+
+fn parse_openai_codex_image_generation_response_items(
+    output_items: Vec<Value>,
+) -> Result<Vec<ProviderGeneratedImage>> {
+    let mut images = Vec::new();
+    for item in output_items {
+        if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+            continue;
+        }
+        let b64 = item.get("result").and_then(Value::as_str).ok_or_else(|| {
+            invalid_response_error(
+                "OpenAI Codex image_generation_call item missing result",
+                "missing result",
+            )
+        })?;
+        let bytes = BASE64_STANDARD.decode(b64).map_err(|error| {
+            invalid_response_error(
+                "invalid OpenAI Codex image_generation base64 payload",
+                error,
+            )
+        })?;
+        images.push(ProviderGeneratedImage {
+            bytes,
+            mime: Some("image/png".into()),
+        });
+    }
+    if images.is_empty() {
+        return Err(invalid_response_error(
+            "OpenAI Codex image generation response contained no completed images",
+            "missing completed image_generation_call",
+        ));
+    }
+    Ok(images)
+}
+
 async fn send_openai_compact_request(
     client: &Client,
     url: String,
@@ -4362,6 +4753,20 @@ async fn send_openai_responses_streaming_request(
         read_openai_streaming_response(response, request_trace.as_ref()).await?;
     parse_openai_response_with_transport_state(terminal_response)
         .map(|parsed| parsed.with_provider_request_id(provider_request_id))
+}
+
+async fn send_openai_codex_image_generation_request(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+) -> Result<Vec<ProviderGeneratedImage>> {
+    let terminal_response =
+        send_openai_responses_streaming_request(client, url, body, headers, trace, agent_id)
+            .await?;
+    parse_openai_codex_image_generation_response_items(terminal_response.output_items)
 }
 
 fn openai_codex_auth_error(
@@ -4949,10 +5354,12 @@ fn unsupported_streaming_transport_error(provider_name: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_openai_responses_request, chat_completions_url, choose_openai_codex_credential,
-        consume_openai_sse_event, incremental_diagnostics, latest_openai_compaction_index,
+        build_openai_codex_image_generation_request, build_openai_responses_request,
+        chat_completions_url, choose_openai_codex_credential, consume_openai_sse_event,
+        incremental_diagnostics, latest_openai_compaction_index,
         openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
-        openai_provider_window_compaction_candidate, plan_openai_responses_request,
+        openai_provider_window_compaction_candidate,
+        parse_openai_codex_image_generation_response_items, plan_openai_responses_request,
         resolve_openai_codex_credential, CredentialStoreRefreshLock, OpenAiCodexProvider,
         OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProviderWindow, OpenAiRequestPlan,
         OpenAiRequestShape, OpenAiResponsesTransportContract, ToolSchemaContract,
@@ -4965,9 +5372,11 @@ mod tests {
     };
     use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
     use crate::provider::{
-        ConversationMessage, ProviderJsonSchemaResponseFormat, ProviderNativeWebSearchKind,
-        ProviderNativeWebSearchRequest, ProviderResponseFormatRequest, ProviderTurnRequest,
+        ConversationMessage, ProviderGenerateImageRequest, ProviderJsonSchemaResponseFormat,
+        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderResponseFormatRequest,
+        ProviderTurnRequest,
     };
+    use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
     use chrono::Utc;
     use serde_json::json;
@@ -5512,6 +5921,74 @@ mod tests {
             .iter()
             .any(|tool| tool == &json!({ "type": "web_search" })));
         assert_eq!(body["stream"], json!(true));
+    }
+
+    #[test]
+    fn openai_codex_image_generation_request_uses_hosted_tool() {
+        let request = ProviderGenerateImageRequest {
+            prompt: "draw a small holon".into(),
+            size: Some("1024x1024".into()),
+            background: Some("transparent".into()),
+            output_format: Some("png".into()),
+        };
+
+        let body = build_openai_codex_image_generation_request("gpt-5.3-codex-spark", &request);
+
+        assert_eq!(body["model"], json!("gpt-5.3-codex-spark"));
+        assert_eq!(body["stream"], json!(true));
+        assert_eq!(body["store"], json!(false));
+        assert_eq!(
+            body["input"][0]["content"][0],
+            json!({
+                "type": "input_text",
+                "text": "draw a small holon",
+            })
+        );
+        assert_eq!(
+            body["tools"][0],
+            json!({
+                "type": "image_generation",
+                "output_format": "png",
+                "size": "1024x1024",
+                "background": "transparent",
+            })
+        );
+    }
+
+    #[test]
+    fn openai_codex_image_generation_response_parses_result_items() {
+        let images = parse_openai_codex_image_generation_response_items(vec![
+            json!({
+                "type": "message",
+                "content": [],
+            }),
+            json!({
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "revised_prompt": "draw a tiny holon",
+                "result": BASE64_STANDARD.encode(b"fake_png"),
+            }),
+        ])
+        .expect("image_generation_call should parse");
+
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].bytes, b"fake_png");
+        assert_eq!(images[0].mime.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn openai_codex_image_generation_response_accepts_done_item_with_generating_status() {
+        let images = parse_openai_codex_image_generation_response_items(vec![json!({
+            "type": "image_generation_call",
+            "id": "ig_1",
+            "status": "generating",
+            "result": BASE64_STANDARD.encode(b"fake_png"),
+        })])
+        .expect("image_generation_call with a final result should parse");
+
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].bytes, b"fake_png");
     }
 
     #[test]

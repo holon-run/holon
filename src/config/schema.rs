@@ -78,6 +78,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "image_generation.default",
+            kind: "model_ref_or_auto",
+            description:
+                "Provider/model ref for GenerateImage. The default auto mode selects the first configured turn model that supports image_generation.",
+            default: json!("auto"),
+            allowed_values: vec!["auto"],
+        },
+        ConfigSchemaEntry {
             key: "providers.<id>.transport",
             kind: "enum",
             description: "Model provider transport used for the provider account/profile.",
@@ -507,6 +515,12 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .as_ref()
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null)),
+        "image_generation.default" => Ok(config
+            .image_generation
+            .default
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or_else(|| json!("auto"))),
         "models.catalog" => Ok(serde_json::to_value(&config.models.catalog)?),
         "model.unknown_fallback" => Ok(config
             .model
@@ -788,6 +802,14 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             let parsed = ModelRef::parse(raw_value)?;
             config.vision.default = Some(parsed.as_string());
         }
+        "image_generation.default" => {
+            if raw_value.trim().eq_ignore_ascii_case("auto") {
+                config.image_generation.default = None;
+            } else {
+                let parsed = ModelRef::parse(raw_value)?;
+                config.image_generation.default = Some(parsed.as_string());
+            }
+        }
         "models.catalog" => {
             config.models.catalog = parse_model_catalog_value(raw_value)?;
         }
@@ -1052,6 +1074,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "model.default" => config.model.default = None,
         "model.fallbacks" => config.model.fallbacks.clear(),
         "vision.default" => config.vision.default = None,
+        "image_generation.default" => config.image_generation.default = None,
         "models.catalog" => config.models.catalog.clear(),
         "model.unknown_fallback" => config.model.unknown_fallback = None,
         "model.unknown_fallback.context_window_tokens" => {

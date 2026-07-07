@@ -277,6 +277,13 @@ impl ProviderTransportKind {
                 | Self::AnthropicMessages
         )
     }
+
+    pub fn supports_image_generation(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAiCodexResponses | Self::OpenAiResponses | Self::OpenAiChatCompletions
+        )
+    }
 }
 
 impl ProviderId {

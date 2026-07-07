@@ -14,6 +14,8 @@ pub struct HolonConfigFile {
     pub runtime: RuntimeConfigFile,
     #[serde(default, skip_serializing_if = "VisionConfigFile::is_empty")]
     pub vision: VisionConfigFile,
+    #[serde(default, skip_serializing_if = "ImageGenerationConfigFile::is_empty")]
+    pub image_generation: ImageGenerationConfigFile,
     #[serde(default, skip_serializing_if = "TuiConfigFile::is_empty")]
     pub tui: TuiConfigFile,
     #[serde(default, skip_serializing_if = "WebConfigFile::is_empty")]
@@ -124,6 +126,12 @@ pub struct ModelsConfigFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VisionConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImageGenerationConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
 }
@@ -353,6 +361,12 @@ impl ModelsConfigFile {
 }
 
 impl VisionConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.default.is_none()
+    }
+}
+
+impl ImageGenerationConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
         self.default.is_none()
     }

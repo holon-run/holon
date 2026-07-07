@@ -21,7 +21,8 @@ use crate::{
     },
     provider::{
         build_provider_from_model_chain, resolved_model_availability, AgentProvider,
-        ConversationMessage, ModelBlock, ProviderJsonSchemaResponseFormat,
+        ConversationMessage, ModelBlock, ProviderGenerateImageRequest,
+        ProviderGenerateImageResponse, ProviderJsonSchemaResponseFormat,
         ProviderResponseFormatRequest, ProviderTurnRequest,
     },
     queue::RuntimeQueue,
@@ -524,6 +525,27 @@ impl RuntimeHandle {
             ));
         }
         Ok(text)
+    }
+
+    pub(crate) async fn generate_image(
+        &self,
+        request: ProviderGenerateImageRequest,
+    ) -> Result<ProviderGenerateImageResponse> {
+        let state = self.agent_state().await?;
+        let snap = self.inner.config_snapshot.load();
+        let model_ref = snap
+            .model_catalog
+            .select_generate_image_model(
+                &snap.base_context_config,
+                state.model_override.as_ref(),
+                state.pending_fallback_model.as_ref(),
+            )
+            .ok_or_else(|| anyhow!("no configured model supports image_generation"))?;
+        let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
+            anyhow!("image generation requires host-managed provider configuration")
+        })?;
+        let provider = build_provider_from_model_chain(&reconfig.config, &[model_ref])?;
+        provider.generate_image(request).await
     }
 
     async fn model_config_with_fresh_discovery_cache(&self) -> Option<AppConfig> {

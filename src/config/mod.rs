@@ -65,6 +65,7 @@ pub struct AppConfig {
     pub default_model: ModelRef,
     pub fallback_models: Vec<ModelRef>,
     pub vision_model: Option<ModelRef>,
+    pub image_generation_model: Option<ModelRef>,
     pub vision_candidate_models: Vec<ModelRef>,
     pub runtime_max_output_tokens: u32,
     pub default_tool_output_tokens: u32,
@@ -264,6 +265,7 @@ impl AppConfig {
         let explicit_default = resolve_default_model(&stored_config)?;
         let explicit_fallbacks = resolve_fallback_models(&stored_config)?;
         let explicit_vision_model = resolve_vision_model(&stored_config)?;
+        let explicit_image_generation_model = resolve_image_generation_model(&stored_config)?;
         let (default_model, fallback_models) = match resolve_model_selection_for_load_mode(
             explicit_default,
             explicit_fallbacks,
@@ -314,6 +316,7 @@ impl AppConfig {
             default_model,
             fallback_models,
             vision_model: explicit_vision_model,
+            image_generation_model: explicit_image_generation_model,
             vision_candidate_models,
             runtime_max_output_tokens,
             default_tool_output_tokens,

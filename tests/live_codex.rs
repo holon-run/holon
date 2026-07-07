@@ -4,8 +4,8 @@ use holon::{
     prompt::PromptStability,
     provider::{
         AgentProvider, ConversationMessage, ModelBlock, OpenAiCodexProvider, PromptContentBlock,
-        ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
-        ProviderTurnRequest,
+        ProviderGenerateImageRequest, ProviderNativeWebSearchRequest, ProviderPromptCache,
+        ProviderPromptFrame, ProviderTurnRequest,
     },
     tool::ToolSpec,
 };
@@ -17,6 +17,11 @@ fn live_config() -> Result<AppConfig> {
 
 fn live_openai_codex_model() -> String {
     std::env::var("HOLON_LIVE_OPENAI_CODEX_MODEL").unwrap_or_else(|_| "gpt-5.3-codex-spark".into())
+}
+
+fn live_openai_codex_image_model() -> String {
+    std::env::var("HOLON_LIVE_OPENAI_CODEX_IMAGE_MODEL")
+        .unwrap_or_else(|_| live_openai_codex_model())
 }
 
 fn probe_tool_spec() -> ToolSpec {
@@ -221,5 +226,30 @@ async fn live_openai_codex_provider_returns_tool_call_for_real_schema() -> Resul
     });
     let tool_use = tool_use.expect("expected ProbeAction tool call from real codex response");
     assert_eq!(tool_use["reason"], json!("live codex tool probe"));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires real Codex auth state, network access, and Codex image generation support"]
+async fn live_openai_codex_generates_image_with_responses_tool() -> Result<()> {
+    let config = live_config()?;
+    let provider = OpenAiCodexProvider::from_config(&config, &live_openai_codex_image_model())?;
+    let output = provider
+        .generate_image(ProviderGenerateImageRequest {
+            prompt: "Create a simple flat icon of a blue circle on a white background.".into(),
+            size: Some("1024x1024".into()),
+            background: Some("opaque".into()),
+            output_format: Some("png".into()),
+        })
+        .await?;
+
+    assert_eq!(output.provider.as_str(), "openai-codex");
+    assert_eq!(output.model, live_openai_codex_image_model());
+    assert_eq!(output.images.len(), 1);
+    assert_eq!(output.images[0].mime.as_deref(), Some("image/png"));
+    assert!(
+        !output.images[0].bytes.is_empty(),
+        "expected non-empty generated image bytes"
+    );
     Ok(())
 }

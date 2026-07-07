@@ -154,6 +154,7 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
             .map(|value| ModelRef::parse(value).unwrap())
             .collect(),
         vision_model: None,
+        image_generation_model: None,
         vision_candidate_models: Vec::new(),
         runtime_max_output_tokens: 8192,
         default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
@@ -2378,6 +2379,83 @@ fn view_image_vision_selection_prefers_primary_over_other_candidates() {
     // Primary appears first in candidates
     assert_eq!(selection.candidates[0].provider, "openai");
     assert_eq!(selection.candidates[0].model, "gpt-5.4");
+}
+
+#[test]
+fn image_generation_config_defaults_to_auto() {
+    let mut config = HolonConfigFile::default();
+
+    assert_eq!(
+        get_config_key(&config, "image_generation.default").unwrap(),
+        json!("auto")
+    );
+
+    set_config_key(&mut config, "image_generation.default", "auto").unwrap();
+    assert!(config.image_generation.default.is_none());
+    assert!(config.image_generation.is_empty());
+}
+
+#[test]
+fn image_generation_config_accepts_explicit_model_ref() {
+    let mut config = HolonConfigFile::default();
+
+    set_config_key(
+        &mut config,
+        "image_generation.default",
+        "openai-codex/gpt-5.5",
+    )
+    .unwrap();
+
+    assert_eq!(
+        config.image_generation.default.as_deref(),
+        Some("openai-codex/gpt-5.5")
+    );
+    assert_eq!(
+        get_config_key(&config, "image_generation.default").unwrap(),
+        json!("openai-codex/gpt-5.5")
+    );
+
+    unset_config_key(&mut config, "image_generation.default").unwrap();
+    assert_eq!(
+        get_config_key(&config, "image_generation.default").unwrap(),
+        json!("auto")
+    );
+}
+
+#[test]
+fn generate_image_selection_auto_uses_turn_chain() {
+    let fixture = test_app_config("arcee/trinity-mini", &["openai/gpt-image-2"]);
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let selected = catalog
+        .select_generate_image_model(&ContextConfig::default(), None, None)
+        .unwrap();
+
+    assert_eq!(selected.as_string(), "openai/gpt-image-2");
+}
+
+#[test]
+fn generate_image_selection_uses_explicit_image_generation_model() {
+    let mut fixture = test_app_config("openai/gpt-image-2", &[]);
+    fixture.config.image_generation_model = Some(ModelRef::parse("openai-codex/gpt-5.5").unwrap());
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let selected = catalog
+        .select_generate_image_model(&ContextConfig::default(), None, None)
+        .unwrap();
+
+    assert_eq!(selected.as_string(), "openai-codex/gpt-5.5");
+}
+
+#[test]
+fn generate_image_selection_requires_explicit_model_capability() {
+    let mut fixture = test_app_config("openai/gpt-image-2", &[]);
+    fixture.config.image_generation_model = Some(ModelRef::parse("openai/gpt-5.4").unwrap());
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    assert!(catalog
+        .select_generate_image_model(&ContextConfig::default(), None, None)
+        .is_none());
 }
 
 #[test]

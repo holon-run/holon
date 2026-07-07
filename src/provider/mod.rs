@@ -68,6 +68,27 @@ pub struct ProviderTurnResponse {
     pub request_diagnostics: Option<ProviderRequestDiagnostics>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProviderGenerateImageRequest {
+    pub prompt: String,
+    pub size: Option<String>,
+    pub background: Option<String>,
+    pub output_format: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderGeneratedImage {
+    pub bytes: Vec<u8>,
+    pub mime: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderGenerateImageResponse {
+    pub provider: String,
+    pub model: String,
+    pub images: Vec<ProviderGeneratedImage>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderPromptFrame {
     pub system_prompt: String,
@@ -398,6 +419,13 @@ pub struct ToolResultBlock {
 #[async_trait]
 pub trait AgentProvider: Send + Sync {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse>;
+
+    async fn generate_image(
+        &self,
+        _request: ProviderGenerateImageRequest,
+    ) -> Result<ProviderGenerateImageResponse> {
+        Err(anyhow!("active provider does not support image generation"))
+    }
 
     fn prompt_capabilities(&self) -> Vec<ProviderPromptCapability> {
         vec![ProviderPromptCapability::FullRequestOnly]

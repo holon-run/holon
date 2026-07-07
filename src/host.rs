@@ -2374,6 +2374,7 @@ mod tests {
             default_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
             fallback_models: Vec::new(),
             vision_model: None,
+            image_generation_model: None,
             vision_candidate_models: Vec::new(),
             runtime_max_output_tokens: 8192,
             default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,

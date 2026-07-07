@@ -683,6 +683,60 @@
       "stability": "stable"
     },
     {
+      "description": "Generate one image from a text prompt using a configured image-generation model.\n\nThe runtime saves the generated image under `agent_home/media/generated` and returns\na `workspace://...` URI plus metadata. Do not request multiple images in one call;\ncall this tool multiple times when distinct images are needed.\n\nInputs:\n- `prompt` (required): detailed image-generation prompt.\n- `size` (optional): one of `1024x1024`, `1536x1024`, or `1024x1536`.\n- `background` (optional): one of `auto`, `transparent`, or `opaque`.\n- `output_format` (optional): one of `png`, `jpeg`, or `webp`.\n- `name` (optional): filename stem used for the saved image.\n",
+      "family": "local_environment",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "background": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_format": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "size": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "name": "GenerateImage",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "custom_text_receipt",
+        "success_result": "tool-specific JSON payload"
+      },
+      "stability": "stable"
+    },
+    {
       "description": "List recent work items with explicit current, open, completed, queued, yielded, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.\n",
       "family": "core_agent",
       "freeform_grammar": null,
