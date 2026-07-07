@@ -611,6 +611,7 @@ const zh: Record<string, any> = {
     binaryFile: "二进制文件（{{type}}）。",
     binaryFileUnknown: "二进制文件（未知类型）。",
     download: "下载",
+    openInFileBrowser: "在文件浏览器中打开",
     markdownView: "Markdown 查看模式",
     pathBreadcrumb: "路径面包屑导航",
   },
@@ -708,6 +709,7 @@ const zh: Record<string, any> = {
     // 输入框
     sendInputAria: "向 {{id}} 发送操作者消息",
     sendInputPlaceholder: "向 {{id}} 发送操作者消息…",
+    dropImageHint: "拖放图片以添加附件",
     // 思考级别
     thinkingAria: "思考：{{level}}",
     thinkingLevelValue: "思考级别：{{level}}",

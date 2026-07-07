@@ -4,6 +4,7 @@ import {
   CircleAlert,
   Clock,
   Diamond,
+  ImageIcon,
   ChevronRight,
   Equal,
   LoaderCircle,
@@ -14,13 +15,17 @@ import {
   User,
   Zap,
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import {
+  memo, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import { MarkdownContent } from "../../components/MarkdownContent";
+import { MarkdownContent, parseWorkspaceImageRef, type WorkspaceImageRef } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
+import { useRuntimeStore } from "../../runtime/runtime-store";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
@@ -68,6 +73,7 @@ const TOP_SCROLL_THRESHOLD = 16;
 const BOTTOM_SCROLL_THRESHOLD = 96;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
+const MESSAGE_LIST_BOTTOM_SAFE_SPACE = 96;
 
 export function storedComposerDraftKey(agentId: string): string {
   return `${COMPOSER_DRAFT_STORAGE_PREFIX}:${encodeURIComponent(agentId)}`;
@@ -141,6 +147,7 @@ export function AgentPage({
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
   const [attachments, setAttachments] = useState<OperatorPromptAttachment[]>([]);
+  const [composerDragActive, setComposerDragActive] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -150,6 +157,7 @@ export function AgentPage({
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragCounterRef = useRef(0);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const autoStickToBottomRef = useRef(false);
@@ -178,6 +186,7 @@ export function AgentPage({
     count: timelineTurns.length,
     getScrollElement: () => messageListRef.current,
     estimateSize: () => 320,
+    paddingEnd: MESSAGE_LIST_BOTTOM_SAFE_SPACE,
     overscan: 4,
     getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
   });
@@ -353,6 +362,43 @@ export function AgentPage({
     }
   }
 
+  function composerDragHasFiles(event: DragEvent<HTMLFormElement>): boolean {
+    const items = event.dataTransfer?.items;
+    return Boolean(items && Array.from(items).some((item) => item.kind === "file"));
+  }
+
+  function handleComposerDragEnter(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    dragCounterRef.current += 1;
+    setComposerDragActive(true);
+  }
+
+  function handleComposerDragOver(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function handleComposerDragLeave(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setComposerDragActive(false);
+    }
+  }
+
+  async function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    dragCounterRef.current = 0;
+    setComposerDragActive(false);
+    await handleAttachmentFiles(event.dataTransfer?.files ?? null);
+  }
+
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
@@ -520,7 +566,20 @@ export function AgentPage({
             </div>
           ) : null}
 
-          <form className="composer" aria-label={t("agent.sendInputAria", { id: activeAgent.id })} onSubmit={handleSubmit}>
+          <form
+            className={composerDragActive ? "composer composer--drag" : "composer"}
+            aria-label={t("agent.sendInputAria", { id: activeAgent.id })}
+            onSubmit={handleSubmit}
+            onDragEnter={handleComposerDragEnter}
+            onDragOver={handleComposerDragOver}
+            onDragLeave={handleComposerDragLeave}
+            onDrop={handleComposerDrop}
+          >
+            {composerDragActive ? (
+              <div className="composer-drop-overlay" aria-hidden="true">
+                <span>{t("agent.dropImageHint")}</span>
+              </div>
+            ) : null}
             <textarea
               ref={composerTextareaRef}
               rows={2}
@@ -968,6 +1027,8 @@ const TimelineMessage = memo(function TimelineMessage({
 }) {
   const { t } = useTranslation();
   const isRuntimeItem = isRuntimeActivityItem(item);
+  const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
+  const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
   const activities =
     isRuntimeItem && item.meta === "activity"
       ? (item.activities ?? [])
@@ -995,7 +1056,15 @@ const TimelineMessage = memo(function TimelineMessage({
 
   const timelineMeta = formatTimelineMeta(item.meta, displayLevel);
   const inspectItem = () => onInspectActivity(timelineItemToWorkingActivity(item));
-
+  const workspaceImageRefs = useMemo(
+    () => extractWorkspaceImageRefs(item.body),
+    [item.body],
+  );
+  const openFirstImage = () => {
+    const first = workspaceImageRefs[0];
+    if (!first || !selectedAgentId) return;
+    showFileBrowser(selectedAgentId, first.workspaceId, undefined, undefined, first.path);
+  };
   return (
     <article
       className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}${targetTimelineItemId === item.id ? " is-targeted" : ""}`}
@@ -1009,6 +1078,11 @@ const TimelineMessage = memo(function TimelineMessage({
         <button className="message-action" type="button" title={t("agent.copyMessage")} onClick={() => copyMessageText(item.body)}>
           ⧉
         </button>
+        {workspaceImageRefs.length > 0 ? (
+          <button className="message-action" type="button" title={t("fileBrowser.openInFileBrowser")} onClick={openFirstImage}>
+            <ImageIcon size={14} />
+          </button>
+        ) : null}
         <button className="message-action" type="button" title={t("agent.inspectMessage")} onClick={inspectItem}>
           ⓘ
         </button>
@@ -1035,7 +1109,16 @@ function copyMessageText(text: string): void {
   if (!navigator.clipboard) return;
   void navigator.clipboard.writeText(text);
 }
-
+function extractWorkspaceImageRefs(text: string): WorkspaceImageRef[] {
+  const refs: WorkspaceImageRef[] = [];
+  const re = /workspace:\/\/[^\s"')\]]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const ref = parseWorkspaceImageRef(match[0]);
+    if (ref) refs.push(ref);
+  }
+  return refs;
+}
 function TimelineItemContent({ item }: { item: AgentTimelineItem }) {
   return <MarkdownContent text={item.body} compact={false} />;
 }

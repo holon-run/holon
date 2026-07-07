@@ -1,4 +1,4 @@
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { memo, useEffect, useState, type ImgHTMLAttributes } from "react";
 
@@ -16,19 +16,34 @@ export interface WorkspaceImageRef {
 
 export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageRef | undefined {
   if (!src?.startsWith("workspace://")) return undefined;
+  const value = src.slice("workspace://".length);
+  const pathStart = value.indexOf("/");
+  if (pathStart <= 0) return undefined;
+
+  const workspaceId = value.slice(0, pathStart);
+  const rawPath = value.slice(pathStart + 1).split(/[?#]/, 1)[0];
+  if (!workspaceId || !rawPath) return undefined;
+
   try {
-    const url = new URL(src);
-    const workspaceId = url.hostname;
-    const path = url.pathname
+    const path = rawPath
       .split("/")
       .filter(Boolean)
-      .map((part) => decodeURIComponent(part))
+      .map((part) => {
+        const decoded = decodeURIComponent(part);
+        if (decoded === "..") throw new Error("workspace image path escapes workspace");
+        return decoded;
+      })
       .join("/");
-    if (!workspaceId || !path) return undefined;
+    if (!path) return undefined;
     return { workspaceId, path };
   } catch {
     return undefined;
   }
+}
+
+export function markdownUrlTransform(url: string, key: string): string {
+  if (key === "src" && parseWorkspaceImageRef(url)) return url;
+  return defaultUrlTransform(url);
 }
 
 export function resolveWorkspaceRelativePath(baseFilePath: string, src: string | undefined): string | undefined {
@@ -62,7 +77,13 @@ interface WorkspaceImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 
   executionRootId?: string;
 }
 
-export function WorkspaceImage({ workspaceId, path, executionRootId, alt, ...props }: WorkspaceImageProps) {
+export function WorkspaceImage({
+  workspaceId,
+  path,
+  executionRootId,
+  alt,
+  ...props
+}: WorkspaceImageProps) {
   const fetchWorkspaceFileBlob = useRuntimeStore((s) => s.fetchWorkspaceFileBlob);
   const [objectUrl, setObjectUrl] = useState<string>();
   const [error, setError] = useState<string>();
@@ -103,7 +124,15 @@ export function WorkspaceImage({ workspaceId, path, executionRootId, alt, ...pro
   if (!objectUrl) {
     return <span className="workspace-image-loading">Loading image…</span>;
   }
-  return <img {...props} src={objectUrl} alt={alt ?? path} />;
+  return (
+    <span className="workspace-image-frame">
+      <img
+        {...props}
+        src={objectUrl}
+        alt={alt ?? path}
+      />
+    </span>
+  );
 }
 
 function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
@@ -111,6 +140,7 @@ function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
     <div className={`markdown-content${compact ? " compact" : ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={markdownUrlTransform}
         components={{
           a: ({ children, ...props }) => (
             <a {...props} rel="noreferrer" target="_blank">

@@ -609,6 +609,7 @@ const en = {
     binaryFile: "Binary file ({{type}}).",
     binaryFileUnknown: "Binary file (unknown type).",
     download: "Download",
+    openInFileBrowser: "Open in file browser",
     markdownView: "Markdown view mode",
     pathBreadcrumb: "Path breadcrumb",
   },
@@ -706,6 +707,7 @@ const en = {
     // Composer
     sendInputAria: "Send operator input to {{id}}",
     sendInputPlaceholder: "Send operator input to {{id}}…",
+    dropImageHint: "Drop images to attach",
     // Thinking
     thinkingAria: "Thinking: {{level}}",
     thinkingLevelValue: "Thinking level: {{level}}",

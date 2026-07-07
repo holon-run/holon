@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { parseWorkspaceImageRef, resolveWorkspaceRelativePath } from "./MarkdownContent";
+import { markdownUrlTransform, parseWorkspaceImageRef, resolveWorkspaceRelativePath } from "./MarkdownContent";
 
 describe("parseWorkspaceImageRef", () => {
   it("parses workspace image URIs", () => {
     expect(parseWorkspaceImageRef("workspace://ws_123/outputs/chart.png")).toEqual({
       workspaceId: "ws_123",
       path: "outputs/chart.png",
+    });
+    expect(parseWorkspaceImageRef("workspace://agent_home:holon-pm/media/inbox/screenshot.png")).toEqual({
+      workspaceId: "agent_home:holon-pm",
+      path: "media/inbox/screenshot.png",
     });
   });
 
@@ -16,6 +20,7 @@ describe("parseWorkspaceImageRef", () => {
       path: "out dir/chart 1.png",
     });
     expect(parseWorkspaceImageRef("https://example.com/chart.png")).toBeUndefined();
+    expect(parseWorkspaceImageRef("workspace://agent_home:holon-pm/../secret.png")).toBeUndefined();
   });
 });
 
@@ -30,5 +35,16 @@ describe("resolveWorkspaceRelativePath", () => {
     expect(resolveWorkspaceRelativePath("docs/report.md", "https://example.com/chart.png")).toBeUndefined();
     expect(resolveWorkspaceRelativePath("docs/report.md", "data:image/png;base64,abc")).toBeUndefined();
     expect(resolveWorkspaceRelativePath("report.md", "../secret.png")).toBeUndefined();
+  });
+});
+
+describe("markdownUrlTransform", () => {
+  it("keeps workspace image sources while preserving default URL sanitization", () => {
+    const src = "workspace://agent_home:holon-pm/media/inbox/screenshot.png";
+
+    expect(markdownUrlTransform(src, "src")).toBe(src);
+    expect(markdownUrlTransform(src, "href")).toBe("");
+    expect(markdownUrlTransform("javascript:alert(1)", "src")).toBe("");
+    expect(markdownUrlTransform("https://example.com/chart.png", "src")).toBe("https://example.com/chart.png");
   });
 });
