@@ -709,6 +709,7 @@ const zh: Record<string, any> = {
     // 输入框
     sendInputAria: "向 {{id}} 发送操作者消息",
     sendInputPlaceholder: "向 {{id}} 发送操作者消息…",
+    dropImageHint: "拖放图片以添加附件",
     // 思考级别
     thinkingAria: "思考：{{level}}",
     thinkingLevelValue: "思考级别：{{level}}",

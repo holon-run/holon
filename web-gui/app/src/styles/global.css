@@ -2289,6 +2289,7 @@ code {
 .composer {
   width: min(var(--conversation-content-max), calc(100% - 60px));
   margin: 0 auto 18px;
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--surface);
@@ -2301,6 +2302,26 @@ code {
 .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
   box-shadow: 0 18px 54px rgba(8, 126, 164, 0.12);
+}
+
+.composer--drag {
+  border-color: var(--accent);
+  box-shadow: 0 18px 54px rgba(8, 126, 164, 0.2);
+}
+
+.composer-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 2;
 }
 
 .composer textarea {

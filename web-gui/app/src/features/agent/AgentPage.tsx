@@ -15,7 +15,10 @@ import {
   User,
   Zap,
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import {
+  memo, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { MarkdownContent, parseWorkspaceImageRef, type WorkspaceImageRef } from "../../components/MarkdownContent";
@@ -144,6 +147,7 @@ export function AgentPage({
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
   const [attachments, setAttachments] = useState<OperatorPromptAttachment[]>([]);
+  const [composerDragActive, setComposerDragActive] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -153,6 +157,7 @@ export function AgentPage({
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragCounterRef = useRef(0);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const autoStickToBottomRef = useRef(false);
@@ -357,6 +362,43 @@ export function AgentPage({
     }
   }
 
+  function composerDragHasFiles(event: DragEvent<HTMLFormElement>): boolean {
+    const items = event.dataTransfer?.items;
+    return Boolean(items && Array.from(items).some((item) => item.kind === "file"));
+  }
+
+  function handleComposerDragEnter(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    dragCounterRef.current += 1;
+    setComposerDragActive(true);
+  }
+
+  function handleComposerDragOver(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function handleComposerDragLeave(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setComposerDragActive(false);
+    }
+  }
+
+  async function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
+    if (sendingPrompt || !composerDragHasFiles(event)) return;
+    event.preventDefault();
+    dragCounterRef.current = 0;
+    setComposerDragActive(false);
+    await handleAttachmentFiles(event.dataTransfer?.files ?? null);
+  }
+
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
@@ -524,7 +566,20 @@ export function AgentPage({
             </div>
           ) : null}
 
-          <form className="composer" aria-label={t("agent.sendInputAria", { id: activeAgent.id })} onSubmit={handleSubmit}>
+          <form
+            className={composerDragActive ? "composer composer--drag" : "composer"}
+            aria-label={t("agent.sendInputAria", { id: activeAgent.id })}
+            onSubmit={handleSubmit}
+            onDragEnter={handleComposerDragEnter}
+            onDragOver={handleComposerDragOver}
+            onDragLeave={handleComposerDragLeave}
+            onDrop={handleComposerDrop}
+          >
+            {composerDragActive ? (
+              <div className="composer-drop-overlay" aria-hidden="true">
+                <span>{t("agent.dropImageHint")}</span>
+              </div>
+            ) : null}
             <textarea
               ref={composerTextareaRef}
               rows={2}
