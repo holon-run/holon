@@ -84,23 +84,13 @@ pub struct WebSearchResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub rank: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result_type: Option<WebSearchResultType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, Value>>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WebSearchResultType {
-    Web,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,7 +181,6 @@ struct ProviderRawSearchResult {
     url: String,
     snippet: Option<String>,
     published_at: Option<String>,
-    result_type: Option<WebSearchResultType>,
     language: Option<String>,
     region: Option<String>,
     metadata: BTreeMap<String, Value>,
@@ -245,9 +234,7 @@ fn normalize_search_result(
         published_at,
         canonical_url: Some(canonical_url),
         display_url: Some(display_url),
-        source_provider: Some(provider_id.to_string()),
         rank: Some(rank),
-        result_type: Some(raw.result_type.unwrap_or(WebSearchResultType::Web)),
         language,
         region,
         metadata,
@@ -1238,6 +1225,7 @@ async fn tencent_cloud_wsa_search(
 }
 
 fn tencent_cloud_wsa_count(max_results: usize) -> usize {
+    // SearchPro accepts result counts in 10-result buckets up to 50.
     match max_results {
         0..=10 => 10,
         11..=20 => 20,
@@ -1266,6 +1254,7 @@ async fn bocha_search(
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = serde_json::json!({
         "query": query,
+        // WebSearchRequest has no freshness filter yet, so request unrestricted results.
         "freshness": "noLimit",
         "summary": true,
         "count": max_results.min(50),
@@ -2264,7 +2253,6 @@ mod tests {
         assert_eq!(result.url, "https://example.com/docs?q=holon#section");
         assert_eq!(result.snippet.as_deref(), Some("useful context"));
         assert_eq!(result.source, "mock_provider");
-        assert_eq!(result.source_provider.as_deref(), Some("mock_provider"));
         assert_eq!(
             result.canonical_url.as_deref(),
             Some("https://example.com/docs?q=holon")
@@ -2274,7 +2262,6 @@ mod tests {
             Some("example.com/docs?q=holon")
         );
         assert_eq!(result.rank, Some(2));
-        assert_eq!(result.result_type, Some(WebSearchResultType::Web));
         assert_eq!(result.published_at.as_deref(), Some("2026-07-07"));
         assert_eq!(result.language.as_deref(), Some("en"));
         assert_eq!(result.region.as_deref(), Some("US"));
@@ -2592,7 +2579,6 @@ mod tests {
         assert_eq!(results.results[0].url, "https://example.com/3");
         assert_eq!(results.results[0].snippet.as_deref(), Some("Snippet"));
         assert_eq!(results.results[0].source, "cmd");
-        assert_eq!(results.results[0].source_provider.as_deref(), Some("cmd"));
         assert_eq!(
             results.results[0].canonical_url.as_deref(),
             Some("https://example.com/3")
