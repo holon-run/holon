@@ -161,8 +161,28 @@ Configure Holon from the browser:
   automatically determines the right credential method for each provider
   (API key input for api_key providers, device login link for OAuth
   providers like Codex).
+- **Language** — switch the Web GUI display language. Supported languages are
+  English (EN) and Simplified Chinese (ZH-CN). All UI text — navigation,
+  buttons, labels, and status messages — updates in real time without a
+  page reload.
 - **Runtime configuration** — view the current execution environment,
   attached workspaces, and policy snapshot.
+
+### Internationalization (i18n)
+
+The Web GUI uses react-i18next for full internationalization. A language
+selector in the Settings page lets you switch between English and Simplified
+Chinese. All interface text — including navigation items, button labels, form
+hints, status messages, and error pages — translates instantly on selection.
+Translation resources are compiled into the embedded build alongside the UI
+assets, so no external files or network access are required.
+
+### UI Icons
+
+Status indicators, navigation icons, and file browser icons now use lucide
+icons (via lucide-react) throughout the Web GUI, replacing the previous
+Unicode symbol approach. Tooltips have been streamlined for clarity, and
+panel titles use a consistent `label(N)` format.
 
 ### Inspector (Right Panel)
 

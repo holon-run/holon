@@ -158,6 +158,50 @@ holon tui --connect https://your-server:8787 --token "your-token"
 The daemon must be started with an access mode that accepts remote connections
 (`tunnel` or `public`). Use `--access local` for local-only TUI connections.
 
+## Agent Templates
+
+The TUI supports browsing, installing, and creating agents from templates
+directly within the terminal. This avoids switching to the Web GUI or CLI
+for common template workflows.
+
+- **Browse templates** — Press `Ctrl+O` then `T` to open the template catalog
+  overlay. Navigate installed templates with `↑`/`↓` and press `Enter` to
+  select a template for agent creation.
+- **Install from URL** — Press `g` inside the templates overlay to enter a
+  GitHub template URL and install it into the user-global template library.
+- **Remove** — Press `r` to remove a selected template.
+- **Sync** — Press `s` to sync templates from configured remote sources.
+- **Create without template** — Press `n` to skip template selection and
+  create an agent with the default configuration.
+
+## Overlay Shortcut Prefix
+
+All overlay shortcuts now use a common `Ctrl+O` prefix, replacing the
+previous single-key bindings. This prevents accidental overlay openings
+during normal typing.
+
+After pressing `Ctrl+O`, a short hint appears in the status line. Press a
+target key to open the corresponding overlay:
+
+| Key | Overlay |
+|-----|---------|
+| `H` | Help |
+| `A` | Agent picker |
+| `E` | Event log |
+| `M` | Model picker |
+| `T` | Template catalog |
+| `R` | Transcript |
+| `S` | Agent state |
+
+Press `Esc` to cancel the prefix and continue typing.
+
+## Persistent Display State
+
+The TUI remembers your last display mode and restores it on restart. Display
+mode is stored per agent in `~/.holon/tui_state.json`, so each agent
+maintains its own preference. This applies to the chat display mode (info,
+verbose, debug) set via `/display <mode>`.
+
 ## Troubleshooting
 
 See the [Troubleshooting guide](/guides/troubleshooting#tui-issues) for common
