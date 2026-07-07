@@ -77,9 +77,12 @@ Holon uses a provider-based search model:
 - **DuckDuckGo (managed)** — Holon's built-in managed search provider. No
   API key required. Enabled during onboarding with "Managed DuckDuckGo" or
   "Auto" mode.
-- **Bing** — Microsoft Bing Web Search API. Requires an API key set via
+- **Tencent Cloud WSA** — Tencent Cloud SearchPro / Web Search API. Requires an
+  API key set via credential profile. Configure with
+  `holon config providers set tencent --kind tencent_cloud_wsa --credential-profile <profile>`.
+- **Bocha AI Search** — Bocha AI Web Search API. Requires an API key set via
   credential profile. Configure with
-  `holon config providers set bing --kind bing --credential-profile <profile>`.
+  `holon config providers set bocha --kind bocha --credential-profile <profile>`.
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these when available.

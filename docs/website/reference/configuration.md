@@ -294,7 +294,7 @@ TUI debug instrumentation is controlled by environment variables:
 | `web.search.providers` | string_list | `[]` | Explicit auto-mode provider attempt order |
 | `web.search.max_results` | integer | `5` | Max results returned |
 | `web.search.max_provider_attempts` | integer | `3` | Max providers attempted by fallback/aggregate routing |
-| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `bing`, `searxng`, `brave`, `tavily`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, or `gemini_native` |
+| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `tencent_cloud_wsa`, `bocha`, `tavily`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
 | `web.providers.<name>.capabilities` | json_object | derived | Read-only capability metadata surfaced by `holon config get` and routing diagnostics |
