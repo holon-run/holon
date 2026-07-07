@@ -1,8 +1,11 @@
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { SKIP, visit } from "unist-util-visit";
 import { memo, useEffect, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
+
+const WORKSPACE_URL_RE = /workspace:\/\/[^\s<>"')\]]+/g;
 
 interface MarkdownContentProps {
   text: string;
@@ -165,11 +168,41 @@ function WorkspaceFileLink({ href, children }: WorkspaceFileLinkProps) {
   );
 }
 
+/**
+ * GFM autolink only covers http(s)/www. URLs. This plugin extends
+ * autolinking to bare `workspace://` URLs so that they render as
+ * clickable links in markdown text.
+ */
+export function remarkWorkspaceAutolink() {
+  return (tree: import("unist").Node) => {
+    visit(tree, "text", (node: any, index: number | null, parent: any) => {
+      if (index === null || !parent || parent.type === "link") return;
+      const value: string = node.value;
+      if (!value.includes("workspace://")) return;
+
+      const segments: any[] = [];
+      let last = 0;
+      WORKSPACE_URL_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = WORKSPACE_URL_RE.exec(value)) !== null) {
+        if (m.index > last) segments.push({ type: "text", value: value.slice(last, m.index) });
+        segments.push({ type: "link", url: m[0], children: [{ type: "text", value: m[0] }] });
+        last = m.index + m[0].length;
+      }
+      if (segments.length === 0) return;
+      if (last < value.length) segments.push({ type: "text", value: value.slice(last) });
+
+      parent.children.splice(index, 1, ...segments);
+      return [SKIP, index + segments.length] as [typeof SKIP, number];
+    });
+  };
+}
+
 function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
   return (
     <div className={`markdown-content${compact ? " compact" : ""}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkWorkspaceAutolink]}
         urlTransform={markdownUrlTransform}
         components={{
           a: ({ children, href, ...props }) =>
