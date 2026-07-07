@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false && tsc --noEmit -p tsconfig.node.json --pretty false"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.5",
     "i18next": "^26.3.4",
     "lucide-react": "^1.23.0",
     "react": "^19.2.7",

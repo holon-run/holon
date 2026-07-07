@@ -573,8 +573,10 @@ export function App() {
         ) : null}
         {route === "agent" && activeAgent ? (
           <AgentPage
+            key={activeAgent.id}
             agent={activeAgent}
             detail={selectedAgentDetail}
+            detailLoading={agentDetailLoading}
             displayLevel={displayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             promptError={selectedAgentSession?.promptError}

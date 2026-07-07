@@ -767,9 +767,9 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         requestHeaders,
       );
     },
-    async getAgentBriefsById(agentId: string, briefIds: string[]): Promise<Record<string, RuntimeBriefRecord>> {
+    async getAgentBriefsById(agentId: string, briefIds: string[]): Promise<BriefFetchResult> {
       if (!baseUrl || !briefIds.length) {
-        return {};
+        return { recordsById: {}, notFoundIds: [] };
       }
       return fetchBriefRecordsById(baseUrl, fetchImpl, requestHeaders, agentId, briefIds);
     },
@@ -1275,7 +1275,12 @@ async function fetchBriefRecordsForEvents(
     ),
   );
   if (!briefIds.length) return {};
-  return fetchBriefRecordsById(baseUrl, fetchImpl, headers, agentId, briefIds);
+  return fetchBriefRecordsById(baseUrl, fetchImpl, headers, agentId, briefIds).then((r) => r.recordsById);
+}
+
+interface BriefFetchResult {
+  recordsById: Record<string, RuntimeBriefRecord>;
+  notFoundIds: string[];
 }
 
 async function fetchBriefRecordsById(
@@ -1284,14 +1289,30 @@ async function fetchBriefRecordsById(
   headers: Record<string, string>,
   agentId: string,
   briefIds: string[],
-): Promise<Record<string, RuntimeBriefRecord>> {
-  const records = await Promise.all(
-    briefIds.map(async (briefId): Promise<RuntimeBriefRecord | undefined> => {
+): Promise<BriefFetchResult> {
+  const results = await Promise.all(
+    briefIds.map(async (briefId): Promise<{ briefId: string; record?: RuntimeBriefRecord; notFound?: boolean }> => {
       const path = `/agents/${encodeURIComponent(agentId)}/briefs/${encodeURIComponent(briefId)}`;
-      return getJson<RuntimeBriefRecord>(fetchImpl, baseUrl, path, { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers }).catch(() => undefined);
+      try {
+        const record = await getJson<RuntimeBriefRecord>(fetchImpl, baseUrl, path, { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers });
+        return { briefId, record };
+      } catch (error) {
+        if (error instanceof RuntimeHttpError && error.status === 404) return { briefId, notFound: true };
+        // Transient failure (timeout, network, 5xx): leave absent for retry.
+        return { briefId };
+      }
     }),
   );
-  return Object.fromEntries(records.flatMap((record) => (record?.id ? [[record.id, record]] : [])));
+  const recordsById: Record<string, RuntimeBriefRecord> = {};
+  const notFoundIds: string[] = [];
+  for (const result of results) {
+    if (result.notFound) {
+      notFoundIds.push(result.briefId);
+    } else if (result.record?.id) {
+      recordsById[result.record.id] = result.record;
+    }
+  }
+  return { recordsById, notFoundIds };
 }
 
 function streamAgentEvents(

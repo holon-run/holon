@@ -1596,7 +1596,6 @@ code {
     radial-gradient(circle at 20% 10%, rgba(8, 126, 164, 0.05), transparent 28rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 260px);
   overscroll-behavior: contain;
-  scroll-behavior: smooth;
 }
 
 .history-loader,
@@ -1634,6 +1633,16 @@ code {
   max-width: min(var(--conversation-content-max), 100%);
   width: 100%;
   align-self: center;
+}
+
+.message-list-virtual-wrapper {
+  width: 100%;
+}
+
+.message-list-virtual-item {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 12px;
 }
 
 .timeline-turn-rail {
@@ -2241,6 +2250,19 @@ code {
 
 .conversation-empty strong {
   color: var(--text);
+}
+
+.conversation-loading {
+  align-self: center;
+  margin: auto 0;
+  padding: 24px;
+  color: var(--muted);
+  display: flex;
+  justify-content: center;
+}
+
+.conversation-loading .spin {
+  animation: spin 0.8s linear infinite;
 }
 
 .copy-action {

@@ -121,6 +121,49 @@ function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, Age
   return agentsById;
 }
 
+/**
+ * Build a provisional AgentDetail from IndexedDB-cached events when the real
+ * HTTP detail hasn't loaded yet. This eliminates the blank/flash period when
+ * switching agents that have cached data.
+ */
+function rebuildProvisionalDetailsWithAgents(
+  agents: AgentSummary[],
+  sessionsByAgentId: Record<string, AgentSessionState>,
+): Record<string, AgentSessionState> | null {
+  const agentsById = Object.fromEntries(agents.map((agent) => [agent.id, agent]));
+  let changed = false;
+  const updated = { ...sessionsByAgentId };
+  for (const [agentId, session] of Object.entries(updated)) {
+    if (session.detail || session.eventSeqs.length === 0) continue;
+    const agent = agentsById[agentId];
+    if (!agent) continue;
+    const events = session.eventSeqs
+      .map((seq) => session.eventsBySeq[seq])
+      .filter(isStreamEventEnvelope);
+    if (events.length === 0) continue;
+    const timeline = reduceAgentSessionTimeline({
+      events: { events },
+      eventDisplayLevel: "debug",
+      messagesById: session.messagesById,
+      transcriptEntriesById: session.transcriptEntriesById,
+      briefRecordsById: session.briefRecordsById,
+    });
+    updated[agentId] = {
+      ...session,
+      detail: {
+        agent,
+        timeline,
+        source: "http",
+        events,
+        newestEventSeq: highestSeq(session.eventSeqs),
+        oldestEventSeq: session.eventSeqs[0],
+      },
+    };
+    changed = true;
+  }
+  return changed ? updated : null;
+}
+
 export interface AgentRosterActivity {
   operatorAt?: string;
   briefAt?: string;
@@ -673,7 +716,7 @@ function filterDismissedDiagnostics(
  * Initialize session cache for the current remote and hydrate any cached
  * sessions into the store. Called on initial load and remote switch.
  */
-function initSessionCacheForRemote(set: StoreSet): void {
+function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState): void {
   if (sessionCacheInitPromise) return;
   const remoteKey = currentRemoteKey(runtimeConnectionConfig);
 
@@ -700,8 +743,21 @@ function initSessionCacheForRemote(set: StoreSet): void {
           ...partial,
         };
       }
-      return { sessionsByAgentId };
+      const withProvisional = rebuildProvisionalDetailsWithAgents(
+        state.bootstrap.agents,
+        sessionsByAgentId,
+      );
+      return { sessionsByAgentId: withProvisional ?? sessionsByAgentId };
     });
+
+    if (get) {
+      const displayLevel = get().displayLevel;
+      for (const agentId of Object.keys(cached)) {
+        scheduleMessageHydration(get, set, agentId, displayLevel);
+        scheduleTranscriptHydration(get, set, agentId, displayLevel);
+        scheduleBriefHydration(get, set, agentId, displayLevel);
+      }
+    }
   })();
 }
 
@@ -963,7 +1019,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     });
     await get().refreshBootstrap();
     // Initialize cache for the new remote (async, non-blocking).
-    initSessionCacheForRemote(set);
+    initSessionCacheForRemote(set, get);
   },
 
   refreshBootstrap: async (options = {}) => {
@@ -1003,6 +1059,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             bootstrapLoading: false,
             bootstrapError: bootstrap.connection.error,
           };
+        });
+        // After bootstrap agents are available, build provisional details
+        // for sessions that have cached events but no HTTP detail yet.
+        useRuntimeStore.setState((state) => {
+          const updated = rebuildProvisionalDetailsWithAgents(
+            state.bootstrap.agents,
+            state.sessionsByAgentId,
+          );
+          return updated ? { sessionsByAgentId: updated } : {};
         });
         syncGlobalEventRoster(get, set);
       } catch (error) {
@@ -1986,7 +2051,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
 // Initialize session cache on first load.
 if (typeof window !== "undefined") {
-  initSessionCacheForRemote((partial) => useRuntimeStore.setState(partial));
+  initSessionCacheForRemote((partial) => useRuntimeStore.setState(partial), () => useRuntimeStore.getState());
 }
 
 // Resume polling for any skill install jobs persisted from a previous session.
@@ -2893,6 +2958,10 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     ...current.briefRecordsById,
     ...(detail.briefRecordsById ?? {}),
   };
+  const missingBriefIds = { ...current.missingBriefIds };
+  for (const briefId of Object.keys(briefRecordsById)) {
+    delete missingBriefIds[briefId];
+  }
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const pageTimeline = reduceAgentSessionTimeline({
@@ -2931,6 +3000,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
         eventsBySeq,
         eventSeqs,
         briefRecordsById,
+        missingBriefIds,
         newestSeq: newestSeq || undefined,
         oldestSeq: detail.oldestEventSeq ?? current.oldestSeq ?? eventSeqs[0],
         hasOlder: detail.hasOlderEvents,
@@ -3188,8 +3258,8 @@ function scheduleBriefHydration(
 
   void runtimeClient
     .getAgentBriefsById(agentId, requestIds)
-    .then((recordsById) => {
-      set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, requestIds, displayLevel));
+    .then(({ recordsById, notFoundIds }) => {
+      set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, notFoundIds, displayLevel));
     })
     .catch((error) => {
       set((state) => ({
@@ -3408,7 +3478,7 @@ function mergeHydratedBriefRecordsIntoSession(
   state: RuntimeStoreState,
   agentId: string,
   recordsById: Record<string, RuntimeBriefRecord>,
-  requestedBriefIds: string[],
+  notFoundBriefIds: string[],
   displayLevel: DisplayLevel,
 ): Partial<RuntimeStoreState> {
   const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -3421,7 +3491,13 @@ function mergeHydratedBriefRecordsIntoSession(
   }
 
   const missingById = { ...current.missingBriefIds };
-  for (const briefId of requestedBriefIds) {
+  for (const briefId of Object.keys(recordsById)) {
+    if (missingById[briefId]) {
+      delete missingById[briefId];
+      changed = true;
+    }
+  }
+  for (const briefId of notFoundBriefIds) {
     if (!briefId || recordsById[briefId]) continue;
     missingById[briefId] = true;
     changed = true;

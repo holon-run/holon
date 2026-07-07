@@ -15,6 +15,7 @@ import {
   Zap,
 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
@@ -38,6 +39,7 @@ import type { OperatorPromptAttachment } from "../../runtime/client";
 interface AgentPageProps {
   agent: AgentSummary;
   detail: AgentDetail | null;
+  detailLoading?: boolean;
   displayLevel: DisplayLevel;
   sendingPrompt: boolean;
   hasOlderEvents: boolean;
@@ -63,6 +65,7 @@ const DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT = 160;
 const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
 const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
 const TOP_SCROLL_THRESHOLD = 16;
+const BOTTOM_SCROLL_THRESHOLD = 96;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
 
@@ -115,6 +118,7 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
 export function AgentPage({
   agent,
   detail,
+  detailLoading,
   displayLevel,
   sendingPrompt,
   hasOlderEvents,
@@ -148,6 +152,8 @@ export function AgentPage({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
+  const autoStickToBottomRef = useRef(false);
+  const scheduledBottomScrollRef = useRef<number | null>(null);
   const activeAgent = detail?.agent ?? agent;
   const sourceTimeline = detail?.timeline ?? [];
   const sourceEvents = detail?.events ?? [];
@@ -168,6 +174,13 @@ export function AgentPage({
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
+  const rowVirtualizer = useVirtualizer({
+    count: timelineTurns.length,
+    getScrollElement: () => messageListRef.current,
+    estimateSize: () => 320,
+    overscan: 4,
+    getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
+  });
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = (trimmedPrompt.length > 0 || attachments.length > 0) && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
@@ -190,6 +203,14 @@ export function AgentPage({
   }, [activeAgent.id, displayLevel]);
 
   useEffect(() => {
+    return () => {
+      if (scheduledBottomScrollRef.current !== null) {
+        window.cancelAnimationFrame(scheduledBottomScrollRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     setPrompt(readStoredComposerDraft(activeAgent.id));
     setAttachments([]);
   }, [activeAgent.id]);
@@ -200,6 +221,50 @@ export function AgentPage({
       resizeComposerTextarea(textarea);
     }
   }, [prompt, activeAgent.id]);
+
+  function scrollToConversationBottom() {
+    const list = messageListRef.current;
+    if (!list) return;
+
+    stickToBottomRef.current = true;
+    autoStickToBottomRef.current = true;
+
+    const lastTurnIndex = timelineTurns.length - 1;
+    const scrollNow = () => {
+      const currentList = messageListRef.current;
+      if (!currentList) return;
+      if (lastTurnIndex >= 0) {
+        rowVirtualizer.scrollToIndex(lastTurnIndex, { align: "end", behavior: "auto" });
+      }
+      currentList.scrollTop = currentList.scrollHeight;
+    };
+
+    if (scheduledBottomScrollRef.current !== null) {
+      window.cancelAnimationFrame(scheduledBottomScrollRef.current);
+      scheduledBottomScrollRef.current = null;
+    }
+
+    scrollNow();
+    scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
+      scrollNow();
+      scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
+        scrollNow();
+        scheduledBottomScrollRef.current = null;
+        autoStickToBottomRef.current = false;
+        const currentList = messageListRef.current;
+        if (currentList) {
+          stickToBottomRef.current = isScrolledNearBottom(currentList);
+        }
+      });
+    });
+  }
+
+  useLayoutEffect(() => {
+    preserveScrollRef.current = null;
+    stickToBottomRef.current = true;
+    rowVirtualizer.measure();
+    scrollToConversationBottom();
+  }, [activeAgent.id]);
 
   useLayoutEffect(() => {
     const list = messageListRef.current;
@@ -213,17 +278,31 @@ export function AgentPage({
     }
 
     if (stickToBottomRef.current) {
-      list.scrollTop = list.scrollHeight;
+      scrollToConversationBottom();
     }
   }, [timelineVersion]);
 
   useLayoutEffect(() => {
     if (!targetTimelineItemId) return;
     const list = messageListRef.current;
-    const target = list?.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`);
-    if (!target) return;
+    if (!list) return;
     stickToBottomRef.current = false;
-    target.scrollIntoView({ block: "center" });
+
+    // Target item already in DOM — scroll directly.
+    const target = list.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`);
+    if (target) {
+      target.scrollIntoView({ block: "center" });
+      return;
+    }
+
+    // Target item is virtualized out of view — scroll its turn into view first.
+    const turnIndex = timelineTurns.findIndex((turn) => turn.items.some((item) => item.id === targetTimelineItemId));
+    if (turnIndex < 0) return;
+    rowVirtualizer.scrollToIndex(turnIndex, { align: "center" });
+    const timer = setTimeout(() => {
+      list.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`)?.scrollIntoView({ block: "center" });
+    }, 0);
+    return () => clearTimeout(timer);
   }, [targetTimelineItemId, timelineVersion]);
 
   async function sendDraftPrompt() {
@@ -277,7 +356,11 @@ export function AgentPage({
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
-    stickToBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 96;
+    if (autoStickToBottomRef.current) {
+      stickToBottomRef.current = true;
+      return;
+    }
+    stickToBottomRef.current = isScrolledNearBottom(list);
   }
 
   async function handleLoadOlderEvents() {
@@ -370,17 +453,41 @@ export function AgentPage({
                 {historyError}
               </div>
             ) : null}
-            {timelineTurns.map((turn) => (
-              <TimelineTurnGroup
-                displayLevel={displayLevel}
-                key={turn.id}
-                onOpenInspector={onOpenInspector}
-                onInspectActivity={onInspectActivity}
-                selectedActivityId={selectedActivityId}
-                targetTimelineItemId={targetTimelineItemId}
-                turn={turn}
-              />
-            ))}
+            {timelineTurns.length > 0 ? (
+              <div
+                className="message-list-virtual-wrapper"
+                style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}
+              >
+                {rowVirtualizer.getVirtualItems().map((vi) => {
+                  const turn = timelineTurns[vi.index];
+                  if (!turn) return null;
+                  return (
+                    <div
+                      key={vi.key}
+                      className="message-list-virtual-item"
+                      data-index={vi.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${vi.start}px)`,
+                      }}
+                    >
+                      <TimelineTurnGroup
+                        displayLevel={displayLevel}
+                        onOpenInspector={onOpenInspector}
+                        onInspectActivity={onInspectActivity}
+                        selectedActivityId={selectedActivityId}
+                        targetTimelineItemId={targetTimelineItemId}
+                        turn={turn}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             {isWorking ? (
               <WorkingIndicator
                 activities={workingActivities}
@@ -391,6 +498,11 @@ export function AgentPage({
               />
             ) : null}
             {timeline.length === 0 ? (
+              detailLoading ? (
+                <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
+                  <LoaderCircle size={24} className="spin" />
+                </div>
+              ) : (
               <EmptyState
                 className="conversation-empty"
                 icon="↵"
@@ -401,6 +513,7 @@ export function AgentPage({
                     : t("agent.noEventsYet")
                 }
               />
+              )
             ) : null}
           </div>
 
@@ -637,6 +750,10 @@ function groupModelOptionsByProvider(options: RuntimeModelOption[]): Array<{ pro
 
 function titleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function isScrolledNearBottom(list: HTMLElement): boolean {
+  return list.scrollHeight - list.scrollTop - list.clientHeight < BOTTOM_SCROLL_THRESHOLD;
 }
 
 function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
