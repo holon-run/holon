@@ -618,6 +618,18 @@ pub(crate) fn built_in_provider_registry_with_settings(
     )?;
     insert_openai_compatible_provider(
         &mut registry,
+        "volcengine-image-openai",
+        "https://ark.cn-beijing.volces.com/api/plan/v3",
+        &[
+            "VOLCENGINE_IMAGE_OPENAI_API_KEY",
+            "VOLCENGINE_AGENT_API_KEY",
+            "VOLCENGINE_API_KEY",
+            "ARK_API_KEY",
+        ],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
         "xiaomi",
         "https://api.xiaomimimo.com/v1",
         &["XIAOMI_API_KEY"],

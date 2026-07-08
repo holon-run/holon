@@ -2335,6 +2335,28 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(
+                provider_id("volcengine-image-openai"),
+                "doubao-seedream-5.0-lite",
+            ),
+            display_name: "Doubao Seedream 5.0 Lite".into(),
+            description: "Volcengine Ark Seedream image generation model for the OpenAI Images-compatible API.".into(),
+            context_window_tokens: None,
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+            ),
+            capabilities: ModelCapabilityFlags {
+                image_generation: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+        },
         catalog_model(
             "xiaomi",
             "mimo-v2.5-pro",

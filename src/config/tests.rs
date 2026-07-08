@@ -1267,6 +1267,14 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
         "HOLON_GEMINI_BASE_URL".to_string(),
         "https://gemini.example/v1beta".to_string(),
     );
+    settings_env.insert(
+        "VOLCENGINE_IMAGE_OPENAI_API_KEY".to_string(),
+        "volcengine-image-key".to_string(),
+    );
+    settings_env.insert(
+        "HOLON_VOLCENGINE_IMAGE_OPENAI_BASE_URL".to_string(),
+        "https://ark.example/api/v3".to_string(),
+    );
 
     let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
 
@@ -1348,6 +1356,44 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
     assert_eq!(
         dashscope_coding_plan.credential.as_deref(),
         Some("dashscope-coding-plan-key")
+    );
+
+    let volcengine_image_openai = providers
+        .get(&ProviderId::parse("volcengine-image-openai").unwrap())
+        .unwrap();
+    assert_eq!(
+        volcengine_image_openai.transport,
+        ProviderTransportKind::OpenAiChatCompletions
+    );
+    assert_eq!(
+        volcengine_image_openai.base_url,
+        "https://ark.example/api/v3"
+    );
+    assert_eq!(
+        volcengine_image_openai.auth.env.as_deref(),
+        Some("VOLCENGINE_IMAGE_OPENAI_API_KEY")
+    );
+    assert_eq!(
+        volcengine_image_openai.credential.as_deref(),
+        Some("volcengine-image-key")
+    );
+    let mut volcengine_agent_only_env = HashMap::new();
+    volcengine_agent_only_env.insert(
+        "VOLCENGINE_AGENT_API_KEY".to_string(),
+        "volcengine-agent-key".to_string(),
+    );
+    let volcengine_agent_only_providers =
+        super::built_in_provider_registry_with_settings(&volcengine_agent_only_env).unwrap();
+    let volcengine_image_openai = volcengine_agent_only_providers
+        .get(&ProviderId::parse("volcengine-image-openai").unwrap())
+        .unwrap();
+    assert_eq!(
+        volcengine_image_openai.auth.env.as_deref(),
+        Some("VOLCENGINE_AGENT_API_KEY")
+    );
+    assert_eq!(
+        volcengine_image_openai.credential.as_deref(),
+        Some("volcengine-agent-key")
     );
 
     let nearai = providers
@@ -1677,6 +1723,8 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
             "TOGETHER_API_KEY",
             "VENICE_API_KEY",
             "VOLCENGINE_API_KEY",
+            "VOLCENGINE_IMAGE_OPENAI_API_KEY",
+            "VOLCENGINE_AGENT_API_KEY",
             "VOLCENGINE_CODING_API_KEY",
             "ARK_API_KEY",
             "XIAOMI_API_KEY",
@@ -2456,6 +2504,39 @@ fn generate_image_selection_requires_explicit_model_capability() {
     assert!(catalog
         .select_generate_image_model(&ContextConfig::default(), None, None)
         .is_none());
+}
+
+#[test]
+fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
+    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
+    fixture.config.image_generation_model =
+        Some(ModelRef::parse("volcengine-image-openai/doubao-seedream-5.0-lite").unwrap());
+    fixture.config.providers.insert(
+        ProviderId::parse("volcengine-image-openai").unwrap(),
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("volcengine-image-openai").unwrap(),
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
+            auth: ProviderAuthConfig::default(),
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let selected = catalog
+        .select_generate_image_model(&ContextConfig::default(), None, None)
+        .unwrap();
+
+    assert_eq!(
+        selected.as_string(),
+        "volcengine-image-openai/doubao-seedream-5.0-lite"
+    );
 }
 
 #[test]
