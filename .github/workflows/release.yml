@@ -114,17 +114,17 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release adds TUI overlay shortcut prefixes and paging help, expands agent template flows into the TUI, introduces full Web GUI internationalization, and polishes Web GUI badges, icons, and copy. It also fixes TUI display-state persistence and makes the solve default template distributable.
+          This release adds image generation support, Volcengine Seedream image provider integration, standardized web search results with additional China-friendly providers, and improved media/attachment handling across the runtime and Web GUI. It also fixes fallback image generation, default callback trigger updates, generic operator prompt attachments, control prompt body limits, and several Web GUI file/link rendering paths.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Add agent template TUI flows and update documentation for the v0.26.0 feature set ([#2113](https://github.com/holon-run/holon/pull/2113), [#2112](https://github.com/holon-run/holon/pull/2112)).
-          - Add full Web GUI internationalization with react-i18next, English and Simplified Chinese resources, and follow-up badge/icon/copy polishing ([#2115](https://github.com/holon-run/holon/pull/2115), [#2118](https://github.com/holon-run/holon/pull/2118)).
-          - Add TUI overlay shortcut prefixes, help text, and paging equivalents ([#2116](https://github.com/holon-run/holon/pull/2116)).
-          - Persist TUI display state across runtime updates ([#2114](https://github.com/holon-run/holon/pull/2114)).
-          - Make the solve default template distributable from release artifacts ([#2117](https://github.com/holon-run/holon/pull/2117)).
+          - Add image generation support and runtime configuration, then wire it through fallback provider selection and the Volcengine Seedream OpenAI-compatible image provider ([#2127](https://github.com/holon-run/holon/pull/2127), [#2130](https://github.com/holon-run/holon/pull/2130), [#2131](https://github.com/holon-run/holon/pull/2131)).
+          - Standardize web search result handling and add China-friendly native search providers ([#2129](https://github.com/holon-run/holon/pull/2129)).
+          - Improve media and attachment flows, including agent media path markdown, workspace image rendering, file-browser integration, drag-and-drop attachments, and generic operator prompt attachments ([#2120](https://github.com/holon-run/holon/pull/2120), [#2126](https://github.com/holon-run/holon/pull/2126), [#2128](https://github.com/holon-run/holon/pull/2128)).
+          - Improve Web GUI responsiveness and settings/file-link polish with virtualized agent messages, native search provider settings, bare workspace URL autolinking, generic drop hints, and file-browser link opening ([#2124](https://github.com/holon-run/holon/pull/2124)).
+          - Fix control prompt request body limits and make default callback trigger creation/reset updates atomic ([#2122](https://github.com/holon-run/holon/pull/2122), [#2132](https://github.com/holon-run/holon/pull/2132)).
 
           ## Install
 
