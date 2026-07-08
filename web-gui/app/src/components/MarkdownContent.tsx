@@ -46,6 +46,9 @@ export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageR
 
 export function markdownUrlTransform(url: string, key: string): string {
   if ((key === "src" || key === "href") && parseWorkspaceImageRef(url)) return url;
+  // Keep workspace:// URLs as-is (even invalid ones) so the renderer
+  // component can decide whether to render as link or plain text.
+  if ((key === "src" || key === "href") && url.startsWith("workspace://")) return url;
   return defaultUrlTransform(url);
 }
 
@@ -185,8 +188,14 @@ export function remarkWorkspaceAutolink() {
       WORKSPACE_URL_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = WORKSPACE_URL_RE.exec(value)) !== null) {
+        // Strip trailing punctuation that is unlikely to be part of the URL
+        const url = m[0].replace(/[.,;!?:]+$/, "");
+        // Only autolink valid workspace:// URLs
+        if (!parseWorkspaceImageRef(url)) continue;
         if (m.index > last) segments.push({ type: "text", value: value.slice(last, m.index) });
-        segments.push({ type: "link", url: m[0], children: [{ type: "text", value: m[0] }] });
+        segments.push({ type: "link", url, children: [{ type: "text", value: url }] });
+        const trailing = m[0].slice(url.length);
+        if (trailing) segments.push({ type: "text", value: trailing });
         last = m.index + m[0].length;
       }
       if (segments.length === 0) return;
@@ -205,14 +214,20 @@ function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
         remarkPlugins={[remarkGfm, remarkWorkspaceAutolink]}
         urlTransform={markdownUrlTransform}
         components={{
-          a: ({ children, href, ...props }) =>
-            href && parseWorkspaceImageRef(href) ? (
-              <WorkspaceFileLink href={href}>{children}</WorkspaceFileLink>
-            ) : (
+          a: ({ children, href, ...props }) => {
+            if (href && parseWorkspaceImageRef(href)) {
+              return <WorkspaceFileLink href={href}>{children}</WorkspaceFileLink>;
+            }
+            // Invalid workspace:// URLs should not render as clickable links
+            if (href?.startsWith("workspace://")) {
+              return <>{children}</>;
+            }
+            return (
               <a {...props} href={href} rel="noreferrer" target="_blank">
                 {children}
               </a>
-            ),
+            );
+          },
           img: ({ src, alt, ...props }) => {
             const workspaceRef = parseWorkspaceImageRef(src);
             if (!workspaceRef) {
