@@ -1,6 +1,3 @@
-   Compiling holon v0.23.0 (/home/jolestar/opensource/src/github.com/holon-run/holon)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.55s
-     Running `target/debug/holon-docgen models`
 ---
 title: Supported Models
 description: Complete reference of all built-in models and providers supported by Holon.
@@ -9,7 +6,8 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **40 providers** and **248 models**.
+Holon includes built-in configuration for **33 provider accounts**
+across **41 endpoints** and **247 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -20,51 +18,53 @@ under the upstream service terms, not backend automation or generic scripts.
 
 ## Provider Setup
 
-Each provider requires an API key or credential to use. Set the listed environment variable before
-running Holon.
+Each provider account endpoint requires an API key or credential to use. Set the listed
+environment variable before running Holon. `Legacy Provider Ref` is the user-visible provider id
+used in existing `provider/model` refs and config shortcuts.
 
-| Provider | Transport | Base URL | Auth Env Variable(s) |
-|----------|-----------|----------|---------------------|
-| `anthropic` | Anthropic Messages | `https://api.anthropic.com` | `ANTHROPIC_AUTH_TOKEN` |
-| `arcee` | OpenAI Chat Completions | `https://api.arcee.ai/api/v1` | `ARCEE_API_KEY` |
-| `bigmodel` | Anthropic Messages | `https://open.bigmodel.cn/api/anthropic` | `BIGMODEL_API_KEY` |
-| `byteplus` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/v3` | `BYTEPLUS_API_KEY` |
-| `byteplus-coding` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` | `BYTEPLUS_CODING_API_KEY or BYTEPLUS_API_KEY` |
-| `chutes` | OpenAI Chat Completions | `https://llm.chutes.ai/v1` | `CHUTES_API_KEY` |
-| `dashscope` | Anthropic Messages | `https://dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_API_KEY or QWEN_API_KEY` |
-| `dashscope-coding-plan` | Anthropic Messages | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_CODING_PLAN_API_KEY` |
-| `dashscope-token-plan` | Anthropic Messages | `https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic` | `DASHSCOPE_TOKEN_PLAN_API_KEY` |
-| `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
-| `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
-| `gemini` | Gemini Generate Content | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
-| `huggingface` | OpenAI Chat Completions | `https://router.huggingface.co/v1` | `HUGGINGFACE_API_KEY or HF_TOKEN` |
-| `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
-| `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |
-| `minimax` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
-| `mistral` | OpenAI Chat Completions | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
-| `moonshot` | OpenAI Chat Completions | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
-| `nearai` | OpenAI Chat Completions | `https://cloud-api.near.ai/v1` | `NEARAI_API_KEY` |
-| `nvidia` | OpenAI Chat Completions | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
-| `openai` | OpenAI Responses | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
-| `openai-codex` | OpenAI Codex | `https://chatgpt.com/backend-api/codex` | `—` |
-| `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
-| `openrouter` | OpenAI Chat Completions | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `qianfan` | OpenAI Chat Completions | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
-| `stepfun` | OpenAI Chat Completions | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` |
-| `stepfun-plan` | OpenAI Chat Completions | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY` |
-| `synthetic` | Anthropic Messages | `https://api.synthetic.new/anthropic` | `SYNTHETIC_API_KEY` |
-| `tencent-tokenhub` | OpenAI Chat Completions | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
-| `together` | OpenAI Chat Completions | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
-| `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
-| `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
-| `vllm` | OpenAI Chat Completions | `http://127.0.0.1:8000/v1` | `—` |
-| `volcengine` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/compatible` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
-| `volcengine-agent` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/plan` | `VOLCENGINE_AGENT_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
-| `volcengine-coding` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/coding` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
-| `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
-| `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
-| `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
-| `zai` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
+| Provider Account | Endpoint | Legacy Provider Ref | Transport | Base URL | Auth Env Variable(s) |
+|------------------|----------|---------------------|-----------|----------|----------------------|
+| `anthropic` | `default` | `anthropic` | Anthropic Messages | `https://api.anthropic.com` | `ANTHROPIC_AUTH_TOKEN` |
+| `arcee` | `default` | `arcee` | OpenAI Chat Completions | `https://api.arcee.ai/api/v1` | `ARCEE_API_KEY` |
+| `bigmodel` | `default` | `bigmodel` | Anthropic Messages | `https://open.bigmodel.cn/api/anthropic` | `BIGMODEL_API_KEY` |
+| `byteplus` | `default` | `byteplus` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/v3` | `BYTEPLUS_API_KEY` |
+| `byteplus` | `coding` | `byteplus-coding` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` | `BYTEPLUS_CODING_API_KEY or BYTEPLUS_API_KEY` |
+| `chutes` | `default` | `chutes` | OpenAI Chat Completions | `https://llm.chutes.ai/v1` | `CHUTES_API_KEY` |
+| `dashscope` | `default` | `dashscope` | Anthropic Messages | `https://dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_API_KEY or QWEN_API_KEY` |
+| `dashscope` | `coding-plan` | `dashscope-coding-plan` | Anthropic Messages | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_CODING_PLAN_API_KEY` |
+| `dashscope` | `token-plan` | `dashscope-token-plan` | Anthropic Messages | `https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic` | `DASHSCOPE_TOKEN_PLAN_API_KEY` |
+| `deepseek` | `default` | `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
+| `fireworks` | `default` | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
+| `gemini` | `default` | `gemini` | Gemini Generate Content | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
+| `huggingface` | `default` | `huggingface` | OpenAI Chat Completions | `https://router.huggingface.co/v1` | `HUGGINGFACE_API_KEY or HF_TOKEN` |
+| `kilocode` | `default` | `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
+| `litellm` | `default` | `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |
+| `minimax` | `default` | `minimax` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
+| `mistral` | `default` | `mistral` | OpenAI Chat Completions | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
+| `moonshot` | `default` | `moonshot` | OpenAI Chat Completions | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
+| `nearai` | `default` | `nearai` | OpenAI Chat Completions | `https://cloud-api.near.ai/v1` | `NEARAI_API_KEY` |
+| `nvidia` | `default` | `nvidia` | OpenAI Chat Completions | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
+| `openai` | `default` | `openai` | OpenAI Responses | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `openai-codex` | `default` | `openai-codex` | OpenAI Codex | `https://chatgpt.com/backend-api/codex` | `—` |
+| `opencode-go` | `default` | `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
+| `openrouter` | `default` | `openrouter` | OpenAI Chat Completions | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `qianfan` | `default` | `qianfan` | OpenAI Chat Completions | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
+| `stepfun` | `default` | `stepfun` | OpenAI Chat Completions | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` |
+| `stepfun` | `plan` | `stepfun-plan` | OpenAI Chat Completions | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY` |
+| `synthetic` | `default` | `synthetic` | Anthropic Messages | `https://api.synthetic.new/anthropic` | `SYNTHETIC_API_KEY` |
+| `tencent-tokenhub` | `default` | `tencent-tokenhub` | OpenAI Chat Completions | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
+| `together` | `default` | `together` | OpenAI Chat Completions | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
+| `venice` | `default` | `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
+| `vercel-ai-gateway` | `default` | `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
+| `vllm` | `default` | `vllm` | OpenAI Chat Completions | `http://127.0.0.1:8000/v1` | `—` |
+| `volcengine` | `default` | `volcengine` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/compatible` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine` | `agent` | `volcengine-agent` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/plan` | `VOLCENGINE_AGENT_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine` | `coding` | `volcengine-coding` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/coding` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine` | `image-openai` | `volcengine-image-openai` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/plan/v3` | `VOLCENGINE_IMAGE_OPENAI_API_KEY or VOLCENGINE_AGENT_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `xai` | `default` | `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
+| `xiaomi` | `default` | `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
+| `xiaomi` | `token-plan` | `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
+| `zai` | `default` | `zai` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
 
 ## Model Catalog
 
@@ -204,12 +204,13 @@ and capabilities.
 | `openai` | `gpt-5.6-luna` | `openai/gpt-5.6-luna` | 272000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-5.6-sol` | `openai/gpt-5.6-sol` | 272000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-5.6-terra` | `openai/gpt-5.6-terra` | 272000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-image-2` | `openai/gpt-image-2` | — | — | — | — |
 | `openai-codex` | `gpt-5.2` | `openai-codex/gpt-5.2` | 272000 | 128000 | ✅ | ✅ |
 | `openai-codex` | `gpt-5.3-codex` | `openai-codex/gpt-5.3-codex` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-5.3-codex-spark` | `openai-codex/gpt-5.3-codex-spark` | 128000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-5.4` | `openai-codex/gpt-5.4` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-5.4-mini` | `openai-codex/gpt-5.4-mini` | 272000 | 128000 | ✅ | ✅ |
-| `openai-codex` | `gpt-5.5` | `openai-codex/gpt-5.5` | 272000 | 128000 | ✅ | ✅ |
+| `openai-codex` | `gpt-5.5` | `openai-codex/gpt-5.5` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-5.6-luna` | `openai-codex/gpt-5.6-luna` | 272000 | 128000 | ✅ | ✅ |
 | `openai-codex` | `gpt-5.6-sol` | `openai-codex/gpt-5.6-sol` | 272000 | 128000 | ✅ | ✅ |
 | `openai-codex` | `gpt-5.6-terra` | `openai-codex/gpt-5.6-terra` | 272000 | 128000 | ✅ | ✅ |
@@ -266,7 +267,6 @@ and capabilities.
 | `volcengine` | `doubao-seed-2-0-code-preview-260215` | `volcengine/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | ✅ |
 | `volcengine` | `doubao-seed-2-0-lite-260215` | `volcengine/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | ✅ |
-| `volcengine` | `glm-4-7-251222` | `volcengine/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
 | `volcengine-agent` | `ark-code-latest` | `volcengine-agent/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `volcengine-agent` | `deepseek-v3-2-251201` | `volcengine-agent/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
 | `volcengine-agent` | `deepseek-v4-flash` | `volcengine-agent/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
@@ -274,8 +274,7 @@ and capabilities.
 | `volcengine-agent` | `doubao-seed-2-0-code-preview-260215` | `volcengine-agent/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | — |
 | `volcengine-agent` | `doubao-seed-2-0-lite-260215` | `volcengine-agent/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine-agent` | `doubao-seed-2-0-pro-260215` | `volcengine-agent/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | — |
-| `volcengine-agent` | `glm-4-7-251222` | `volcengine-agent/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
-| `volcengine-agent` | `glm-5.2` | `volcengine-agent/glm-5.2` | 204800 | 131072 | ✅ | — |
+| `volcengine-agent` | `glm-5.2` | `volcengine-agent/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `volcengine-agent` | `kimi-k2.6` | `volcengine-agent/kimi-k2.6` | 262144 | 32768 | ✅ | — |
 | `volcengine-agent` | `kimi-k2.7-code` | `volcengine-agent/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
 | `volcengine-coding` | `ark-code-latest` | `volcengine-coding/ark-code-latest` | 256000 | 65536 | ✅ | — |
@@ -285,10 +284,10 @@ and capabilities.
 | `volcengine-coding` | `doubao-seed-2-0-code-preview-260215` | `volcengine-coding/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | — |
 | `volcengine-coding` | `doubao-seed-2-0-lite-260215` | `volcengine-coding/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine-coding` | `doubao-seed-2-0-pro-260215` | `volcengine-coding/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | — |
-| `volcengine-coding` | `glm-4-7-251222` | `volcengine-coding/glm-4-7-251222` | 204800 | 131072 | ✅ | — |
-| `volcengine-coding` | `glm-5.2` | `volcengine-coding/glm-5.2` | 204800 | 131072 | ✅ | — |
+| `volcengine-coding` | `glm-5.2` | `volcengine-coding/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `volcengine-coding` | `kimi-k2.6` | `volcengine-coding/kimi-k2.6` | 262144 | 32768 | ✅ | — |
 | `volcengine-coding` | `kimi-k2.7-code` | `volcengine-coding/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
+| `volcengine-image-openai` | `doubao-seedream-5.0-lite` | `volcengine-image-openai/doubao-seedream-5.0-lite` | — | — | — | — |
 | `xai` | `grok-3` | `xai/grok-3` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-fast` | `xai/grok-3-fast` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-mini` | `xai/grok-3-mini` | 131072 | 8192 | ✅ | — |
@@ -321,4 +320,3 @@ and capabilities.
 | `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
-Generated model reference: 40 providers, 248 models.

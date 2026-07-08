@@ -2716,13 +2716,28 @@ fn provider_doc_entries_are_sorted_and_populated() {
     let entries =
         built_in_provider_doc_entries().expect("built_in_provider_doc_entries should succeed");
     assert!(!entries.is_empty(), "should have at least one provider");
-    // Verify entries are sorted by id
+    // Legacy provider refs remain sorted for stable generated docs.
     for i in 1..entries.len() {
         assert!(
             entries[i - 1].id.as_str() <= entries[i].id.as_str(),
             "entries must be sorted by id"
         );
     }
+
+    let dashscope_token_plan = entries
+        .iter()
+        .find(|entry| entry.legacy_provider.as_str() == "dashscope-token-plan")
+        .expect("dashscope-token-plan doc entry");
+    assert_eq!(dashscope_token_plan.id.as_str(), "dashscope-token-plan");
+    assert_eq!(dashscope_token_plan.provider.as_str(), "dashscope");
+    assert_eq!(dashscope_token_plan.endpoint.as_str(), "token-plan");
+
+    let volcengine_image = entries
+        .iter()
+        .find(|entry| entry.legacy_provider.as_str() == "volcengine-image-openai")
+        .expect("volcengine-image-openai doc entry");
+    assert_eq!(volcengine_image.provider.as_str(), "volcengine");
+    assert_eq!(volcengine_image.endpoint.as_str(), "image-openai");
 }
 
 #[test]
