@@ -23,9 +23,10 @@ use crate::config::{
     save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
     validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig,
     ControlAuthMode, CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile,
-    ModelConfigFile, ModelRef, ProviderAuthConfig, ProviderBuiltinWebSearchConfig,
-    ProviderConfigFile, ProviderId, ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind,
-    RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID, OPENAI_CODEX_CREDENTIAL_PROFILE,
+    ModelConfigFile, ModelRef, ModelRouteCapability, ProviderAuthConfig,
+    ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
+    ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
+    OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 
 struct EnvVarSnapshot {
@@ -2427,6 +2428,46 @@ fn view_image_vision_selection_prefers_primary_over_other_candidates() {
     // Primary appears first in candidates
     assert_eq!(selection.candidates[0].provider, "openai");
     assert_eq!(selection.candidates[0].model, "gpt-5.4");
+}
+
+#[test]
+fn runtime_model_catalog_materializes_legacy_provider_as_default_route_endpoint() {
+    let fixture = test_app_config("openai/gpt-5.4", &[]);
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let route = catalog
+        .resolve_model_route(
+            &ContextConfig::default(),
+            &ModelRef::parse("openai/gpt-5.4").unwrap(),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+
+    assert_eq!(route.model_ref.as_string(), "openai/gpt-5.4");
+    assert_eq!(route.endpoint.provider.as_str(), "openai");
+    assert_eq!(route.endpoint.endpoint.as_str(), "default");
+    assert_eq!(
+        route.endpoint.runtime_config.transport,
+        ProviderTransportKind::OpenAiResponses
+    );
+}
+
+#[test]
+fn runtime_model_catalog_resolves_image_generation_route() {
+    let fixture = test_app_config("arcee/trinity-mini", &["openai/gpt-image-2"]);
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let route = catalog
+        .select_generate_image_route(&ContextConfig::default(), None, None)
+        .unwrap();
+
+    assert_eq!(route.model_ref.as_string(), "openai/gpt-image-2");
+    assert_eq!(
+        route.requested_capability,
+        ModelRouteCapability::ImageGeneration
+    );
+    assert_eq!(route.endpoint.provider.as_str(), "openai");
+    assert_eq!(route.endpoint.endpoint.as_str(), "default");
 }
 
 #[test]

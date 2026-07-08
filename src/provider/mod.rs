@@ -15,6 +15,7 @@ pub mod test_support;
 mod tool_schema;
 mod transports;
 
+pub(crate) use catalog::build_candidate_from_model_route;
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{
     provider_doctor, resolved_model_availability, resolved_model_providers,

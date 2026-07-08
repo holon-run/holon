@@ -6,6 +6,81 @@ pub struct ModelRef {
     pub model: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderEndpointId(String);
+
+impl ProviderEndpointId {
+    pub const DEFAULT: &'static str = "default";
+
+    pub fn default_endpoint() -> Self {
+        Self(Self::DEFAULT.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelRouteCapability {
+    Turn,
+    VisionObservation,
+    ImageGeneration,
+}
+
+impl ModelRouteCapability {
+    pub fn model_supports(self, policy: &ResolvedRuntimeModelPolicy) -> bool {
+        match self {
+            Self::Turn => true,
+            Self::VisionObservation => policy.capabilities.image_input,
+            Self::ImageGeneration => policy.capabilities.image_generation,
+        }
+    }
+
+    pub fn transport_supports(self, transport: ProviderTransportKind) -> bool {
+        match self {
+            Self::Turn => true,
+            Self::VisionObservation => transport.supports_view_image_observation_generation(),
+            Self::ImageGeneration => transport.supports_image_generation(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProviderEndpointConfig {
+    pub provider: ProviderId,
+    pub endpoint: ProviderEndpointId,
+    pub runtime_config: ProviderRuntimeConfig,
+}
+
+impl ResolvedProviderEndpointConfig {
+    pub fn from_provider_runtime_config(runtime_config: ProviderRuntimeConfig) -> Self {
+        Self {
+            provider: runtime_config.id.clone(),
+            endpoint: ProviderEndpointId::default_endpoint(),
+            runtime_config,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelRoute {
+    pub model_ref: ModelRef,
+    pub endpoint: ResolvedProviderEndpointConfig,
+    pub policy: ResolvedRuntimeModelPolicy,
+    pub requested_capability: ModelRouteCapability,
+}
+
+impl ResolvedModelRoute {
+    pub fn provider_config(&self) -> &ProviderRuntimeConfig {
+        &self.endpoint.runtime_config
+    }
+
+    pub fn provider_name(&self) -> &str {
+        self.endpoint.provider.as_str()
+    }
+}
+
 pub(crate) fn resolve_image_generation_model(
     stored_config: &HolonConfigFile,
 ) -> Result<Option<ModelRef>> {
@@ -34,7 +109,7 @@ pub struct RuntimeModelCatalog {
     pub image_generation_model: Option<ModelRef>,
     pub vision_candidate_models: Vec<ModelRef>,
     pub disable_provider_fallback: bool,
-    pub provider_transports: HashMap<ProviderId, ProviderTransportKind>,
+    pub provider_endpoints: HashMap<ProviderId, ResolvedProviderEndpointConfig>,
     pub built_in_catalog: BuiltInModelCatalog,
     pub discovered_models: HashMap<ModelRef, BuiltInModelMetadata>,
     pub model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
@@ -51,10 +126,17 @@ impl RuntimeModelCatalog {
             image_generation_model: config.image_generation_model.clone(),
             vision_candidate_models: config.vision_candidate_models.clone(),
             disable_provider_fallback: config.provider_fallback_disabled(),
-            provider_transports: config
+            provider_endpoints: config
                 .providers
                 .iter()
-                .map(|(provider, config)| (provider.clone(), config.transport))
+                .map(|(provider, config)| {
+                    (
+                        provider.clone(),
+                        ResolvedProviderEndpointConfig::from_provider_runtime_config(
+                            config.clone(),
+                        ),
+                    )
+                })
                 .collect(),
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: config
@@ -66,6 +148,34 @@ impl RuntimeModelCatalog {
             unknown_model_fallback: config.validated_unknown_model_fallback.clone(),
             configured_runtime_max_output_tokens: config.runtime_max_output_tokens,
         }
+    }
+
+    pub fn resolve_model_route(
+        &self,
+        base_context_config: &ContextConfig,
+        model_ref: &ModelRef,
+        requested_capability: ModelRouteCapability,
+    ) -> Option<ResolvedModelRoute> {
+        let endpoint = self.provider_endpoints.get(&model_ref.provider)?;
+        let policy = self.built_in_catalog.resolve_policy(
+            model_ref,
+            &self.model_overrides,
+            &self.discovered_models,
+            self.unknown_model_fallback.as_ref(),
+            base_context_config,
+            self.configured_runtime_max_output_tokens,
+        );
+        if !requested_capability.model_supports(&policy)
+            || !requested_capability.transport_supports(endpoint.runtime_config.transport)
+        {
+            return None;
+        }
+        Some(ResolvedModelRoute {
+            model_ref: model_ref.clone(),
+            endpoint: endpoint.clone(),
+            policy,
+            requested_capability,
+        })
     }
 
     pub fn provider_chain(&self, model_override: Option<&ModelRef>) -> Vec<ModelRef> {
@@ -271,9 +381,12 @@ impl RuntimeModelCatalog {
             );
             let image_input = policy.capabilities.image_input;
             let supported_transport = self
-                .provider_transports
+                .provider_endpoints
                 .get(&model_ref.provider)
-                .is_some_and(|transport| transport.supports_view_image_observation_generation());
+                .is_some_and(|endpoint| {
+                    ModelRouteCapability::VisionObservation
+                        .transport_supports(endpoint.runtime_config.transport)
+                });
             let reason = if !image_input {
                 "model_lacks_image_input"
             } else if supported_transport {
@@ -288,7 +401,15 @@ impl RuntimeModelCatalog {
                 image_input,
                 reason: reason.to_string(),
             });
-            if image_input && supported_transport && selected.is_none() {
+            if self
+                .resolve_model_route(
+                    base_context_config,
+                    model_ref,
+                    ModelRouteCapability::VisionObservation,
+                )
+                .is_some()
+                && selected.is_none()
+            {
                 selected = Some(model_ref.clone());
             }
         }
@@ -327,12 +448,35 @@ impl RuntimeModelCatalog {
     }
 
     pub fn provider_supports_view_image_observation(&self, provider: &str) -> bool {
-        self.provider_transports
+        self.provider_endpoints
             .iter()
-            .any(|(provider_id, transport)| {
+            .any(|(provider_id, endpoint)| {
                 provider_id.as_str() == provider
-                    && transport.supports_view_image_observation_generation()
+                    && ModelRouteCapability::VisionObservation
+                        .transport_supports(endpoint.runtime_config.transport)
             })
+    }
+
+    pub fn select_generate_image_route(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRef>,
+        pending_fallback_model: Option<&ModelRef>,
+    ) -> Option<ResolvedModelRoute> {
+        let candidates = self
+            .image_generation_model
+            .clone()
+            .map(|model_ref| vec![model_ref])
+            .unwrap_or_else(|| {
+                self.provider_chain_for_turn(model_override, pending_fallback_model)
+            });
+        candidates.into_iter().find_map(|model_ref| {
+            self.resolve_model_route(
+                base_context_config,
+                &model_ref,
+                ModelRouteCapability::ImageGeneration,
+            )
+        })
     }
 
     pub fn select_generate_image_model(
@@ -341,31 +485,12 @@ impl RuntimeModelCatalog {
         model_override: Option<&ModelRef>,
         pending_fallback_model: Option<&ModelRef>,
     ) -> Option<ModelRef> {
-        let candidates = self
-            .image_generation_model
-            .clone()
-            .map(|model_ref| vec![model_ref])
-            .unwrap_or_else(|| {
-                self.provider_chain_for_turn(model_override, pending_fallback_model)
-            });
-        for model_ref in candidates {
-            let policy = self.built_in_catalog.resolve_policy(
-                &model_ref,
-                &self.model_overrides,
-                &self.discovered_models,
-                self.unknown_model_fallback.as_ref(),
-                base_context_config,
-                self.configured_runtime_max_output_tokens,
-            );
-            let supported_transport = self
-                .provider_transports
-                .get(&model_ref.provider)
-                .is_some_and(|transport| transport.supports_image_generation());
-            if policy.capabilities.image_generation && supported_transport {
-                return Some(model_ref);
-            }
-        }
-        None
+        self.select_generate_image_route(
+            base_context_config,
+            model_override,
+            pending_fallback_model,
+        )
+        .map(|route| route.model_ref)
     }
 }
 
@@ -378,7 +503,7 @@ impl Default for RuntimeModelCatalog {
             image_generation_model: None,
             vision_candidate_models: Vec::new(),
             disable_provider_fallback: false,
-            provider_transports: HashMap::new(),
+            provider_endpoints: HashMap::new(),
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: HashMap::new(),
             model_overrides: HashMap::new(),

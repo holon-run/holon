@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use anyhow::{anyhow, Result};
 
 use crate::{
-    config::{AppConfig, ModelRef, ProviderTransportKind},
+    config::{
+        AppConfig, ModelRef, ModelRouteCapability, ProviderTransportKind, ResolvedModelRoute,
+        RuntimeModelCatalog,
+    },
     context::ContextConfig,
-    model_catalog::BuiltInModelCatalog,
     provider::fallback::FallbackProvider,
 };
 
@@ -67,14 +69,17 @@ pub(crate) fn build_candidate(
     config: &AppConfig,
     model_ref: &ModelRef,
 ) -> Result<ProviderCandidate> {
-    let provider_config = config.providers.get(&model_ref.provider).ok_or_else(|| {
-        anyhow!(
-            "unknown provider {}; configure providers.{}",
-            model_ref.provider.as_str(),
-            model_ref.provider.as_str()
-        )
-    })?;
-    let resolved_policy = resolved_model_policy_for_candidate(config, model_ref);
+    let route = resolve_model_route_for_candidate(config, model_ref, ModelRouteCapability::Turn)?;
+    build_candidate_from_model_route(&config.home_dir, &route)
+}
+
+pub(crate) fn build_candidate_from_model_route(
+    home_dir: &Path,
+    route: &ResolvedModelRoute,
+) -> Result<ProviderCandidate> {
+    let model_ref = &route.model_ref;
+    let provider_config = route.provider_config();
+    let resolved_policy = &route.policy;
     let openai_compaction_policy = OpenAiCompactionPolicy {
         trigger_input_tokens: resolved_policy.compaction_trigger_estimated_tokens as u64,
     };
@@ -87,7 +92,7 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
                 openai_compaction_policy,
                 resolved_policy.verbosity,
                 resolved_policy.capabilities.supports_reasoning,
@@ -98,7 +103,7 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
                 openai_compaction_policy,
             )?)
         }
@@ -107,7 +112,7 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
                 resolved_policy.capabilities.supports_reasoning,
             )?)
         }
@@ -116,7 +121,7 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
             )?)
         }
         ProviderTransportKind::GeminiGenerateContent => {
@@ -124,22 +129,46 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
             )?)
         }
     };
     Ok(ProviderCandidate {
         model_ref: model_ref.as_string(),
-        provider_name: model_ref.provider.as_str().to_string(),
+        provider_name: route.provider_name().to_string(),
         provider,
     })
 }
 
-fn resolved_model_policy_for_candidate(
+pub(crate) fn resolve_model_route_for_candidate(
     config: &AppConfig,
     model_ref: &ModelRef,
-) -> crate::model_catalog::ResolvedRuntimeModelPolicy {
-    let base_context_config = ContextConfig {
+    requested_capability: ModelRouteCapability,
+) -> Result<ResolvedModelRoute> {
+    let provider_config = config.providers.get(&model_ref.provider).ok_or_else(|| {
+        anyhow!(
+            "unknown provider {}; configure providers.{}",
+            model_ref.provider.as_str(),
+            model_ref.provider.as_str()
+        )
+    })?;
+
+    let base_context_config = base_context_config_for_candidate(config);
+    RuntimeModelCatalog::from_config(config)
+        .resolve_model_route(&base_context_config, model_ref, requested_capability)
+        .ok_or_else(|| {
+            anyhow!(
+                "provider {} default endpoint transport {} cannot route model {} for requested route capability {:?}",
+                model_ref.provider.as_str(),
+                provider_config.transport.as_str(),
+                model_ref.as_string(),
+                requested_capability
+            )
+        })
+}
+
+fn base_context_config_for_candidate(config: &AppConfig) -> ContextConfig {
+    ContextConfig {
         recent_messages: config.context_window_messages,
         recent_briefs: config.context_window_briefs,
         compaction_trigger_messages: config.compaction_trigger_messages,
@@ -150,13 +179,5 @@ fn resolved_model_policy_for_candidate(
         recent_episode_candidates: config.recent_episode_candidates,
         max_relevant_episodes: config.max_relevant_episodes,
         ..ContextConfig::default()
-    };
-    BuiltInModelCatalog::default().resolve_policy(
-        model_ref,
-        &config.validated_model_overrides,
-        &config.model_discovery_cache.models(),
-        config.validated_unknown_model_fallback.as_ref(),
-        &base_context_config,
-        config.runtime_max_output_tokens,
-    )
+    }
 }
