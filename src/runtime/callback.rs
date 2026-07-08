@@ -42,60 +42,39 @@ impl RuntimeHandle {
         let delivery_mode = CallbackDeliveryMode::WakeHint;
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
-        if let Some(descriptor) = self
+        let external_trigger_id = crate::ids::external_trigger_id();
+        let token = generate_callback_token();
+        let (descriptor, revoked, created) = self
             .inner
             .runtime_db
             .external_triggers()
-            .active_default_for_agent(&agent_id)?
-        {
-            if descriptor.token.is_some() {
-                return capability_from_record(&self.inner.callback_base_url, &descriptor);
-            }
-            let mut revoked = descriptor;
-            revoked.status = ExternalTriggerStatus::Revoked;
-            revoked.revoked_at = Some(now);
-            self.inner.runtime_db.external_triggers().upsert(&revoked)?;
+            .ensure_default_for_agent(
+                &agent_id,
+                delivery_mode.clone(),
+                now,
+                external_trigger_id,
+                token,
+            )?;
+
+        if !created {
+            return capability_from_record(&self.inner.callback_base_url, &descriptor);
+        }
+        if let Some(revoked) = revoked {
             self.cache_external_trigger_projection(&revoked).await;
         }
 
-        let external_trigger_id = crate::ids::external_trigger_id();
-        let token = generate_callback_token();
-        let descriptor = ExternalTriggerRecord {
-            external_trigger_id: external_trigger_id.clone(),
-            target_agent_id: agent_id.clone(),
-            scope: ExternalTriggerScope::Agent,
-            delivery_mode: delivery_mode.clone(),
-            token: Some(token.clone()),
-            token_hash: crate::callbacks::hash_callback_token(&token),
-            status: ExternalTriggerStatus::Active,
-            created_at: now,
-            revoked_at: None,
-            last_delivered_at: None,
-            delivery_count: 0,
-        };
-
-        self.inner
-            .runtime_db
-            .external_triggers()
-            .upsert(&descriptor)?;
         self.cache_external_trigger_projection(&descriptor).await;
         self.inner.storage.append_event(&AuditEvent::new(
             "external_trigger_created",
             serde_json::json!({
-                "external_trigger_id": descriptor.external_trigger_id,
-                "agent_id": agent_id,
-                "scope": descriptor.scope,
-                "delivery_mode": descriptor.delivery_mode,
+                "external_trigger_id": &descriptor.external_trigger_id,
+                "agent_id": &agent_id,
+                "scope": &descriptor.scope,
+                "delivery_mode": &descriptor.delivery_mode,
             }),
         ))?;
 
-        Ok(ExternalTriggerCapability {
-            external_trigger_id,
-            trigger_url: build_callback_url(&self.inner.callback_base_url, &delivery_mode, &token),
-            target_agent_id: agent_id,
-            delivery_mode,
-            status: ExternalTriggerStatus::Active,
-        })
+        capability_from_record(&self.inner.callback_base_url, &descriptor)
     }
 
     pub async fn deliver_callback(
@@ -220,17 +199,21 @@ impl RuntimeHandle {
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
 
-        // Revoke existing active default trigger if present.
-        if let Some(descriptor) = self
+        let external_trigger_id = crate::ids::external_trigger_id();
+        let token = generate_callback_token();
+        let (descriptor, revoked) = self
             .inner
             .runtime_db
             .external_triggers()
-            .active_default_for_agent(&agent_id)?
-        {
-            let mut revoked = descriptor;
-            revoked.status = ExternalTriggerStatus::Revoked;
-            revoked.revoked_at = Some(now);
-            self.inner.runtime_db.external_triggers().upsert(&revoked)?;
+            .reset_default_for_agent(
+                &agent_id,
+                delivery_mode.clone(),
+                now,
+                external_trigger_id,
+                token,
+            )?;
+
+        if let Some(revoked) = revoked {
             self.cache_external_trigger_projection(&revoked).await;
             self.inner.storage.append_event(&AuditEvent::new(
                 "external_trigger_revoked",
@@ -243,45 +226,19 @@ impl RuntimeHandle {
             ))?;
         }
 
-        // Provision a new trigger with a fresh token.
-        let external_trigger_id = crate::ids::external_trigger_id();
-        let token = generate_callback_token();
-        let descriptor = ExternalTriggerRecord {
-            external_trigger_id: external_trigger_id.clone(),
-            target_agent_id: agent_id.clone(),
-            scope: ExternalTriggerScope::Agent,
-            delivery_mode: delivery_mode.clone(),
-            token: Some(token.clone()),
-            token_hash: crate::callbacks::hash_callback_token(&token),
-            status: ExternalTriggerStatus::Active,
-            created_at: now,
-            revoked_at: None,
-            last_delivered_at: None,
-            delivery_count: 0,
-        };
-        self.inner
-            .runtime_db
-            .external_triggers()
-            .upsert(&descriptor)?;
         self.cache_external_trigger_projection(&descriptor).await;
         self.inner.storage.append_event(&AuditEvent::new(
             "external_trigger_created",
             serde_json::json!({
-                "external_trigger_id": &external_trigger_id,
+                "external_trigger_id": &descriptor.external_trigger_id,
                 "agent_id": &agent_id,
-                "scope": descriptor.scope,
+                "scope": &descriptor.scope,
                 "delivery_mode": &delivery_mode,
                 "reason": "reset_callback",
             }),
         ))?;
 
-        Ok(ExternalTriggerCapability {
-            external_trigger_id,
-            trigger_url: build_callback_url(&self.inner.callback_base_url, &delivery_mode, &token),
-            target_agent_id: agent_id,
-            delivery_mode,
-            status: ExternalTriggerStatus::Active,
-        })
+        capability_from_record(&self.inner.callback_base_url, &descriptor)
     }
 }
 
