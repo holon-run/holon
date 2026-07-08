@@ -1723,6 +1723,7 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
             "TOGETHER_API_KEY",
             "VENICE_API_KEY",
             "VOLCENGINE_API_KEY",
+            "VOLCENGINE_IMAGE_OPENAI_API_KEY",
             "VOLCENGINE_AGENT_API_KEY",
             "VOLCENGINE_CODING_API_KEY",
             "ARK_API_KEY",
