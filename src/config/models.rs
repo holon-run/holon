@@ -37,6 +37,25 @@ impl ProviderEndpointId {
     }
 }
 
+impl Serialize for ProviderEndpointId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderEndpointId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        ProviderEndpointId::parse(&raw).map_err(D::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelRouteCapability {
     Turn,
@@ -145,13 +164,10 @@ impl RuntimeModelCatalog {
             provider_endpoints: config
                 .providers
                 .iter()
-                .map(|(provider, config)| {
-                    (
-                        provider.clone(),
-                        ResolvedProviderEndpointConfig::from_provider_runtime_config(
-                            config.clone(),
-                        ),
-                    )
+                .filter_map(|(provider, config)| {
+                    resolved_provider_endpoint_config(provider.clone(), config.clone())
+                        .ok()
+                        .map(|endpoint| (provider.clone(), endpoint))
                 })
                 .collect(),
             built_in_catalog: BuiltInModelCatalog::default(),
@@ -461,16 +477,6 @@ impl RuntimeModelCatalog {
             primary_model: Some(primary.model),
             candidates,
         }
-    }
-
-    pub fn provider_supports_view_image_observation(&self, provider: &str) -> bool {
-        self.provider_endpoints
-            .iter()
-            .any(|(provider_id, endpoint)| {
-                provider_id.as_str() == provider
-                    && ModelRouteCapability::VisionObservation
-                        .transport_supports(endpoint.runtime_config.transport)
-            })
     }
 
     pub fn select_generate_image_route(

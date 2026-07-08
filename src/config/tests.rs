@@ -23,8 +23,9 @@ use crate::config::{
     save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
     validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig,
     ControlAuthMode, CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile,
-    ModelConfigFile, ModelRef, ModelRouteCapability, ProviderAuthConfig,
-    ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
+    ModelConfigFile, ModelRef, ModelRouteCapability, ModelsConfigFile, ProviderAuthConfig,
+    ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderEndpointConfigFile,
+    ProviderEndpointId, ProviderId, ProviderPlanConfigFile, ProviderRegistry,
     ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
     OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
@@ -320,6 +321,8 @@ fn app_config_applies_provider_overrides_before_materializing_openai_codex_profi
                     },
                     reasoning_effort: None,
                     builtin_web_search: None,
+                    endpoints: BTreeMap::new(),
+                    plans: BTreeMap::new(),
                 },
             )]),
             ..HolonConfigFile::default()
@@ -913,6 +916,8 @@ fn provider_builtin_web_search_rejects_empty_tool_metadata() {
             advertised_tool_type: String::new(),
             backend_kind: "custom_backend".into(),
         }),
+        endpoints: BTreeMap::new(),
+        plans: BTreeMap::new(),
     };
 
     let err = validate_provider_config(&id, &config).unwrap_err();
@@ -940,6 +945,8 @@ fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
             advertised_tool_type: "web_search_20250305".into(),
             backend_kind: "custom_backend".into(),
         }),
+        endpoints: BTreeMap::new(),
+        plans: BTreeMap::new(),
     };
 
     let err = validate_provider_config(&id, &config).unwrap_err();
@@ -966,6 +973,8 @@ fn provider_builtin_web_search_rejects_wrong_tool_type() {
             advertised_tool_type: "web_search_20250305".into(),
             backend_kind: "custom_backend".into(),
         }),
+        endpoints: BTreeMap::new(),
+        plans: BTreeMap::new(),
     };
 
     let err = validate_provider_config(&id, &config).unwrap_err();
@@ -992,6 +1001,8 @@ fn provider_builtin_web_search_accepts_codex_tool_type() {
             advertised_tool_type: "web_search".into(),
             backend_kind: "openai_codex_web_search".into(),
         }),
+        endpoints: BTreeMap::new(),
+        plans: BTreeMap::new(),
     };
 
     validate_provider_config(&id, &config).unwrap();
@@ -1017,6 +1028,8 @@ fn provider_builtin_web_search_rejects_wrong_codex_tool_type() {
             advertised_tool_type: "web_search_preview".into(),
             backend_kind: "openai_codex_web_search".into(),
         }),
+        endpoints: BTreeMap::new(),
+        plans: BTreeMap::new(),
     };
 
     let err = validate_provider_config(&id, &config).unwrap_err();
@@ -1051,6 +1064,8 @@ fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provid
                 advertised_tool_type: "web_search".into(),
                 backend_kind: "openai_codex_web_search".into(),
             }),
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
         },
         &HashMap::new(),
         &CredentialStoreFile::default(),
@@ -1081,6 +1096,8 @@ fn materialize_provider_config_resolves_env_credentials_from_settings() {
             },
             reasoning_effort: None,
             builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
         },
         &settings_env,
         &CredentialStoreFile::default(),
@@ -1169,6 +1186,8 @@ fn materialize_provider_config_resolves_credential_profile() {
             },
             reasoning_effort: None,
             builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
         },
         &settings_env,
         &credential_store,
@@ -1225,6 +1244,8 @@ fn app_config_rejects_bad_credential_store_permissions_when_store_exists() {
             },
             reasoning_effort: None,
             builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
         },
     );
     save_persisted_config_at(&persisted_config_path(dir.path()), &config).unwrap();
@@ -1608,6 +1629,8 @@ fn materialize_provider_config_preserves_builtin_runtime_fields() {
             },
             reasoning_effort: None,
             builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
         },
         &settings_env,
         &CredentialStoreFile::default(),
@@ -1757,6 +1780,8 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
                     },
                     reasoning_effort: None,
                     builtin_web_search: None,
+                    endpoints: BTreeMap::new(),
+                    plans: BTreeMap::new(),
                 },
             )]),
             ..HolonConfigFile::default()
@@ -1788,6 +1813,8 @@ fn model_selection_derives_custom_provider_from_catalog_override() {
         id.clone(),
         ProviderRuntimeConfig {
             id: id.clone(),
+            route_provider: id.clone(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiChatCompletions,
             base_url: "https://custom.example/v1".into(),
             auth: ProviderAuthConfig {
@@ -2018,6 +2045,9 @@ fn schema_contains_expected_keys() {
     assert!(keys.contains(&"model.default"));
     assert!(keys.contains(&"models.catalog"));
     assert!(keys.contains(&"model.unknown_fallback"));
+    assert!(keys.contains(&"providers.<id>.endpoints.<endpoint_id>.transport"));
+    assert!(keys.contains(&"providers.<id>.endpoints.<endpoint_id>.base_url"));
+    assert!(keys.contains(&"providers.<id>.plans.<plan_id>.endpoint"));
     assert!(!keys.contains(&"providers.openai-codex.auth_source"));
     assert!(keys.contains(&"runtime.max_output_tokens"));
     assert!(keys.contains(&"runtime.default_tool_output_tokens"));
@@ -2079,6 +2109,180 @@ fn load_persisted_config_reads_provider_entries() {
             .base_url,
         "https://example.openai.com/v1"
     );
+}
+
+#[test]
+fn provider_endpoint_config_keys_round_trip_default_endpoint() {
+    let mut config = HolonConfigFile::default();
+
+    set_config_key(
+        &mut config,
+        "providers.openai.endpoints.default.transport",
+        "openai_chat_completions",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.openai.endpoints.default.base_url",
+        "https://example.openai.test/v1",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.openai.endpoints.default.auth.env",
+        "CUSTOM_OPENAI_API_KEY",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.openai.plans.coding.endpoint",
+        "default",
+    )
+    .unwrap();
+
+    assert_eq!(
+        get_config_key(&config, "providers.openai.endpoints.default.transport").unwrap(),
+        json!("openai_chat_completions")
+    );
+    assert_eq!(
+        get_config_key(&config, "providers.openai.transport").unwrap(),
+        json!("openai_responses")
+    );
+    assert_eq!(
+        get_config_key(&config, "providers.openai.endpoints.default.base_url").unwrap(),
+        json!("https://example.openai.test/v1")
+    );
+    assert_eq!(
+        get_config_key(&config, "providers.openai.endpoints.default.auth.env").unwrap(),
+        json!("CUSTOM_OPENAI_API_KEY")
+    );
+    assert_eq!(
+        get_config_key(&config, "providers.openai.plans.coding.endpoint").unwrap(),
+        json!("default")
+    );
+
+    unset_config_key(&mut config, "providers.openai.endpoints.default.auth.env").unwrap();
+    assert_eq!(
+        get_config_key(&config, "providers.openai.endpoints.default.auth.env").unwrap(),
+        json!(null)
+    );
+}
+
+#[test]
+fn load_persisted_config_uses_default_endpoint_override_for_runtime_provider() {
+    let home = tempdir().unwrap();
+    let provider_id = ProviderId::parse("custom-openai").unwrap();
+    save_persisted_config_at(
+        &persisted_config_path(home.path()),
+        &HolonConfigFile {
+            model: ModelConfigFile {
+                default: Some("custom-openai/test-model".into()),
+                ..ModelConfigFile::default()
+            },
+            models: ModelsConfigFile {
+                catalog: BTreeMap::from([(
+                    "custom-openai/test-model".to_string(),
+                    ModelRuntimeOverride::default(),
+                )]),
+            },
+            providers: BTreeMap::from([(
+                provider_id.clone(),
+                ProviderConfigFile {
+                    transport: ProviderTransportKind::OpenAiResponses,
+                    base_url: "https://legacy.example/v1".into(),
+                    auth: ProviderAuthConfig::default(),
+                    reasoning_effort: None,
+                    builtin_web_search: None,
+                    endpoints: BTreeMap::from([(
+                        ProviderEndpointId::default_endpoint(),
+                        ProviderEndpointConfigFile {
+                            transport: Some(ProviderTransportKind::OpenAiChatCompletions),
+                            base_url: Some("https://endpoint.example/v1".into()),
+                            auth: Some(ProviderAuthConfig {
+                                source: CredentialSource::None,
+                                kind: CredentialKind::None,
+                                env: None,
+                                profile: None,
+                                external: None,
+                            }),
+                        },
+                    )]),
+                    plans: BTreeMap::new(),
+                },
+            )]),
+            ..HolonConfigFile::default()
+        },
+    )
+    .unwrap();
+
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let provider = config.providers.get(&provider_id).unwrap();
+    assert_eq!(
+        provider.transport,
+        ProviderTransportKind::OpenAiChatCompletions
+    );
+    assert_eq!(provider.base_url, "https://endpoint.example/v1");
+}
+
+#[test]
+fn load_persisted_config_materializes_plan_endpoint_alias() {
+    let home = tempdir().unwrap();
+    let provider_id = ProviderId::parse("custom-openai").unwrap();
+    let endpoint_id = ProviderEndpointId::parse("coding").unwrap();
+    save_persisted_config_at(
+        &persisted_config_path(home.path()),
+        &HolonConfigFile {
+            model: ModelConfigFile {
+                default: Some("custom-openai-coding/test-model".into()),
+                ..ModelConfigFile::default()
+            },
+            providers: BTreeMap::from([(
+                provider_id.clone(),
+                ProviderConfigFile {
+                    transport: ProviderTransportKind::OpenAiResponses,
+                    base_url: "https://default.example/v1".into(),
+                    auth: ProviderAuthConfig::default(),
+                    reasoning_effort: None,
+                    builtin_web_search: None,
+                    endpoints: BTreeMap::from([(
+                        endpoint_id.clone(),
+                        ProviderEndpointConfigFile {
+                            transport: Some(ProviderTransportKind::OpenAiChatCompletions),
+                            base_url: Some("https://coding.example/v1".into()),
+                            auth: Some(ProviderAuthConfig {
+                                source: CredentialSource::None,
+                                kind: CredentialKind::None,
+                                env: None,
+                                profile: None,
+                                external: None,
+                            }),
+                        },
+                    )]),
+                    plans: BTreeMap::from([(
+                        "coding".to_string(),
+                        ProviderPlanConfigFile {
+                            endpoint: Some(endpoint_id),
+                        },
+                    )]),
+                },
+            )]),
+            ..HolonConfigFile::default()
+        },
+    )
+    .unwrap();
+
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let alias = ProviderId::parse("custom-openai-coding").unwrap();
+    let provider = config.providers.get(&alias).unwrap();
+
+    assert_eq!(provider.id, alias);
+    assert_eq!(provider.route_provider, provider_id);
+    assert_eq!(provider.route_endpoint.as_str(), "coding");
+    assert_eq!(
+        provider.transport,
+        ProviderTransportKind::OpenAiChatCompletions
+    );
+    assert_eq!(provider.base_url, "https://coding.example/v1");
 }
 
 #[test]
@@ -2235,6 +2439,8 @@ fn view_image_vision_selection_uses_configured_custom_auto_discovery_capabilitie
         custom_model.provider.clone(),
         ProviderRuntimeConfig {
             id: custom_model.provider.clone(),
+            route_provider: custom_model.provider.clone(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://api.example.com/v1".into(),
             auth: ProviderAuthConfig {
@@ -2471,6 +2677,40 @@ fn runtime_model_catalog_resolves_image_generation_route() {
 }
 
 #[test]
+fn runtime_model_catalog_resolves_legacy_multi_endpoint_provider_identity() {
+    let mut fixture = test_app_config(
+        "openai/gpt-5.4",
+        &["volcengine-image-openai/doubao-seedream-5.0-lite"],
+    );
+    let legacy_provider = ProviderId::parse("volcengine-image-openai").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture.config.providers.insert(
+        legacy_provider.clone(),
+        built_ins.get(&legacy_provider).unwrap().clone(),
+    );
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let route = catalog
+        .select_generate_image_route(&ContextConfig::default(), None, None)
+        .unwrap();
+
+    assert_eq!(
+        route.model_ref.as_string(),
+        "volcengine-image-openai/doubao-seedream-5.0-lite"
+    );
+    assert_eq!(
+        route.requested_capability,
+        ModelRouteCapability::ImageGeneration
+    );
+    assert_eq!(route.endpoint.provider.as_str(), "volcengine");
+    assert_eq!(route.endpoint.endpoint.as_str(), "image-openai");
+    assert_eq!(
+        route.endpoint.runtime_config.id.as_str(),
+        "volcengine-image-openai"
+    );
+}
+
+#[test]
 fn image_generation_config_defaults_to_auto() {
     let mut config = HolonConfigFile::default();
 
@@ -2556,6 +2796,8 @@ fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
         ProviderId::parse("volcengine-image-openai").unwrap(),
         ProviderRuntimeConfig {
             id: ProviderId::parse("volcengine-image-openai").unwrap(),
+            route_provider: ProviderId::parse("volcengine-image-openai").unwrap(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiChatCompletions,
             base_url: "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
             auth: ProviderAuthConfig::default(),
@@ -2758,6 +3000,8 @@ fn default_provider_ready_false_for_credential_source_none() {
         vllm.clone(),
         ProviderRuntimeConfig {
             id: vllm.clone(),
+            route_provider: vllm.clone(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiChatCompletions,
             base_url: "http://127.0.0.1:8000/v1".into(),
             auth: ProviderAuthConfig {

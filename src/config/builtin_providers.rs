@@ -4,9 +4,25 @@ pub fn validate_provider_config(
     provider_id: &ProviderId,
     provider_config: &ProviderConfigFile,
 ) -> Result<()> {
-    parse_url_value("providers.<id>.base_url", &provider_config.base_url)?;
-    validate_provider_auth(provider_id, &provider_config.auth)?;
-    validate_provider_builtin_web_search(provider_id, provider_config)
+    let effective = provider_config_for_default_endpoint(provider_config);
+    parse_url_value("providers.<id>.base_url", &effective.base_url)?;
+    validate_provider_auth(provider_id, &effective.auth)?;
+    for (endpoint_id, endpoint_config) in &provider_config.endpoints {
+        if let Some(base_url) = endpoint_config.base_url.as_deref() {
+            parse_url_value(
+                &format!(
+                    "providers.{}.endpoints.{}.base_url",
+                    provider_id.as_str(),
+                    endpoint_id.as_str()
+                ),
+                base_url,
+            )?;
+        }
+        if let Some(auth) = &endpoint_config.auth {
+            validate_provider_auth(provider_id, auth)?;
+        }
+    }
+    validate_provider_builtin_web_search(provider_id, &effective)
 }
 
 pub(crate) fn persisted_provider_config_mut<'a>(
@@ -24,6 +40,13 @@ pub(crate) fn persisted_provider_config_mut<'a>(
         ));
     }
     let id = ProviderId::parse(rest)?;
+    persisted_provider_config_by_id_mut(config, id)
+}
+
+pub(crate) fn persisted_provider_config_by_id_mut(
+    config: &mut HolonConfigFile,
+    id: ProviderId,
+) -> Result<&mut ProviderConfigFile> {
     if !config.providers.contains_key(&id) {
         let defaults = built_in_provider_default_config(&id)?
             .ok_or_else(|| anyhow!("provider {} not found", id.as_str()))?;
@@ -35,12 +58,155 @@ pub(crate) fn persisted_provider_config_mut<'a>(
         .ok_or_else(|| anyhow!("provider {} not found", id.as_str()))
 }
 
+fn provider_endpoint_key<'a>(rest: &'a str, suffix: &str) -> Option<(&'a str, &'a str)> {
+    let rest = rest.strip_suffix(suffix)?;
+    rest.split_once(".endpoints.")
+}
+
+fn provider_plan_key<'a>(rest: &'a str, suffix: &str) -> Option<(&'a str, &'a str)> {
+    let rest = rest.strip_suffix(suffix)?;
+    rest.split_once(".plans.")
+}
+
+fn provider_endpoint_transport(
+    provider: &ProviderConfigFile,
+    endpoint: &ProviderEndpointId,
+) -> Option<ProviderTransportKind> {
+    provider
+        .endpoints
+        .get(endpoint)
+        .and_then(|endpoint| endpoint.transport)
+        .or_else(|| endpoint_is_default(endpoint).then_some(provider.transport))
+}
+
+fn provider_endpoint_base_url<'a>(
+    provider: &'a ProviderConfigFile,
+    endpoint: &ProviderEndpointId,
+) -> Option<&'a str> {
+    provider
+        .endpoints
+        .get(endpoint)
+        .and_then(|endpoint| endpoint.base_url.as_deref())
+        .or_else(|| endpoint_is_default(endpoint).then_some(provider.base_url.as_str()))
+}
+
+fn provider_endpoint_auth<'a>(
+    provider: &'a ProviderConfigFile,
+    endpoint: &ProviderEndpointId,
+) -> Option<&'a ProviderAuthConfig> {
+    provider
+        .endpoints
+        .get(endpoint)
+        .and_then(|endpoint| endpoint.auth.as_ref())
+        .or_else(|| endpoint_is_default(endpoint).then_some(&provider.auth))
+}
+
+fn endpoint_is_default(endpoint: &ProviderEndpointId) -> bool {
+    endpoint.as_str() == ProviderEndpointId::DEFAULT
+}
+
+fn provider_config_for_default_endpoint(
+    provider_config: &ProviderConfigFile,
+) -> ProviderConfigFile {
+    let mut effective = provider_config.clone();
+    if let Some(default_endpoint) = provider_config
+        .endpoints
+        .get(&ProviderEndpointId::default_endpoint())
+    {
+        if let Some(transport) = default_endpoint.transport {
+            effective.transport = transport;
+        }
+        if let Some(base_url) = &default_endpoint.base_url {
+            effective.base_url = base_url.clone();
+        }
+        if let Some(auth) = &default_endpoint.auth {
+            effective.auth = auth.clone();
+        }
+    }
+    effective
+}
+
 pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
     let rest = key
         .strip_prefix("providers.")
         .ok_or_else(|| unknown_config_key(key))?;
     if rest.is_empty() {
         return Err(anyhow!("providers.<id> requires a non-empty provider id"));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".transport") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_transport(provider, &endpoint))
+            .map(|transport| Value::String(transport.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".base_url") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_base_url(provider, &endpoint))
+            .map(|value| Value::String(value.to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".auth.source") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_auth(provider, &endpoint))
+            .map(|auth| Value::String(auth.source.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".auth.kind") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_auth(provider, &endpoint))
+            .map(|auth| Value::String(auth.kind.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".auth.env") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_auth(provider, &endpoint))
+            .and_then(|auth| auth.env.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".auth.profile") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_auth(provider, &endpoint))
+            .and_then(|auth| auth.profile.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".auth.external") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_auth(provider, &endpoint))
+            .and_then(|auth| auth.external.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, plan)) = provider_plan_key(rest, ".endpoint") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.plans.get(plan))
+            .and_then(|plan| plan.endpoint.as_ref())
+            .map(|endpoint| Value::String(endpoint.as_str().to_string()))
+            .unwrap_or(Value::Null));
     }
     if let Some(id) = rest.strip_suffix(".transport") {
         return Ok(config
@@ -110,6 +276,12 @@ pub(crate) fn set_provider_config_key(
     key: &str,
     raw_value: &str,
 ) -> Result<()> {
+    if set_provider_endpoint_config_key(config, key, raw_value)? {
+        return Ok(());
+    }
+    if set_provider_plan_config_key(config, key, raw_value)? {
+        return Ok(());
+    }
     if key.ends_with(".transport") {
         persisted_provider_config_mut(config, key, ".transport")?.transport =
             ProviderTransportKind::parse(raw_value)?;
@@ -158,6 +330,12 @@ pub(crate) fn set_provider_config_key(
 }
 
 pub(crate) fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
+    if unset_provider_endpoint_config_key(config, key)? {
+        return Ok(());
+    }
+    if unset_provider_plan_config_key(config, key)? {
+        return Ok(());
+    }
     if key.ends_with(".auth.env") {
         persisted_provider_config_mut(config, key, ".auth.env")?
             .auth
@@ -186,6 +364,200 @@ pub(crate) fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str)
     Ok(())
 }
 
+fn set_provider_endpoint_config_key(
+    config: &mut HolonConfigFile,
+    key: &str,
+    raw_value: &str,
+) -> Result<bool> {
+    let rest = key
+        .strip_prefix("providers.")
+        .ok_or_else(|| unknown_config_key(key))?;
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".transport") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider.endpoints.entry(endpoint_id).or_default().transport =
+            Some(ProviderTransportKind::parse(raw_value)?);
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".base_url") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let value = raw_value.trim();
+        parse_url_value(key, value)?;
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider.endpoints.entry(endpoint_id).or_default().base_url = Some(value.to_string());
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.source") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider
+            .endpoints
+            .entry(endpoint_id)
+            .or_default()
+            .auth
+            .get_or_insert_with(ProviderAuthConfig::default)
+            .source = CredentialSource::parse(raw_value)?;
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.kind") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider
+            .endpoints
+            .entry(endpoint_id)
+            .or_default()
+            .auth
+            .get_or_insert_with(ProviderAuthConfig::default)
+            .kind = CredentialKind::parse(raw_value)?;
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.env") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let value = raw_value.trim();
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider
+            .endpoints
+            .entry(endpoint_id)
+            .or_default()
+            .auth
+            .get_or_insert_with(ProviderAuthConfig::default)
+            .env = (!value.is_empty()).then(|| value.to_string());
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.profile") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let value = raw_value.trim();
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider
+            .endpoints
+            .entry(endpoint_id)
+            .or_default()
+            .auth
+            .get_or_insert_with(ProviderAuthConfig::default)
+            .profile = (!value.is_empty()).then(|| value.to_string());
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.external") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let value = raw_value.trim();
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider
+            .endpoints
+            .entry(endpoint_id)
+            .or_default()
+            .auth
+            .get_or_insert_with(ProviderAuthConfig::default)
+            .external = (!value.is_empty()).then(|| value.to_string());
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn set_provider_plan_config_key(
+    config: &mut HolonConfigFile,
+    key: &str,
+    raw_value: &str,
+) -> Result<bool> {
+    let rest = key
+        .strip_prefix("providers.")
+        .ok_or_else(|| unknown_config_key(key))?;
+    let Some((id, plan_id)) = provider_plan_key(rest, ".endpoint") else {
+        return Ok(false);
+    };
+    if plan_id.is_empty() {
+        return Err(anyhow!(
+            "providers.<id>.plans.<plan_id> requires a non-empty plan id"
+        ));
+    }
+    let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+    provider
+        .plans
+        .entry(plan_id.to_string())
+        .or_default()
+        .endpoint = Some(ProviderEndpointId::parse(raw_value)?);
+    Ok(true)
+}
+
+fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -> Result<bool> {
+    let rest = key
+        .strip_prefix("providers.")
+        .ok_or_else(|| unknown_config_key(key))?;
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".transport") {
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        if let Some(endpoint) = provider.endpoints.get_mut(&endpoint_id) {
+            endpoint.transport = None;
+        }
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".base_url") {
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        if let Some(endpoint) = provider.endpoints.get_mut(&endpoint_id) {
+            endpoint.base_url = None;
+        }
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.source") {
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        if let Some(auth) = provider
+            .endpoints
+            .get_mut(&endpoint_id)
+            .and_then(|endpoint| endpoint.auth.as_mut())
+        {
+            auth.source = CredentialSource::None;
+        }
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.kind") {
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        if let Some(auth) = provider
+            .endpoints
+            .get_mut(&endpoint_id)
+            .and_then(|endpoint| endpoint.auth.as_mut())
+        {
+            auth.kind = CredentialKind::None;
+        }
+        return Ok(true);
+    }
+    for suffix in [".auth.env", ".auth.profile", ".auth.external"] {
+        if let Some((id, endpoint_id)) = provider_endpoint_key(rest, suffix) {
+            let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+            let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+            if let Some(auth) = provider
+                .endpoints
+                .get_mut(&endpoint_id)
+                .and_then(|endpoint| endpoint.auth.as_mut())
+            {
+                match suffix {
+                    ".auth.env" => auth.env = None,
+                    ".auth.profile" => auth.profile = None,
+                    ".auth.external" => auth.external = None,
+                    _ => {}
+                }
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn unset_provider_plan_config_key(config: &mut HolonConfigFile, key: &str) -> Result<bool> {
+    let rest = key
+        .strip_prefix("providers.")
+        .ok_or_else(|| unknown_config_key(key))?;
+    let Some((id, plan_id)) = provider_plan_key(rest, ".endpoint") else {
+        return Ok(false);
+    };
+    let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+    if let Some(plan) = provider.plans.get_mut(plan_id) {
+        plan.endpoint = None;
+    }
+    Ok(true)
+}
+
 pub fn built_in_provider_default_config(
     provider_id: &ProviderId,
 ) -> Result<Option<ProviderConfigFile>> {
@@ -206,6 +578,8 @@ pub(crate) fn built_in_provider_default_config_with_settings(
             auth: ProviderAuthConfig::default(),
             reasoning_effort: None,
             builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
         }))
 }
 
@@ -276,6 +650,37 @@ pub(crate) fn resolve_provider_registry(
         )?;
         registry.insert(id.clone(), runtime);
     }
+    for (id, provider_config) in &stored_config.providers {
+        let Some(base_runtime) = registry.get(id).cloned() else {
+            continue;
+        };
+        for (plan_id, plan_config) in &provider_config.plans {
+            let Some(endpoint_id) = plan_config.endpoint.as_ref() else {
+                continue;
+            };
+            if endpoint_id.as_str() != ProviderEndpointId::DEFAULT
+                && !provider_config.endpoints.contains_key(endpoint_id)
+            {
+                return Err(anyhow!(
+                    "providers.{}.plans.{}.endpoint references unknown endpoint {}",
+                    id.as_str(),
+                    plan_id,
+                    endpoint_id.as_str()
+                ));
+            }
+            let alias = provider_plan_alias_id(id, plan_id)?;
+            let mut runtime = materialize_provider_endpoint_config(
+                id,
+                endpoint_id,
+                provider_config,
+                base_runtime.clone(),
+                settings_env,
+                credential_store,
+            )?;
+            runtime.id = alias.clone();
+            registry.insert(alias, runtime);
+        }
+    }
     for provider in registry.values_mut() {
         if provider.credential.is_none() {
             provider.credential =
@@ -285,10 +690,76 @@ pub(crate) fn resolve_provider_registry(
     Ok(registry)
 }
 
+fn provider_plan_alias_id(provider_id: &ProviderId, plan_id: &str) -> Result<ProviderId> {
+    if plan_id.trim().is_empty() {
+        return Err(anyhow!(
+            "providers.{}.plans.<plan_id> requires a non-empty plan id",
+            provider_id.as_str()
+        ));
+    }
+    ProviderId::parse(&format!("{}-{}", provider_id.as_str(), plan_id))
+}
+
+fn materialize_provider_endpoint_config(
+    provider_id: &ProviderId,
+    endpoint_id: &ProviderEndpointId,
+    provider_config: &ProviderConfigFile,
+    mut runtime: ProviderRuntimeConfig,
+    settings_env: &HashMap<String, String>,
+    credential_store: &CredentialStoreFile,
+) -> Result<ProviderRuntimeConfig> {
+    if let Some(endpoint_config) = provider_config.endpoints.get(endpoint_id) {
+        if let Some(transport) = endpoint_config.transport {
+            runtime.transport = transport;
+        }
+        if let Some(base_url) = endpoint_config.base_url.as_deref() {
+            parse_url_value(
+                &format!(
+                    "providers.{}.endpoints.{}.base_url",
+                    provider_id.as_str(),
+                    endpoint_id.as_str()
+                ),
+                base_url,
+            )?;
+            runtime.base_url = base_url.to_string();
+        }
+        if let Some(auth) = endpoint_config.auth.as_ref() {
+            validate_provider_auth(provider_id, auth)?;
+            runtime.auth = auth.clone();
+            runtime.credential = resolve_provider_credential(auth, settings_env, credential_store)?;
+        }
+        if endpoint_id.as_str() != ProviderEndpointId::DEFAULT {
+            runtime.builtin_web_search = None;
+        }
+    }
+    runtime.route_provider = provider_id.clone();
+    runtime.route_endpoint = endpoint_id.clone();
+    Ok(runtime)
+}
+
 pub(crate) fn built_in_provider_registry_with_settings(
     settings_env: &HashMap<String, String>,
 ) -> Result<ProviderRegistry> {
     Ok(BuiltInProviderCatalog::with_settings(settings_env)?.into_legacy_registry())
+}
+
+pub(crate) fn resolved_provider_endpoint_config(
+    legacy_provider: ProviderId,
+    runtime_config: ProviderRuntimeConfig,
+) -> Result<ResolvedProviderEndpointConfig> {
+    let (provider, endpoint) = if runtime_config.route_provider.as_str().is_empty() {
+        built_in_provider_endpoint_identity(&legacy_provider)?
+    } else {
+        (
+            runtime_config.route_provider.clone(),
+            runtime_config.route_endpoint.clone(),
+        )
+    };
+    Ok(ResolvedProviderEndpointConfig {
+        provider,
+        endpoint,
+        runtime_config,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -316,8 +787,10 @@ impl BuiltInProviderCatalog {
         provider: ProviderId,
         endpoint: ProviderEndpointId,
         legacy_provider: ProviderId,
-        runtime_config: ProviderRuntimeConfig,
+        mut runtime_config: ProviderRuntimeConfig,
     ) {
+        runtime_config.route_provider = provider.clone();
+        runtime_config.route_endpoint = endpoint.clone();
         self.endpoints.push(BuiltInProviderEndpointDefinition {
             provider,
             endpoint,
@@ -403,7 +876,9 @@ pub(crate) fn populate_built_in_provider_catalog(
         ProviderEndpointId::default_endpoint(),
         openai_codex.clone(),
         ProviderRuntimeConfig {
-            id: openai_codex,
+            id: openai_codex.clone(),
+            route_provider: openai_codex,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: env::var("HOLON_OPENAI_CODEX_BASE_URL")
                 .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".to_string()),
@@ -433,7 +908,9 @@ pub(crate) fn populate_built_in_provider_catalog(
         ProviderEndpointId::default_endpoint(),
         openai.clone(),
         ProviderRuntimeConfig {
-            id: openai,
+            id: openai.clone(),
+            route_provider: openai,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: env::var("HOLON_OPENAI_BASE_URL")
                 .ok()
@@ -461,7 +938,9 @@ pub(crate) fn populate_built_in_provider_catalog(
         ProviderEndpointId::default_endpoint(),
         anthropic.clone(),
         ProviderRuntimeConfig {
-            id: anthropic,
+            id: anthropic.clone(),
+            route_provider: anthropic,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::AnthropicMessages,
             base_url: get_config_value("ANTHROPIC_BASE_URL", None, settings_env)
                 .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
@@ -487,7 +966,9 @@ pub(crate) fn populate_built_in_provider_catalog(
         ProviderEndpointId::default_endpoint(),
         gemini.clone(),
         ProviderRuntimeConfig {
-            id: gemini,
+            id: gemini.clone(),
+            route_provider: gemini,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::GeminiGenerateContent,
             base_url: get_config_value("HOLON_GEMINI_BASE_URL", None, settings_env)
                 .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string()),
@@ -868,7 +1349,9 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
         ProviderEndpointId::default_endpoint(),
         id.clone(),
         ProviderRuntimeConfig {
-            id,
+            id: id.clone(),
+            route_provider: id,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::AnthropicMessages,
             base_url: get_config_value("HOLON_VERCEL_AI_GATEWAY_BASE_URL", None, settings_env)
                 .unwrap_or_else(|| "https://ai-gateway.vercel.sh".to_string()),
@@ -938,11 +1421,13 @@ pub(crate) fn insert_builtin_http_provider_with_context_management(
             }
         });
     catalog.insert_endpoint(
-        provider_id,
-        endpoint_id,
+        provider_id.clone(),
+        endpoint_id.clone(),
         id.clone(),
         ProviderRuntimeConfig {
-            id,
+            id: id.clone(),
+            route_provider: provider_id,
+            route_endpoint: endpoint_id,
             transport,
             base_url,
             auth: env_name
@@ -1058,14 +1543,20 @@ pub(crate) fn materialize_provider_config(
     credential_store: &CredentialStoreFile,
     built_in: Option<ProviderRuntimeConfig>,
 ) -> Result<ProviderRuntimeConfig> {
-    validate_provider_auth(&id, &provider_config.auth)?;
-    let credential =
-        resolve_provider_credential(&provider_config.auth, settings_env, credential_store)?;
+    let effective_provider_config = provider_config_for_default_endpoint(&provider_config);
+    validate_provider_auth(&id, &effective_provider_config.auth)?;
+    let credential = resolve_provider_credential(
+        &effective_provider_config.auth,
+        settings_env,
+        credential_store,
+    )?;
     let mut runtime = built_in.unwrap_or_else(|| ProviderRuntimeConfig {
         id: id.clone(),
-        transport: provider_config.transport,
-        base_url: provider_config.base_url.clone(),
-        auth: provider_config.auth.clone(),
+        route_provider: id.clone(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: effective_provider_config.transport,
+        base_url: effective_provider_config.base_url.clone(),
+        auth: effective_provider_config.auth.clone(),
         credential: None,
         credential_store_path: None,
         codex_home: None,
@@ -1077,11 +1568,11 @@ pub(crate) fn materialize_provider_config(
     if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
         validate_openai_reasoning_effort(reasoning_effort)?;
     }
-    validate_provider_builtin_web_search(&id, &provider_config)?;
+    validate_provider_builtin_web_search(&id, &effective_provider_config)?;
     runtime.id = id;
-    runtime.transport = provider_config.transport;
-    runtime.base_url = provider_config.base_url;
-    runtime.auth = provider_config.auth;
+    runtime.transport = effective_provider_config.transport;
+    runtime.base_url = effective_provider_config.base_url;
+    runtime.auth = effective_provider_config.auth;
     runtime.credential = credential;
     if provider_config.reasoning_effort.is_some() {
         runtime.reasoning_effort = provider_config.reasoning_effort;
@@ -1283,7 +1774,9 @@ pub fn provider_registry_for_tests(
     registry.insert(
         openai_codex.clone(),
         ProviderRuntimeConfig {
-            id: openai_codex,
+            id: openai_codex.clone(),
+            route_provider: openai_codex,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: "https://chatgpt.com/backend-api/codex".into(),
             auth: ProviderAuthConfig {
@@ -1306,7 +1799,9 @@ pub fn provider_registry_for_tests(
     registry.insert(
         openai.clone(),
         ProviderRuntimeConfig {
-            id: openai,
+            id: openai.clone(),
+            route_provider: openai,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://api.openai.com/v1".into(),
             auth: ProviderAuthConfig {
@@ -1329,7 +1824,9 @@ pub fn provider_registry_for_tests(
     registry.insert(
         anthropic.clone(),
         ProviderRuntimeConfig {
-            id: anthropic,
+            id: anthropic.clone(),
+            route_provider: anthropic,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::AnthropicMessages,
             base_url: "https://api.anthropic.com".into(),
             auth: ProviderAuthConfig {
@@ -1352,7 +1849,9 @@ pub fn provider_registry_for_tests(
     registry.insert(
         gemini.clone(),
         ProviderRuntimeConfig {
-            id: gemini,
+            id: gemini.clone(),
+            route_provider: gemini,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::GeminiGenerateContent,
             base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
             auth: ProviderAuthConfig {

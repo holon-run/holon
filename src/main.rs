@@ -3525,6 +3525,8 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                 },
                 reasoning_effort: None,
                 builtin_web_search: None,
+                endpoints: BTreeMap::new(),
+                plans: BTreeMap::new(),
             };
             validate_provider_config(&id, &provider_config)?;
 

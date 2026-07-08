@@ -147,6 +147,26 @@ pub struct ProviderConfigFile {
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub endpoints: BTreeMap<ProviderEndpointId, ProviderEndpointConfigFile>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plans: BTreeMap<String, ProviderPlanConfigFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderEndpointConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<ProviderTransportKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<ProviderAuthConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderPlanConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<ProviderEndpointId>,
 }
 
 pub(crate) fn default_true() -> bool {
