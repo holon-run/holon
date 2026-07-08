@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use anyhow::{anyhow, Result};
 
@@ -71,11 +71,11 @@ pub(crate) fn build_candidate(
     model_ref: &ModelRef,
 ) -> Result<ProviderCandidate> {
     let route = resolve_model_route_for_candidate(config, model_ref, ModelRouteCapability::Turn)?;
-    build_candidate_from_model_route(config, &route)
+    build_candidate_from_model_route(&config.home_dir, &route)
 }
 
 pub(crate) fn build_candidate_from_model_route(
-    config: &AppConfig,
+    home_dir: &Path,
     route: &ResolvedModelRoute,
 ) -> Result<ProviderCandidate> {
     let model_ref = &route.model_ref;
@@ -93,7 +93,7 @@ pub(crate) fn build_candidate_from_model_route(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
                 openai_compaction_policy,
                 resolved_policy.verbosity,
                 resolved_policy.capabilities.supports_reasoning,
@@ -104,7 +104,7 @@ pub(crate) fn build_candidate_from_model_route(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
                 openai_compaction_policy,
             )?)
         }
@@ -113,7 +113,7 @@ pub(crate) fn build_candidate_from_model_route(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
                 resolved_policy.capabilities.supports_reasoning,
             )?)
         }
@@ -122,7 +122,7 @@ pub(crate) fn build_candidate_from_model_route(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
             )?)
         }
         ProviderTransportKind::GeminiGenerateContent => {
@@ -130,7 +130,7 @@ pub(crate) fn build_candidate_from_model_route(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,
-                &config.home_dir,
+                home_dir,
             )?)
         }
     };

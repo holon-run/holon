@@ -498,7 +498,8 @@ impl RuntimeHandle {
         let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
             anyhow!("ViewImage observation generation requires host-managed provider configuration")
         })?;
-        let provider = build_candidate_from_model_route(&reconfig.config, &vision_route)?.provider;
+        let provider =
+            build_candidate_from_model_route(&reconfig.config.home_dir, &vision_route)?.provider;
         let mut request = ProviderTurnRequest::plain(
             "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return exactly one JSON object and no markdown, prose, or implementation advice. The JSON object must match this shape: {\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"string\",\"ocr\":[],\"elements\":[],\"relations\":[],\"issues\":[],\"uncertainties\":[],\"external_sources\":[]}. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary, uncertainties. The uncertainties field must be an array of strings; use [] when there are no caveats. The ocr, elements, relations, issues, and external_sources fields must be arrays of objects; omit them or use [] when empty. Include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
             vec![ConversationMessage::UserImage {
@@ -545,7 +546,8 @@ impl RuntimeHandle {
         let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
             anyhow!("image generation requires host-managed provider configuration")
         })?;
-        let provider = build_candidate_from_model_route(&reconfig.config, &route)?.provider;
+        let provider =
+            build_candidate_from_model_route(&reconfig.config.home_dir, &route)?.provider;
         provider.generate_image(request).await
     }
 
