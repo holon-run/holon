@@ -174,6 +174,31 @@ Options:
 - `--credential-env`: Environment variable name (when source is `env`)
 - `--credential-profile`: Credential store profile (when source is `credential_profile`)
 
+### Provider Endpoints and Plans
+
+Provider configuration separates a provider account from its concrete endpoints.
+The legacy provider keys still configure the default endpoint:
+
+```bash
+holon config set providers.openai.transport openai_responses
+holon config set providers.openai.base_url "https://api.openai.com/v1"
+```
+
+These are shortcuts for `providers.openai.endpoints.default.transport` and
+`providers.openai.endpoints.default.base_url`. Use endpoint keys when the same
+provider account needs another transport, base URL, or credential policy:
+
+```bash
+holon config set providers.volcengine.endpoints.image-openai.transport openai_chat_completions
+holon config set providers.volcengine.endpoints.image-openai.base_url "https://ark.cn-beijing.volces.com/api/plan/v3"
+holon config set providers.volcengine.plans.image-openai.endpoint image-openai
+```
+
+A plan maps a stable provider alias such as `volcengine-image-openai` onto a
+named endpoint while keeping the user-facing model reference shape
+`provider/model`. Existing built-in aliases and older `provider/model`
+references continue to work.
+
 ### Removing a Provider
 
 ```bash

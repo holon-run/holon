@@ -487,6 +487,8 @@ fn provider_config_file_from_runtime(provider: &ProviderRuntimeConfig) -> Provid
         auth: provider.auth.clone(),
         reasoning_effort: provider.reasoning_effort.clone(),
         builtin_web_search: provider.builtin_web_search.clone(),
+        endpoints: BTreeMap::new(),
+        plans: BTreeMap::new(),
     }
 }
 
@@ -971,7 +973,10 @@ fn overall_status(sections: &[OnboardingSection]) -> OnboardingStatus {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        path::PathBuf,
+    };
 
     use tempfile::tempdir;
 
@@ -979,8 +984,8 @@ mod tests {
         config::{
             credential_store_path, load_credential_store_at, load_persisted_config_at,
             provider_registry_for_tests, AppConfig, ControlAuthMode, CredentialKind,
-            CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile, ProviderId,
-            ProviderRuntimeConfig, ProviderTransportKind,
+            CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile, ProviderEndpointId,
+            ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
         },
         model_catalog::ModelRuntimeOverride,
         onboarding::{
@@ -1092,6 +1097,8 @@ mod tests {
                 },
                 reasoning_effort: None,
                 builtin_web_search: None,
+                endpoints: BTreeMap::new(),
+                plans: BTreeMap::new(),
             },
         );
 
@@ -1146,6 +1153,8 @@ mod tests {
         let custom_provider = ProviderId::parse("custom-openai").unwrap();
         let custom_provider_config = ProviderRuntimeConfig {
             id: custom_provider.clone(),
+            route_provider: custom_provider.clone(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiChatCompletions,
             base_url: "https://custom.example/v1".into(),
             auth: ProviderAuthConfig {
@@ -1174,11 +1183,15 @@ mod tests {
                 auth: custom_provider_config.auth.clone(),
                 reasoning_effort: None,
                 builtin_web_search: None,
+                endpoints: BTreeMap::new(),
+                plans: BTreeMap::new(),
             },
         );
         let deepseek = ProviderId::parse("deepseek").unwrap();
         let deepseek_config = ProviderRuntimeConfig {
             id: deepseek.clone(),
+            route_provider: deepseek.clone(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::AnthropicMessages,
             base_url: "https://api.deepseek.com/anthropic".into(),
             auth: ProviderAuthConfig {

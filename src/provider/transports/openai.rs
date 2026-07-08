@@ -5367,7 +5367,7 @@ mod tests {
     use crate::auth::CodexCliCredential;
     use crate::config::{
         load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
-        CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderId,
+        CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderEndpointId, ProviderId,
         ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
     };
     use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
@@ -5426,6 +5426,8 @@ mod tests {
     fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
             id: ProviderId::openai_codex(),
+            route_provider: ProviderId::openai_codex(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: "https://chatgpt.com/backend-api/codex".into(),
             auth: ProviderAuthConfig {

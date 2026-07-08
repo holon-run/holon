@@ -68,6 +68,8 @@ pub const OPENAI_CODEX_CREDENTIAL_PROFILE: &str = "openai-codex";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderRuntimeConfig {
     pub id: ProviderId,
+    pub route_provider: ProviderId,
+    pub route_endpoint: ProviderEndpointId,
     pub transport: ProviderTransportKind,
     pub base_url: String,
     pub auth: ProviderAuthConfig,

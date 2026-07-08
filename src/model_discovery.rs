@@ -348,6 +348,8 @@ mod tests {
     fn openrouter_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
             id: ProviderId::parse("openrouter").unwrap(),
+            route_provider: ProviderId::parse("openrouter").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
             transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
             base_url: "https://openrouter.ai/api/v1".into(),
             auth: crate::config::ProviderAuthConfig {

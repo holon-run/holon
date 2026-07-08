@@ -8,7 +8,7 @@ use std::sync::{
 use super::support::*;
 use super::*;
 use crate::config::{
-    CredentialKind, CredentialSource, ModelRef, ProviderAuthConfig, ProviderId,
+    CredentialKind, CredentialSource, ModelRef, ProviderAuthConfig, ProviderEndpointId, ProviderId,
     ProviderRuntimeConfig, ProviderTransportKind,
 };
 use crate::provider::retry::{
@@ -1556,7 +1556,9 @@ fn build_provider_from_config_uses_custom_openai_responses_provider() {
     fixture.config.providers.insert(
         provider_id.clone(),
         ProviderRuntimeConfig {
-            id: provider_id,
+            id: provider_id.clone(),
+            route_provider: provider_id,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://openrouter.example/v1".into(),
             auth: ProviderAuthConfig {
@@ -1601,7 +1603,9 @@ fn build_candidate_accepts_openai_responses_without_auth() {
     fixture.config.providers.insert(
         provider_id.clone(),
         ProviderRuntimeConfig {
-            id: provider_id,
+            id: provider_id.clone(),
+            route_provider: provider_id,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "http://127.0.0.1:8080/v1".into(),
             auth: ProviderAuthConfig {
