@@ -5,10 +5,9 @@ use anyhow::{anyhow, Result};
 use crate::{
     config::{
         AppConfig, ModelRef, ModelRouteCapability, ProviderTransportKind, ResolvedModelRoute,
-        ResolvedProviderEndpointConfig,
+        RuntimeModelCatalog,
     },
     context::ContextConfig,
-    model_catalog::BuiltInModelCatalog,
     provider::fallback::FallbackProvider,
 };
 
@@ -153,37 +152,23 @@ pub(crate) fn resolve_model_route_for_candidate(
             model_ref.provider.as_str()
         )
     })?;
-    let resolved_policy = resolved_model_policy_for_candidate(config, model_ref);
-    if !requested_capability.model_supports(&resolved_policy) {
-        return Err(anyhow!(
-            "model {} does not support requested route capability {:?}",
-            model_ref.as_string(),
-            requested_capability
-        ));
-    }
-    if !requested_capability.transport_supports(provider_config.transport) {
-        return Err(anyhow!(
-            "provider {} default endpoint transport {} does not support requested route capability {:?}",
-            model_ref.provider.as_str(),
-            provider_config.transport.as_str(),
-            requested_capability
-        ));
-    }
-    Ok(ResolvedModelRoute {
-        model_ref: model_ref.clone(),
-        endpoint: ResolvedProviderEndpointConfig::from_provider_runtime_config(
-            provider_config.clone(),
-        ),
-        policy: resolved_policy,
-        requested_capability,
-    })
+
+    let base_context_config = base_context_config_for_candidate(config);
+    RuntimeModelCatalog::from_config(config)
+        .resolve_model_route(&base_context_config, model_ref, requested_capability)
+        .ok_or_else(|| {
+            anyhow!(
+                "provider {} default endpoint transport {} cannot route model {} for requested route capability {:?}",
+                model_ref.provider.as_str(),
+                provider_config.transport.as_str(),
+                model_ref.as_string(),
+                requested_capability
+            )
+        })
 }
 
-fn resolved_model_policy_for_candidate(
-    config: &AppConfig,
-    model_ref: &ModelRef,
-) -> crate::model_catalog::ResolvedRuntimeModelPolicy {
-    let base_context_config = ContextConfig {
+fn base_context_config_for_candidate(config: &AppConfig) -> ContextConfig {
+    ContextConfig {
         recent_messages: config.context_window_messages,
         recent_briefs: config.context_window_briefs,
         compaction_trigger_messages: config.compaction_trigger_messages,
@@ -194,13 +179,5 @@ fn resolved_model_policy_for_candidate(
         recent_episode_candidates: config.recent_episode_candidates,
         max_relevant_episodes: config.max_relevant_episodes,
         ..ContextConfig::default()
-    };
-    BuiltInModelCatalog::default().resolve_policy(
-        model_ref,
-        &config.validated_model_overrides,
-        &config.model_discovery_cache.models(),
-        config.validated_unknown_model_fallback.as_ref(),
-        &base_context_config,
-        config.runtime_max_output_tokens,
-    )
+    }
 }
