@@ -727,6 +727,79 @@ impl ExternalTriggerRepository<'_> {
             .transaction(|tx| upsert_external_trigger_tx(tx, record))
     }
 
+    pub fn ensure_default_for_agent(
+        &self,
+        agent_id: &str,
+        delivery_mode: CallbackDeliveryMode,
+        now: DateTime<Utc>,
+        external_trigger_id: String,
+        token: String,
+    ) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>, bool)> {
+        self.db.transaction(|tx| {
+            if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
+                if descriptor.token.is_some() {
+                    return Ok((descriptor, None, false));
+                }
+
+                let mut revoked = descriptor;
+                revoked.status = ExternalTriggerStatus::Revoked;
+                revoked.revoked_at = Some(now);
+                upsert_external_trigger_tx(tx, &revoked)?;
+
+                let descriptor = default_external_trigger_record(
+                    agent_id,
+                    delivery_mode.clone(),
+                    now,
+                    external_trigger_id.clone(),
+                    token.clone(),
+                );
+                upsert_external_trigger_tx(tx, &descriptor)?;
+                return Ok((descriptor, Some(revoked), true));
+            }
+
+            let descriptor = default_external_trigger_record(
+                agent_id,
+                delivery_mode.clone(),
+                now,
+                external_trigger_id.clone(),
+                token.clone(),
+            );
+            upsert_external_trigger_tx(tx, &descriptor)?;
+            Ok((descriptor, None, true))
+        })
+    }
+
+    pub fn reset_default_for_agent(
+        &self,
+        agent_id: &str,
+        delivery_mode: CallbackDeliveryMode,
+        now: DateTime<Utc>,
+        external_trigger_id: String,
+        token: String,
+    ) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>)> {
+        self.db.transaction(|tx| {
+            let revoked = if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
+                let mut revoked = descriptor;
+                revoked.status = ExternalTriggerStatus::Revoked;
+                revoked.revoked_at = Some(now);
+                upsert_external_trigger_tx(tx, &revoked)?;
+                Some(revoked)
+            } else {
+                None
+            };
+
+            let descriptor = default_external_trigger_record(
+                agent_id,
+                delivery_mode.clone(),
+                now,
+                external_trigger_id.clone(),
+                token.clone(),
+            );
+            upsert_external_trigger_tx(tx, &descriptor)?;
+            Ok((descriptor, revoked))
+        })
+    }
+
     pub fn latest(&self, external_trigger_id: &str) -> Result<Option<ExternalTriggerRecord>> {
         let connection = self.db.connection()?;
         connection
@@ -2560,6 +2633,46 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
         ],
     )?;
     Ok(())
+}
+
+fn active_default_for_agent_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<ExternalTriggerRecord>> {
+    tx.query_row(
+        "SELECT payload_json
+         FROM external_triggers
+         WHERE target_agent_id = ?1 AND status = 'active'
+         ORDER BY created_at DESC, external_trigger_id ASC
+         LIMIT 1",
+        [agent_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|payload| decode_external_trigger_payload(&payload))
+    .transpose()
+}
+
+fn default_external_trigger_record(
+    agent_id: &str,
+    delivery_mode: CallbackDeliveryMode,
+    now: DateTime<Utc>,
+    external_trigger_id: String,
+    token: String,
+) -> ExternalTriggerRecord {
+    ExternalTriggerRecord {
+        external_trigger_id,
+        target_agent_id: agent_id.to_string(),
+        scope: ExternalTriggerScope::Agent,
+        delivery_mode,
+        token: Some(token.clone()),
+        token_hash: crate::callbacks::hash_callback_token(&token),
+        status: ExternalTriggerStatus::Active,
+        created_at: now,
+        revoked_at: None,
+        last_delivered_at: None,
+        delivery_count: 0,
+    }
 }
 
 fn insert_operator_notification_tx(
