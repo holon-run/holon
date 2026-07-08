@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{
-    config::{AppConfig, ModelRef, RuntimeModelCatalog},
+    config::{AppConfig, ModelRef, ModelRouteCapability, RuntimeModelCatalog},
     context::ContextConfig,
     host::RuntimeHostBridge,
     model_catalog::BuiltInModelMetadata,
@@ -20,10 +20,10 @@ use crate::{
         ModelDiscoveryCacheStatus, DEFAULT_DISCOVERY_CACHE_TTL,
     },
     provider::{
-        build_provider_from_model_chain, resolved_model_availability, AgentProvider,
-        ConversationMessage, ModelBlock, ProviderGenerateImageRequest,
-        ProviderGenerateImageResponse, ProviderJsonSchemaResponseFormat,
-        ProviderResponseFormatRequest, ProviderTurnRequest,
+        build_candidate_from_model_route, build_provider_from_model_chain,
+        resolved_model_availability, AgentProvider, ConversationMessage, ModelBlock,
+        ProviderGenerateImageRequest, ProviderGenerateImageResponse,
+        ProviderJsonSchemaResponseFormat, ProviderResponseFormatRequest, ProviderTurnRequest,
     },
     queue::RuntimeQueue,
     runtime_db::RuntimeDb,
@@ -481,23 +481,24 @@ impl RuntimeHandle {
             .vision_model
             .as_deref()
             .ok_or_else(|| anyhow!("vision selection did not include a model"))?;
-        let vision_snap = self.inner.config_snapshot.load();
-        if !vision_snap
-            .model_catalog
-            .provider_supports_view_image_observation(provider_name)
-        {
-            return Err(anyhow!(
-                "vision model {provider_name}/{model_name} is not supported by ViewImage observation generation yet"
-            ));
-        }
         let snap = self.inner.config_snapshot.load();
+        let vision_model_ref = ModelRef::parse(&format!("{provider_name}/{model_name}"))?;
+        let vision_route = snap
+            .model_catalog
+            .resolve_model_route(
+                &snap.base_context_config,
+                &vision_model_ref,
+                ModelRouteCapability::VisionObservation,
+            )
+            .ok_or_else(|| {
+                anyhow!(
+                    "vision model {provider_name}/{model_name} is not supported by ViewImage observation generation yet"
+                )
+            })?;
         let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
             anyhow!("ViewImage observation generation requires host-managed provider configuration")
         })?;
-        let provider = build_provider_from_model_chain(
-            &reconfig.config,
-            &[ModelRef::parse(&format!("{provider_name}/{model_name}"))?],
-        )?;
+        let provider = build_candidate_from_model_route(&reconfig.config, &vision_route)?.provider;
         let mut request = ProviderTurnRequest::plain(
             "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return exactly one JSON object and no markdown, prose, or implementation advice. The JSON object must match this shape: {\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"string\",\"ocr\":[],\"elements\":[],\"relations\":[],\"issues\":[],\"uncertainties\":[],\"external_sources\":[]}. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary, uncertainties. The uncertainties field must be an array of strings; use [] when there are no caveats. The ocr, elements, relations, issues, and external_sources fields must be arrays of objects; omit them or use [] when empty. Include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
             vec![ConversationMessage::UserImage {
@@ -533,9 +534,9 @@ impl RuntimeHandle {
     ) -> Result<ProviderGenerateImageResponse> {
         let state = self.agent_state().await?;
         let snap = self.inner.config_snapshot.load();
-        let model_ref = snap
+        let route = snap
             .model_catalog
-            .select_generate_image_model(
+            .select_generate_image_route(
                 &snap.base_context_config,
                 state.model_override.as_ref(),
                 state.pending_fallback_model.as_ref(),
@@ -544,7 +545,7 @@ impl RuntimeHandle {
         let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
             anyhow!("image generation requires host-managed provider configuration")
         })?;
-        let provider = build_provider_from_model_chain(&reconfig.config, &[model_ref])?;
+        let provider = build_candidate_from_model_route(&reconfig.config, &route)?.provider;
         provider.generate_image(request).await
     }
 

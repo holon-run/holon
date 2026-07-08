@@ -3,7 +3,10 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 
 use crate::{
-    config::{AppConfig, ModelRef, ProviderTransportKind},
+    config::{
+        AppConfig, ModelRef, ModelRouteCapability, ProviderTransportKind, ResolvedModelRoute,
+        ResolvedProviderEndpointConfig,
+    },
     context::ContextConfig,
     model_catalog::BuiltInModelCatalog,
     provider::fallback::FallbackProvider,
@@ -67,14 +70,17 @@ pub(crate) fn build_candidate(
     config: &AppConfig,
     model_ref: &ModelRef,
 ) -> Result<ProviderCandidate> {
-    let provider_config = config.providers.get(&model_ref.provider).ok_or_else(|| {
-        anyhow!(
-            "unknown provider {}; configure providers.{}",
-            model_ref.provider.as_str(),
-            model_ref.provider.as_str()
-        )
-    })?;
-    let resolved_policy = resolved_model_policy_for_candidate(config, model_ref);
+    let route = resolve_model_route_for_candidate(config, model_ref, ModelRouteCapability::Turn)?;
+    build_candidate_from_model_route(config, &route)
+}
+
+pub(crate) fn build_candidate_from_model_route(
+    config: &AppConfig,
+    route: &ResolvedModelRoute,
+) -> Result<ProviderCandidate> {
+    let model_ref = &route.model_ref;
+    let provider_config = route.provider_config();
+    let resolved_policy = &route.policy;
     let openai_compaction_policy = OpenAiCompactionPolicy {
         trigger_input_tokens: resolved_policy.compaction_trigger_estimated_tokens as u64,
     };
@@ -130,8 +136,46 @@ pub(crate) fn build_candidate(
     };
     Ok(ProviderCandidate {
         model_ref: model_ref.as_string(),
-        provider_name: model_ref.provider.as_str().to_string(),
+        provider_name: route.provider_name().to_string(),
         provider,
+    })
+}
+
+pub(crate) fn resolve_model_route_for_candidate(
+    config: &AppConfig,
+    model_ref: &ModelRef,
+    requested_capability: ModelRouteCapability,
+) -> Result<ResolvedModelRoute> {
+    let provider_config = config.providers.get(&model_ref.provider).ok_or_else(|| {
+        anyhow!(
+            "unknown provider {}; configure providers.{}",
+            model_ref.provider.as_str(),
+            model_ref.provider.as_str()
+        )
+    })?;
+    let resolved_policy = resolved_model_policy_for_candidate(config, model_ref);
+    if !requested_capability.model_supports(&resolved_policy) {
+        return Err(anyhow!(
+            "model {} does not support requested route capability {:?}",
+            model_ref.as_string(),
+            requested_capability
+        ));
+    }
+    if !requested_capability.transport_supports(provider_config.transport) {
+        return Err(anyhow!(
+            "provider {} default endpoint transport {} does not support requested route capability {:?}",
+            model_ref.provider.as_str(),
+            provider_config.transport.as_str(),
+            requested_capability
+        ));
+    }
+    Ok(ResolvedModelRoute {
+        model_ref: model_ref.clone(),
+        endpoint: ResolvedProviderEndpointConfig::from_provider_runtime_config(
+            provider_config.clone(),
+        ),
+        policy: resolved_policy,
+        requested_capability,
     })
 }
 
