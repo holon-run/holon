@@ -16,6 +16,22 @@ impl ProviderEndpointId {
         Self(Self::DEFAULT.to_string())
     }
 
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Err(anyhow!("provider endpoint id must not be empty"));
+        }
+        if !normalized
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+        {
+            return Err(anyhow!(
+                "invalid provider endpoint id {normalized}; expected lowercase ascii, digits, '-' or '_'"
+            ));
+        }
+        Ok(Self(normalized))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

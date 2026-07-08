@@ -197,9 +197,9 @@ pub(crate) fn built_in_provider_default_config_with_settings(
     provider_id: &ProviderId,
     settings_env: &HashMap<String, String>,
 ) -> Result<Option<ProviderConfigFile>> {
-    let registry = built_in_provider_registry_with_settings(&settings_env)?;
-    Ok(registry
-        .get(provider_id)
+    let catalog = BuiltInProviderCatalog::with_settings(settings_env)?;
+    Ok(catalog
+        .legacy_runtime(provider_id)
         .map(|provider| ProviderConfigFile {
             transport: provider.transport,
             base_url: provider.base_url.clone(),
@@ -212,6 +212,9 @@ pub(crate) fn built_in_provider_default_config_with_settings(
 /// Provider metadata for documentation generation.
 #[derive(Debug, Clone)]
 pub struct ProviderDocEntry {
+    pub provider: ProviderId,
+    pub endpoint: ProviderEndpointId,
+    pub legacy_provider: ProviderId,
     pub id: ProviderId,
     pub transport: ProviderTransportKind,
     pub base_url: String,
@@ -221,18 +224,7 @@ pub struct ProviderDocEntry {
 /// Returns built-in provider metadata for documentation generation.
 pub fn built_in_provider_doc_entries() -> Result<Vec<ProviderDocEntry>> {
     let settings_env = HashMap::new();
-    let registry = built_in_provider_registry_with_settings(&settings_env)?;
-    let mut entries: Vec<ProviderDocEntry> = registry
-        .values()
-        .map(|provider| ProviderDocEntry {
-            id: provider.id.clone(),
-            transport: provider.transport,
-            base_url: provider.base_url.clone(),
-            auth_env: provider.auth.env.clone(),
-        })
-        .collect();
-    entries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
-    Ok(entries)
+    Ok(BuiltInProviderCatalog::with_settings(&settings_env)?.doc_entries())
 }
 
 pub fn provider_config_views(config: &AppConfig) -> Vec<ProviderConfigView> {
@@ -296,7 +288,109 @@ pub(crate) fn resolve_provider_registry(
 pub(crate) fn built_in_provider_registry_with_settings(
     settings_env: &HashMap<String, String>,
 ) -> Result<ProviderRegistry> {
-    let mut registry = ProviderRegistry::new();
+    Ok(BuiltInProviderCatalog::with_settings(settings_env)?.into_legacy_registry())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BuiltInProviderEndpointDefinition {
+    pub provider: ProviderId,
+    pub endpoint: ProviderEndpointId,
+    pub legacy_provider: ProviderId,
+    pub runtime_config: ProviderRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BuiltInProviderCatalog {
+    endpoints: Vec<BuiltInProviderEndpointDefinition>,
+}
+
+impl BuiltInProviderCatalog {
+    pub(crate) fn with_settings(settings_env: &HashMap<String, String>) -> Result<Self> {
+        let mut catalog = Self::default();
+        populate_built_in_provider_catalog(&mut catalog, settings_env)?;
+        Ok(catalog)
+    }
+
+    pub(crate) fn insert_endpoint(
+        &mut self,
+        provider: ProviderId,
+        endpoint: ProviderEndpointId,
+        legacy_provider: ProviderId,
+        runtime_config: ProviderRuntimeConfig,
+    ) {
+        self.endpoints.push(BuiltInProviderEndpointDefinition {
+            provider,
+            endpoint,
+            legacy_provider,
+            runtime_config,
+        });
+    }
+
+    pub(crate) fn legacy_runtime(
+        &self,
+        provider_id: &ProviderId,
+    ) -> Option<&ProviderRuntimeConfig> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| &endpoint.legacy_provider == provider_id)
+            .map(|endpoint| &endpoint.runtime_config)
+    }
+
+    pub(crate) fn into_legacy_registry(self) -> ProviderRegistry {
+        self.endpoints
+            .into_iter()
+            .map(|endpoint| (endpoint.legacy_provider, endpoint.runtime_config))
+            .collect()
+    }
+
+    pub(crate) fn doc_entries(&self) -> Vec<ProviderDocEntry> {
+        let mut entries = self
+            .endpoints
+            .iter()
+            .map(|endpoint| ProviderDocEntry {
+                provider: endpoint.provider.clone(),
+                endpoint: endpoint.endpoint.clone(),
+                legacy_provider: endpoint.legacy_provider.clone(),
+                id: endpoint.legacy_provider.clone(),
+                transport: endpoint.runtime_config.transport,
+                base_url: endpoint.runtime_config.base_url.clone(),
+                auth_env: endpoint.runtime_config.auth.env.clone(),
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        entries
+    }
+}
+
+fn built_in_provider_endpoint_identity(
+    legacy_provider: &ProviderId,
+) -> Result<(ProviderId, ProviderEndpointId)> {
+    let (provider, endpoint) = match legacy_provider.as_str() {
+        "byteplus-coding" => ("byteplus", "coding"),
+        "dashscope-token-plan" => ("dashscope", "token-plan"),
+        "dashscope-coding-plan" => ("dashscope", "coding-plan"),
+        "stepfun-plan" => ("stepfun", "plan"),
+        "volcengine-coding" => ("volcengine", "coding"),
+        "volcengine-agent" => ("volcengine", "agent"),
+        "volcengine-image-openai" => ("volcengine", "image-openai"),
+        "xiaomi-token-plan" => ("xiaomi", "token-plan"),
+        _ => {
+            return Ok((
+                legacy_provider.clone(),
+                ProviderEndpointId::default_endpoint(),
+            ));
+        }
+    };
+    Ok((
+        ProviderId::parse(provider)?,
+        ProviderEndpointId::parse(endpoint)?,
+    ))
+}
+
+pub(crate) fn populate_built_in_provider_catalog(
+    catalog: &mut BuiltInProviderCatalog,
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
     let openai_codex = ProviderId::openai_codex();
     let openai_codex_reasoning_effort = env::var("HOLON_OPENAI_CODEX_REASONING_EFFORT")
         .ok()
@@ -304,7 +398,9 @@ pub(crate) fn built_in_provider_registry_with_settings(
         .or_else(|| Some("low".to_string()))
         .map(|value| validate_openai_reasoning_effort(&value).map(|_| value))
         .transpose()?;
-    registry.insert(
+    catalog.insert_endpoint(
+        openai_codex.clone(),
+        ProviderEndpointId::default_endpoint(),
         openai_codex.clone(),
         ProviderRuntimeConfig {
             id: openai_codex,
@@ -332,7 +428,9 @@ pub(crate) fn built_in_provider_registry_with_settings(
         },
     );
     let openai = ProviderId::openai();
-    registry.insert(
+    catalog.insert_endpoint(
+        openai.clone(),
+        ProviderEndpointId::default_endpoint(),
         openai.clone(),
         ProviderRuntimeConfig {
             id: openai,
@@ -358,7 +456,9 @@ pub(crate) fn built_in_provider_registry_with_settings(
         },
     );
     let anthropic = ProviderId::anthropic();
-    registry.insert(
+    catalog.insert_endpoint(
+        anthropic.clone(),
+        ProviderEndpointId::default_endpoint(),
         anthropic.clone(),
         ProviderRuntimeConfig {
             id: anthropic,
@@ -382,7 +482,9 @@ pub(crate) fn built_in_provider_registry_with_settings(
         },
     );
     let gemini = ProviderId::gemini();
-    registry.insert(
+    catalog.insert_endpoint(
+        gemini.clone(),
+        ProviderEndpointId::default_endpoint(),
         gemini.clone(),
         ProviderRuntimeConfig {
             id: gemini,
@@ -406,196 +508,196 @@ pub(crate) fn built_in_provider_registry_with_settings(
         },
     );
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "arcee",
         "https://api.arcee.ai/api/v1",
         &["ARCEE_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "byteplus",
         "https://ark.ap-southeast.bytepluses.com/api/v3",
         &["BYTEPLUS_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "byteplus-coding",
         "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
         &["BYTEPLUS_CODING_API_KEY", "BYTEPLUS_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "chutes",
         "https://llm.chutes.ai/v1",
         &["CHUTES_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "dashscope",
         "https://dashscope.aliyuncs.com/apps/anthropic",
         &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "dashscope-token-plan",
         "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
         &["DASHSCOPE_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "dashscope-coding-plan",
         "https://coding.dashscope.aliyuncs.com/apps/anthropic",
         &["DASHSCOPE_CODING_PLAN_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "deepseek",
         "https://api.deepseek.com/anthropic",
         &["DEEPSEEK_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "fireworks",
         "https://api.fireworks.ai/inference/v1",
         &["FIREWORKS_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "huggingface",
         "https://router.huggingface.co/v1",
         &["HUGGINGFACE_API_KEY", "HF_TOKEN"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "kilocode",
         "https://api.kilo.ai/api/gateway",
         &["KILOCODE_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "litellm",
         "http://localhost:4000",
         &["LITELLM_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "mistral",
         "https://api.mistral.ai/v1",
         &["MISTRAL_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "moonshot",
         "https://api.moonshot.ai/v1",
         &["MOONSHOT_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "nearai",
         "https://cloud-api.near.ai/v1",
         &["NEARAI_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "nvidia",
         "https://integrate.api.nvidia.com/v1",
         &["NVIDIA_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "opencode-go",
         "https://opencode.ai/zen/go/v1",
         &["OPENCODE_GO_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "openrouter",
         "https://openrouter.ai/api/v1",
         &["OPENROUTER_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "qianfan",
         "https://qianfan.baidubce.com/v2",
         &["QIANFAN_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "stepfun",
         "https://api.stepfun.ai/v1",
         &["STEPFUN_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "stepfun-plan",
         "https://api.stepfun.ai/step_plan/v1",
         &["STEPFUN_PLAN_API_KEY", "STEPFUN_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "synthetic",
         "https://api.synthetic.new/anthropic",
         &["SYNTHETIC_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "tencent-tokenhub",
         "https://tokenhub.tencentmaas.com/v1",
         &["TOKENHUB_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "together",
         "https://api.together.xyz/v1",
         &["TOGETHER_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "venice",
         "https://api.venice.ai/api/v1",
         &["VENICE_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "vllm",
         "http://127.0.0.1:8000/v1",
         &[],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "volcengine",
         "https://ark.cn-beijing.volces.com/api/compatible",
         &["VOLCENGINE_API_KEY", "ARK_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "volcengine-coding",
         "https://ark.cn-beijing.volces.com/api/coding",
         &[
@@ -606,7 +708,7 @@ pub(crate) fn built_in_provider_registry_with_settings(
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "volcengine-agent",
         "https://ark.cn-beijing.volces.com/api/plan",
         &[
@@ -617,7 +719,7 @@ pub(crate) fn built_in_provider_registry_with_settings(
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "volcengine-image-openai",
         "https://ark.cn-beijing.volces.com/api/plan/v3",
         &[
@@ -629,49 +731,49 @@ pub(crate) fn built_in_provider_registry_with_settings(
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "xiaomi",
         "https://api.xiaomimimo.com/v1",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "xiaomi-token-plan",
         "https://token-plan-cn.xiaomimimo.com/v1",
         &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
-        &mut registry,
+        catalog,
         "xai",
         "https://api.x.ai/v1",
         &["XAI_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "zai",
         "https://api.z.ai/api/anthropic",
         &["ZAI_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "bigmodel",
         "https://open.bigmodel.cn/api/anthropic",
         &["BIGMODEL_API_KEY"],
         settings_env,
     )?;
     insert_anthropic_compatible_provider(
-        &mut registry,
+        catalog,
         "minimax",
         "https://api.minimax.io/anthropic",
         &["MINIMAX_API_KEY"],
         settings_env,
     )?;
-    insert_vercel_ai_gateway_provider(&mut registry, settings_env)?;
-    Ok(registry)
+    insert_vercel_ai_gateway_provider(catalog, settings_env)?;
+    Ok(())
 }
 
 /// Public entry point for tools that need the built-in provider registry (e.g. docgen).
@@ -681,14 +783,14 @@ pub fn built_in_provider_registry() -> Result<ProviderRegistry> {
 }
 
 pub(crate) fn insert_openai_compatible_provider(
-    registry: &mut ProviderRegistry,
+    catalog: &mut BuiltInProviderCatalog,
     provider: &str,
     default_base_url: &str,
     env_names: &[&str],
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
     insert_builtin_http_provider(
-        registry,
+        catalog,
         provider,
         ProviderTransportKind::OpenAiChatCompletions,
         default_base_url,
@@ -701,7 +803,7 @@ pub(crate) fn insert_openai_compatible_provider(
 /// lowering while avoiding implicit Claude-specific beta injection. Operators can
 /// still override cache strategy and betas explicitly with env config.
 pub(crate) fn insert_anthropic_compatible_provider(
-    registry: &mut ProviderRegistry,
+    catalog: &mut BuiltInProviderCatalog,
     provider: &str,
     default_base_url: &str,
     env_names: &[&str],
@@ -714,7 +816,7 @@ pub(crate) fn insert_anthropic_compatible_provider(
         _ => None,
     };
     insert_builtin_http_provider_with_context_management(
-        registry,
+        catalog,
         provider,
         ProviderTransportKind::AnthropicMessages,
         default_base_url,
@@ -726,7 +828,7 @@ pub(crate) fn insert_anthropic_compatible_provider(
 }
 
 pub(crate) fn insert_vercel_ai_gateway_provider(
-    registry: &mut ProviderRegistry,
+    catalog: &mut BuiltInProviderCatalog,
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
     let context_management = resolve_anthropic_compatible_context_management_config()?;
@@ -761,7 +863,9 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
         )
     };
     let id = ProviderId::parse("vercel-ai-gateway")?;
-    registry.insert(
+    catalog.insert_endpoint(
+        id.clone(),
+        ProviderEndpointId::default_endpoint(),
         id.clone(),
         ProviderRuntimeConfig {
             id,
@@ -788,7 +892,7 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
 }
 
 pub(crate) fn insert_builtin_http_provider(
-    registry: &mut ProviderRegistry,
+    catalog: &mut BuiltInProviderCatalog,
     provider: &str,
     transport: ProviderTransportKind,
     default_base_url: &str,
@@ -796,7 +900,7 @@ pub(crate) fn insert_builtin_http_provider(
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
     insert_builtin_http_provider_with_context_management(
-        registry,
+        catalog,
         provider,
         transport,
         default_base_url,
@@ -808,7 +912,7 @@ pub(crate) fn insert_builtin_http_provider(
 }
 
 pub(crate) fn insert_builtin_http_provider_with_context_management(
-    registry: &mut ProviderRegistry,
+    catalog: &mut BuiltInProviderCatalog,
     provider: &str,
     transport: ProviderTransportKind,
     default_base_url: &str,
@@ -818,6 +922,7 @@ pub(crate) fn insert_builtin_http_provider_with_context_management(
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
 ) -> Result<()> {
     let id = ProviderId::parse(provider)?;
+    let (provider_id, endpoint_id) = built_in_provider_endpoint_identity(&id)?;
     let base_url_env = format!("HOLON_{}_BASE_URL", env_key_fragment(provider));
     let base_url = get_config_value(&base_url_env, None, settings_env)
         .unwrap_or_else(|| default_base_url.to_string());
@@ -832,7 +937,9 @@ pub(crate) fn insert_builtin_http_provider_with_context_management(
                 Some(env_names.join(" or "))
             }
         });
-    registry.insert(
+    catalog.insert_endpoint(
+        provider_id,
+        endpoint_id,
         id.clone(),
         ProviderRuntimeConfig {
             id,
