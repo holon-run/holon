@@ -428,6 +428,18 @@ export type TimelineStateObjectRef =
       id: string;
       objective?: string;
       state?: string;
+    }
+  | {
+      kind: "tool_execution";
+      id: string;
+      toolName: string;
+      status: string;
+    }
+  | {
+      kind: "task";
+      id: string;
+      status: string;
+      summary?: string;
     };
 
 export interface AgentTimelineActivity {

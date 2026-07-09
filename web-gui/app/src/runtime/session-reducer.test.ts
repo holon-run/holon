@@ -798,11 +798,22 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    // Phase 2: lifecycle events for the same task_id merge into one item
-    expect(timeline).toHaveLength(1);
-    expect(timeline[0]).toEqual(
+    // Task StateObject renders as a stable card; task_result_received is an
+    // ActivityView that gets flattened back into the timeline by compactAgentTimelineItems.
+    expect(timeline).toHaveLength(2);
+    const taskCard = timeline.find((item) => item.kind === "tool");
+    expect(taskCard).toEqual(
       expect.objectContaining({
-        id: "task-result",
+        id: "task:task_123",
+        kind: "tool",
+        label: "Task completed",
+        body: "Run command: npm test",
+        stateObjectRef: { kind: "task", id: "task:task_123", status: "completed", summary: "Run command: npm test" },
+      }),
+    );
+    const activity = timeline.find((item) => item.id === "task-result");
+    expect(activity).toEqual(
+      expect.objectContaining({
         kind: "event",
         label: "Task completed",
         body: "Run command: npm test · exit 0 · 42 tests passed",
@@ -835,7 +846,17 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline[0]).toEqual(
+    expect(timeline).toHaveLength(2);
+    const card = timeline.find((item) => item.kind === "tool");
+    expect(card).toEqual(
+      expect.objectContaining({
+        label: "Task failed",
+        body: "Run command: cargo test",
+        minDisplayLevel: "info",
+      }),
+    );
+    const activity = timeline.find((item) => item.id === "task-failed");
+    expect(activity).toEqual(
       expect.objectContaining({
         label: "Task failed",
         body: "Run command: cargo test · exit 101 · tests failed",
@@ -883,15 +904,101 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    // Phase 2: all three lifecycle events merge into one item showing final status
+    // Task card + 2 flattened activities (running, completed) = 3 items
+    expect(timeline).toHaveLength(3);
+    const card = timeline.find((item) => item.kind === "tool");
+    expect(card).toEqual(
+      expect.objectContaining({
+        id: "task:task_abc",
+        kind: "tool",
+        label: "Task completed",
+        body: "npm run build",
+        stateObjectRef: { kind: "task", id: "task:task_abc", status: "completed", summary: "npm run build" },
+      }),
+    );
+    const runningActivity = timeline.find((item) => item.id === "t-running");
+    expect(runningActivity).toEqual(
+      expect.objectContaining({ label: "Task running", body: "npm run build" }),
+    );
+    const doneActivity = timeline.find((item) => item.id === "t-done");
+    expect(doneActivity).toEqual(
+      expect.objectContaining({ label: "Task completed", body: "npm run build · exit 0" }),
+    );
+  });
+
+  it("adds stateObjectRef to tool execution items", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "exec-1",
+            event_seq: 50,
+            type: "tool_executed",
+            payload: {
+              tool_name: "ExecCommand",
+              exec_command_cmd: "npm test",
+              exec_command_exit_status: 0,
+              exec_command_duration_ms: 500,
+            },
+          }),
+        ],
+      },
+    });
+
     expect(timeline).toHaveLength(1);
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "t-done",
-        kind: "event",
-        label: "Task completed",
-        body: "npm run build · exit 0",
- sourceIds: expect.arrayContaining(["t-created", "t-running", "t-done"]),
+        id: "exec-1",
+        stateObjectRef: { kind: "tool_execution", id: "exec-1", toolName: "ExecCommand", status: "completed" },
+      }),
+    );
+  });
+
+  it("links promoted tool execution to task via relatedStateObjectRef", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "exec-promoted",
+            event_seq: 60,
+            type: "tool_executed",
+            payload: {
+              tool_name: "ExecCommand",
+              exec_command_cmd: "cargo build",
+              exec_command_disposition: "promoted_to_task",
+              task_handle: { task_id: "task_xyz" },
+            },
+          }),
+          event({
+            id: "task-created-xyz",
+            event_seq: 61,
+            type: "task_created",
+            payload: {
+              task_id: "task_xyz",
+              status: "queued",
+              summary: "cargo build",
+            },
+          }),
+        ],
+      },
+    });
+
+    // Tool execution with promoted status has relatedStateObjectRef pointing to the task
+    const toolItem = timeline.find((item) => item.id === "exec-promoted");
+    expect(toolItem).toEqual(
+      expect.objectContaining({
+        relatedStateObjectRef: { kind: "task", id: "task:task_xyz", status: "running", summary: undefined },
+        stateObjectRef: { kind: "tool_execution", id: "exec-promoted", toolName: "ExecCommand", status: "promoted" },
+      }),
+    );
+    // Task card exists and has stateObjectRef
+    const taskCard = timeline.find((item) => item.id === "task:task_xyz");
+    expect(taskCard).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Task queued",
+        body: "cargo build",
+        stateObjectRef: { kind: "task", id: "task:task_xyz", status: "queued", summary: "cargo build" },
       }),
     );
   });

@@ -187,20 +187,45 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
       role: originKind === "operator" ? "operator" : "unknown",
     } as DomainObject);
   } else if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
+    const result = asRecord(payload?.exec_command_result);
+    const disposition = firstStringField(payload, ["exec_command_disposition"]) ?? firstStringField(result, ["disposition"]);
+    const promoted = disposition === "promoted_to_task";
+    const promotedTaskId = promoted ? firstStringField(asRecord(payload?.task_handle), ["task_id"]) : undefined;
     upsertObject(state, "tool_execution", eventId, {
       ...baseFields,
       id: eventId,
-      status: eventType === "tool_execution_failed" ? "failed" : "completed",
+      status: eventType === "tool_execution_failed" ? "failed" : promoted ? "promoted" : "completed",
       toolName: stringField(payload, "tool_name") ?? "tool",
+      taskId: promotedTaskId,
     } as DomainObject);
   } else if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
     const taskId = stringField(payload, "task_id");
+    const taskObjId = taskId ? `task:${taskId}` : eventId;
     const taskStatus = firstStringField(payload, ["task_status", "status"]) as TaskObject["status"];
+    const summary = stringField(payload, "summary") ?? state.tasks.get(taskObjId)?.summary;
+    const isActivity = eventType !== "task_created";
+    const activityIds = isActivity ? [eventId] : undefined;
     upsertObject(state, "task", taskId ? `task:${taskId}` : eventId, {
       ...baseFields,
-      id: taskId ? `task:${taskId}` : eventId,
+      id: taskObjId,
       status: taskStatus ?? (eventType === "task_created" ? "created" : "running"),
+      summary,
+      activityIds,
     } as DomainObject);
+    if (isActivity) {
+      upsertObject(state, "activity", eventId, {
+        ...baseFields,
+        id: eventId,
+        status: eventType,
+        eventType,
+        relatedStateObjectRef: {
+          kind: "task",
+          id: taskObjId,
+          status: taskStatus ?? "running",
+          summary,
+        },
+      } as DomainObject);
+    }
   } else if (isDebugOnlyWorkItemEvent(eventType)) {
     upsertObject(state, "activity", eventId, {
       ...baseFields,
@@ -492,7 +517,7 @@ function item(draft: SessionItemDraft): AgentTimelineItem {
   return draft;
 }
 
-function projectToolExecution(
+export function projectToolExecution(
   eventType: string,
   payload: Record<string, unknown> | undefined,
   options: { includeHiddenWorkItemMutations?: boolean } = {},
@@ -1245,7 +1270,7 @@ function summarizeWorkItemEvent(eventType: string, payload: Record<string, unkno
   return compactJoin([humanizeEventType(`work_item_${action}`), objective, state, objective ? undefined : workItemId]);
 }
 
-function projectTaskLifecycleEvent(
+export function projectTaskLifecycleEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
 ): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {

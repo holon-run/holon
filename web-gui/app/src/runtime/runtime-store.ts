@@ -907,6 +907,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return;
     }
 
+    if (activity.stateObjectRef?.kind === "task") {
+      const taskId = activity.stateObjectRef.id.replace(/^task:/, "");
+      const task: TaskSummary = {
+        id: taskId,
+        kind: "task",
+        status: activity.stateObjectRef.status ?? "unknown",
+        summary: activity.stateObjectRef.summary ?? activity.body,
+      };
+      get().showTaskDetail(agentId, task);
+      void get().loadAgentTaskDetail(agentId, taskId);
+      return;
+    }
+
+    // tool_execution and other stateObjectRef kinds fall through to the
+    // activity inspector, which shows structured detail for the event.
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
       return {

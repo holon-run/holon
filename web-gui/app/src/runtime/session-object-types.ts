@@ -56,6 +56,7 @@ export type ToolExecutionStatus = "completed" | "failed" | "promoted";
 export interface ToolExecutionObject extends BaseObject {
   status: ToolExecutionStatus;
   toolName: string;
+  taskId?: string;
 }
 
 export type TaskStatus =
@@ -69,6 +70,8 @@ export type TaskStatus =
 
 export interface TaskObject extends BaseObject {
   status: TaskStatus;
+  summary?: string;
+  activityIds?: string[];
 }
 
 export type WorkItemStatus =
