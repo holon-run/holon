@@ -44,8 +44,12 @@ export function createSessionState(): SessionState {
  * `mergeAgentTimelineItems`. This makes incremental event-by-event
  * application equivalent to the previous batch dedup pass.
  */
-export function upsertTimelineItem(state: SessionState, item: AgentTimelineItem): void {
-  const key = sessionObjectKey(item);
+export function upsertTimelineItem(
+  state: SessionState,
+  item: AgentTimelineItem,
+  objectKey?: string,
+): void {
+  const key = objectKey ?? sessionObjectKey(item);
   const existing = state.items.get(key);
 
   if (!existing) {

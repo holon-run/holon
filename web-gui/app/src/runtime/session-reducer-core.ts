@@ -76,7 +76,9 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
       input.transcriptEntriesById,
       input.briefRecordsById,
     );
-    if (item) upsertTimelineItem(state, item);
+    if (item) {
+      upsertTimelineItem(state, item, extractObjectKey(event));
+    }
   }
 
   return deriveTimelineView(state);
@@ -1401,4 +1403,24 @@ function debugJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * Extract an object identity key for lifecycle merging (Phase 2).
+ *
+ * When multiple events target the same domain object (e.g. a background task
+ * going through created → running → completed), they should merge into one
+ * timeline entry showing the object's current state. Return a stable key
+ * keyed by the object id so {@link upsertTimelineItem} can group them.
+ */
+function extractObjectKey(event: SessionEventEnvelope): string | undefined {
+  const eventType = event.type ?? "";
+  const payload = asRecord(event.payload);
+
+  if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
+    const taskId = stringField(payload, "task_id");
+    if (taskId) return `task:${taskId}`;
+  }
+
+  return undefined;
 }

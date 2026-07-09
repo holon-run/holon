@@ -649,16 +649,9 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
+    // Phase 2: lifecycle events for the same task_id merge into one item
+    expect(timeline).toHaveLength(1);
     expect(timeline[0]).toEqual(
-      expect.objectContaining({
-        id: "task-created",
-        kind: "event",
-        label: "Task queued",
-        body: "Run command: npm test",
-        minDisplayLevel: "verbose",
-      }),
-    );
-    expect(timeline[1]).toEqual(
       expect.objectContaining({
         id: "task-result",
         kind: "event",
@@ -698,6 +691,58 @@ describe("reduceAgentSessionTimeline", () => {
         label: "Task failed",
         body: "Run command: cargo test · exit 101 · tests failed",
         minDisplayLevel: "info",
+      }),
+    );
+  });
+
+  it("merges intermediate task status updates into final lifecycle item", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "t-created",
+            event_seq: 40,
+            type: "task_created",
+            payload: {
+              task_id: "task_abc",
+              status: "queued",
+              summary: "npm run build",
+            },
+          }),
+          event({
+            id: "t-running",
+            event_seq: 41,
+            type: "task_status_updated",
+            payload: {
+              task_id: "task_abc",
+              status: "running",
+              summary: "npm run build",
+            },
+          }),
+          event({
+            id: "t-done",
+            event_seq: 42,
+            type: "task_result_received",
+            payload: {
+              task_id: "task_abc",
+              status: "completed",
+              summary: "npm run build",
+              exit_status: 0,
+            },
+          }),
+        ],
+      },
+    });
+
+    // Phase 2: all three lifecycle events merge into one item showing final status
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "t-done",
+        kind: "event",
+        label: "Task completed",
+        body: "npm run build · exit 0",
+ sourceIds: expect.arrayContaining(["t-created", "t-running", "t-done"]),
       }),
     );
   });
