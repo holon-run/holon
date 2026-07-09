@@ -9,7 +9,8 @@ import type {
   RuntimeTranscriptEntry,
 } from "./types";
 import type { SessionEventEnvelope } from "./session-events";
-import { compactAgentTimelineItems, mergeAgentTimelineItems } from "./timeline-display";
+import { createSessionState, upsertTimelineItem } from "./session-state-reducer";
+import { deriveTimelineView } from "./timeline-view-model";
 
 function projectDebugEvent(
   eventType: string,
@@ -64,22 +65,21 @@ const debugOnlyToolNames = new Set(["WaitFor"]);
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
-  const eventItems = (input.events.events ?? []).map((event) =>
-    projectEventEnvelope(
+  const state = createSessionState();
+
+  for (const event of input.events.events ?? []) {
+    const item = projectEventEnvelope(
       event,
       eventDisplayLevel,
       input.includeDebug ?? false,
       input.messagesById,
       input.transcriptEntriesById,
       input.briefRecordsById,
-    ),
-  );
+    );
+    if (item) upsertTimelineItem(state, item);
+  }
 
-  const sorted = mergeAgentTimelineItems([], eventItems)
-    .filter((item): item is AgentTimelineItem => Boolean(item))
-    .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
-
-  return compactAgentTimelineItems(sorted);
+  return deriveTimelineView(state);
 }
 
 export function debugAgentSessionEvents(events: SessionEventEnvelope[], options: { itemLimit?: number } = {}): AgentTimelineItem[] {
@@ -347,23 +347,6 @@ function projectAssistantRoundRecorded(
   }
 
   return undefined;
-}
-
-function timelineDedupeKey(item: AgentTimelineItem): string {
-  if (item.kind === "operator") {
-    return `operator:${item.sourceIds[0] ?? item.id}`;
-  }
-  if (item.kind === "assistant") {
-    return `assistant:${item.id}`;
-  }
-  return `item:${item.id}`;
-}
-
-function timelineItemPriority(item: AgentTimelineItem): number {
-  if (item.id.startsWith("operator-prompt:pending:")) return 0;
-  if (item.sourceIds.includes("pending-operator-prompt")) return 0;
-  if (item.id.startsWith("event-") || item.meta.includes("event #")) return 1;
-  return 2;
 }
 
 function item(draft: SessionItemDraft): AgentTimelineItem {

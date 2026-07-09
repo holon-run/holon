@@ -1,5 +1,33 @@
 import type { AgentTimelineActivity, AgentTimelineItem, DisplayLevel } from "./types";
 
+/**
+ * Semantic dedup key for a timeline item. Items with the same key are merged.
+ * Exported so session-state-reducer can apply the same identity logic incrementally.
+ */
+export function sessionObjectKey(item: AgentTimelineItem): string {
+  return timelineDedupeKey(item);
+}
+
+/**
+ * Merge priority for a timeline item. Higher priority wins during dedup.
+ * Exported so session-state-reducer can apply the same priority logic incrementally.
+ */
+export function sessionItemPriority(item: AgentTimelineItem): number {
+  return timelineItemPriority(item);
+}
+
+/**
+ * Merge two timeline items into one. `preferred` provides the display fields;
+ * sourceIds and activities from both are combined.
+ * Exported so session-state-reducer can apply the same merge semantics incrementally.
+ */
+export function mergeTimelineItemFields(
+  preferred: AgentTimelineItem,
+  fallback: AgentTimelineItem,
+): AgentTimelineItem {
+  return mergeTimelineItemActivities(preferred, fallback);
+}
+
 const displayLevelRank: Record<DisplayLevel, number> = {
   info: 0,
   verbose: 1,
