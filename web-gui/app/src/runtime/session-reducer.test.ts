@@ -469,7 +469,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_123",
         kind: "system",
         label: "Work item",
-        body: "Picked work item · Fix timeline · next priority",
+        body: "Fix timeline",
         minDisplayLevel: "verbose",
         stateObjectRef: {
           kind: "work_item",
@@ -516,7 +516,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_123",
         kind: "system",
         label: "Work item",
-        body: "Work Item Updated · Improve slim event display · ready",
+        body: "Improve slim event display",
         minDisplayLevel: "verbose",
       }),
     );
@@ -558,6 +558,7 @@ describe("reduceAgentSessionTimeline", () => {
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         id: "work_nested",
+        body: "Merge nested work item",
         sourceIds: ["nested-written", "nested-picked"],
         stateObjectRef: {
           kind: "work_item",
@@ -567,11 +568,11 @@ describe("reduceAgentSessionTimeline", () => {
         },
       }),
     );
-    expect(timeline.slice(1).map((item) => item.id)).toEqual(["nested-written", "nested-picked"]);
-    expect(timeline.slice(1).map((item) => item.relatedStateObjectRef?.id)).toEqual(["work_nested", "work_nested"]);
+    expect(timeline.slice(1).map((item) => item.id)).toEqual(["nested-picked"]);
+    expect(timeline.slice(1).map((item) => item.relatedStateObjectRef?.id)).toEqual(["work_nested"]);
   });
 
-  it("merges work item events by work item id and exposes state object and activity views", () => {
+  it("merges work item state-update events by work item id without creating activities", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
@@ -599,10 +600,11 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline).toHaveLength(3);
+    expect(timeline).toHaveLength(1);
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         id: "work_123",
+        body: "Improve slim event display",
         sourceIds: ["written", "refs-updated"],
         stateObjectRef: {
           kind: "work_item",
@@ -612,28 +614,6 @@ describe("reduceAgentSessionTimeline", () => {
         },
       }),
     );
-    expect(timeline.slice(1)).toEqual([
-      expect.objectContaining({
-        id: "written",
-        body: "Work Item Written · Improve slim event display · draft",
-        relatedStateObjectRef: {
-          kind: "work_item",
-          id: "work_123",
-          objective: "Improve slim event display",
-          state: "draft",
-        },
-      }),
-      expect.objectContaining({
-        id: "refs-updated",
-        body: "Work Item Refs Updated · Improve slim event display · ready",
-        relatedStateObjectRef: {
-          kind: "work_item",
-          id: "work_123",
-          objective: "Improve slim event display",
-          state: "ready",
-        },
-      }),
-    ]);
   });
 
   it("renders current work item focus from slim top-level ids", () => {
@@ -656,7 +636,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        body: "Released work item focus · yielded · runnable",
+        body: "Work item",
       }),
     );
     expect(timeline[1]).toEqual(
@@ -697,8 +677,8 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_456",
         kind: "system",
         label: "Work item",
-        body: "Released work item focus · completed · ready",
-        minDisplayLevel: "debug",
+        body: "Work item",
+        minDisplayLevel: "verbose",
       }),
     );
   });
@@ -728,7 +708,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_789",
         kind: "system",
         label: "Work item",
-        body: "Promoted completion report · Finished the implementation.",
+        body: "Work item",
       }),
     );
     expect(timeline[1]).toEqual(
@@ -770,7 +750,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_abc",
         kind: "system",
         label: "Work item",
-        body: "Promoted completion report candidate · Candidate completion text.",
+        body: "Work item",
       }),
     );
     expect(timeline[1]).toEqual(

@@ -89,9 +89,6 @@ interface SessionItemDraft {
 const infoRuntimeEvents = new Set(["brief_created", "agent_waiting"]);
 const verboseRuntimeEventPrefixes = ["work_item_"];
 const workItemActivityEventNames = new Set([
-  "work_item_written",
-  "work_item_refs_updated",
-  "work_item_turn_end_committed",
   "work_item_picked",
   "work_item_focus_released",
   "work_item_completion_report_promoted",

@@ -26,6 +26,13 @@ export function renderDomainObject(
   obj: DomainObject,
   ctx: RenderContext,
 ): AgentTimelineItem | undefined {
+  // WorkItem StateObjects render from their own fields (objective, state),
+  // not from the last event's projection. This produces one stable card per
+  // work item, with lifecycle events shown as activities underneath.
+  if (isWorkItemObject(obj)) {
+    return renderWorkItemObject(obj, ctx);
+  }
+
   const projection = projectRuntimeEvent(
     obj.render.eventType,
     obj.render.payload,
@@ -44,29 +51,39 @@ export function renderDomainObject(
     meta: obj.render.meta,
     minDisplayLevel: projection.minDisplayLevel,
     sourceIds: obj.sourceEventIds,
-    stateObjectRef: stateObjectRefFor(obj),
     relatedStateObjectRef: relatedStateObjectRefFor(obj),
     detail: projection.detail,
-    activities: isWorkItemObject(obj) ? renderWorkItemActivities(obj, ctx) : undefined,
     rawEvent: obj.render.rawEvent,
     debug: obj.render.debug,
   };
 }
 
-function stateObjectRefFor(obj: DomainObject): TimelineStateObjectRef | undefined {
-  if (isWorkItemObject(obj)) {
-    return {
+function renderWorkItemObject(obj: WorkItemObject, ctx: RenderContext): AgentTimelineItem {
+  return {
+    id: obj.id,
+    kind: "system" as const,
+    label: "Work item",
+    body: obj.objective || "Work item",
+    timestamp: obj.render.timestamp,
+    meta: obj.render.meta,
+    minDisplayLevel: "verbose" as const,
+    sourceIds: obj.sourceEventIds,
+    stateObjectRef: {
       kind: "work_item",
       id: obj.id,
       objective: obj.objective,
       state: obj.state,
-    };
-  }
-  return undefined;
+    },
+    activities: renderWorkItemActivities(obj, ctx),
+    rawEvent: obj.render.rawEvent,
+    debug: obj.render.debug,
+  };
 }
 
 function isWorkItemObject(obj: DomainObject): obj is WorkItemObject {
-  return obj.render.eventType.startsWith("work_item_");
+  // RuntimeActivityObject also carries work_item_ event types but has its own
+  // `eventType` field; exclude it so only true WorkItemObjects match.
+  return obj.render.eventType.startsWith("work_item_") && !("eventType" in obj);
 }
 
 function relatedStateObjectRefFor(obj: DomainObject): TimelineStateObjectRef | undefined {
