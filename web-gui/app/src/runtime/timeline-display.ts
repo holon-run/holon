@@ -183,7 +183,7 @@ function mergeTimelineActivities(
   return Array.from(byId.values()).sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 }
 
-function mergeSourceIds(sourceIds: string[]): string[] {
+export function mergeSourceIds(sourceIds: string[]): string[] {
   return Array.from(new Set(sourceIds)).slice(0, maxTimelineSourceIds);
 }
 

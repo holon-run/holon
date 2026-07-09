@@ -9,7 +9,17 @@ import type {
   RuntimeTranscriptEntry,
 } from "./types";
 import type { SessionEventEnvelope } from "./session-events";
-import { createSessionState, upsertTimelineItem } from "./session-state-reducer";
+import { createSessionState, upsertObject } from "./session-state-reducer";
+import type { SessionState } from "./session-state-reducer";
+import type {
+  DomainObject,
+  MessageObject,
+  RuntimeActivityObject,
+  SessionObjectType,
+  TaskObject,
+  WorkItemObject,
+  ViewDraft,
+} from "./session-object-types";
 import { deriveTimelineView } from "./timeline-view-model";
 
 function projectDebugEvent(
@@ -64,24 +74,116 @@ const debugRuntimeEvents = new Set([
 const debugOnlyToolNames = new Set(["WaitFor"]);
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
-  const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
   const state = createSessionState();
+  const ctx: ApplyContext = {
+    eventDisplayLevel: input.eventDisplayLevel ?? "debug",
+    includeDebug: input.includeDebug ?? false,
+    messagesById: input.messagesById,
+    transcriptEntriesById: input.transcriptEntriesById,
+    briefRecordsById: input.briefRecordsById,
+  };
 
   for (const event of input.events.events ?? []) {
-    const item = projectEventEnvelope(
-      event,
-      eventDisplayLevel,
-      input.includeDebug ?? false,
-      input.messagesById,
-      input.transcriptEntriesById,
-      input.briefRecordsById,
-    );
-    if (item) {
-      upsertTimelineItem(state, item, extractObjectKey(event));
-    }
+    applyEvent(state, event, ctx);
   }
 
   return deriveTimelineView(state);
+}
+
+interface ApplyContext {
+  eventDisplayLevel: DisplayLevel;
+  includeDebug: boolean;
+  messagesById?: Record<string, RuntimeMessageEnvelope>;
+  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
+  briefRecordsById?: Record<string, RuntimeBriefRecord>;
+}
+
+/**
+ * Route a single event through the apply layer: project it, determine the
+ * domain object type and identity key, then upsert into normalized state.
+ */
+function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: ApplyContext): void {
+  if (!event.id && event.event_seq == null) return;
+
+  const item = projectEventEnvelope(
+    event,
+    ctx.eventDisplayLevel,
+    ctx.includeDebug,
+    ctx.messagesById,
+    ctx.transcriptEntriesById,
+    ctx.briefRecordsById,
+  );
+  if (!item) return;
+
+  const eventId = event.id ?? `event-${event.event_seq}`;
+  const eventType = event.type ?? "runtime_event";
+  const payload = asRecord(event.payload);
+  const ts = item.timestamp;
+
+  const viewDraft: ViewDraft = {
+    kind: item.kind,
+    label: item.label,
+    body: item.body,
+    timestamp: item.timestamp,
+    meta: item.meta,
+    minDisplayLevel: item.minDisplayLevel,
+    detail: item.detail,
+    rawEvent: item.rawEvent,
+    debug: item.debug,
+  };
+
+  const baseFields = {
+    sourceEventIds: [eventId],
+    createdAt: ts,
+    updatedAt: ts,
+    viewDraft,
+  };
+
+  // Route by event type to determine object type, identity key, and status
+  if (eventType === "message_enqueued" || eventType === "message_processing_started") {
+    const origin = asRecord(payload?.origin);
+    const originKind = stringField(origin, "kind")?.toLowerCase();
+    upsertObject(state, "message", eventId, {
+      ...baseFields,
+      id: eventId,
+      status: eventType === "message_processing_started" ? "processing" : "enqueued",
+      role: originKind === "operator" ? "operator" : "unknown",
+    } as DomainObject);
+  } else if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
+    upsertObject(state, "tool_execution", eventId, {
+      ...baseFields,
+      id: eventId,
+      status: eventType === "tool_execution_failed" ? "failed" : "completed",
+      toolName: stringField(payload, "tool_name") ?? "tool",
+    } as DomainObject);
+  } else if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
+    const taskId = stringField(payload, "task_id");
+    const taskStatus = firstStringField(payload, ["task_status", "status"]) as TaskObject["status"];
+    upsertObject(state, "task", taskId ? `task:${taskId}` : eventId, {
+      ...baseFields,
+      id: taskId ? `task:${taskId}` : eventId,
+      status: taskStatus ?? (eventType === "task_created" ? "created" : "running"),
+    } as DomainObject);
+  } else if (eventType.startsWith("work_item_")) {
+    upsertObject(state, "work_item", eventId, {
+      ...baseFields,
+      id: eventId,
+      status: eventType.replace(/^work_item_/, "") as WorkItemObject["status"],
+    } as DomainObject);
+  } else if (eventType === "brief_created" || eventType === "assistant_round_recorded") {
+    upsertObject(state, "assistant_round", eventId, {
+      ...baseFields,
+      id: eventId,
+      status: "recorded",
+    } as DomainObject);
+  } else {
+    upsertObject(state, "activity", eventId, {
+      ...baseFields,
+      id: eventId,
+      status: eventType,
+      eventType,
+    } as DomainObject);
+  }
 }
 
 export function debugAgentSessionEvents(events: SessionEventEnvelope[], options: { itemLimit?: number } = {}): AgentTimelineItem[] {
@@ -1403,24 +1505,4 @@ function debugJson(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-/**
- * Extract an object identity key for lifecycle merging (Phase 2).
- *
- * When multiple events target the same domain object (e.g. a background task
- * going through created → running → completed), they should merge into one
- * timeline entry showing the object's current state. Return a stable key
- * keyed by the object id so {@link upsertTimelineItem} can group them.
- */
-function extractObjectKey(event: SessionEventEnvelope): string | undefined {
-  const eventType = event.type ?? "";
-  const payload = asRecord(event.payload);
-
-  if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
-    const taskId = stringField(payload, "task_id");
-    if (taskId) return `task:${taskId}`;
-  }
-
-  return undefined;
 }
