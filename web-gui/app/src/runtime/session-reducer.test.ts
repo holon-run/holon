@@ -494,11 +494,54 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "work-item-updated",
+        id: "work_123",
         kind: "system",
         label: "Work item",
         body: "Work Item Updated · Improve slim event display · ready",
         minDisplayLevel: "verbose",
+      }),
+    );
+  });
+
+  it("merges work item events by work item id and exposes the state object ref", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "written",
+            event_seq: 15,
+            type: "work_item_written",
+            payload: {
+              work_item_id: "work_123",
+              objective_preview: "Improve slim event display",
+              plan_status: "draft",
+            },
+          }),
+          event({
+            id: "refs-updated",
+            event_seq: 16,
+            type: "work_item_refs_updated",
+            payload: {
+              work_item_id: "work_123",
+              objective_preview: "Improve slim event display",
+              plan_status: "ready",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "work_123",
+        sourceIds: ["written", "refs-updated"],
+        stateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Improve slim event display",
+          state: "ready",
+        },
       }),
     );
   });
@@ -549,7 +592,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "released",
+        id: "work_456",
         kind: "system",
         label: "Work item",
         body: "Released work item focus · completed · ready",
@@ -580,7 +623,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "promoted",
+        id: "work_789",
         kind: "system",
         label: "Work item",
         body: "Promoted completion report · Finished the implementation.",
@@ -610,7 +653,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "candidate-promoted",
+        id: "work_abc",
         kind: "system",
         label: "Work item",
         body: "Promoted completion report candidate · Candidate completion text.",

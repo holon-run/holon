@@ -8,8 +8,8 @@
  * metadata (source IDs, raw event, timestamp, debug info).
  */
 
-import type { AgentTimelineItem } from "./types";
-import type { DomainObject } from "./session-object-types";
+import type { AgentTimelineItem, TimelineStateObjectRef } from "./types";
+import type { DomainObject, WorkItemObject } from "./session-object-types";
 import type { RenderContext } from "./timeline-view-model";
 import { projectRuntimeEvent } from "./session-reducer-core";
 
@@ -44,8 +44,25 @@ export function renderDomainObject(
     meta: obj.render.meta,
     minDisplayLevel: projection.minDisplayLevel,
     sourceIds: obj.sourceEventIds,
+    stateObjectRef: stateObjectRefFor(obj),
     detail: projection.detail,
     rawEvent: obj.render.rawEvent,
     debug: obj.render.debug,
   };
+}
+
+function stateObjectRefFor(obj: DomainObject): TimelineStateObjectRef | undefined {
+  if (isWorkItemObject(obj)) {
+    return {
+      kind: "work_item",
+      id: obj.id,
+      objective: obj.objective,
+      state: obj.state,
+    };
+  }
+  return undefined;
+}
+
+function isWorkItemObject(obj: DomainObject): obj is WorkItemObject {
+  return obj.render.eventType.startsWith("work_item_");
 }

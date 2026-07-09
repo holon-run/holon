@@ -1,3 +1,31 @@
+/**
+ * Session reduction and projection layer.
+ *
+ * This module contains two parallel systems for timeline rendering:
+ *
+ * ## Legacy system (still in active use)
+ * - `reduceAgentSessionTimeline()`: Direct event→projection→timeline pipeline
+ * - `debugAgentSessionEvents()`: Debug-focused event→projection pipeline
+ * - Projection functions (`projectRuntimeEvent`, `projectToolExecution`, etc.)
+ * - Helper functions (`stringField`, `readableText`, etc.)
+ *
+ * ## New system (preferred for SessionState-based rendering)
+ * - `applyEvent()`: Event→SessionState router (called by session-state-reducer)
+ * - `deriveTimelineView()`: SessionState→DomainObjects→TimelineItems
+ * - `renderDomainObject()` in `object-renderers.ts`
+ *
+ * ## Migration notes
+ * The new system (SessionState + specialized renderers) is the preferred
+ * architecture for timeline rendering. The legacy system remains for:
+ * - Backward compatibility with `reduceAgentSessionTimeline()` callers
+ * - Debug UI (`debugAgentSessionEvents()` in AgentPage.tsx)
+ * - Test coverage
+ *
+ * Helper functions in this module are shared by both systems and should
+ * eventually be extracted to a separate utilities module to avoid duplication
+ * with `object-renderers.ts`.
+ */
+
 import type {
   AgentTimelineActivity,
   AgentTimelineItem,
@@ -166,10 +194,14 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
       status: taskStatus ?? (eventType === "task_created" ? "created" : "running"),
     } as DomainObject);
   } else if (eventType.startsWith("work_item_")) {
-    upsertObject(state, "work_item", eventId, {
+    const workItemId = workItemObjectId(payload) ?? eventId;
+    const previousWorkItem = state.workItems.get(workItemId);
+    upsertObject(state, "work_item", workItemId, {
       ...baseFields,
-      id: eventId,
+      id: workItemId,
       status: eventType.replace(/^work_item_/, "") as WorkItemObject["status"],
+      objective: workItemObjective(payload) ?? previousWorkItem?.objective,
+      state: firstStringField(payload, ["state", "plan_status", "readiness"]) ?? previousWorkItem?.state,
     } as DomainObject);
   } else if (eventType === "brief_created" || eventType === "assistant_round_recorded") {
     upsertObject(state, "assistant_round", eventId, {
@@ -558,6 +590,15 @@ function genericToolDescription(toolName: string, payload: Record<string, unknow
   if (resource) return resource;
 
   return toolName;
+}
+
+function workItemObjectId(payload: Record<string, unknown> | undefined): string | undefined {
+  return firstStringField(payload, ["work_item_id", "current_work_item_id"]);
+}
+
+function workItemObjective(payload: Record<string, unknown> | undefined): string | undefined {
+  const record = asRecord(payload?.record);
+  return firstStringField(record, ["objective", "objective_preview"]) ?? stringField(payload, "objective_preview");
 }
 
 function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {

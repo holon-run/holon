@@ -80,6 +80,8 @@ export type WorkItemStatus =
 
 export interface WorkItemObject extends BaseObject {
   status: WorkItemStatus;
+  objective?: string;
+  state?: string;
 }
 
 export type AssistantRoundStatus = "recorded" | "brief_promoted";

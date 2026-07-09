@@ -422,6 +422,14 @@ export interface AgentTimelineItemDetail {
   tone?: "command" | "output" | "data" | "diff";
 }
 
+export type TimelineStateObjectRef =
+  | {
+      kind: "work_item";
+      id: string;
+      objective?: string;
+      state?: string;
+    };
+
 export interface AgentTimelineActivity {
   id: string;
   kind: AgentTimelineItemKind;
@@ -431,6 +439,7 @@ export interface AgentTimelineActivity {
   meta: string;
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
+  stateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
   rawEvent?: unknown;
   debug?: string;
@@ -559,6 +568,7 @@ export interface AgentTimelineItem {
   meta: string;
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
+  stateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
   activities?: AgentTimelineActivity[];
   rawEvent?: unknown;

@@ -2,7 +2,7 @@ import type { AgentTimelineItem, DisplayLevel, RuntimeMessageEnvelope, RuntimeBr
 import type { SessionState } from "./session-state-reducer";
 import type { DomainObject, InsertionEntry } from "./session-object-types";
 import { compactAgentTimelineItems } from "./timeline-display";
-import { projectRuntimeEvent, eventProjectionDisplayLevel } from "./session-reducer-core";
+import { renderDomainObject } from "./object-renderers";
 
 /**
  * Context passed to the render layer. Contains external lookup tables
@@ -54,32 +54,17 @@ function lookupObject(state: SessionState, entry: InsertionEntry): DomainObject 
 /**
  * Render a single domain object into a display-ready {@link AgentTimelineItem}.
  *
- * Calls {@link projectRuntimeEvent} with the stored event payload and external
- * lookup tables to produce the display fields (kind, label, body, etc.).
- * Returns `undefined` when the event type produces no visible projection.
+ * Calls {@link renderDomainObject} to produce the display-ready item.
+ * Returns `undefined` when the object produces no visible projection.
  */
 function renderObject(obj: DomainObject, ctx: RenderContext): AgentTimelineItem | undefined {
-  const projection = projectRuntimeEvent(
-    obj.render.eventType,
-    obj.render.payload,
-    ctx.messagesById,
-    ctx.transcriptEntriesById,
-    ctx.briefRecordsById,
-  );
-  if (!projection) return undefined;
+  const item = renderDomainObject(obj, ctx);
+  if (!item) return undefined;
 
   return {
-    id: obj.sourceEventIds[obj.sourceEventIds.length - 1] ?? obj.render.eventId,
-    kind: projection.kind,
-    label: projection.label,
-    body: projection.body,
-    timestamp: projection.timestamp ?? obj.render.timestamp,
-    meta: obj.render.meta,
-    minDisplayLevel: eventProjectionDisplayLevel(projection.minDisplayLevel, ctx.eventDisplayLevel),
-    sourceIds: obj.sourceEventIds,
-    detail: projection.detail,
-    rawEvent: obj.render.rawEvent,
-    debug: obj.render.debug,
+    ...item,
+    id: item.stateObjectRef ? obj.id : (obj.sourceEventIds[obj.sourceEventIds.length - 1] ?? obj.render.eventId),
+    timestamp: item.timestamp || obj.render.timestamp,
   };
 }
 

@@ -896,6 +896,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   fetchWorkspaceFileBlob: (workspaceId, path, executionRootId) => runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId),
   workspaceFileUrl: (workspaceId, path, download, executionRootId) => runtimeClient.workspaceFileUrl(workspaceId, path, download, executionRootId),
   inspectActivity: (agentId, activity) => {
+    if (activity.stateObjectRef?.kind === "work_item") {
+      const workItem: WorkItemSummary = {
+        id: activity.stateObjectRef.id,
+        objective: activity.stateObjectRef.objective ?? activity.body,
+        state: activity.stateObjectRef.state ?? "unknown",
+      };
+      get().showWorkItemDetail(agentId, workItem);
+      void get().loadAgentWorkItemDetail(agentId, activity.stateObjectRef.id);
+      return;
+    }
+
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
       return {
