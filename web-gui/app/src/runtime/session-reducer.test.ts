@@ -503,7 +503,7 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
-  it("merges work item events by work item id and exposes the state object ref", () => {
+  it("merges work item events by work item id and exposes state object and activity views", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
@@ -531,7 +531,7 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline).toHaveLength(1);
+    expect(timeline).toHaveLength(3);
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         id: "work_123",
@@ -544,6 +544,28 @@ describe("reduceAgentSessionTimeline", () => {
         },
       }),
     );
+    expect(timeline.slice(1)).toEqual([
+      expect.objectContaining({
+        id: "written",
+        body: "Work Item Written · Improve slim event display · draft",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Improve slim event display",
+          state: "draft",
+        },
+      }),
+      expect.objectContaining({
+        id: "refs-updated",
+        body: "Work Item Refs Updated · Improve slim event display · ready",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Improve slim event display",
+          state: "ready",
+        },
+      }),
+    ]);
   });
 
   it("renders current work item focus from slim top-level ids", () => {

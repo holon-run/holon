@@ -68,6 +68,7 @@ export function timelineItemToWorkingActivity(item: AgentTimelineItem): AgentTim
     minDisplayLevel: item.minDisplayLevel,
     sourceIds: item.sourceIds,
     stateObjectRef: item.stateObjectRef,
+    relatedStateObjectRef: item.relatedStateObjectRef,
     detail: item.detail,
     rawEvent: item.rawEvent,
     debug: item.debug,

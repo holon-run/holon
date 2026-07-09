@@ -440,6 +440,7 @@ export interface AgentTimelineActivity {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   stateObjectRef?: TimelineStateObjectRef;
+  relatedStateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
   rawEvent?: unknown;
   debug?: string;
@@ -569,6 +570,7 @@ export interface AgentTimelineItem {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   stateObjectRef?: TimelineStateObjectRef;
+  relatedStateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
   activities?: AgentTimelineActivity[];
   rawEvent?: unknown;

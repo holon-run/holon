@@ -10,6 +10,8 @@
  * keeping domain state separate from display formatting.
  */
 
+import type { TimelineStateObjectRef } from "./types";
+
 export type SessionObjectType =
   | "message"
   | "tool_execution"
@@ -82,6 +84,7 @@ export interface WorkItemObject extends BaseObject {
   status: WorkItemStatus;
   objective?: string;
   state?: string;
+  activityIds?: string[];
 }
 
 export type AssistantRoundStatus = "recorded" | "brief_promoted";
@@ -92,6 +95,7 @@ export interface AssistantRoundObject extends BaseObject {
 
 export interface RuntimeActivityObject extends BaseObject {
   eventType: string;
+  relatedStateObjectRef?: TimelineStateObjectRef;
 }
 
 /**

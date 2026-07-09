@@ -12,6 +12,7 @@ import { renderDomainObject } from "./object-renderers";
 export interface RenderContext {
   eventDisplayLevel: DisplayLevel;
   includeDebug: boolean;
+  activitiesById?: SessionState["activitiesById"];
   messagesById?: Record<string, RuntimeMessageEnvelope>;
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
   briefRecordsById?: Record<string, RuntimeBriefRecord>;
@@ -58,6 +59,7 @@ function lookupObject(state: SessionState, entry: InsertionEntry): DomainObject 
  * Returns `undefined` when the object produces no visible projection.
  */
 function renderObject(obj: DomainObject, ctx: RenderContext): AgentTimelineItem | undefined {
+  if ("relatedStateObjectRef" in obj && obj.relatedStateObjectRef) return undefined;
   const item = renderDomainObject(obj, ctx);
   if (!item) return undefined;
 

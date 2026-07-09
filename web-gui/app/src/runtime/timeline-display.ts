@@ -153,6 +153,7 @@ function activityToTimelineItem(activity: AgentTimelineActivity): AgentTimelineI
     meta: activity.meta,
     minDisplayLevel: activity.minDisplayLevel,
     sourceIds: activity.sourceIds,
+    relatedStateObjectRef: activity.relatedStateObjectRef,
     detail: activity.detail,
     rawEvent: activity.rawEvent,
     debug: activity.debug,

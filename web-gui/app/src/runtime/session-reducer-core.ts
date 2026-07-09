@@ -88,6 +88,11 @@ interface SessionItemDraft {
 
 const infoRuntimeEvents = new Set(["brief_created", "agent_waiting"]);
 const verboseRuntimeEventPrefixes = ["work_item_"];
+const workItemActivityEventNames = new Set([
+  "work_item_written",
+  "work_item_refs_updated",
+  "work_item_turn_end_committed",
+]);
 const debugRuntimeEventNames = new Set(["work_item_focus_released", "work_item_stale_reminder_injected"]);
 const debugRuntimeEventPrefixes = ["provider_", "task_"];
 const debugRuntimeEvents = new Set([
@@ -119,6 +124,7 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
   return deriveTimelineView(state, {
     eventDisplayLevel: applyCtx.eventDisplayLevel,
     includeDebug: applyCtx.includeDebug,
+    activitiesById: state.activitiesById,
     messagesById: applyCtx.messagesById,
     transcriptEntriesById: applyCtx.transcriptEntriesById,
     briefRecordsById: applyCtx.briefRecordsById,
@@ -196,13 +202,29 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
   } else if (eventType.startsWith("work_item_")) {
     const workItemId = workItemObjectId(payload) ?? eventId;
     const previousWorkItem = state.workItems.get(workItemId);
+    const activityIds = workItemActivityEventNames.has(eventType) ? [eventId] : undefined;
     upsertObject(state, "work_item", workItemId, {
       ...baseFields,
       id: workItemId,
       status: eventType.replace(/^work_item_/, "") as WorkItemObject["status"],
       objective: workItemObjective(payload) ?? previousWorkItem?.objective,
       state: firstStringField(payload, ["state", "plan_status", "readiness"]) ?? previousWorkItem?.state,
+      activityIds,
     } as DomainObject);
+    if (activityIds) {
+      upsertObject(state, "activity", eventId, {
+        ...baseFields,
+        id: eventId,
+        status: eventType,
+        eventType,
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: workItemId,
+          objective: workItemObjective(payload) ?? previousWorkItem?.objective,
+          state: firstStringField(payload, ["state", "plan_status", "readiness"]) ?? previousWorkItem?.state,
+        },
+      } as DomainObject);
+    }
   } else if (eventType === "brief_created" || eventType === "assistant_round_recorded") {
     upsertObject(state, "assistant_round", eventId, {
       ...baseFields,

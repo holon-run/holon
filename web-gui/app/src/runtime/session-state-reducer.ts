@@ -99,6 +99,7 @@ function mergeObjectFields(existing: DomainObject, incoming: DomainObject): void
 
   const winner = incomingPriority >= existingPriority ? incoming : existing;
   const loser = incomingPriority >= existingPriority ? existing : incoming;
+  const activityIds = mergeActivityIds(existing, incoming);
 
   // Copy all render and domain fields from the winner, preserving
   // earliest createdAt and accumulating sourceEventIds.
@@ -106,6 +107,17 @@ function mergeObjectFields(existing: DomainObject, incoming: DomainObject): void
   Object.assign(existing, winnerFields, {
     sourceEventIds: mergeSourceIds([...loser.sourceEventIds, ...winner.sourceEventIds]),
   });
+  if (activityIds.length) {
+    (existing as { activityIds?: string[] }).activityIds = activityIds;
+  }
+}
+
+function mergeActivityIds(existing: DomainObject, incoming: DomainObject): string[] {
+  const ids = [
+    ...("activityIds" in existing ? (existing.activityIds ?? []) : []),
+    ...("activityIds" in incoming ? (incoming.activityIds ?? []) : []),
+  ];
+  return Array.from(new Set(ids));
 }
 
 function objectPriority(obj: DomainObject): number {

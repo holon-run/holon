@@ -8,8 +8,8 @@
  * metadata (source IDs, raw event, timestamp, debug info).
  */
 
-import type { AgentTimelineItem, TimelineStateObjectRef } from "./types";
-import type { DomainObject, WorkItemObject } from "./session-object-types";
+import type { AgentTimelineActivity, AgentTimelineItem, TimelineStateObjectRef } from "./types";
+import type { DomainObject, RuntimeActivityObject, WorkItemObject } from "./session-object-types";
 import type { RenderContext } from "./timeline-view-model";
 import { projectRuntimeEvent } from "./session-reducer-core";
 
@@ -45,7 +45,9 @@ export function renderDomainObject(
     minDisplayLevel: projection.minDisplayLevel,
     sourceIds: obj.sourceEventIds,
     stateObjectRef: stateObjectRefFor(obj),
+    relatedStateObjectRef: relatedStateObjectRefFor(obj),
     detail: projection.detail,
+    activities: isWorkItemObject(obj) ? renderWorkItemActivities(obj, ctx) : undefined,
     rawEvent: obj.render.rawEvent,
     debug: obj.render.debug,
   };
@@ -65,4 +67,50 @@ function stateObjectRefFor(obj: DomainObject): TimelineStateObjectRef | undefine
 
 function isWorkItemObject(obj: DomainObject): obj is WorkItemObject {
   return obj.render.eventType.startsWith("work_item_");
+}
+
+function relatedStateObjectRefFor(obj: DomainObject): TimelineStateObjectRef | undefined {
+  if (isRuntimeActivityObject(obj)) return obj.relatedStateObjectRef;
+  return undefined;
+}
+
+function renderWorkItemActivities(obj: WorkItemObject, ctx: RenderContext): AgentTimelineItem["activities"] {
+  const activityIds = obj.activityIds ?? [];
+  if (!activityIds.length || !ctx.activitiesById) return undefined;
+  const activities = activityIds
+    .map((activityId) => ctx.activitiesById?.get(activityId))
+    .filter((activity): activity is RuntimeActivityObject => Boolean(activity))
+    .map((activity) => renderRuntimeActivity(activity, ctx))
+    .filter((activity): activity is NonNullable<ReturnType<typeof renderRuntimeActivity>> => Boolean(activity));
+  return activities.length ? activities : undefined;
+}
+
+function renderRuntimeActivity(activity: RuntimeActivityObject, ctx: RenderContext): AgentTimelineActivity | undefined {
+  const projection = projectRuntimeEvent(
+    activity.render.eventType,
+    activity.render.payload,
+    ctx.messagesById,
+    ctx.transcriptEntriesById,
+    ctx.briefRecordsById,
+  );
+  if (!projection) return undefined;
+
+  return {
+    id: activity.id,
+    kind: projection.kind,
+    label: projection.label,
+    body: projection.body,
+    timestamp: projection.timestamp || activity.render.timestamp,
+    meta: activity.render.meta,
+    minDisplayLevel: projection.minDisplayLevel,
+    sourceIds: activity.sourceEventIds,
+    relatedStateObjectRef: activity.relatedStateObjectRef,
+    detail: projection.detail,
+    rawEvent: activity.render.rawEvent,
+    debug: activity.render.debug,
+  };
+}
+
+function isRuntimeActivityObject(obj: DomainObject): obj is RuntimeActivityObject {
+  return "eventType" in obj;
 }
