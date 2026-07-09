@@ -188,7 +188,11 @@ impl RuntimeModelCatalog {
         model_ref: &ModelRef,
         requested_capability: ModelRouteCapability,
     ) -> Option<ResolvedModelRoute> {
-        let endpoint = self.provider_endpoints.get(&model_ref.provider)?;
+        let canonical_ref = self.built_in_catalog.canonicalize_model_ref(model_ref);
+        let model_ref = &canonical_ref;
+
+        let endpoint = self.resolve_endpoint_for_model(model_ref)?;
+
         let policy = self.built_in_catalog.resolve_policy(
             model_ref,
             &self.model_overrides,
@@ -208,6 +212,28 @@ impl RuntimeModelCatalog {
             policy,
             requested_capability,
         })
+    }
+
+    /// Resolve the provider endpoint config for a (possibly canonical) model ref.
+    /// Uses the model metadata's endpoint field when available to find the
+    /// correct endpoint among multiple endpoints under the same canonical provider.
+    fn resolve_endpoint_for_model(
+        &self,
+        model_ref: &ModelRef,
+    ) -> Option<&ResolvedProviderEndpointConfig> {
+        let model_endpoint = self
+            .built_in_catalog
+            .get(model_ref)
+            .and_then(|metadata| metadata.endpoint.as_ref());
+        match model_endpoint {
+            // Model declares a specific non-default endpoint: find by (provider, endpoint)
+            Some(endpoint) => self
+                .provider_endpoints
+                .values()
+                .find(|e| e.provider == model_ref.provider && &e.endpoint == endpoint),
+            // Default endpoint or no catalog metadata: direct key lookup
+            None => self.provider_endpoints.get(&model_ref.provider),
+        }
     }
 
     pub fn provider_chain(&self, model_override: Option<&ModelRef>) -> Vec<ModelRef> {
@@ -338,6 +364,7 @@ impl RuntimeModelCatalog {
                     override_config.capabilities.as_ref(),
                 ),
                 source: crate::model_catalog::ModelMetadataSource::ConfigOverride,
+                endpoint: None,
             });
         }
         models.sort_by(|left, right| {

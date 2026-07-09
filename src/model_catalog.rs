@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ModelRef, ProviderId};
+use crate::config::{ModelRef, ProviderEndpointId, ProviderId};
 use crate::context::ContextConfig;
 
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
@@ -105,6 +105,10 @@ pub struct BuiltInModelMetadata {
     #[serde(default)]
     pub capabilities: ModelCapabilityFlags,
     pub source: ModelMetadataSource,
+    /// Non-default endpoint this model belongs to under its canonical provider.
+    /// When `None`, the model uses the provider's default endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<ProviderEndpointId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -231,12 +235,14 @@ impl Default for ResolvedRuntimeModelPolicy {
 pub struct BuiltInModelCatalog {
     entries: HashMap<ModelRef, BuiltInModelMetadata>,
     preferred_models: HashMap<ProviderId, ModelRef>,
+    aliases: HashMap<ModelRef, ModelRef>,
 }
 
 impl BuiltInModelCatalog {
     pub fn new() -> Self {
         let mut entries = HashMap::new();
         let mut preferred_models = HashMap::new();
+        let aliases = Self::legacy_aliases();
         for entry in built_in_entries() {
             if is_turn_default_candidate(&entry) {
                 preferred_models
@@ -248,11 +254,34 @@ impl BuiltInModelCatalog {
         Self {
             entries,
             preferred_models,
+            aliases,
         }
     }
 
     pub fn get(&self, model_ref: &ModelRef) -> Option<&BuiltInModelMetadata> {
         self.entries.get(model_ref)
+    }
+
+    /// Resolve a legacy model ref to its canonical form.
+    /// Returns the input unchanged if no alias exists.
+    pub fn canonicalize_model_ref(&self, model_ref: &ModelRef) -> ModelRef {
+        self.aliases
+            .get(model_ref)
+            .cloned()
+            .unwrap_or_else(|| model_ref.clone())
+    }
+
+    /// Legacy model ref → canonical model ref aliases for backward compatibility.
+    fn legacy_aliases() -> HashMap<ModelRef, ModelRef> {
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            ModelRef::new(
+                provider_id("volcengine-image-openai"),
+                "doubao-seedream-5.0-lite",
+            ),
+            ModelRef::new(provider_id("volcengine"), "doubao-seedream-5.0-lite"),
+        );
+        aliases
     }
 
     pub fn list(&self) -> Vec<BuiltInModelMetadata> {
@@ -510,6 +539,7 @@ fn catalog_model(
             ..ModelCapabilityFlags::default()
         },
         source: ModelMetadataSource::BuiltInCatalog,
+        endpoint: None,
     }
 }
 
@@ -561,6 +591,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::anthropic(), "claude-haiku-4-5"),
@@ -579,6 +610,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.5"),
@@ -599,6 +631,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.4"),
@@ -619,6 +652,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex"),
@@ -639,6 +673,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex-spark"),
@@ -659,6 +694,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai(), "gpt-image-2"),
@@ -676,6 +712,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai(), "gpt-5.4"),
@@ -694,6 +731,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::ConservativeBuiltin,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai(), "gpt-5.3"),
@@ -712,6 +750,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::ConservativeBuiltin,
+            endpoint: None,
         },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai(), "gpt-5.4-mini"),
@@ -730,6 +769,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::ConservativeBuiltin,
+            endpoint: None,
         },
     ];
     entries.extend(compatible_provider_model_entries());
@@ -2337,7 +2377,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         BuiltInModelMetadata {
             model_ref: ModelRef::new(
-                provider_id("volcengine-image-openai"),
+                provider_id("volcengine"),
                 "doubao-seedream-5.0-lite",
             ),
             display_name: "Doubao Seedream 5.0 Lite".into(),
@@ -2356,6 +2396,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: Some(ProviderEndpointId::parse("image-openai").expect("valid built-in endpoint id")),
         },
         catalog_model(
             "xiaomi",
