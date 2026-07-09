@@ -318,6 +318,7 @@ impl OpenRouterModel {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
         })
     }
 }

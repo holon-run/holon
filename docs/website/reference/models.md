@@ -267,6 +267,7 @@ and capabilities.
 | `volcengine` | `doubao-seed-2-0-code-preview-260215` | `volcengine/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | ✅ |
 | `volcengine` | `doubao-seed-2-0-lite-260215` | `volcengine/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | — | ✅ |
+| `volcengine` | `doubao-seedream-5.0-lite` | `volcengine/doubao-seedream-5.0-lite` | — | — | — | — |
 | `volcengine-agent` | `ark-code-latest` | `volcengine-agent/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `volcengine-agent` | `deepseek-v3-2-251201` | `volcengine-agent/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
 | `volcengine-agent` | `deepseek-v4-flash` | `volcengine-agent/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
@@ -287,7 +288,6 @@ and capabilities.
 | `volcengine-coding` | `glm-5.2` | `volcengine-coding/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `volcengine-coding` | `kimi-k2.6` | `volcengine-coding/kimi-k2.6` | 262144 | 32768 | ✅ | — |
 | `volcengine-coding` | `kimi-k2.7-code` | `volcengine-coding/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
-| `volcengine-image-openai` | `doubao-seedream-5.0-lite` | `volcengine-image-openai/doubao-seedream-5.0-lite` | — | — | — | — |
 | `xai` | `grok-3` | `xai/grok-3` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-fast` | `xai/grok-3-fast` | 131072 | 8192 | — | — |
 | `xai` | `grok-3-mini` | `xai/grok-3-mini` | 131072 | 8192 | ✅ | — |

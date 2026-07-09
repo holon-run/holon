@@ -2696,7 +2696,7 @@ fn runtime_model_catalog_resolves_legacy_multi_endpoint_provider_identity() {
 
     assert_eq!(
         route.model_ref.as_string(),
-        "volcengine-image-openai/doubao-seedream-5.0-lite"
+        "volcengine/doubao-seedream-5.0-lite"
     );
     assert_eq!(
         route.requested_capability,
@@ -2796,8 +2796,8 @@ fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
         ProviderId::parse("volcengine-image-openai").unwrap(),
         ProviderRuntimeConfig {
             id: ProviderId::parse("volcengine-image-openai").unwrap(),
-            route_provider: ProviderId::parse("volcengine-image-openai").unwrap(),
-            route_endpoint: ProviderEndpointId::default_endpoint(),
+            route_provider: ProviderId::parse("volcengine").unwrap(),
+            route_endpoint: ProviderEndpointId::parse("image-openai").unwrap(),
             transport: ProviderTransportKind::OpenAiChatCompletions,
             base_url: "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
             auth: ProviderAuthConfig::default(),
@@ -2816,9 +2816,55 @@ fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
         .select_generate_image_model(&ContextConfig::default(), None, None)
         .unwrap();
 
+    assert_eq!(selected.as_string(), "volcengine/doubao-seedream-5.0-lite");
+}
+
+#[test]
+fn generate_image_selection_accepts_canonical_volcengine_seedream() {
+    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
+    fixture.config.image_generation_model =
+        Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
+    let legacy_provider = ProviderId::parse("volcengine-image-openai").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture.config.providers.insert(
+        legacy_provider.clone(),
+        built_ins.get(&legacy_provider).unwrap().clone(),
+    );
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let selected = catalog
+        .select_generate_image_model(&ContextConfig::default(), None, None)
+        .unwrap();
+
+    assert_eq!(selected.as_string(), "volcengine/doubao-seedream-5.0-lite");
+}
+
+#[test]
+fn runtime_model_catalog_resolves_canonical_seedream_route_endpoint() {
+    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
+    fixture.config.image_generation_model =
+        Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
+    let legacy_provider = ProviderId::parse("volcengine-image-openai").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture.config.providers.insert(
+        legacy_provider.clone(),
+        built_ins.get(&legacy_provider).unwrap().clone(),
+    );
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let route = catalog
+        .select_generate_image_route(&ContextConfig::default(), None, None)
+        .unwrap();
+
     assert_eq!(
-        selected.as_string(),
-        "volcengine-image-openai/doubao-seedream-5.0-lite"
+        route.model_ref.as_string(),
+        "volcengine/doubao-seedream-5.0-lite"
+    );
+    assert_eq!(route.endpoint.provider.as_str(), "volcengine");
+    assert_eq!(route.endpoint.endpoint.as_str(), "image-openai");
+    assert_eq!(
+        route.endpoint.runtime_config.id.as_str(),
+        "volcengine-image-openai"
     );
 }
 
@@ -2846,6 +2892,7 @@ fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
                 tool_output_truncation_estimated_tokens: None,
                 capabilities: Default::default(),
                 source: ModelMetadataSource::RemoteDiscovered,
+                endpoint: None,
             }],
         },
     );
