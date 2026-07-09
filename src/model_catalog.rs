@@ -2396,7 +2396,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
-            endpoint: Some(ProviderEndpointId::parse("image-openai").expect("valid built-in endpoint id")),
+            endpoint: Some(ProviderEndpointId::parse("plan-openai").expect("valid built-in endpoint id")),
         },
         catalog_model(
             "xiaomi",
@@ -3210,7 +3210,8 @@ mod tests {
     #[test]
     fn volcengine_catalog_respects_anthropic_compatible_output_limits() {
         // Regression test for #2095: Volcengine's Anthropic-compatible API
-        // rejects max_tokens above 128000.
+        // (Agent Plan tier only) rejects max_tokens above 128000. Standard and
+        // Coding tiers now use OpenAI Responses, so the limit does not apply.
         let catalog = BuiltInModelCatalog::new();
 
         for removed_model_ref in [
@@ -3227,16 +3228,16 @@ mod tests {
         }
 
         for entry in catalog.list() {
-            if entry.model_ref.provider.as_str().starts_with("volcengine") {
+            if entry.model_ref.provider.as_str() == "volcengine-agent" {
                 assert!(
                     entry.max_output_tokens_upper_limit <= Some(128_000),
-                    "{} should not exceed Volcengine's Anthropic-compatible max_tokens limit",
+                    "{} should not exceed Volcengine Agent Plan Anthropic-compatible max_tokens limit",
                     entry.model_ref.as_string()
                 );
             }
         }
 
-        for model_ref in ["volcengine-coding/glm-5.2", "volcengine-agent/glm-5.2"] {
+        for model_ref in ["volcengine-agent/glm-5.2"] {
             let policy = catalog.resolve_policy(
                 &ModelRef::parse(model_ref).unwrap(),
                 &HashMap::new(),
