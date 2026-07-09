@@ -1923,7 +1923,7 @@ fn openai_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value>
     let native = request.native_web_search.as_ref()?;
     match native.kind {
         ProviderNativeWebSearchKind::OpenAi => Some(json!({ "type": native.advertised_tool_type })),
-        ProviderNativeWebSearchKind::Xai => Some(json!({ "type": "web_search" })),
+        ProviderNativeWebSearchKind::Xai => Some(json!({ "type": native.advertised_tool_type })),
         _ => None,
     }
 }
