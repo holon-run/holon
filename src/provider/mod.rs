@@ -176,6 +176,7 @@ pub enum ProviderNativeWebSearchKind {
     OpenAi,
     Anthropic,
     Gemini,
+    Xai,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

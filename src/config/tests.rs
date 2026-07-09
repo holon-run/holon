@@ -840,6 +840,14 @@ fn built_in_provider_registry_declares_provider_specific_builtin_search() {
     assert_eq!(deepseek_search.kind, ProviderNativeWebSearchKind::Anthropic);
     assert_eq!(deepseek_search.advertised_tool_type, "web_search_20250305");
     assert_eq!(deepseek_search.backend_kind, "deepseek_web_search");
+
+    let xai = registry.get(&ProviderId::parse("xai").unwrap()).unwrap();
+    assert_eq!(xai.transport, ProviderTransportKind::OpenAiResponses);
+    assert_eq!(xai.reasoning_effort.as_deref(), Some("medium"));
+    let xai_search = xai.builtin_web_search.as_ref().unwrap();
+    assert_eq!(xai_search.kind, ProviderNativeWebSearchKind::Xai);
+    assert_eq!(xai_search.advertised_tool_type, "web_search");
+    assert_eq!(xai_search.backend_kind, "xai_web_search_x_search");
 }
 
 #[test]

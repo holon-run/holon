@@ -1214,9 +1214,10 @@ pub(crate) fn populate_built_in_provider_catalog(
         &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_builtin_http_provider(
         catalog,
         "xai",
+        ProviderTransportKind::OpenAiResponses,
         "https://api.x.ai/v1",
         &["XAI_API_KEY"],
         settings_env,
@@ -1433,9 +1434,17 @@ pub(crate) fn insert_builtin_http_provider_with_context_management(
             credential_store_path: None,
             codex_home: None,
             originator: None,
-            reasoning_effort: None,
+            reasoning_effort: if provider == "xai" {
+                Some("medium".into())
+            } else {
+                None
+            },
             context_management,
-            builtin_web_search,
+            builtin_web_search: if provider == "xai" {
+                Some(xai_builtin_web_search_config())
+            } else {
+                builtin_web_search
+            },
         },
     );
     Ok(())
@@ -1492,6 +1501,15 @@ pub(crate) fn deepseek_builtin_web_search_config() -> ProviderBuiltinWebSearchCo
         kind: ProviderNativeWebSearchKind::Anthropic,
         advertised_tool_type: "web_search_20250305".to_string(),
         backend_kind: "deepseek_web_search".to_string(),
+    }
+}
+
+pub(crate) fn xai_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Xai,
+        advertised_tool_type: "web_search".to_string(),
+        backend_kind: "xai_web_search_x_search".to_string(),
     }
 }
 
@@ -1610,6 +1628,16 @@ pub(crate) fn validate_provider_builtin_web_search(
             } else {
                 Err(anyhow!(
                     "providers.{}.builtin_web_search.advertised_tool_type must be web_search_preview for OpenAI Responses native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        (ProviderTransportKind::OpenAiResponses, ProviderNativeWebSearchKind::Xai) => {
+            if search.advertised_tool_type == "web_search" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search for xAI Responses native search",
                     provider_id.as_str()
                 ))
             }
