@@ -1130,9 +1130,8 @@ function toolExecutionDetail(
   if (outputPreview) return { label: "Output", text: outputPreview, tone: "output" };
   const readable = readableText(payload);
   const readableDuplicatesSummary = Boolean(readable && summary && normalizeTextKey(readable) === normalizeTextKey(summary));
-  const detailText = readable && !readableDuplicatesSummary ? readable : debugJson(payload ?? {});
-  if (detailText && detailText !== "{}") return { label: "Result", text: detailText, tone: "data" };
-  return undefined;
+  const detailText = readable && !readableDuplicatesSummary ? readable : undefined;
+  return detailText ? { label: "Result", text: detailText, tone: "data" } : undefined;
 }
 
 function commandBatchDetail(payload: Record<string, unknown> | undefined): string | undefined {

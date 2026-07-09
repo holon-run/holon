@@ -610,7 +610,7 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
   const rawEventText = formatInspectorJson(activity.rawEvent);
   const hydratedDetail = hasHydratedDetail(detailState);
   const showTimelineDetail = Boolean(detail && !hydratedDetail);
-  const structuredDetail = showTimelineDetail || Boolean(detail) || hydratedDetail;
+  const structuredDetail = showTimelineDetail || Boolean(detail) || hydratedDetail || activity.stateObjectRef?.kind === "tool_execution";
 
   return (
     <div className="inspector-stack">
