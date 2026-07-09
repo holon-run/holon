@@ -845,7 +845,7 @@ fn built_in_provider_endpoint_identity(
         "stepfun-plan" => ("stepfun", "plan"),
         "volcengine-coding" => ("volcengine", "coding"),
         "volcengine-agent" => ("volcengine", "plan"),
-        "volcengine-image-openai" => ("volcengine", "plan-openai"),
+        "volcengine-image-openai" => ("volcengine", "plan"),
         "xiaomi-token-plan" => ("xiaomi", "token-plan"),
         _ => {
             return Ok((
@@ -1188,23 +1188,15 @@ pub(crate) fn populate_built_in_provider_catalog(
         &["VOLCENGINE_CODING_API_KEY"],
         settings_env,
     )?;
-    // Agent Plan tier — Anthropic compatible at /api/plan (isolated key, no cross-tier fallback).
-    insert_anthropic_compatible_provider(
-        catalog,
-        "volcengine-agent",
-        "https://ark.cn-beijing.volces.com/api/plan",
-        &["VOLCENGINE_AGENT_API_KEY"],
-        settings_env,
-    )?;
-    // Agent Plan OpenAI tier — OpenAI Responses at /api/plan/v3 (text + image generation, same key as agent plan).
+    // Agent Plan tier — OpenAI Responses at /api/plan/v3 (text + image generation, isolated key, no cross-tier fallback).
     insert_builtin_http_provider(
         catalog,
-        "volcengine-image-openai",
+        "volcengine-agent",
         ProviderTransportKind::OpenAiResponses,
         "https://ark.cn-beijing.volces.com/api/plan/v3",
         &[
-            "VOLCENGINE_IMAGE_OPENAI_API_KEY",
             "VOLCENGINE_AGENT_API_KEY",
+            "VOLCENGINE_IMAGE_OPENAI_API_KEY",
         ],
         settings_env,
     )?;

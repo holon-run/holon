@@ -2396,7 +2396,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
                 ..ModelCapabilityFlags::default()
             },
             source: ModelMetadataSource::BuiltInCatalog,
-            endpoint: Some(ProviderEndpointId::parse("plan-openai").expect("valid built-in endpoint id")),
+            endpoint: Some(ProviderEndpointId::parse("plan").expect("valid built-in endpoint id")),
         },
         catalog_model(
             "xiaomi",
@@ -3209,9 +3209,9 @@ mod tests {
 
     #[test]
     fn volcengine_catalog_respects_anthropic_compatible_output_limits() {
-        // Regression test for #2095: Volcengine's Anthropic-compatible API
-        // (Agent Plan tier only) rejects max_tokens above 128000. Standard and
-        // Coding tiers now use OpenAI Responses, so the limit does not apply.
+        // Regression test for #2095: All Volcengine tiers now use OpenAI
+        // Responses. The 128000 limit on volcengine-agent models is a
+        // conservative model definition choice, not an API constraint.
         let catalog = BuiltInModelCatalog::new();
 
         for removed_model_ref in [

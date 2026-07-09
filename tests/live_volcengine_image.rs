@@ -13,11 +13,11 @@ fn live_volcengine_image_model() -> String {
 #[ignore = "requires a Volcengine Ark image generation credential profile and network access"]
 async fn live_volcengine_ark_seedream_generates_image_with_openai_images_api() -> Result<()> {
     let config = AppConfig::load()?;
-    let provider_id = ProviderId::parse("volcengine-image-openai")?;
+    let provider_id = ProviderId::parse("volcengine-agent")?;
     let provider_config = config
         .providers
         .get(&provider_id)
-        .ok_or_else(|| anyhow::anyhow!("missing volcengine-image-openai provider config"))?;
+        .ok_or_else(|| anyhow::anyhow!("missing volcengine-agent provider config"))?;
     let model = live_volcengine_image_model();
     let provider = OpenAiChatCompletionsProvider::from_runtime_config(
         provider_config,
@@ -34,7 +34,7 @@ async fn live_volcengine_ark_seedream_generates_image_with_openai_images_api() -
         })
         .await?;
 
-    assert_eq!(output.provider.as_str(), "volcengine-image-openai");
+    assert_eq!(output.provider.as_str(), "volcengine-agent");
     assert_eq!(output.model, model);
     assert_eq!(output.images.len(), 1);
     assert!(

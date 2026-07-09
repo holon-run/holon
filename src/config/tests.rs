@@ -1290,11 +1290,11 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
         "https://gemini.example/v1beta".to_string(),
     );
     settings_env.insert(
-        "VOLCENGINE_IMAGE_OPENAI_API_KEY".to_string(),
-        "volcengine-image-key".to_string(),
+        "VOLCENGINE_AGENT_API_KEY".to_string(),
+        "volcengine-agent-key".to_string(),
     );
     settings_env.insert(
-        "HOLON_VOLCENGINE_IMAGE_OPENAI_BASE_URL".to_string(),
+        "HOLON_VOLCENGINE_AGENT_BASE_URL".to_string(),
         "https://ark.example/api/v3".to_string(),
     );
 
@@ -1380,42 +1380,40 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
         Some("dashscope-coding-plan-key")
     );
 
-    let volcengine_image_openai = providers
-        .get(&ProviderId::parse("volcengine-image-openai").unwrap())
+    let volcengine_agent = providers
+        .get(&ProviderId::parse("volcengine-agent").unwrap())
         .unwrap();
     assert_eq!(
-        volcengine_image_openai.transport,
+        volcengine_agent.transport,
         ProviderTransportKind::OpenAiResponses
     );
+    assert_eq!(volcengine_agent.base_url, "https://ark.example/api/v3");
     assert_eq!(
-        volcengine_image_openai.base_url,
-        "https://ark.example/api/v3"
-    );
-    assert_eq!(
-        volcengine_image_openai.auth.env.as_deref(),
-        Some("VOLCENGINE_IMAGE_OPENAI_API_KEY")
-    );
-    assert_eq!(
-        volcengine_image_openai.credential.as_deref(),
-        Some("volcengine-image-key")
-    );
-    let mut volcengine_agent_only_env = HashMap::new();
-    volcengine_agent_only_env.insert(
-        "VOLCENGINE_AGENT_API_KEY".to_string(),
-        "volcengine-agent-key".to_string(),
-    );
-    let volcengine_agent_only_providers =
-        super::built_in_provider_registry_with_settings(&volcengine_agent_only_env).unwrap();
-    let volcengine_image_openai = volcengine_agent_only_providers
-        .get(&ProviderId::parse("volcengine-image-openai").unwrap())
-        .unwrap();
-    assert_eq!(
-        volcengine_image_openai.auth.env.as_deref(),
+        volcengine_agent.auth.env.as_deref(),
         Some("VOLCENGINE_AGENT_API_KEY")
     );
     assert_eq!(
-        volcengine_image_openai.credential.as_deref(),
+        volcengine_agent.credential.as_deref(),
         Some("volcengine-agent-key")
+    );
+    // Backward compat: VOLCENGINE_IMAGE_OPENAI_API_KEY still works as fallback.
+    let mut volcengine_image_openai_only_env = HashMap::new();
+    volcengine_image_openai_only_env.insert(
+        "VOLCENGINE_IMAGE_OPENAI_API_KEY".to_string(),
+        "volcengine-image-key".to_string(),
+    );
+    let volcengine_image_openai_only_providers =
+        super::built_in_provider_registry_with_settings(&volcengine_image_openai_only_env).unwrap();
+    let volcengine_agent = volcengine_image_openai_only_providers
+        .get(&ProviderId::parse("volcengine-agent").unwrap())
+        .unwrap();
+    assert_eq!(
+        volcengine_agent.auth.env.as_deref(),
+        Some("VOLCENGINE_IMAGE_OPENAI_API_KEY")
+    );
+    assert_eq!(
+        volcengine_agent.credential.as_deref(),
+        Some("volcengine-image-key")
     );
 
     let nearai = providers
@@ -2678,11 +2676,8 @@ fn runtime_model_catalog_resolves_image_generation_route() {
 
 #[test]
 fn runtime_model_catalog_resolves_legacy_multi_endpoint_provider_identity() {
-    let mut fixture = test_app_config(
-        "openai/gpt-5.4",
-        &["volcengine-image-openai/doubao-seedream-5.0-lite"],
-    );
-    let legacy_provider = ProviderId::parse("volcengine-image-openai").unwrap();
+    let mut fixture = test_app_config("openai/gpt-5.4", &["volcengine/doubao-seedream-5.0-lite"]);
+    let legacy_provider = ProviderId::parse("volcengine-agent").unwrap();
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
     fixture.config.providers.insert(
         legacy_provider.clone(),
@@ -2703,10 +2698,10 @@ fn runtime_model_catalog_resolves_legacy_multi_endpoint_provider_identity() {
         ModelRouteCapability::ImageGeneration
     );
     assert_eq!(route.endpoint.provider.as_str(), "volcengine");
-    assert_eq!(route.endpoint.endpoint.as_str(), "plan-openai");
+    assert_eq!(route.endpoint.endpoint.as_str(), "plan");
     assert_eq!(
         route.endpoint.runtime_config.id.as_str(),
-        "volcengine-image-openai"
+        "volcengine-agent"
     );
 }
 
@@ -2797,7 +2792,7 @@ fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
         ProviderRuntimeConfig {
             id: ProviderId::parse("volcengine-image-openai").unwrap(),
             route_provider: ProviderId::parse("volcengine").unwrap(),
-            route_endpoint: ProviderEndpointId::parse("plan-openai").unwrap(),
+            route_endpoint: ProviderEndpointId::parse("plan").unwrap(),
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
             auth: ProviderAuthConfig::default(),
@@ -2824,7 +2819,7 @@ fn generate_image_selection_accepts_canonical_volcengine_seedream() {
     let mut fixture = test_app_config("openai/gpt-5.4", &[]);
     fixture.config.image_generation_model =
         Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
-    let legacy_provider = ProviderId::parse("volcengine-image-openai").unwrap();
+    let legacy_provider = ProviderId::parse("volcengine-agent").unwrap();
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
     fixture.config.providers.insert(
         legacy_provider.clone(),
@@ -2844,7 +2839,7 @@ fn runtime_model_catalog_resolves_canonical_seedream_route_endpoint() {
     let mut fixture = test_app_config("openai/gpt-5.4", &[]);
     fixture.config.image_generation_model =
         Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
-    let legacy_provider = ProviderId::parse("volcengine-image-openai").unwrap();
+    let legacy_provider = ProviderId::parse("volcengine-agent").unwrap();
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
     fixture.config.providers.insert(
         legacy_provider.clone(),
@@ -2861,10 +2856,10 @@ fn runtime_model_catalog_resolves_canonical_seedream_route_endpoint() {
         "volcengine/doubao-seedream-5.0-lite"
     );
     assert_eq!(route.endpoint.provider.as_str(), "volcengine");
-    assert_eq!(route.endpoint.endpoint.as_str(), "plan-openai");
+    assert_eq!(route.endpoint.endpoint.as_str(), "plan");
     assert_eq!(
         route.endpoint.runtime_config.id.as_str(),
-        "volcengine-image-openai"
+        "volcengine-agent"
     );
 }
 
@@ -3021,12 +3016,12 @@ fn provider_doc_entries_are_sorted_and_populated() {
     assert_eq!(dashscope_token_plan.provider.as_str(), "dashscope");
     assert_eq!(dashscope_token_plan.endpoint.as_str(), "token-plan");
 
-    let volcengine_image = entries
+    let volcengine_agent = entries
         .iter()
-        .find(|entry| entry.legacy_provider.as_str() == "volcengine-image-openai")
-        .expect("volcengine-image-openai doc entry");
-    assert_eq!(volcengine_image.provider.as_str(), "volcengine");
-    assert_eq!(volcengine_image.endpoint.as_str(), "plan-openai");
+        .find(|entry| entry.legacy_provider.as_str() == "volcengine-agent")
+        .expect("volcengine-agent doc entry");
+    assert_eq!(volcengine_agent.provider.as_str(), "volcengine");
+    assert_eq!(volcengine_agent.endpoint.as_str(), "plan");
 }
 
 #[test]
