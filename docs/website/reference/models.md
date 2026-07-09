@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **41 endpoints** and **247 models**.
+across **40 endpoints** and **247 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -57,10 +57,9 @@ used in existing `provider/model` refs and config shortcuts.
 | `venice` | `default` | `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
 | `vercel-ai-gateway` | `default` | `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
 | `vllm` | `default` | `vllm` | OpenAI Chat Completions | `http://127.0.0.1:8000/v1` | `—` |
-| `volcengine` | `default` | `volcengine` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/compatible` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
-| `volcengine` | `agent` | `volcengine-agent` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/plan` | `VOLCENGINE_AGENT_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
-| `volcengine` | `coding` | `volcengine-coding` | Anthropic Messages | `https://ark.cn-beijing.volces.com/api/coding` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
-| `volcengine` | `image-openai` | `volcengine-image-openai` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/plan/v3` | `VOLCENGINE_IMAGE_OPENAI_API_KEY or VOLCENGINE_AGENT_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine` | `default` | `volcengine` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/v3` | `VOLCENGINE_API_KEY` |
+| `volcengine` | `plan` | `volcengine-agent` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/plan/v3` | `VOLCENGINE_AGENT_API_KEY or VOLCENGINE_IMAGE_OPENAI_API_KEY` |
+| `volcengine` | `coding` | `volcengine-coding` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY` |
 | `xai` | `default` | `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `xiaomi` | `default` | `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
 | `xiaomi` | `token-plan` | `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
