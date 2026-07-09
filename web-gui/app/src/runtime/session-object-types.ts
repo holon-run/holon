@@ -72,13 +72,18 @@ export interface TaskObject extends BaseObject {
 }
 
 export type WorkItemStatus =
-  | "created"
-  | "picked"
+  | "unknown"
+  | "open"
+  | "runnable"
+  | "queued"
   | "yielded"
   | "blocked"
+  | "waiting_for_operator"
+  | "draft"
+  | "ready"
+  | "needs_input"
   | "completed"
-  | "focus_released"
-  | "report_promoted";
+  | "cancelled";
 
 export interface WorkItemObject extends BaseObject {
   status: WorkItemStatus;

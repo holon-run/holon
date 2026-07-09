@@ -443,7 +443,7 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
-  it("renders work_item_picked objective and reason without internal ids", () => {
+  it("renders work_item_picked as a WorkItem state object plus activity view", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
@@ -463,13 +463,32 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
+    expect(timeline.map((item) => item.id)).toEqual(["work_123", "picked"]);
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "picked",
+        id: "work_123",
         kind: "system",
         label: "Work item",
         body: "Picked work item · Fix timeline · next priority",
         minDisplayLevel: "verbose",
+        stateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Fix timeline",
+          state: undefined,
+        },
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "picked",
+        body: "Picked work item · Fix timeline · next priority",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Fix timeline",
+          state: undefined,
+        },
       }),
     );
   });
@@ -501,6 +520,55 @@ describe("reduceAgentSessionTimeline", () => {
         minDisplayLevel: "verbose",
       }),
     );
+  });
+
+  it("merges work item events by nested work_item id", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "nested-written",
+            event_seq: 15,
+            type: "work_item_written",
+            payload: {
+              work_item: {
+                id: "work_nested",
+                objective: "Merge nested work item",
+                plan_status: "draft",
+              },
+            },
+          }),
+          event({
+            id: "nested-picked",
+            event_seq: 16,
+            type: "work_item_picked",
+            payload: {
+              reason: "resume",
+              record: {
+                id: "work_nested",
+                objective: "Merge nested work item",
+                readiness: "runnable",
+              },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "work_nested",
+        sourceIds: ["nested-written", "nested-picked"],
+        stateObjectRef: {
+          kind: "work_item",
+          id: "work_nested",
+          objective: "Merge nested work item",
+          state: "runnable",
+        },
+      }),
+    );
+    expect(timeline.slice(1).map((item) => item.id)).toEqual(["nested-written", "nested-picked"]);
+    expect(timeline.slice(1).map((item) => item.relatedStateObjectRef?.id)).toEqual(["work_nested", "work_nested"]);
   });
 
   it("merges work item events by work item id and exposes state object and activity views", () => {
@@ -591,6 +659,18 @@ describe("reduceAgentSessionTimeline", () => {
         body: "Released work item focus · yielded · runnable",
       }),
     );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "focus-released",
+        body: "Released work item focus · yielded · runnable",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_456",
+          objective: undefined,
+          state: "runnable",
+        },
+      }),
+    );
   });
 
   it("renders focus release details from top-level work item fields", () => {
@@ -651,6 +731,18 @@ describe("reduceAgentSessionTimeline", () => {
         body: "Promoted completion report · Finished the implementation.",
       }),
     );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "promoted",
+        body: "Promoted completion report · Finished the implementation.",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_789",
+          objective: undefined,
+          state: undefined,
+        },
+      }),
+    );
   });
 
   it("renders completion report candidate promotion details and preview", () => {
@@ -679,6 +771,18 @@ describe("reduceAgentSessionTimeline", () => {
         kind: "system",
         label: "Work item",
         body: "Promoted completion report candidate · Candidate completion text.",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "candidate-promoted",
+        body: "Promoted completion report candidate · Candidate completion text.",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_abc",
+          objective: undefined,
+          state: undefined,
+        },
       }),
     );
   });

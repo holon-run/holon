@@ -92,7 +92,12 @@ const workItemActivityEventNames = new Set([
   "work_item_written",
   "work_item_refs_updated",
   "work_item_turn_end_committed",
+  "work_item_picked",
+  "work_item_focus_released",
+  "work_item_completion_report_promoted",
+  "work_item_completion_report_candidate_promoted",
 ]);
+const workItemDebugOnlyEventNames = new Set(["work_item_stale_reminder_injected"]);
 const debugRuntimeEventNames = new Set(["work_item_focus_released", "work_item_stale_reminder_injected"]);
 const debugRuntimeEventPrefixes = ["provider_", "task_"];
 const debugRuntimeEvents = new Set([
@@ -199,16 +204,25 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
       id: taskId ? `task:${taskId}` : eventId,
       status: taskStatus ?? (eventType === "task_created" ? "created" : "running"),
     } as DomainObject);
+  } else if (isDebugOnlyWorkItemEvent(eventType)) {
+    upsertObject(state, "activity", eventId, {
+      ...baseFields,
+      id: eventId,
+      status: eventType,
+      eventType,
+    } as DomainObject);
   } else if (eventType.startsWith("work_item_")) {
     const workItemId = workItemObjectId(payload) ?? eventId;
     const previousWorkItem = state.workItems.get(workItemId);
-    const activityIds = workItemActivityEventNames.has(eventType) ? [eventId] : undefined;
+    const objective = workItemObjective(payload) ?? previousWorkItem?.objective;
+    const stateName = workItemState(payload) ?? previousWorkItem?.state;
+    const activityIds = isWorkItemActivityEvent(eventType) ? [eventId] : undefined;
     upsertObject(state, "work_item", workItemId, {
       ...baseFields,
       id: workItemId,
-      status: eventType.replace(/^work_item_/, "") as WorkItemObject["status"],
-      objective: workItemObjective(payload) ?? previousWorkItem?.objective,
-      state: firstStringField(payload, ["state", "plan_status", "readiness"]) ?? previousWorkItem?.state,
+      status: workItemStatus(eventType, stateName, previousWorkItem?.status),
+      objective,
+      state: stateName,
       activityIds,
     } as DomainObject);
     if (activityIds) {
@@ -220,8 +234,8 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
         relatedStateObjectRef: {
           kind: "work_item",
           id: workItemId,
-          objective: workItemObjective(payload) ?? previousWorkItem?.objective,
-          state: firstStringField(payload, ["state", "plan_status", "readiness"]) ?? previousWorkItem?.state,
+          objective,
+          state: stateName,
         },
       } as DomainObject);
     }
@@ -615,12 +629,66 @@ function genericToolDescription(toolName: string, payload: Record<string, unknow
 }
 
 function workItemObjectId(payload: Record<string, unknown> | undefined): string | undefined {
-  return firstStringField(payload, ["work_item_id", "current_work_item_id"]);
+  const record = workItemRecord(payload);
+  return firstStringField(payload, ["work_item_id", "current_work_item_id"])
+    ?? firstStringField(record, ["id", "work_item_id", "workItemId"]);
 }
 
 function workItemObjective(payload: Record<string, unknown> | undefined): string | undefined {
+  const record = workItemRecord(payload);
+  return firstStringField(record, ["objective", "objective_preview"])
+    ?? firstStringField(payload, ["objective", "objective_preview"]);
+}
+
+function workItemState(payload: Record<string, unknown> | undefined): string | undefined {
+  const record = workItemRecord(payload);
+  return firstStringField(record, ["state", "plan_status", "readiness"])
+    ?? firstStringField(payload, ["state", "plan_status", "readiness"]);
+}
+
+function workItemRecord(payload: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   const record = asRecord(payload?.record);
-  return firstStringField(record, ["objective", "objective_preview"]) ?? stringField(payload, "objective_preview");
+  if (record) return record;
+  const workItem = asRecord(payload?.work_item);
+  if (workItem) return workItem;
+  return asRecord(payload?.workItem);
+}
+
+function isWorkItemActivityEvent(eventType: string): boolean {
+  return workItemActivityEventNames.has(eventType);
+}
+
+function isDebugOnlyWorkItemEvent(eventType: string): boolean {
+  return workItemDebugOnlyEventNames.has(eventType);
+}
+
+function workItemStatus(
+  eventType: string,
+  stateName: string | undefined,
+  previousStatus: WorkItemObject["status"] | undefined,
+): WorkItemObject["status"] {
+  if (isKnownWorkItemStatus(stateName)) return stateName;
+  if (eventType === "work_item_completed" || eventType === "work_item_completion_report_promoted") return "completed";
+  if (eventType === "work_item_blocked") return "blocked";
+  if (eventType === "work_item_focus_released") return previousStatus ?? "yielded";
+  return previousStatus ?? "unknown";
+}
+
+function isKnownWorkItemStatus(value: string | undefined): value is WorkItemObject["status"] {
+  return (
+    value === "unknown" ||
+    value === "open" ||
+    value === "runnable" ||
+    value === "queued" ||
+    value === "yielded" ||
+    value === "blocked" ||
+    value === "waiting_for_operator" ||
+    value === "draft" ||
+    value === "ready" ||
+    value === "needs_input" ||
+    value === "completed" ||
+    value === "cancelled"
+  );
 }
 
 function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
@@ -1161,11 +1229,10 @@ function formatDuration(milliseconds: number): string {
 
 function summarizeWorkItemEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
   const action = stringField(payload, "action") ?? eventType.replace(/^work_item_/, "");
-  const record = asRecord(payload?.record);
-  const objective = firstStringField(record, ["objective", "objective_preview"]) ?? stringField(payload, "objective_preview");
-  const workItemId = firstStringField(payload, ["work_item_id", "current_work_item_id"]);
+  const objective = workItemObjective(payload);
+  const workItemId = workItemObjectId(payload);
   const reason = stringField(payload, "reason");
-  const state = firstStringField(payload, ["state", "plan_status", "readiness"]);
+  const state = workItemState(payload);
   if (eventType === "work_item_picked") {
     return compactJoin(["Picked work item", objective, reason, state]);
   }
