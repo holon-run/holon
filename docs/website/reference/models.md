@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **247 models**.
+across **40 endpoints** and **248 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -60,7 +60,7 @@ used in existing `provider/model` refs and config shortcuts.
 | `volcengine` | `default` | `volcengine` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/v3` | `VOLCENGINE_API_KEY` |
 | `volcengine` | `plan` | `volcengine-agent` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/plan/v3` | `VOLCENGINE_AGENT_API_KEY or VOLCENGINE_IMAGE_OPENAI_API_KEY` |
 | `volcengine` | `coding` | `volcengine-coding` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY` |
-| `xai` | `default` | `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
+| `xai` | `default` | `xai` | OpenAI Responses | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `xiaomi` | `default` | `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
 | `xiaomi` | `token-plan` | `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
 | `zai` | `default` | `zai` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
@@ -295,6 +295,7 @@ and capabilities.
 | `xai` | `grok-4-1-fast` | `xai/grok-4-1-fast` | 2000000 | 30000 | ✅ | ✅ |
 | `xai` | `grok-4-fast` | `xai/grok-4-fast` | 2000000 | 30000 | ✅ | ✅ |
 | `xai` | `grok-4-fast-non-reasoning` | `xai/grok-4-fast-non-reasoning` | 2000000 | 30000 | — | ✅ |
+| `xai` | `grok-4.5` | `xai/grok-4.5` | 500000 | 64000 | ✅ | ✅ |
 | `xai` | `grok-code-fast-1` | `xai/grok-code-fast-1` | 256000 | 10000 | ✅ | — |
 | `xiaomi` | `mimo-v2-flash` | `xiaomi/mimo-v2-flash` | 262144 | 8192 | — | — |
 | `xiaomi` | `mimo-v2-omni` | `xiaomi/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |

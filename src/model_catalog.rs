@@ -2510,6 +2510,15 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         catalog_model("xai", "grok-4", "Grok 4", 256_000, 64_000, true, false),
         catalog_model(
             "xai",
+            "grok-4.5",
+            "Grok 4.5",
+            500_000,
+            64_000,
+            true,
+            true,
+        ),
+        catalog_model(
+            "xai",
             "grok-4-fast",
             "Grok 4 Fast",
             2_000_000,

@@ -55,6 +55,7 @@ pub struct OpenAiProvider {
     api_key: Option<String>,
     model: String,
     max_output_tokens: u32,
+    reasoning_effort: Option<String>,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
@@ -302,6 +303,7 @@ impl OpenAiProvider {
             api_key,
             model: model.to_string(),
             max_output_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
             builtin_web_search: provider_config.builtin_web_search.clone(),
             compaction_policy,
             trace_home_dir: trace_home_dir.to_path_buf(),
@@ -809,7 +811,7 @@ impl AgentProvider for OpenAiProvider {
             &request,
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Relaxed,
-            None,
+            self.reasoning_effort.as_deref(),
             None,
         )?;
         let mut plan = plan_openai_responses_request(body, &request, &self.continuation, true)?;
@@ -946,7 +948,7 @@ impl AgentProvider for OpenAiProvider {
             &probe_request,
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Relaxed,
-            None,
+            self.reasoning_effort.as_deref(),
             None,
         )?;
         let headers = self
@@ -1865,6 +1867,7 @@ pub(crate) fn build_openai_responses_request(
         .collect::<Result<Vec<_>>>()?;
     if let Some(tool) = openai_native_web_search_tool(request) {
         tools.push(tool);
+        tools.extend(openai_native_web_search_extra_tools(request));
     }
 
     let mut body = json!({
@@ -1882,6 +1885,9 @@ pub(crate) fn build_openai_responses_request(
     if let Some(response_format) = openai_response_format(request) {
         body["text"]["format"] = response_format;
     }
+    if let Some(reasoning_effort) = reasoning_effort {
+        body["reasoning"] = json!({ "effort": reasoning_effort });
+    }
     match contract {
         OpenAiResponsesTransportContract::StandardJson => {
             body["max_output_tokens"] = Value::from(max_output_tokens);
@@ -1891,8 +1897,7 @@ pub(crate) fn build_openai_responses_request(
             if let Some(verbosity) = verbosity {
                 body["text"] = json!({ "verbosity": verbosity.as_str() });
             }
-            if let Some(reasoning_effort) = reasoning_effort {
-                body["reasoning"] = json!({ "effort": reasoning_effort });
+            if reasoning_effort.is_some() {
                 body["include"] = json!(["reasoning.encrypted_content"]);
             } else {
                 body["reasoning"] = Value::Null;
@@ -1916,10 +1921,23 @@ fn openai_response_format(request: &ProviderTurnRequest) -> Option<Value> {
 
 fn openai_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value> {
     let native = request.native_web_search.as_ref()?;
-    if native.kind != ProviderNativeWebSearchKind::OpenAi {
-        return None;
+    match native.kind {
+        ProviderNativeWebSearchKind::OpenAi => Some(json!({ "type": native.advertised_tool_type })),
+        ProviderNativeWebSearchKind::Xai => Some(json!({ "type": native.advertised_tool_type })),
+        _ => None,
     }
-    Some(json!({ "type": native.advertised_tool_type }))
+}
+
+fn openai_native_web_search_extra_tools(request: &ProviderTurnRequest) -> Vec<Value> {
+    if request
+        .native_web_search
+        .as_ref()
+        .is_some_and(|native| native.kind == ProviderNativeWebSearchKind::Xai)
+    {
+        vec![json!({ "type": "x_search" })]
+    } else {
+        Vec::new()
+    }
 }
 
 fn openai_request_controls_diagnostics(body: &Value) -> ProviderOpenAiRequestControlsDiagnostics {
@@ -2431,7 +2449,10 @@ fn native_web_search_diagnostics(
     request: &ProviderTurnRequest,
 ) -> Option<ProviderNativeWebSearchDiagnostics> {
     let native = request.native_web_search.as_ref()?;
-    let lowered = native.kind == ProviderNativeWebSearchKind::OpenAi;
+    let lowered = matches!(
+        native.kind,
+        ProviderNativeWebSearchKind::OpenAi | ProviderNativeWebSearchKind::Xai
+    );
     Some(ProviderNativeWebSearchDiagnostics {
         kind: native.kind,
         provider_id: native.provider_id.clone(),
@@ -2439,8 +2460,9 @@ fn native_web_search_diagnostics(
         advertised_tool_type: native.advertised_tool_type.clone(),
         backend_kind: native.backend_kind.clone(),
         lowered,
-        fallback_reason: (!lowered)
-            .then(|| "openai responses transport only supports OpenAI-native web search".into()),
+        fallback_reason: (!lowered).then(|| {
+            "openai responses transport only supports OpenAI/xAI-native web search".into()
+        }),
     })
 }
 
@@ -5356,7 +5378,7 @@ mod tests {
     use super::{
         build_openai_codex_image_generation_request, build_openai_responses_request,
         chat_completions_url, choose_openai_codex_credential, consume_openai_sse_event,
-        incremental_diagnostics, latest_openai_compaction_index,
+        incremental_diagnostics, latest_openai_compaction_index, native_web_search_diagnostics,
         openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
         openai_provider_window_compaction_candidate,
         parse_openai_codex_image_generation_response_items, plan_openai_responses_request,
@@ -5845,6 +5867,49 @@ mod tests {
             .expect("tools should be an array")
             .iter()
             .any(|tool| tool == &json!({ "type": "web_search_preview" })));
+    }
+
+    #[test]
+    fn openai_responses_request_lowers_xai_native_search_tools_and_reasoning() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("search X and the web".into())],
+            vec![],
+        );
+        request.native_web_search = Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::Xai,
+            provider_id: "xai".into(),
+            provider_model_ref: "xai/grok-4-fast".into(),
+            advertised_tool_type: "web_search".into(),
+            backend_kind: "xai_web_search_x_search".into(),
+            max_results: Some(5),
+        });
+
+        let body = build_openai_responses_request(
+            "grok-4-fast",
+            1024,
+            &request,
+            OpenAiResponsesTransportContract::StandardJson,
+            ToolSchemaContract::Strict,
+            Some("medium"),
+            None,
+        )
+        .expect("xAI responses request should build");
+
+        let tools = body["tools"].as_array().expect("tools should be an array");
+        assert!(tools
+            .iter()
+            .any(|tool| tool == &json!({ "type": "web_search" })));
+        assert!(tools
+            .iter()
+            .any(|tool| tool == &json!({ "type": "x_search" })));
+        assert_eq!(body["reasoning"]["effort"], json!("medium"));
+
+        let diagnostics = native_web_search_diagnostics(&request)
+            .expect("native web search diagnostics should be recorded");
+        assert!(diagnostics.lowered);
+        assert_eq!(diagnostics.kind, ProviderNativeWebSearchKind::Xai);
+        assert_eq!(diagnostics.fallback_reason, None);
     }
 
     #[test]
