@@ -887,9 +887,36 @@ impl RuntimeHandle {
         let next_state = {
             let guard = self.inner.agent.lock().await;
             let mut next_state = guard.state.clone();
-            next_state.attached_workspaces = parent_state.attached_workspaces.clone();
+            next_state.attached_workspaces =
+                workspace::inherited_attached_workspaces_for_agent(parent_state, &next_state.id);
             next_state.active_workspace_entry = parent_state.active_workspace_entry.clone();
             next_state.worktree_session = parent_state.worktree_session.clone();
+            workspace::canonicalize_agent_home_bindings(
+                &mut next_state,
+                self.inner.storage.data_dir(),
+                &guard.state.id,
+            )?;
+            if next_state
+                .active_workspace_entry
+                .as_ref()
+                .is_some_and(|entry| {
+                    entry.workspace_id == AGENT_HOME_WORKSPACE_ID
+                        || entry.workspace_id.starts_with("agent_home:")
+                })
+            {
+                let access_mode = next_state
+                    .active_workspace_entry
+                    .as_ref()
+                    .map(|entry| entry.access_mode)
+                    .unwrap_or(WorkspaceAccessMode::ExclusiveWrite);
+                next_state.active_workspace_entry =
+                    Some(workspace::canonical_agent_home_active_entry(
+                        self.inner.storage.data_dir(),
+                        &guard.state.id,
+                        access_mode,
+                    )?);
+                next_state.worktree_session = None;
+            }
             next_state.execution_profile = parent_state.execution_profile.clone();
             next_state.model_override = parent_state.model_override.clone();
             next_state
@@ -918,9 +945,15 @@ impl RuntimeHandle {
         let next_state = {
             let guard = self.inner.agent.lock().await;
             let mut next_state = guard.state.clone();
-            next_state.attached_workspaces = parent_state.attached_workspaces.clone();
+            next_state.attached_workspaces =
+                workspace::inherited_attached_workspaces_for_agent(parent_state, &next_state.id);
             next_state.active_workspace_entry = None;
             next_state.worktree_session = None;
+            workspace::canonicalize_agent_home_bindings(
+                &mut next_state,
+                self.inner.storage.data_dir(),
+                &guard.state.id,
+            )?;
             next_state.execution_profile = parent_state.execution_profile.clone();
             next_state.model_override = parent_state.model_override.clone();
             next_state

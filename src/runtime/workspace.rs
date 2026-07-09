@@ -45,14 +45,6 @@ pub(crate) fn agent_home_workspace_entry(data_dir: &Path, agent_id: &str) -> Wor
     entry
 }
 
-/// Canonicalize legacy `AGENT_HOME_WORKSPACE_ID` references in agent state to
-/// the deterministic, agent-specific canonical ID.
-///
-/// # Migration path (deprecated)
-///
-/// This function exists solely to migrate agents that still reference the
-/// old constant `AGENT_HOME_WORKSPACE_ID`. It is planned for removal once
-/// migration logs confirm no agents require canonicalization.
 pub(crate) fn canonicalize_agent_home_bindings(
     state: &mut AgentState,
     data_dir: &Path,
@@ -87,6 +79,9 @@ pub(crate) fn canonicalize_agent_home_bindings(
         let next_id = if workspace_id == AGENT_HOME_WORKSPACE_ID {
             changed = true;
             canonical_id.as_str()
+        } else if workspace_id.starts_with("agent_home:") && workspace_id != &canonical_id {
+            changed = true;
+            continue;
         } else {
             workspace_id.as_str()
         };
@@ -97,13 +92,12 @@ pub(crate) fn canonicalize_agent_home_bindings(
         }
     }
 
-    if state
-        .active_workspace_entry
-        .as_ref()
-        .is_some_and(|entry| entry.workspace_id == canonical_id)
-        && !next.iter().any(|id| id == &canonical_id)
-    {
-        next.push(canonical_id);
+    if !next.iter().any(|id| id == &canonical_id) {
+        next.insert(0, canonical_id);
+        changed = true;
+    } else if next.first() != Some(&canonical_id) {
+        next.retain(|id| id != &canonical_id);
+        next.insert(0, canonical_id);
         changed = true;
     }
 
@@ -116,6 +110,24 @@ pub(crate) fn canonicalize_agent_home_bindings(
     }
 
     Ok(changed)
+}
+
+pub(crate) fn inherited_attached_workspaces_for_agent(
+    parent_state: &AgentState,
+    agent_id: &str,
+) -> Vec<String> {
+    let canonical_id = agent_home_workspace_id(agent_id);
+    let mut inherited = Vec::with_capacity(parent_state.attached_workspaces.len().max(1));
+    inherited.push(canonical_id);
+    for workspace_id in &parent_state.attached_workspaces {
+        if workspace_id == AGENT_HOME_WORKSPACE_ID || workspace_id.starts_with("agent_home:") {
+            continue;
+        }
+        if !inherited.iter().any(|id| id == workspace_id) {
+            inherited.push(workspace_id.clone());
+        }
+    }
+    inherited
 }
 
 pub(crate) fn canonical_agent_home_active_entry(
@@ -481,14 +493,36 @@ mod tests {
     }
 
     #[test]
-    fn canonicalize_handles_no_active_workspace_entry() {
+    fn canonicalize_repairs_missing_own_agent_home() {
         let data_dir = PathBuf::from("/tmp/agent-home");
         let mut state = AgentState::new("my-agent");
-        // No active_workspace_entry and no legacy references.
         state.attached_workspaces = vec!["ws_other".to_string()];
 
         let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
 
-        assert!(!changed, "should be no-op with no legacy references");
+        assert!(changed, "should repair missing own agent home");
+        assert_eq!(
+            state.attached_workspaces,
+            vec![agent_home_workspace_id("my-agent"), "ws_other".to_string()]
+        );
+    }
+
+    #[test]
+    fn canonicalize_filters_foreign_agent_home_bindings() {
+        let data_dir = PathBuf::from("/tmp/agent-home");
+        let mut state = AgentState::new("my-agent");
+        state.attached_workspaces = vec![
+            "agent_home:other-agent".to_string(),
+            "ws_other".to_string(),
+            agent_home_workspace_id("my-agent"),
+        ];
+
+        let changed = canonicalize_agent_home_bindings(&mut state, &data_dir, "my-agent").unwrap();
+
+        assert!(changed, "should filter foreign agent home");
+        assert_eq!(
+            state.attached_workspaces,
+            vec![agent_home_workspace_id("my-agent"), "ws_other".to_string()]
+        );
     }
 }

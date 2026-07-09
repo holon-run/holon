@@ -11,7 +11,9 @@ use crate::{
     runtime_db::RuntimeDb,
     storage::AppStorage,
     system::WorkspaceAccessMode,
-    types::{AgentIdentityRecord, WorkspaceEntry, WorkspaceOccupancyRecord},
+    types::{
+        agent_home_workspace_id, AgentIdentityRecord, WorkspaceEntry, WorkspaceOccupancyRecord,
+    },
 };
 
 #[derive(Clone)]
@@ -206,7 +208,11 @@ impl RuntimeRegistry {
         workspace_anchor: PathBuf,
     ) -> Result<WorkspaceEntry> {
         let workspace_anchor = crate::system::workspace::normalize_path(&workspace_anchor)?;
-        let det_id = ids::deterministic_workspace_id(&workspace_anchor);
+        let agent_home = self.agent_home_workspace_entry_for_anchor(&workspace_anchor)?;
+        let det_id = agent_home
+            .as_ref()
+            .map(|entry| entry.workspace_id.clone())
+            .unwrap_or_else(|| ids::deterministic_workspace_id(&workspace_anchor));
         if let Some(existing) = self
             .inner
             .host_storage
@@ -226,13 +232,30 @@ impl RuntimeRegistry {
                 self.inner
                     .host_storage
                     .migrate_workspace_id(&existing.workspace_id, &det_id)?;
+                if let Some(entry) = agent_home {
+                    self.inner.host_storage.append_workspace_entry(&entry)?;
+                    return Ok(entry);
+                }
                 let mut migrated = existing;
                 migrated.workspace_id = det_id;
                 return Ok(migrated);
             }
+            if let Some(entry) = agent_home {
+                if existing.workspace_alias != entry.workspace_alias
+                    || existing.workspace_kind != entry.workspace_kind
+                    || existing.owner_agent_id != entry.owner_agent_id
+                {
+                    self.inner.host_storage.append_workspace_entry(&entry)?;
+                    return Ok(entry);
+                }
+            }
             return Ok(existing);
         }
 
+        if let Some(entry) = agent_home {
+            self.inner.host_storage.append_workspace_entry(&entry)?;
+            return Ok(entry);
+        }
         let repo_name = workspace_anchor
             .file_name()
             .and_then(|name| name.to_str())
@@ -240,6 +263,37 @@ impl RuntimeRegistry {
         let entry = WorkspaceEntry::new(det_id, workspace_anchor, repo_name);
         self.inner.host_storage.append_workspace_entry(&entry)?;
         Ok(entry)
+    }
+
+    fn agent_home_workspace_entry_for_anchor(
+        &self,
+        workspace_anchor: &std::path::Path,
+    ) -> Result<Option<WorkspaceEntry>> {
+        let agents_root =
+            crate::system::workspace::normalize_path(&self.config().data_dir.join("agents"))?;
+        let Ok(agent_id_path) = workspace_anchor.strip_prefix(&agents_root) else {
+            return Ok(None);
+        };
+        if agent_id_path.components().count() != 1 {
+            return Ok(None);
+        }
+        let Some(agent_id) = agent_id_path.file_name().and_then(|name| name.to_str()) else {
+            return Ok(None);
+        };
+        if self.agent_identity_record(agent_id)?.is_none()
+            && agent_id != self.config().default_agent_id
+        {
+            return Ok(None);
+        }
+        let mut entry = WorkspaceEntry::new(
+            agent_home_workspace_id(agent_id),
+            workspace_anchor.to_path_buf(),
+            Some("AgentHome".into()),
+        );
+        entry.workspace_alias = Some(crate::types::AGENT_HOME_WORKSPACE_ID.into());
+        entry.workspace_kind = Some("agent_home".into());
+        entry.owner_agent_id = Some(agent_id.to_string());
+        Ok(Some(entry))
     }
 
     pub(crate) fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
@@ -598,5 +652,28 @@ mod tests {
 
         let entry = registry.ensure_workspace_entry(repo_path).unwrap();
         assert_eq!(entry.repo_name.as_deref(), Some("my-repo-name"));
+    }
+
+    #[test]
+    fn ensure_workspace_entry_recognizes_agent_home_path() {
+        let (_home, registry) = test_registry();
+        registry.ensure_default_agent_identity().unwrap();
+        let agent_id = registry.config().default_agent_id.clone();
+        let agent_home = registry.config().agent_root_dir().join(&agent_id);
+        std::fs::create_dir_all(&agent_home).unwrap();
+
+        let entry = registry.ensure_workspace_entry(agent_home.clone()).unwrap();
+
+        assert_eq!(entry.workspace_id, agent_home_workspace_id(&agent_id));
+        assert_eq!(entry.workspace_alias.as_deref(), Some("agent_home"));
+        assert_eq!(entry.workspace_kind.as_deref(), Some("agent_home"));
+        assert_eq!(entry.owner_agent_id.as_deref(), Some(agent_id.as_str()));
+        assert_eq!(
+            entry.workspace_id,
+            registry
+                .ensure_workspace_entry(agent_home)
+                .unwrap()
+                .workspace_id
+        );
     }
 }
