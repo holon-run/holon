@@ -5,16 +5,10 @@
  * execution, task, work item, assistant round, or runtime activity) with an
  * explicit status field and lifecycle semantics.
  *
- * During the Phase 3 migration, each object also carries a `_viewDraft` that
- * caches the projection result so `deriveTimelineView` can produce identical
- * output. Step 3b will replace this draft with proper per-object renderers
- * that derive the view from typed fields.
+ * Each object also carries render data from the winning event. The renderer
+ * layer (`deriveTimelineView`) uses this to produce display-ready items,
+ * keeping domain state separate from display formatting.
  */
-import type {
-  AgentTimelineItemDetail,
-  AgentTimelineItemKind,
-  DisplayLevel,
-} from "./types";
 
 export type SessionObjectType =
   | "message"
@@ -25,21 +19,18 @@ export type SessionObjectType =
   | "activity";
 
 /**
- * Cached projection of an event into display-ready fields.
- *
- * Step 3a uses this to bridge the new domain-object state with the existing
- * projection logic. Step 3b will remove it in favour of per-object renderers.
+ * Rendering data carried by each domain object from the winning event.
+ * The renderer reads these fields to produce display output.
  */
-export interface ViewDraft {
-  kind: AgentTimelineItemKind;
-  label: string;
-  body: string;
+export interface RenderData {
+  eventType: string;
+  payload: Record<string, unknown> | undefined;
   timestamp: string;
+  eventId: string;
+  eventSeq: number | undefined;
   meta: string;
-  minDisplayLevel: DisplayLevel;
-  detail?: AgentTimelineItemDetail;
-  rawEvent?: unknown;
   debug?: string;
+  rawEvent?: unknown;
 }
 
 interface BaseObject {
@@ -48,7 +39,7 @@ interface BaseObject {
   sourceEventIds: string[];
   createdAt: string;
   updatedAt: string;
-  viewDraft: ViewDraft;
+  render: RenderData;
 }
 
 export type MessageStatus = "enqueued" | "processing" | "delivered";
@@ -97,14 +88,8 @@ export interface AssistantRoundObject extends BaseObject {
   status: AssistantRoundStatus;
 }
 
-export interface RuntimeActivityObject {
-  id: string;
+export interface RuntimeActivityObject extends BaseObject {
   eventType: string;
-  sourceEventIds: string[];
-  createdAt: string;
-  updatedAt: string;
-  status: string;
-  viewDraft: ViewDraft;
 }
 
 /**

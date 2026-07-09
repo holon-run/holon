@@ -9,11 +9,7 @@ import type {
   ToolExecutionObject,
   WorkItemObject,
 } from "./session-object-types";
-import {
-  mergeSourceIds,
-  sessionItemPriority,
-} from "./timeline-display";
-import type { AgentTimelineItem } from "./types";
+import { mergeSourceIds } from "./timeline-display";
 
 /**
  * Normalized session state built by applying events incrementally.
@@ -21,10 +17,6 @@ import type { AgentTimelineItem } from "./types";
  * Objects are organized into typed maps by domain type. Each map is keyed
  * by the object identity (message_id, task_id, etc.). `insertionOrder`
  * preserves first-insertion order across all types for stable iteration.
- *
- * During Phase 3 Step 3a, each object carries a `viewDraft` that caches the
- * projection result. Step 3b will replace these drafts with proper
- * per-object renderers that derive the view from typed fields.
  */
 export interface SessionState {
   messages: Map<string, MessageObject>;
@@ -55,9 +47,8 @@ export function createSessionState(): SessionState {
  * Insert or update a domain object in the state.
  *
  * If an object with the same key already exists in its typed map, the two
- * are merged using the same priority and sourceId logic as the previous
- * `mergeAgentTimelineItems` pass. The view draft from the higher-priority
- * projection wins; sourceEventIds are accumulated.
+ * are merged using priority logic: the winning event's render data and
+ * domain fields are kept; sourceEventIds are accumulated.
  */
 export function upsertObject(
   state: SessionState,
@@ -94,39 +85,33 @@ function objectMap(state: SessionState, objectType: SessionObjectType): Map<stri
 }
 
 /**
- * Merge a new object into an existing one. Display fields (viewDraft) from
- * the higher-priority projection win; sourceEventIds are accumulated in
- * insertion order; activities are merged.
+ * Merge a new object into an existing one. The higher-priority event's render
+ * data and domain fields win; sourceEventIds are accumulated in insertion order.
+ *
+ * Priority mirrors the original `timelineItemPriority` logic:
+ * - `operator-prompt:pending:*` ids or `pending-operator-prompt` sourceIds → 0
+ * - fallback `event-*` ids or meta containing `event #` → 1
+ * - everything else → 2
  */
 function mergeObjectFields(existing: DomainObject, incoming: DomainObject): void {
-  const existingPriority = sessionItemPriority(draftToItem(existing));
-  const incomingPriority = sessionItemPriority(draftToItem(incoming));
+  const existingPriority = objectPriority(existing);
+  const incomingPriority = objectPriority(incoming);
 
   const winner = incomingPriority >= existingPriority ? incoming : existing;
   const loser = incomingPriority >= existingPriority ? existing : incoming;
 
-  Object.assign(existing, {
-    status: winner.status,
-    updatedAt: winner.updatedAt,
-    viewDraft: { ...winner.viewDraft },
+  // Copy all render and domain fields from the winner, preserving
+  // earliest createdAt and accumulating sourceEventIds.
+  const { id: _id, createdAt: _createdAt, sourceEventIds: _sourceIds, ...winnerFields } = winner;
+  Object.assign(existing, winnerFields, {
     sourceEventIds: mergeSourceIds([...loser.sourceEventIds, ...winner.sourceEventIds]),
   });
 }
 
-/**
- * Build a minimal AgentTimelineItem from a view draft for priority comparison.
- * Only the fields used by {@link sessionItemPriority} are needed.
- */
-function draftToItem(obj: DomainObject): AgentTimelineItem {
-  const draft = obj.viewDraft;
-  return {
-    id: obj.sourceEventIds[0] ?? obj.id,
-    kind: draft.kind,
-    label: draft.label,
-    body: draft.body,
-    timestamp: draft.timestamp,
-    meta: draft.meta,
-    minDisplayLevel: draft.minDisplayLevel,
-    sourceIds: obj.sourceEventIds,
-  };
+function objectPriority(obj: DomainObject): number {
+  const eventId = obj.render.eventId;
+  if (eventId.startsWith("operator-prompt:pending:")) return 0;
+  if (obj.sourceEventIds.includes("pending-operator-prompt")) return 0;
+  if (eventId.startsWith("event-") || obj.render.meta.includes("event #")) return 1;
+  return 2;
 }

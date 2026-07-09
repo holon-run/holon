@@ -18,9 +18,10 @@ import type {
   SessionObjectType,
   TaskObject,
   WorkItemObject,
-  ViewDraft,
+  RenderData,
 } from "./session-object-types";
 import { deriveTimelineView } from "./timeline-view-model";
+import type { RenderContext } from "./timeline-view-model";
 
 function projectDebugEvent(
   eventType: string,
@@ -75,7 +76,7 @@ const debugOnlyToolNames = new Set(["WaitFor"]);
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const state = createSessionState();
-  const ctx: ApplyContext = {
+  const applyCtx: ApplyContext = {
     eventDisplayLevel: input.eventDisplayLevel ?? "debug",
     includeDebug: input.includeDebug ?? false,
     messagesById: input.messagesById,
@@ -84,10 +85,16 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
   };
 
   for (const event of input.events.events ?? []) {
-    applyEvent(state, event, ctx);
+    applyEvent(state, event, applyCtx);
   }
 
-  return deriveTimelineView(state);
+  return deriveTimelineView(state, {
+    eventDisplayLevel: applyCtx.eventDisplayLevel,
+    includeDebug: applyCtx.includeDebug,
+    messagesById: applyCtx.messagesById,
+    transcriptEntriesById: applyCtx.transcriptEntriesById,
+    briefRecordsById: applyCtx.briefRecordsById,
+  });
 }
 
 interface ApplyContext {
@@ -99,44 +106,38 @@ interface ApplyContext {
 }
 
 /**
- * Route a single event through the apply layer: project it, determine the
- * domain object type and identity key, then upsert into normalized state.
+ * Route a single event through the apply layer: determine the domain object
+ * type and identity key, store render data, then upsert into normalized state.
+ *
+ * Projection (event -> display fields) is deferred to the render layer
+ * (`deriveTimelineView`). This function only handles object routing,
+ * identity, and render-data storage.
  */
 function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: ApplyContext): void {
   if (!event.id && event.event_seq == null) return;
 
-  const item = projectEventEnvelope(
-    event,
-    ctx.eventDisplayLevel,
-    ctx.includeDebug,
-    ctx.messagesById,
-    ctx.transcriptEntriesById,
-    ctx.briefRecordsById,
-  );
-  if (!item) return;
-
   const eventId = event.id ?? `event-${event.event_seq}`;
   const eventType = event.type ?? "runtime_event";
   const payload = asRecord(event.payload);
-  const ts = item.timestamp;
+  const ts = event.ts ?? "";
+  const meta = eventMeta(eventType, payload, event.event_seq);
 
-  const viewDraft: ViewDraft = {
-    kind: item.kind,
-    label: item.label,
-    body: item.body,
-    timestamp: item.timestamp,
-    meta: item.meta,
-    minDisplayLevel: item.minDisplayLevel,
-    detail: item.detail,
-    rawEvent: item.rawEvent,
-    debug: item.debug,
+  const render: RenderData = {
+    eventType,
+    payload,
+    timestamp: ts,
+    eventId,
+    eventSeq: event.event_seq,
+    meta,
+    debug: ctx.includeDebug ? debugJson(event) : undefined,
+    rawEvent: event,
   };
 
   const baseFields = {
     sourceEventIds: [eventId],
     createdAt: ts,
     updatedAt: ts,
-    viewDraft,
+    render,
   };
 
   // Route by event type to determine object type, identity key, and status
@@ -194,37 +195,6 @@ export function debugAgentSessionEvents(events: SessionEventEnvelope[], options:
   return projected.slice(-(options.itemLimit ?? 220));
 }
 
-function projectEventEnvelope(
-  event: SessionEventEnvelope,
-  eventDisplayLevel: DisplayLevel,
-  includeDebug: boolean,
-  messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
-  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
-  briefRecordsById?: Record<string, RuntimeBriefRecord>,
-): AgentTimelineItem | undefined {
-  if (!event.id && event.event_seq == null) return undefined;
-  const id = event.id ?? `event-${event.event_seq}`;
-  const payload = asRecord(event.payload);
-  const eventType = event.type ?? "runtime_event";
-  const projection = projectRuntimeEvent(eventType, payload, messagesById, transcriptEntriesById, briefRecordsById);
-  if (!projection) return undefined;
-  const meta = eventMeta(eventType, payload, event.event_seq);
-
-  return item({
-    id,
-    kind: projection.kind,
-    label: projection.label,
-    body: projection.body,
-    timestamp: projection.timestamp ?? event.ts ?? "",
-    meta,
-    minDisplayLevel: eventProjectionDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
-    sourceIds: [id],
-    detail: projection.detail,
-    rawEvent: event,
-    debug: includeDebug ? debugJson(event) : undefined,
-  });
-}
-
 function debugEventTimelineItem(event: SessionEventEnvelope): AgentTimelineItem {
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
@@ -277,7 +247,7 @@ function eventMeta(eventType: string, payload: Record<string, unknown> | undefin
   return eventRef == null ? eventType : `${eventType} · ${eventRef}`;
 }
 
-function eventProjectionDisplayLevel(level: DisplayLevel, eventDisplayLevel: DisplayLevel): DisplayLevel {
+export function eventProjectionDisplayLevel(level: DisplayLevel, eventDisplayLevel: DisplayLevel): DisplayLevel {
   // `eventDisplayLevel` describes the API page that supplied the event. It must
   // not promote or demote a semantic projection: display filtering is applied
   // later against each item's intrinsic `minDisplayLevel`.
@@ -285,7 +255,7 @@ function eventProjectionDisplayLevel(level: DisplayLevel, eventDisplayLevel: Dis
   return level;
 }
 
-function projectRuntimeEvent(
+export function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
   messagesById?: Record<string, RuntimeMessageEnvelope>,
