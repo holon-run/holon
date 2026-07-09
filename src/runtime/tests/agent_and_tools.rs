@@ -41,7 +41,10 @@ async fn attached_workspace_inheritance_preserves_execution_boundary() {
     .unwrap();
     {
         let mut guard = parent.inner.agent.lock().await;
-        guard.state.attached_workspaces = vec!["repo-a".into()];
+        guard.state.attached_workspaces = vec![
+            crate::types::agent_home_workspace_id("default"),
+            "repo-a".into(),
+        ];
         guard.state.active_workspace_entry = Some(ActiveWorkspaceEntry {
             workspace_id: "repo-a".into(),
             workspace_anchor: parent_workspace.path().to_path_buf(),
@@ -79,7 +82,13 @@ async fn attached_workspace_inheritance_preserves_execution_boundary() {
         .unwrap();
     let child_state = child.agent_state().await.unwrap();
 
-    assert_eq!(child_state.attached_workspaces, vec!["repo-a".to_string()]);
+    assert_eq!(
+        child_state.attached_workspaces,
+        vec![
+            crate::types::agent_home_workspace_id("release-bot"),
+            "repo-a".to_string()
+        ]
+    );
     assert!(child_state.active_workspace_entry.is_none());
     assert!(child_state.worktree_session.is_none());
     assert_eq!(

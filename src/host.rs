@@ -2924,6 +2924,11 @@ mod tests {
         let parent_state = parent.agent_state().await.unwrap();
         assert!(parent_state.active_workspace_entry.is_some());
         assert!(parent_state.worktree_session.is_some());
+        let parent_home_id = crate::types::agent_home_workspace_id(&parent_state.id);
+        assert!(
+            parent_state.attached_workspaces.contains(&parent_home_id),
+            "parent state should contain its own agent home"
+        );
 
         host.spawn_public_named_agent(
             parent.clone(),
@@ -2938,9 +2943,14 @@ mod tests {
 
         let named = host.get_public_agent("release-bot").await.unwrap();
         let named_state = named.agent_state().await.unwrap();
+        let named_home_id = crate::types::agent_home_workspace_id("release-bot");
         assert_eq!(
             named_state.attached_workspaces,
-            parent_state.attached_workspaces
+            vec![named_home_id, workspace.workspace_id.clone()]
+        );
+        assert!(
+            !named_state.attached_workspaces.contains(&parent_home_id),
+            "public named agent should not inherit the caller's agent home"
         );
         assert!(
             named_state.active_workspace_entry.is_none(),

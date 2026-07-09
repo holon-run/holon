@@ -1062,14 +1062,21 @@ impl RuntimeHandle {
         {
             return Ok(existing);
         }
-        let workspace = WorkspaceEntry::new(
-            crate::ids::deterministic_workspace_id(&normalized_anchor),
-            normalized_anchor.clone(),
-            normalized_anchor
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(ToString::to_string),
-        );
+        let workspace = if normalized_anchor == self.inner.storage.data_dir() {
+            crate::runtime::workspace::agent_home_workspace_entry(
+                self.inner.storage.data_dir(),
+                &self.agent_id().await?,
+            )
+        } else {
+            WorkspaceEntry::new(
+                crate::ids::deterministic_workspace_id(&normalized_anchor),
+                normalized_anchor.clone(),
+                normalized_anchor
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(ToString::to_string),
+            )
+        };
         Ok(workspace)
     }
 
