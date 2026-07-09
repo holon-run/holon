@@ -1385,7 +1385,7 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
         .unwrap();
     assert_eq!(
         volcengine_image_openai.transport,
-        ProviderTransportKind::OpenAiChatCompletions
+        ProviderTransportKind::OpenAiResponses
     );
     assert_eq!(
         volcengine_image_openai.base_url,
@@ -2703,7 +2703,7 @@ fn runtime_model_catalog_resolves_legacy_multi_endpoint_provider_identity() {
         ModelRouteCapability::ImageGeneration
     );
     assert_eq!(route.endpoint.provider.as_str(), "volcengine");
-    assert_eq!(route.endpoint.endpoint.as_str(), "image-openai");
+    assert_eq!(route.endpoint.endpoint.as_str(), "plan-openai");
     assert_eq!(
         route.endpoint.runtime_config.id.as_str(),
         "volcengine-image-openai"
@@ -2797,8 +2797,8 @@ fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
         ProviderRuntimeConfig {
             id: ProviderId::parse("volcengine-image-openai").unwrap(),
             route_provider: ProviderId::parse("volcengine").unwrap(),
-            route_endpoint: ProviderEndpointId::parse("image-openai").unwrap(),
-            transport: ProviderTransportKind::OpenAiChatCompletions,
+            route_endpoint: ProviderEndpointId::parse("plan-openai").unwrap(),
+            transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
             auth: ProviderAuthConfig::default(),
             credential: None,
@@ -2861,7 +2861,7 @@ fn runtime_model_catalog_resolves_canonical_seedream_route_endpoint() {
         "volcengine/doubao-seedream-5.0-lite"
     );
     assert_eq!(route.endpoint.provider.as_str(), "volcengine");
-    assert_eq!(route.endpoint.endpoint.as_str(), "image-openai");
+    assert_eq!(route.endpoint.endpoint.as_str(), "plan-openai");
     assert_eq!(
         route.endpoint.runtime_config.id.as_str(),
         "volcengine-image-openai"
@@ -3026,7 +3026,7 @@ fn provider_doc_entries_are_sorted_and_populated() {
         .find(|entry| entry.legacy_provider.as_str() == "volcengine-image-openai")
         .expect("volcengine-image-openai doc entry");
     assert_eq!(volcengine_image.provider.as_str(), "volcengine");
-    assert_eq!(volcengine_image.endpoint.as_str(), "image-openai");
+    assert_eq!(volcengine_image.endpoint.as_str(), "plan-openai");
 }
 
 #[test]

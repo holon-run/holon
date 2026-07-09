@@ -844,8 +844,8 @@ fn built_in_provider_endpoint_identity(
         "dashscope-coding-plan" => ("dashscope", "coding-plan"),
         "stepfun-plan" => ("stepfun", "plan"),
         "volcengine-coding" => ("volcengine", "coding"),
-        "volcengine-agent" => ("volcengine", "agent"),
-        "volcengine-image-openai" => ("volcengine", "image-openai"),
+        "volcengine-agent" => ("volcengine", "plan"),
+        "volcengine-image-openai" => ("volcengine", "plan-openai"),
         "xiaomi-token-plan" => ("xiaomi", "token-plan"),
         _ => {
             return Ok((
@@ -1170,44 +1170,41 @@ pub(crate) fn populate_built_in_provider_catalog(
         &[],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    // Standard tier — OpenAI Responses at /api/v3 (not the non-existent /api/compatible).
+    insert_builtin_http_provider(
         catalog,
         "volcengine",
-        "https://ark.cn-beijing.volces.com/api/compatible",
-        &["VOLCENGINE_API_KEY", "ARK_API_KEY"],
+        ProviderTransportKind::OpenAiResponses,
+        "https://ark.cn-beijing.volces.com/api/v3",
+        &["VOLCENGINE_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    // Coding Plan tier — OpenAI Responses at /api/coding/v3 (independent plan, isolated key).
+    insert_builtin_http_provider(
         catalog,
         "volcengine-coding",
-        "https://ark.cn-beijing.volces.com/api/coding",
-        &[
-            "VOLCENGINE_CODING_API_KEY",
-            "VOLCENGINE_API_KEY",
-            "ARK_API_KEY",
-        ],
+        ProviderTransportKind::OpenAiResponses,
+        "https://ark.cn-beijing.volces.com/api/coding/v3",
+        &["VOLCENGINE_CODING_API_KEY"],
         settings_env,
     )?;
+    // Agent Plan tier — Anthropic compatible at /api/plan (isolated key, no cross-tier fallback).
     insert_anthropic_compatible_provider(
         catalog,
         "volcengine-agent",
         "https://ark.cn-beijing.volces.com/api/plan",
-        &[
-            "VOLCENGINE_AGENT_API_KEY",
-            "VOLCENGINE_API_KEY",
-            "ARK_API_KEY",
-        ],
+        &["VOLCENGINE_AGENT_API_KEY"],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    // Agent Plan OpenAI tier — OpenAI Responses at /api/plan/v3 (text + image generation, same key as agent plan).
+    insert_builtin_http_provider(
         catalog,
         "volcengine-image-openai",
+        ProviderTransportKind::OpenAiResponses,
         "https://ark.cn-beijing.volces.com/api/plan/v3",
         &[
             "VOLCENGINE_IMAGE_OPENAI_API_KEY",
             "VOLCENGINE_AGENT_API_KEY",
-            "VOLCENGINE_API_KEY",
-            "ARK_API_KEY",
         ],
         settings_env,
     )?;
