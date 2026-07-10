@@ -155,11 +155,11 @@ fn summarize_view_image_result(result: &Value) -> Option<String> {
     let prompt = observation
         .get("prompt")
         .and_then(Value::as_str)
-        .map(|prompt| truncate_text(prompt, 160));
+        .map(|prompt| truncate_text(prompt.trim(), 160));
     let summary = observation
         .get("summary")
         .and_then(Value::as_str)
-        .map(|summary| truncate_text(summary, 160));
+        .map(|summary| truncate_text(summary.trim(), 160));
     let ocr = observation
         .get("ocr")
         .and_then(Value::as_array)
@@ -168,7 +168,7 @@ fn summarize_view_image_result(result: &Value) -> Option<String> {
                 .iter()
                 .filter_map(|entry| entry.get("text").and_then(Value::as_str))
                 .take(3)
-                .map(|text| truncate_text(text, 80))
+                .map(|text| truncate_text(text.trim(), 80))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -242,6 +242,35 @@ mod tests {
         assert_eq!(
             tool_result_summary(&result.envelope),
             "completed exit_status=2 truncated=false"
+        );
+    }
+
+    #[test]
+    fn view_image_result_summary_trims_observation_text() {
+        let result = ToolResult::success(
+            "ViewImage",
+            json!({
+                "visual_reference": {
+                    "id": "image-1",
+                    "mime": "image/png"
+                },
+                "observation": {
+                    "schema": "visual_observation.v1",
+                    "prompt": "  inspect this  ",
+                    "summary": "  a diagram  ",
+                    "ocr": [{"text": "  label  "}]
+                }
+            }),
+            None,
+        );
+
+        assert_eq!(
+            tool_result_summary(&result.envelope),
+            concat!(
+                "visual_observation schema=visual_observation.v1 ",
+                "ref=image-1 mime=image/png prompt=\"inspect this\" ",
+                "summary=\"a diagram\" ocr=[label]"
+            )
         );
     }
 }
