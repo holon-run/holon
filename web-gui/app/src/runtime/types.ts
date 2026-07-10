@@ -454,6 +454,7 @@ export interface AgentTimelineActivity {
   stateObjectRef?: TimelineStateObjectRef;
   relatedStateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
+  stateEvolution?: string[];
   rawEvent?: unknown;
   debug?: string;
 }
@@ -598,6 +599,7 @@ export interface AgentTimelineItem {
   stateObjectRef?: TimelineStateObjectRef;
   relatedStateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
+  stateEvolution?: string[];
   activities?: AgentTimelineActivity[];
   rawEvent?: unknown;
   debug?: string;

@@ -800,23 +800,18 @@ describe("reduceAgentSessionTimeline", () => {
 
     // Task StateObject renders as a stable card; task_result_received is an
     // ActivityView that gets flattened back into the timeline by compactAgentTimelineItems.
-    expect(timeline).toHaveLength(2);
-    const taskCard = timeline.find((item) => item.kind === "tool");
-    expect(taskCard).toEqual(
+    // Consecutive task lifecycle items from the same task are merged into one entry
+    // with stateEvolution tracking the status progression.
+    expect(timeline).toHaveLength(1);
+    const merged = timeline.find((item) => item.id === "task:task_123");
+    expect(merged).toEqual(
       expect.objectContaining({
         id: "task:task_123",
         kind: "tool",
         label: "Task completed",
-        body: "Run command: npm test",
-        stateObjectRef: { kind: "task", id: "task:task_123", status: "completed", summary: "Run command: npm test" },
-      }),
-    );
-    const activity = timeline.find((item) => item.id === "task-result");
-    expect(activity).toEqual(
-      expect.objectContaining({
-        kind: "event",
-        label: "Task completed",
         body: "Run command: npm test · exit 0 · 42 tests passed",
+        stateObjectRef: { kind: "task", id: "task:task_123", status: "completed", summary: "Run command: npm test" },
+        stateEvolution: ["Task queued", "Task completed"],
         detail: {
           label: "Task details",
           text: "task: task_123 · output: /tmp/task.log · 42 tests passed",
@@ -846,18 +841,14 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline).toHaveLength(2);
-    const card = timeline.find((item) => item.kind === "tool");
-    expect(card).toEqual(
+    // Single task_result_received creates task card + activity which are merged.
+    // Both have same label "Task failed" so stateEvolution is not set (length <= 1).
+    expect(timeline).toHaveLength(1);
+    const merged = timeline[0]!;
+    expect(merged).toEqual(
       expect.objectContaining({
-        label: "Task failed",
-        body: "Run command: cargo test",
-        minDisplayLevel: "info",
-      }),
-    );
-    const activity = timeline.find((item) => item.id === "task-failed");
-    expect(activity).toEqual(
-      expect.objectContaining({
+        id: "task:task_failed",
+        kind: "tool",
         label: "Task failed",
         body: "Run command: cargo test · exit 101 · tests failed",
         minDisplayLevel: "info",
@@ -904,25 +895,19 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    // Task card + 2 flattened activities (running, completed) = 3 items
-    expect(timeline).toHaveLength(3);
-    const card = timeline.find((item) => item.kind === "tool");
-    expect(card).toEqual(
+    // All 3 consecutive task lifecycle items from the same task are merged into one entry.
+    // The merged item shows the final status label and accumulates stateEvolution.
+    expect(timeline).toHaveLength(1);
+    const merged = timeline[0]!;
+    expect(merged).toEqual(
       expect.objectContaining({
         id: "task:task_abc",
         kind: "tool",
         label: "Task completed",
-        body: "npm run build",
+        body: "npm run build · exit 0",
         stateObjectRef: { kind: "task", id: "task:task_abc", status: "completed", summary: "npm run build" },
+        stateEvolution: ["Task queued", "Task running", "Task completed"],
       }),
-    );
-    const runningActivity = timeline.find((item) => item.id === "t-running");
-    expect(runningActivity).toEqual(
-      expect.objectContaining({ label: "Task running", body: "npm run build" }),
-    );
-    const doneActivity = timeline.find((item) => item.id === "t-done");
-    expect(doneActivity).toEqual(
-      expect.objectContaining({ label: "Task completed", body: "npm run build · exit 0" }),
     );
   });
 

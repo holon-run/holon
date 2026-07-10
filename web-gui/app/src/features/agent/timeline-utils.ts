@@ -70,6 +70,7 @@ export function timelineItemToWorkingActivity(item: AgentTimelineItem): AgentTim
     stateObjectRef: item.stateObjectRef,
     relatedStateObjectRef: item.relatedStateObjectRef,
     detail: item.detail,
+    stateEvolution: item.stateEvolution,
     rawEvent: item.rawEvent,
     debug: item.debug,
   };

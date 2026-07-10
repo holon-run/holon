@@ -5,6 +5,7 @@ import type React from "react";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
+import { TaskDetailContent, normalizeTaskDetailContent } from "./TaskDetailRenderers";
 import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
@@ -610,18 +611,8 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
   const output = detailState?.output;
   const taskRecord = output?.task;
   const status = taskRecord?.status ?? output?.status ?? task.status;
-  const summary = taskRecord?.summary ?? output?.summary ?? task.summary;
-  const exitStatus = taskRecord?.exit_status;
-  const outputText =
-    taskRecord?.output_preview ??
-    output?.output ??
-    output?.stdout ??
-    "";
-  const stderrText = output?.stderr ?? "";
-  const truncated = taskRecord?.output_truncated ?? output?.truncated;
-  const command = task.command;
-  const taskIdShort = task.id.replace(/^task:/, "").slice(0, 12);
-  const resultSummary = taskRecord?.result_summary;
+  const detail = normalizeTaskDetailContent(task, output);
+  const summary = detail.summary || task.summary;
 
   return (
     <article className="task-detail inspector-list-item featured">
@@ -633,15 +624,13 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
         <div>
-          <dt>{t("rightPanel.kind")}</dt>
+          <dt>{t("inspector.taskId")}</dt>
+          <dd><code>{task.id}</code></dd>
+        </div>
+        <div>
+          <dt>{t("inspector.kind")}</dt>
           <dd>{task.kind}</dd>
         </div>
-        {exitStatus != null ? (
-          <div>
-            <dt>{t("inspector.exit")}</dt>
-            <dd>{exitStatus}</dd>
-          </div>
-        ) : null}
         {task.workdir ? (
           <div>
             <dt>{t("rightPanel.workdir")}</dt>
@@ -649,30 +638,7 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
           </div>
         ) : null}
       </dl>
-      {command ? (
-        <section className="work-item-detail-section">
-          <h3>{t("rightPanel.command")}</h3>
-          <pre className="task-command-pre">{command}</pre>
-        </section>
-      ) : null}
-      {resultSummary ? (
-        <section className="work-item-detail-section">
-          <h3>{t("rightPanel.output")}</h3>
-          <pre>{resultSummary}</pre>
-        </section>
-      ) : null}
-      {outputText ? (
-        <section className="work-item-detail-section">
-          <h3>{truncated ? t("rightPanel.outputTruncated") : t("rightPanel.output")}</h3>
-          <pre>{outputText}</pre>
-        </section>
-      ) : null}
-      {stderrText ? (
-        <section className="work-item-detail-section">
-          <h3>{t("rightPanel.stderr")}</h3>
-          <pre>{stderrText}</pre>
-        </section>
-      ) : null}
+      <TaskDetailContent task={task} output={output} />
     </article>
   );
 }

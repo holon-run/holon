@@ -63,8 +63,8 @@ function patchInputText(input: unknown): string {
 
 // Shared rendering primitives
 
-/** A labeled code/output block rendered as a standalone section. */
-function OutputField({
+/** A labeled code/output block rendered as a standalone section. Exported for reuse by other detail panels. */
+export function OutputField({
   label,
   value,
   variant,
@@ -83,7 +83,7 @@ function OutputField({
 }
 
 /** A simple inline key-value row for scalar fields like exit status. */
-function SimpleField({ label, value }: { label: string; value: unknown }) {
+export function SimpleField({ label, value }: { label: string; value: unknown }) {
   const text = textField(value) || scalarText(value);
   if (!text) return null;
   return (

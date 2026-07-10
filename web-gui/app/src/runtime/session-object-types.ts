@@ -73,6 +73,7 @@ export interface TaskObject extends BaseObject {
   status: TaskStatus;
   summary?: string;
   activityIds?: string[];
+  initialStatus?: TaskStatus;
 }
 
 export type WorkItemStatus =

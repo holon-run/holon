@@ -2006,6 +2006,14 @@ code {
   font-size: 11px;
 }
 
+.activity-state-evolution {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .activity-meta {
   grid-template-columns: minmax(0, 1fr) auto;
   color: var(--faint);

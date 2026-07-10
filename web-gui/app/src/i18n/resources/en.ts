@@ -636,6 +636,7 @@ const en = {
     patch: "Patch",
     patchDiff: "Patch diff",
     output: "Output",
+    rawOutput: "Raw output",
     activity: "Activity",
     summary: "Summary",
     stdout: "Stdout",

@@ -245,6 +245,9 @@ function ActivityTrail({
               {activityIcon(activity)}
             </span>
             <span className="activity-body">{activity.body}</span>
+            {activity.stateEvolution ? (
+              <span className="activity-state-evolution">{activity.stateEvolution.map((s) => s.replace(/^Task\s+/, "")).join(" → ")}</span>
+            ) : null}
           </button>
         );
 
