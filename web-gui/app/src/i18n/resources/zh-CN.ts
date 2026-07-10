@@ -638,6 +638,7 @@ const zh: Record<string, any> = {
     patch: "补丁",
     patchDiff: "补丁差异",
     output: "输出",
+    rawOutput: "原始输出",
     activity: "活动",
     summary: "摘要",
     stdout: "标准输出",
