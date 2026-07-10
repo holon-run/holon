@@ -574,6 +574,7 @@ export type RightPanelView =
       agentId: string;
       toolExecutionId: string;
       toolName?: string;
+      relatedStateObjectRef?: TimelineStateObjectRef;
       detailState?: ToolExecutionDetailState;
     }
   | {

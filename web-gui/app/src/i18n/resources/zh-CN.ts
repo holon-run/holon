@@ -621,6 +621,8 @@ const zh: Record<string, any> = {
     loadingDetail: "正在从运行时 API 获取完整的工具/任务详情。",
     unavailable: "不可用",
     toolExecution: "工具执行",
+    relatedWorkItem: "Work item",
+    relatedTask: "Task",
     rawJson: "原始工具执行 JSON",
     result: "结果",
     timelineActivity: "时间线活动",

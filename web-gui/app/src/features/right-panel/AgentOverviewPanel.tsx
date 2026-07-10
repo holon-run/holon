@@ -619,27 +619,27 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
     "";
   const stderrText = output?.stderr ?? "";
   const truncated = taskRecord?.output_truncated ?? output?.truncated;
+  const command = task.command;
+  const taskIdShort = task.id.replace(/^task:/, "").slice(0, 12);
+  const resultSummary = taskRecord?.result_summary;
 
   return (
     <article className="task-detail inspector-list-item featured">
       <div className="inspector-list-head">
-        <strong>{summary}</strong>
+        <strong>{summary || t("inspector.taskOutput")}</strong>
+        <StatusBadge className="state-chip" kind="connection" value={status} />
         {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}
       </div>
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
         <div>
-          <dt>{t("common.status")}</dt>
-          <dd>{compactMeta([status, exitStatus != null ? `exit ${exitStatus}` : undefined])}</dd>
-        </div>
-        <div>
           <dt>{t("rightPanel.kind")}</dt>
           <dd>{task.kind}</dd>
         </div>
-        {task.command ? (
+        {exitStatus != null ? (
           <div>
-            <dt>{t("rightPanel.command")}</dt>
-            <dd><code>{task.command}</code></dd>
+            <dt>{t("inspector.exit")}</dt>
+            <dd>{exitStatus}</dd>
           </div>
         ) : null}
         {task.workdir ? (
@@ -649,6 +649,18 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
           </div>
         ) : null}
       </dl>
+      {command ? (
+        <section className="work-item-detail-section">
+          <h3>{t("rightPanel.command")}</h3>
+          <pre className="task-command-pre">{command}</pre>
+        </section>
+      ) : null}
+      {resultSummary ? (
+        <section className="work-item-detail-section">
+          <h3>{t("rightPanel.output")}</h3>
+          <pre>{resultSummary}</pre>
+        </section>
+      ) : null}
       {outputText ? (
         <section className="work-item-detail-section">
           <h3>{truncated ? t("rightPanel.outputTruncated") : t("rightPanel.output")}</h3>
@@ -669,10 +681,16 @@ export function ToolExecutionDetailPanel({
   toolExecutionId,
   toolName,
   detailState,
+  relatedStateObjectRef,
+  onOpenWorkItem,
+  onOpenTask,
 }: {
   toolExecutionId: string;
   toolName?: string;
   detailState?: ToolExecutionDetailState;
+  relatedStateObjectRef?: import("../../runtime/types").TimelineStateObjectRef;
+  onOpenWorkItem?: (workItem: WorkItemSummary) => void;
+  onOpenTask?: (task: TaskSummary) => void;
 }) {
   const { t } = useTranslation();
   const loading = detailState?.loading && !detailState?.toolExecution;
@@ -680,6 +698,28 @@ export function ToolExecutionDetailPanel({
 
   return (
     <article className="tool-execution-detail inspector-list-item featured">
+      {relatedStateObjectRef ? (
+        <div className="inspector-breadcrumb">
+          {relatedStateObjectRef.kind === "work_item" && onOpenWorkItem ? (
+            <button
+              type="button"
+              className="breadcrumb-link"
+              onClick={() => onOpenWorkItem({ id: relatedStateObjectRef.id, objective: relatedStateObjectRef.objective ?? "", state: relatedStateObjectRef.state ?? "unknown" })}
+            >
+              {t("inspector.relatedWorkItem")}: {relatedStateObjectRef.id.replace(/^work_/, "").slice(0, 12)}
+            </button>
+          ) : null}
+          {relatedStateObjectRef.kind === "task" && onOpenTask ? (
+            <button
+              type="button"
+              className="breadcrumb-link"
+              onClick={() => onOpenTask({ id: relatedStateObjectRef.id.replace(/^task:/, ""), kind: "task", status: relatedStateObjectRef.status ?? "unknown", summary: relatedStateObjectRef.summary ?? "" })}
+            >
+              {t("inspector.relatedTask")}: {relatedStateObjectRef.id.replace(/^task:/, "").slice(0, 12)}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="inspector-list-head">
         <strong>{toolName ?? record?.tool_name ?? t("inspector.toolExecution")}</strong>
         {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}

@@ -619,6 +619,8 @@ const en = {
     loadingDetail: "Fetching full tool/task detail from the runtime API.",
     unavailable: "Unavailable",
     toolExecution: "Tool execution",
+    relatedWorkItem: "Work item",
+    relatedTask: "Task",
     rawJson: "Raw tool execution JSON",
     result: "Result",
     timelineActivity: "Timeline activity",

@@ -30,6 +30,7 @@ import type {
   AgentTemplateDetailState,
   AgentTimelineActivity,
   AgentTimelineItem,
+  TimelineStateObjectRef,
   DisplayLevel,
   MemorySourceContent,
   RightPanelView,
@@ -273,7 +274,7 @@ export interface RuntimeStoreState {
   showAgentOverview: (agentId?: string) => void;
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
-  showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string) => void;
+  showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
   showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
@@ -885,13 +886,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rightPanelView: { kind: "task_detail", agentId, task },
       };
     }),
-  showToolExecutionDetail: (agentId, toolExecutionId, toolName) =>
+  showToolExecutionDetail: (agentId, toolExecutionId, toolName, relatedStateObjectRef) =>
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
       return {
       rightPanelViewStack: stack,
       rightPanelOpen: true,
-      rightPanelView: { kind: "tool_execution_detail", agentId, toolExecutionId, toolName },
+      rightPanelView: { kind: "tool_execution_detail", agentId, toolExecutionId, toolName, relatedStateObjectRef },
       };
     }),
   showFileBrowser: (agentId, workspaceId, initialPath, executionRootId, initialFilePath) =>
@@ -908,24 +909,28 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   fetchWorkspaceFileBlob: (workspaceId, path, executionRootId) => runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId),
   workspaceFileUrl: (workspaceId, path, download, executionRootId) => runtimeClient.workspaceFileUrl(workspaceId, path, download, executionRootId),
   inspectActivity: (agentId, activity) => {
-    if (activity.stateObjectRef?.kind === "work_item") {
+    // Use relatedStateObjectRef as fallback for task/work_item navigation,
+    // since their child activities (status_updated, result_received, etc.)
+    // only carry relatedStateObjectRef without their own stateObjectRef.
+    const ref = activity.stateObjectRef ?? activity.relatedStateObjectRef;
+    if (ref?.kind === "work_item") {
       const workItem: WorkItemSummary = {
-        id: activity.stateObjectRef.id,
-        objective: activity.stateObjectRef.objective ?? activity.body,
-        state: activity.stateObjectRef.state ?? "unknown",
+        id: ref.id,
+        objective: ref.objective ?? activity.body,
+        state: ref.state ?? "unknown",
       };
       get().showWorkItemDetail(agentId, workItem);
-      void get().loadAgentWorkItemDetail(agentId, activity.stateObjectRef.id);
+      void get().loadAgentWorkItemDetail(agentId, ref.id);
       return;
     }
 
-    if (activity.stateObjectRef?.kind === "task") {
-      const taskId = activity.stateObjectRef.id.replace(/^task:/, "");
+    if (ref?.kind === "task") {
+      const taskId = ref.id.replace(/^task:/, "");
       const task: TaskSummary = {
         id: taskId,
         kind: "task",
-        status: activity.stateObjectRef.status ?? "unknown",
-        summary: activity.stateObjectRef.summary ?? activity.body,
+        status: ref.status ?? "unknown",
+        summary: ref.summary ?? activity.body,
       };
       get().showTaskDetail(agentId, task);
       void get().loadAgentTaskDetail(agentId, taskId);
@@ -933,7 +938,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
 
     if (activity.stateObjectRef?.kind === "tool_execution") {
-      get().showToolExecutionDetail(agentId, activity.stateObjectRef.id, activity.stateObjectRef.toolName);
+      get().showToolExecutionDetail(agentId, activity.stateObjectRef.id, activity.stateObjectRef.toolName, activity.relatedStateObjectRef);
       void get().loadAgentToolExecutionDetail(agentId, activity.stateObjectRef.id, activity);
       return;
     }

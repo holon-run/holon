@@ -57,6 +57,7 @@ export interface ToolExecutionObject extends BaseObject {
   status: ToolExecutionStatus;
   toolName: string;
   taskId?: string;
+  relatedStateObjectRef?: TimelineStateObjectRef;
 }
 
 export type TaskStatus =

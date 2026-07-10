@@ -59,7 +59,10 @@ function lookupObject(state: SessionState, entry: InsertionEntry): DomainObject 
  * Returns `undefined` when the object produces no visible projection.
  */
 function renderObject(obj: DomainObject, ctx: RenderContext): AgentTimelineItem | undefined {
-  if ("relatedStateObjectRef" in obj && obj.relatedStateObjectRef) return undefined;
+  // Skip activity objects that are children of a parent StateObject.
+  // Tool execution objects may carry relatedStateObjectRef for breadcrumb
+  // navigation but should still render as standalone timeline items.
+  if ("relatedStateObjectRef" in obj && obj.relatedStateObjectRef && !("toolName" in obj)) return undefined;
   const item = renderDomainObject(obj, ctx);
   if (!item) return undefined;
 

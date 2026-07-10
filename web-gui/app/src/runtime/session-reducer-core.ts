@@ -31,6 +31,7 @@ import type {
   AgentTimelineItem,
   AgentTimelineItemDetail,
   AgentTimelineItemKind,
+  TimelineStateObjectRef,
   DisplayLevel,
   RuntimeMessageEnvelope,
   RuntimeBriefRecord,
@@ -192,12 +193,15 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
     const disposition = firstStringField(payload, ["exec_command_disposition"]) ?? firstStringField(result, ["disposition"]);
     const promoted = disposition === "promoted_to_task";
     const promotedTaskId = promoted ? firstStringField(asRecord(payload?.task_handle), ["task_id"]) : undefined;
+    const toolName = stringField(payload, "tool_name") ?? "tool";
+    const relatedRef = toolExecutionRelatedStateObjectRef(toolName, payload, promotedTaskId);
     upsertObject(state, "tool_execution", toolExecutionId, {
       ...baseFields,
       id: toolExecutionId,
       status: eventType === "tool_execution_failed" ? "failed" : promoted ? "promoted" : "completed",
-      toolName: stringField(payload, "tool_name") ?? "tool",
+      toolName,
       taskId: promotedTaskId,
+      relatedStateObjectRef: relatedRef,
     } as DomainObject);
   } else if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
     const taskId = stringField(payload, "task_id");
@@ -594,6 +598,40 @@ function projectKnownToolExecution(
 
 function isWorkItemMutationTool(toolName: string): boolean {
   return toolName === "CreateWorkItem" || toolName === "UpdateWorkItem" || toolName === "PickWorkItem" || toolName === "CompleteWorkItem";
+}
+
+/**
+ * Tools that operate on a single task and carry a task_id in the payload.
+ * Excludes ListTasks (no single task target).
+ */
+function isTaskOperationTool(toolName: string): boolean {
+  return toolName === "TaskOutput" || toolName === "TaskStatus" || toolName === "TaskStop" || toolName === "TaskInput";
+}
+
+/**
+ * Compute the relatedStateObjectRef for a tool execution, linking it to
+ * a parent WorkItem, Task, or promoted-Task for navigation breadcrumbs.
+ */
+function toolExecutionRelatedStateObjectRef(
+  toolName: string,
+  payload: Record<string, unknown> | undefined,
+  promotedTaskId?: string,
+): TimelineStateObjectRef | undefined {
+  // Promoted ExecCommand → Task
+  if (promotedTaskId) {
+    return { kind: "task", id: `task:${promotedTaskId}`, status: "running" };
+  }
+  // WorkItem tools: CreateWorkItem, UpdateWorkItem, PickWorkItem, CompleteWorkItem, GetWorkItem
+  if (isWorkItemMutationTool(toolName) || toolName === "GetWorkItem") {
+    const workItemId = workItemObjectId(payload);
+    if (workItemId) return { kind: "work_item", id: workItemId };
+  }
+  // Task tools: TaskOutput, TaskStatus, TaskStop, TaskInput
+  if (isTaskOperationTool(toolName)) {
+    const taskId = stringField(payload, "task_id");
+    if (taskId) return { kind: "task", id: `task:${taskId}`, status: "unknown" };
+  }
+  return undefined;
 }
 
 function isWebSearchTool(toolName: string): boolean {

@@ -108,9 +108,7 @@ function renderToolExecutionObject(obj: ToolExecutionObject): AgentTimelineItem 
       toolName: obj.toolName,
       status: obj.status,
     },
-    relatedStateObjectRef: obj.taskId
-      ? { kind: "task", id: `task:${obj.taskId}`, status: "running", summary: undefined }
-      : undefined,
+    relatedStateObjectRef: obj.relatedStateObjectRef,
     detail: projection.detail,
     rawEvent: obj.render.rawEvent,
     debug: obj.render.debug,

@@ -4764,6 +4764,34 @@ code {
   line-height: 1.35;
 }
 
+.inspector-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.breadcrumb-link {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.breadcrumb-link:hover {
+  text-decoration: underline;
+}
+
+.task-command-pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+}
+
 .inspector-details-list {
   margin-top: 12px;
 }
