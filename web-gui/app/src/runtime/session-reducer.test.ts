@@ -67,7 +67,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline).toEqual([
       expect.objectContaining({
-        id: "event-1",
+        id: "message:msg-1",
         kind: "operator",
         body: "hydrated hello",
       }),
@@ -94,7 +94,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline).toEqual([
       expect.objectContaining({
-        id: "event-1",
+        id: "message:msg-1",
         kind: "operator",
         body: "Loading operator input…",
       }),
@@ -127,7 +127,7 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline.map((item) => item.id)).toEqual(["event-1", "event-2"]);
+    expect(timeline.map((item) => item.id)).toEqual(["message:msg-1", "message:msg-2"]);
   });
 
   it("keeps the raw event on projected timeline items", () => {
@@ -463,27 +463,14 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline.map((item) => item.id)).toEqual(["work_123", "picked"]);
+    expect(timeline.map((item) => item.id)).toEqual(["work_123"]);
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         id: "work_123",
         kind: "system",
-        label: "Work item",
-        body: "Fix timeline",
+        body: "Picked work item · Fix timeline · next priority",
         minDisplayLevel: "verbose",
         stateObjectRef: {
-          kind: "work_item",
-          id: "work_123",
-          objective: "Fix timeline",
-          state: undefined,
-        },
-      }),
-    );
-    expect(timeline[1]).toEqual(
-      expect.objectContaining({
-        id: "picked",
-        body: "Picked work item · Fix timeline · next priority",
-        relatedStateObjectRef: {
           kind: "work_item",
           id: "work_123",
           objective: "Fix timeline",
@@ -558,7 +545,7 @@ describe("reduceAgentSessionTimeline", () => {
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         id: "work_nested",
-        body: "Merge nested work item",
+        body: "Picked work item · Merge nested work item · resume · runnable",
         sourceIds: ["nested-written", "nested-picked"],
         stateObjectRef: {
           kind: "work_item",
@@ -568,8 +555,6 @@ describe("reduceAgentSessionTimeline", () => {
         },
       }),
     );
-    expect(timeline.slice(1).map((item) => item.id)).toEqual(["nested-picked"]);
-    expect(timeline.slice(1).map((item) => item.relatedStateObjectRef?.id)).toEqual(["work_nested"]);
   });
 
   it("merges work item state-update events by work item id without creating activities", () => {
@@ -636,19 +621,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        body: "Work item",
-      }),
-    );
-    expect(timeline[1]).toEqual(
-      expect.objectContaining({
-        id: "focus-released",
         body: "Released work item focus · yielded · runnable",
-        relatedStateObjectRef: {
-          kind: "work_item",
-          id: "work_456",
-          objective: undefined,
-          state: "runnable",
-        },
       }),
     );
   });
@@ -677,7 +650,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_456",
         kind: "system",
         label: "Work item",
-        body: "Work item",
+        body: "Released work item focus · completed · ready",
         minDisplayLevel: "verbose",
       }),
     );
@@ -708,19 +681,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_789",
         kind: "system",
         label: "Work item",
-        body: "Work item",
-      }),
-    );
-    expect(timeline[1]).toEqual(
-      expect.objectContaining({
-        id: "promoted",
         body: "Promoted completion report · Finished the implementation.",
-        relatedStateObjectRef: {
-          kind: "work_item",
-          id: "work_789",
-          objective: undefined,
-          state: undefined,
-        },
       }),
     );
   });
@@ -750,19 +711,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "work_abc",
         kind: "system",
         label: "Work item",
-        body: "Work item",
-      }),
-    );
-    expect(timeline[1]).toEqual(
-      expect.objectContaining({
-        id: "candidate-promoted",
         body: "Promoted completion report candidate · Candidate completion text.",
-        relatedStateObjectRef: {
-          kind: "work_item",
-          id: "work_abc",
-          objective: undefined,
-          state: undefined,
-        },
       }),
     );
   });

@@ -38,7 +38,7 @@ import type {
   RuntimeTranscriptEntry,
 } from "./types";
 import type { SessionEventEnvelope } from "./session-events";
-import { createSessionState, upsertObject } from "./session-state-reducer";
+import { createSessionState, getObject, upsertObject } from "./session-state-reducer";
 import type { SessionState } from "./session-state-reducer";
 import type {
   DomainObject,
@@ -181,9 +181,28 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
   if (eventType === "message_enqueued" || eventType === "message_processing_started") {
     const origin = asRecord(payload?.origin);
     const originKind = stringField(origin, "kind")?.toLowerCase();
-    upsertObject(state, "message", eventId, {
+    const messageId = stringField(payload, "message_id");
+    const objId = messageId ? `message:${messageId}` : eventId;
+
+    // For message_processing_started, if the message object already exists (from
+    // message_enqueued with the same message_id), only update the status and
+    // accumulate sourceEventIds without overwriting render data (which carries
+    // the message body text).
+    if (eventType === "message_processing_started") {
+      const existing = getObject(state, "message", objId);
+      if (existing) {
+        existing.status = "processing";
+        existing.updatedAt = ts;
+        if (!existing.sourceEventIds.includes(eventId)) {
+          existing.sourceEventIds.push(eventId);
+        }
+        return;
+      }
+    }
+
+    upsertObject(state, "message", objId, {
       ...baseFields,
-      id: eventId,
+      id: objId,
       status: eventType === "message_processing_started" ? "processing" : "enqueued",
       role: originKind === "operator" ? "operator" : "unknown",
     } as DomainObject);
@@ -595,6 +614,14 @@ function projectKnownToolExecution(
   if (toolName === "TaskStatus") return projectTaskStatusTool(payload);
   if (toolName === "TaskStop") return projectTaskStopTool(payload);
   if (toolName === "TaskInput") return projectTaskInputTool(payload);
+  if (toolName === "SpawnAgent") return projectSpawnAgentTool(payload);
+  if (toolName === "UseWorkspace") return projectUseWorkspaceTool(payload);
+  if (toolName === "Enqueue") return projectEnqueueTool(payload);
+  if (toolName === "GenerateImage") return projectGenerateImageTool(payload);
+  if (toolName === "AgentGet") return projectAgentGetTool(payload);
+  if (toolName === "ListModelProviders") return projectListModelProvidersTool(payload);
+  if (toolName === "ListProviderModels") return projectListProviderModelsTool(payload);
+  if (toolName === "WaitFor") return projectWaitForTool(payload);
   return undefined;
 }
 
@@ -658,7 +685,10 @@ function isReadControlTool(toolName: string): boolean {
     toolName === "ListWorkItems" ||
     toolName === "GetWorkItem" ||
     toolName === "MemorySearch" ||
-    toolName === "MemoryGet"
+    toolName === "MemoryGet" ||
+    toolName === "AgentGet" ||
+    toolName === "ListModelProviders" ||
+    toolName === "ListProviderModels"
   );
 }
 
@@ -1091,6 +1121,113 @@ function formatBytesRead(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+function projectSpawnAgentTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.spawn_agent_result) ?? unwrapToolResult(payload);
+  const agentId = stringField(result, "agent_id") ?? stringField(payload, "agent_id");
+  const preset = stringField(payload, "preset") ?? stringField(result, "preset");
+  const template = stringField(payload, "template") ?? stringField(result, "template");
+  const initialMessage = stringField(payload, "initial_message") ?? stringField(result, "initial_message");
+  const body = compactJoin([
+    "Spawned agent",
+    agentId ?? "agent",
+    preset && preset !== "private_child" ? preset : undefined,
+    template,
+    initialMessage ? truncateText(initialMessage.replace(/\s+/g, " ").trim(), 80) : undefined,
+  ]);
+  return { body, detail: undefined };
+}
+
+function projectUseWorkspaceTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const path = stringField(payload, "path");
+  const workspaceId = stringField(payload, "workspace_id");
+  const mode = stringField(payload, "mode");
+  const body = compactJoin([
+    "Switched workspace",
+    path ?? workspaceId,
+    mode && mode !== "direct" ? mode : undefined,
+  ]);
+  return { body, detail: undefined };
+}
+
+function projectEnqueueTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const text = stringField(payload, "text");
+  const priority = stringField(payload, "priority");
+  const body = compactJoin([
+    "Enqueued follow-up",
+    priority && priority !== "normal" ? priority : undefined,
+    text ? truncateText(text.replace(/\s+/g, " ").trim(), 100) : undefined,
+  ]);
+  return { body, detail: undefined };
+}
+
+function projectGenerateImageTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.generate_image_result) ?? unwrapToolResult(payload);
+  const prompt = stringField(payload, "prompt") ?? stringField(result, "prompt");
+  const name = stringField(payload, "name") ?? stringField(result, "name");
+  const size = stringField(payload, "size") ?? stringField(result, "size");
+  const imageUri = firstStringField(result, ["image_uri", "uri", "path"]);
+  const body = compactJoin([
+    "Generated image",
+    name ?? (imageUri ? basename(imageUri) : undefined),
+    size,
+    prompt ? truncateText(prompt, 80) : undefined,
+  ]);
+  return { body, detail: undefined };
+}
+
+function projectAgentGetTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const agentId = stringField(payload, "agent_id");
+  const result = unwrapToolResult(payload);
+  const visibility = stringField(result, "visibility");
+  const ownership = stringField(result, "ownership");
+  const body = compactJoin([
+    "Inspected agent",
+    agentId ?? "self",
+    visibility,
+    ownership,
+  ]);
+  return { body, detail: undefined };
+}
+
+function projectListModelProvidersTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = unwrapToolResult(payload);
+  const providers = arrayField(result, "providers") ?? arrayField(result, "model_providers");
+  const count = providers?.length;
+  const body = compactJoin([
+    "Listed model providers",
+    count != null ? `${count} provider${count === 1 ? "" : "s"}` : undefined,
+  ]);
+  return { body, detail: undefined };
+}
+
+function projectListProviderModelsTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const provider = stringField(payload, "provider");
+  const result = unwrapToolResult(payload);
+  const models = arrayField(result, "models") ?? arrayField(result, "provider_models");
+  const count = models?.length;
+  const body = compactJoin([
+    "Listed provider models",
+    provider,
+    count != null ? `${count} model${count === 1 ? "" : "s"}` : undefined,
+  ]);
+  return { body, detail: undefined };
+}
+
+function projectWaitForTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const reason = stringField(payload, "reason");
+  const wake = stringField(payload, "wake");
+  const resource = stringField(payload, "resource");
+  const recheckAfterMs = numberField(payload, "recheck_after_ms");
+  const body = compactJoin([
+    "Waiting",
+    wake,
+    resource ? truncateText(resource, 60) : undefined,
+    reason ? truncateText(reason, 80) : undefined,
+    recheckAfterMs != null ? `recheck in ${formatDuration(recheckAfterMs)}` : undefined,
+  ]);
+  return { body, detail: undefined };
+}
+
 function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
   return (items ?? [])
     .map(asRecord)
@@ -1281,6 +1418,13 @@ function toolFriendlyLabel(toolName: string, failed: boolean): string {
   if (toolName === "TaskStatus") return failed ? "Task status failed" : "Task status";
   if (toolName === "TaskStop") return failed ? "Task stop failed" : "Stopped task";
   if (toolName === "TaskInput") return failed ? "Task input failed" : "Task input";
+  if (toolName === "SpawnAgent") return failed ? "Agent spawn failed" : "Spawned agent";
+  if (toolName === "UseWorkspace") return failed ? "Workspace switch failed" : "Switched workspace";
+  if (toolName === "Enqueue") return failed ? "Enqueue failed" : "Enqueued follow-up";
+  if (toolName === "GenerateImage") return failed ? "Image generation failed" : "Generated image";
+  if (toolName === "AgentGet") return failed ? "Agent inspection failed" : "Inspected agent";
+  if (toolName === "ListModelProviders") return failed ? "Provider list failed" : "Listed model providers";
+  if (toolName === "ListProviderModels") return failed ? "Model list failed" : "Listed provider models";
   return failed ? "Tool failed" : "Tool finished";
 }
 

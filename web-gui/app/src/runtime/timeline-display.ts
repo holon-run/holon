@@ -79,7 +79,7 @@ export function compactAgentTimelineItems(items: AgentTimelineItem[]): AgentTime
   const finalBriefTexts = flattened.filter(isFinalBriefItem).map((item) => normalizeAssistantBriefText(item.body));
   const deduped = flattened.filter((candidate) => !isAssistantPreviewDuplicate(candidate, finalBriefTexts));
   const sorted = deduped.sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
-  return mergeConsecutiveTaskLifecycleItems(sorted);
+  return mergeConsecutiveStateObjectActivities(sorted);
 }
 
 function timelineDedupeKey(item: AgentTimelineItem): string {
@@ -199,39 +199,39 @@ function sortableTime(value: string): number {
 }
 
 /**
- * Merge consecutive task lifecycle items from the same task into a single
+ * Merge consecutive state-object lifecycle items from the same object into a single
  * evolving entry. Items are only merged when they are adjacent in the sorted
- * timeline (no non-task items between them), preserving time-order context.
+ * timeline (no non-matching items between them), preserving time-order context.
  *
- * Task lifecycle items are identified by:
- * - `stateObjectRef.kind === "task"` (the task card from task_created)
- * - `relatedStateObjectRef.kind === "task"` (flattened lifecycle activities)
+ * State-object lifecycle items are identified by:
+ * - `stateObjectRef.kind` in mergeable kinds (the card from the creation event)
+ * - `relatedStateObjectRef.kind` in mergeable kinds (flattened lifecycle activities)
  *
  * The merged item keeps the earliest timestamp, the latest label/body, and
  * accumulates status labels into `stateEvolution`.
  */
-function mergeConsecutiveTaskLifecycleItems(items: AgentTimelineItem[]): AgentTimelineItem[] {
+function mergeConsecutiveStateObjectActivities(items: AgentTimelineItem[]): AgentTimelineItem[] {
   if (!items.length) return items;
   const result: AgentTimelineItem[] = [];
   let i = 0;
   while (i < items.length) {
-    const taskRefId = taskLifecycleRefId(items[i]);
-    if (!taskRefId) {
+    const refId = stateObjectRefId(items[i]);
+    if (!refId) {
       result.push(items[i]);
       i++;
       continue;
     }
-    // Collect consecutive items from the same task
+    // Collect consecutive items from the same state object
     const group: AgentTimelineItem[] = [items[i]];
     let j = i + 1;
-    while (j < items.length && taskLifecycleRefId(items[j]) === taskRefId) {
+    while (j < items.length && stateObjectRefId(items[j]) === refId) {
       group.push(items[j]);
       j++;
     }
     if (group.length === 1) {
       result.push(group[0]);
     } else {
-      result.push(mergeTaskLifecycleGroup(group));
+      result.push(mergeStateObjectGroup(group));
     }
     i = j;
   }
@@ -239,30 +239,35 @@ function mergeConsecutiveTaskLifecycleItems(items: AgentTimelineItem[]): AgentTi
 }
 
 /**
- * Extract the task object id if the item is a task lifecycle item.
- * Returns undefined for non-task items.
+ * Kinds whose consecutive lifecycle activities should be merged.
  */
-function taskLifecycleRefId(item: AgentTimelineItem): string | undefined {
-  if (item.stateObjectRef?.kind === "task") return item.stateObjectRef.id;
+const mergeableStateObjectKinds = new Set(["task", "work_item"]);
+
+/**
+ * Extract the state object id if the item is a lifecycle item for a mergeable kind.
+ * Returns undefined for non-mergeable items.
+ */
+function stateObjectRefId(item: AgentTimelineItem): string | undefined {
+  if (item.stateObjectRef && mergeableStateObjectKinds.has(item.stateObjectRef.kind)) return item.stateObjectRef.id;
   // Only match flattened activities (no own stateObjectRef) to avoid merging tool executions
-  // that have relatedStateObjectRef pointing to a task but are separate objects.
-  if (!item.stateObjectRef && item.relatedStateObjectRef?.kind === "task") return item.relatedStateObjectRef.id;
+  // that have relatedStateObjectRef pointing to a state object but are separate objects.
+  if (!item.stateObjectRef && item.relatedStateObjectRef && mergeableStateObjectKinds.has(item.relatedStateObjectRef.kind)) return item.relatedStateObjectRef.id;
   return undefined;
 }
 
 /**
- * Merge a group of consecutive task lifecycle items into one entry.
- * - id: prefer the task card's id (stateObjectRef) for stable React keys
+ * Merge a group of consecutive state-object lifecycle items into one entry.
+ * - id: prefer the card's id (stateObjectRef) for stable React keys
  * - timestamp: earliest (group start)
  * - label/body/detail: from the last item (latest state)
  * - stateEvolution: accumulated status labels from all items
- * - stateObjectRef: from the task card if present
+ * - stateObjectRef: from the card if present
  * - sourceIds: merged from all
  */
-function mergeTaskLifecycleGroup(group: AgentTimelineItem[]): AgentTimelineItem {
+function mergeStateObjectGroup(group: AgentTimelineItem[]): AgentTimelineItem {
   const first = group[0];
   const last = group[group.length - 1];
-  const taskCard = group.find((item) => item.stateObjectRef?.kind === "task");
+  const card = group.find((item) => item.stateObjectRef && mergeableStateObjectKinds.has(item.stateObjectRef.kind));
 
   // Build state evolution from status labels
   const stateEvolution: string[] = [];
@@ -274,8 +279,8 @@ function mergeTaskLifecycleGroup(group: AgentTimelineItem[]): AgentTimelineItem 
   }
 
   return {
-    id: taskCard?.id ?? first.id,
-    kind: taskCard?.kind ?? last.kind,
+    id: card?.id ?? first.id,
+    kind: card?.kind ?? last.kind,
     label: last.label,
     body: last.body,
     timestamp: first.timestamp,
@@ -285,8 +290,8 @@ function mergeTaskLifecycleGroup(group: AgentTimelineItem[]): AgentTimelineItem 
       first,
     ).minDisplayLevel,
     sourceIds: mergeSourceIds(group.flatMap((item) => item.sourceIds)),
-    stateObjectRef: taskCard?.stateObjectRef ?? last.relatedStateObjectRef,
-    relatedStateObjectRef: taskCard ? undefined : last.relatedStateObjectRef,
+    stateObjectRef: card?.stateObjectRef ?? last.relatedStateObjectRef,
+    relatedStateObjectRef: card ? undefined : last.relatedStateObjectRef,
     detail: last.detail,
     stateEvolution: stateEvolution.length > 1 ? stateEvolution : undefined,
     activities: undefined,

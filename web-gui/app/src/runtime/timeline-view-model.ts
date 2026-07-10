@@ -68,7 +68,12 @@ function renderObject(obj: DomainObject, ctx: RenderContext): AgentTimelineItem 
 
   return {
     ...item,
-    id: item.stateObjectRef ? obj.id : (obj.sourceEventIds[obj.sourceEventIds.length - 1] ?? obj.render.eventId),
+    // Use the stable object id when available (stateObjectRef-bearing objects
+    // and messages with message_id-based identity). Fall back to the last
+    // source event id for objects without a stable identity.
+    id: item.stateObjectRef || obj.id.startsWith("message:")
+      ? obj.id
+      : (obj.sourceEventIds[obj.sourceEventIds.length - 1] ?? obj.render.eventId),
     timestamp: item.timestamp || obj.render.timestamp,
   };
 }
