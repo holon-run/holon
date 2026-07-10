@@ -237,6 +237,8 @@ pub(super) fn build_delta_checkpoint_prompt(
         "\
 [Runtime-generated delta progress checkpoint request]
 You are crossing another context compaction boundary. A previous checkpoint is still the active base.
+This delta is runtime-private continuity state, not operator-facing prose. Do not later repeat its headings or metadata to the operator unless explicitly asked.
+Best effort: write the delta in the current target response language inferred from the trusted prompt and context. Language mismatch must not prevent checkpoint creation or continuation.
 
 {base_source}
 Base checkpoint preview:

@@ -258,6 +258,7 @@ shown, hidden, merged, attached, or left to trace inspection.
 | Message aborts and failures | `message_processing_aborted` when it explains an abort or failure | `info` |
 | Message queue and admission plumbing | `message_enqueued`, `message_admitted`, `message_processing_started`, `turn_started` | `trace_only` |
 | Assistant text progress | `assistant_round_recorded`, `text_only_round_observed` with assistant text | `verbose` |
+| Runtime-private checkpoint rounds | `assistant_round_recorded`, `text_only_round_observed`, and `provider_round_completed` with `round_purpose = runtime_checkpoint` | `trace_only`; raw evidence remains available and explicitly labeled |
 | Tool-only assistant rounds | `assistant_round_recorded` with only tool calls | `verbose`, but normally merged into the related tool item |
 | Provider telemetry | `provider_round_completed` | `debug` |
 | Command and tool lifecycle | `process_execution_requested`, `tool_executed`, `tool_execution_failed`, `truncated_mutation_tool_call_rejected` | `verbose`; failures may promote to `info` when operator-relevant |
@@ -412,6 +413,12 @@ Intermediate assistant text is progress. It is not part of the result-oriented
 
 Tool-only assistant rounds are better expressed as the actual tool or command
 activity.
+
+Runtime-private checkpoint rounds are not assistant progress. Curated
+`info`/`verbose` projections must omit their text regardless of language or
+format. Debug/raw inspectors may expose the original event and transcript
+blocks, but must preserve the `runtime_checkpoint` purpose label so the content
+cannot be mistaken for operator-facing assistant prose.
 
 ### Provider Rounds
 

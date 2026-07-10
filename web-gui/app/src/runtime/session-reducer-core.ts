@@ -515,6 +515,9 @@ function projectAssistantRoundRecorded(
   payload: Record<string, unknown> | undefined,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
 ): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
+  if (stringField(payload, "round_purpose") === "runtime_checkpoint") {
+    return undefined;
+  }
   const transcriptText = transcriptTextForPayload(payload, transcriptEntriesById);
   if (transcriptText) {
     return {

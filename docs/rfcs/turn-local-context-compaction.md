@@ -167,6 +167,39 @@ logical cycle:
 
 Compacting raw blocks independently would break that meaning.
 
+### 6.1 Checkpoint Round Purpose
+
+A provider round requested by the runtime solely to create a compaction
+checkpoint is still stored as `TranscriptEntry::AssistantRound`, but it must be
+marked with:
+
+```json
+{
+  "round_purpose": "runtime_checkpoint",
+  "visibility": "runtime_private",
+  "checkpoint_request_id": "..."
+}
+```
+
+Ordinary rounds use `round_purpose = "agent_response"`.
+
+This distinction is semantic, not a text heuristic. A runtime checkpoint:
+
+- remains durable transcript and audit evidence;
+- may be replayed to the provider as continuity state;
+- must not become `TurnTerminalRecord.final_text`;
+- must not become `final_text_source_assistant_round_id`;
+- must not be promoted to a brief merely because it contains text;
+- must not contribute text to max-output recovery history.
+
+Briefs and assistant rounds remain non-bijective. One turn may produce multiple
+briefs, including WorkItem completion reports, and no rule here introduces a
+single terminal-brief assumption.
+
+Checkpoint generation should best-effort follow the current response language
+contract from the trusted prompt and context. Language mismatch does not block
+checkpoint recording, compaction, or continuation.
+
 ## 7. Bounded Provider Projection
 
 Before every continuation request after round 1, Holon should build a fresh

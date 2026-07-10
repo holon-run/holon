@@ -578,6 +578,8 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         .unwrap();
 
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
+    assert_eq!(outcome.final_text, "Finished after compacted continuation.");
+    assert!(outcome.final_text_source_assistant_round_id.is_some());
     assert_eq!(*provider.calls.lock().await, 5);
 
     let requests = provider.requests.lock().await;
@@ -684,6 +686,36 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
                     && event.data["checkpoint_request_id"].as_str() == Some(checkpoint_request_id)
             })
             .expect("missing structured checkpoint recorded event");
+        let checkpoint_assistant_event = events
+            .iter()
+            .find(|event| {
+                event.kind == "assistant_round_recorded"
+                    && event.data["checkpoint_request_id"].as_str() == Some(checkpoint_request_id)
+            })
+            .expect("missing checkpoint assistant round event");
+        assert_eq!(
+            checkpoint_assistant_event.data["round_purpose"].as_str(),
+            Some("runtime_checkpoint")
+        );
+        assert_eq!(
+            checkpoint_assistant_event.data["visibility"].as_str(),
+            Some("runtime_private")
+        );
+        let checkpoint_assistant_round_id = checkpoint_assistant_event.data["assistant_round_id"]
+            .as_str()
+            .expect("checkpoint assistant round id");
+        assert_ne!(
+            outcome.final_text_source_assistant_round_id.as_deref(),
+            Some(checkpoint_assistant_round_id)
+        );
+        let checkpoint_transcript = transcript
+            .iter()
+            .find(|entry| entry.id == checkpoint_assistant_round_id)
+            .expect("missing checkpoint assistant transcript");
+        assert_eq!(
+            checkpoint_transcript.data["round_purpose"].as_str(),
+            Some("runtime_checkpoint")
+        );
         assert_eq!(
             Some(checkpoint_request_id),
             checkpoint_requested.data["checkpoint_request_id"].as_str()

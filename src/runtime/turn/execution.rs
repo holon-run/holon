@@ -20,10 +20,10 @@ use crate::runtime::provider_turn::{
 use crate::storage::to_json_value;
 use crate::tool::{ToolCall, ToolError};
 use crate::types::{
-    AdmissionContext, AuditEvent, AuthorityClass, MessageBody, MessageDeliverySurface,
-    MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
-    TokenUsage, ToolExecutionAuditEvent, TranscriptEntry, TranscriptEntryKind, TurnTerminalKind,
-    TurnTerminalRecord,
+    AdmissionContext, AssistantRoundPurpose, AuditEvent, AuthorityClass, MessageBody,
+    MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+    QueueEntryRecord, QueueEntryStatus, TokenUsage, ToolExecutionAuditEvent, TranscriptEntry,
+    TranscriptEntryKind, TurnTerminalKind, TurnTerminalRecord,
 };
 
 use super::checkpoint::{
@@ -577,7 +577,7 @@ impl TurnExecution<'_> {
         let mut round = 0usize;
         let mut truncated_text_history = Vec::new();
         let mut last_assistant_message: Option<String> = None;
-        let mut last_assistant_round_id: Option<String>;
+        let mut last_assistant_round_id: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
         let mut rounds_since_work_item_update = 0usize;
         let mut rounds_since_work_item_reminder = work_item_stale_reminder_cooldown_rounds();
@@ -1087,6 +1087,18 @@ impl TurnExecution<'_> {
             };
 
             let assistant_blocks = response.blocks.clone();
+            let pending_checkpoint_metadata = checkpoint_state.pending.as_ref().map(|pending| {
+                (
+                    pending.request_id.clone(),
+                    pending.mode,
+                    pending.requested_at_round,
+                )
+            });
+            let round_purpose = if pending_checkpoint_metadata.is_some() {
+                AssistantRoundPurpose::RuntimeCheckpoint
+            } else {
+                AssistantRoundPurpose::AgentResponse
+            };
             let mut tool_calls = Vec::new();
             let mut text_blocks = Vec::new();
             let mut thinking_block_count = 0usize;
@@ -1133,28 +1145,38 @@ impl TurnExecution<'_> {
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            let aggregated_text = combine_text_history(&truncated_text_history, &text_blocks)
-                .into_iter()
-                .map(|text| text.trim().to_string())
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            if !aggregated_text.is_empty() {
-                last_assistant_message = Some(aggregated_text.clone());
-            } else if !truncated_text_history.is_empty() {
-                // If current round has no text, preserve text history from previous rounds
-                // This ensures that summaries before tool calls are not lost
-                let history_text = truncated_text_history
-                    .iter()
-                    .map(|text| text.trim())
+            if round_purpose == AssistantRoundPurpose::AgentResponse {
+                let aggregated_text = combine_text_history(&truncated_text_history, &text_blocks)
+                    .into_iter()
+                    .map(|text| text.trim().to_string())
                     .filter(|text| !text.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                if !history_text.is_empty() {
-                    last_assistant_message = Some(history_text);
+                if !aggregated_text.is_empty() {
+                    last_assistant_message = Some(aggregated_text);
+                } else if !truncated_text_history.is_empty() {
+                    // If current round has no text, preserve text history from previous rounds.
+                    let history_text = truncated_text_history
+                        .iter()
+                        .map(|text| text.trim())
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if !history_text.is_empty() {
+                        last_assistant_message = Some(history_text);
+                    }
                 }
             }
             let token_usage = TokenUsage::new(response.input_tokens, response.output_tokens);
+            let checkpoint_request_id = pending_checkpoint_metadata
+                .as_ref()
+                .map(|(request_id, _, _)| request_id.clone());
+            let checkpoint_mode = pending_checkpoint_metadata
+                .as_ref()
+                .map(|(_, mode, _)| mode.as_str());
+            let checkpoint_requested_at_round = pending_checkpoint_metadata
+                .as_ref()
+                .map(|(_, _, requested_at_round)| *requested_at_round);
 
             runtime.inner.storage.append_event(&AuditEvent::new(
                 "provider_round_completed",
@@ -1163,6 +1185,15 @@ impl TurnExecution<'_> {
                     "turn_index": turn_index,
                     "run_id": run_id,
                     "round": round,
+                    "round_purpose": round_purpose.as_str(),
+                    "visibility": if round_purpose == AssistantRoundPurpose::RuntimeCheckpoint {
+                        "runtime_private"
+                    } else {
+                        "operator_visible"
+                    },
+                    "checkpoint_request_id": checkpoint_request_id.clone(),
+                    "checkpoint_mode": checkpoint_mode,
+                    "checkpoint_requested_at_round": checkpoint_requested_at_round,
                     "work_item_id": round_work_item_id.clone(),
                     "stop_reason": stop_reason,
                     "context_build_ms": context_build_ms,
@@ -1265,6 +1296,15 @@ impl TurnExecution<'_> {
                     None,
                     serde_json::json!({
                         "blocks": &completed_round_assistant_blocks,
+                        "round_purpose": round_purpose.as_str(),
+                        "visibility": if round_purpose == AssistantRoundPurpose::RuntimeCheckpoint {
+                            "runtime_private"
+                        } else {
+                            "operator_visible"
+                        },
+                        "checkpoint_request_id": checkpoint_request_id.clone(),
+                        "checkpoint_mode": checkpoint_mode,
+                        "checkpoint_requested_at_round": checkpoint_requested_at_round,
                         "work_item_id": round_work_item_id.clone(),
                         "token_usage": token_usage,
                         "provider_cache_usage": cache_usage,
@@ -1282,7 +1322,9 @@ impl TurnExecution<'_> {
             };
             let assistant_round_id = assistant_round_transcript_entry.id.clone();
             runtime.persist_transcript_evidence(&assistant_round_transcript_entry)?;
-            last_assistant_round_id = Some(assistant_round_id.clone());
+            if round_purpose == AssistantRoundPurpose::AgentResponse {
+                last_assistant_round_id = Some(assistant_round_id.clone());
+            }
             runtime.inner.storage.append_event(&AuditEvent::new(
                 "assistant_round_recorded",
                 serde_json::json!({
@@ -1291,6 +1333,15 @@ impl TurnExecution<'_> {
                     "turn_index": turn_index,
                     "run_id": run_id,
                     "round": round,
+                    "round_purpose": round_purpose.as_str(),
+                    "visibility": if round_purpose == AssistantRoundPurpose::RuntimeCheckpoint {
+                        "runtime_private"
+                    } else {
+                        "operator_visible"
+                    },
+                    "checkpoint_request_id": checkpoint_request_id.clone(),
+                    "checkpoint_mode": checkpoint_mode,
+                    "checkpoint_requested_at_round": checkpoint_requested_at_round,
                     "work_item_id": round_work_item_id.clone(),
                     "stop_reason": stop_reason,
                     "text_block_count": text_blocks.len(),
@@ -1312,6 +1363,15 @@ impl TurnExecution<'_> {
                         "turn_index": turn_index,
                         "run_id": run_id,
                         "round": round,
+                        "round_purpose": round_purpose.as_str(),
+                        "visibility": if round_purpose == AssistantRoundPurpose::RuntimeCheckpoint {
+                            "runtime_private"
+                        } else {
+                            "operator_visible"
+                        },
+                        "checkpoint_request_id": checkpoint_request_id,
+                        "checkpoint_mode": checkpoint_mode,
+                        "checkpoint_requested_at_round": checkpoint_requested_at_round,
                         "stop_reason": stop_reason,
                         "has_text": !combined_text.is_empty(),
                         "text_preview": if combined_text.is_empty() {
@@ -1363,7 +1423,9 @@ impl TurnExecution<'_> {
 
             if tool_calls.is_empty() && is_max_output_stop_reason(stop_reason.as_deref()) {
                 if max_output_recovery_count < MAX_OUTPUT_RECOVERY_ATTEMPTS {
-                    if !combined_text.is_empty() {
+                    if round_purpose == AssistantRoundPurpose::AgentResponse
+                        && !combined_text.is_empty()
+                    {
                         truncated_text_history.push(combined_text.clone());
                     }
                     max_output_recovery_count += 1;
