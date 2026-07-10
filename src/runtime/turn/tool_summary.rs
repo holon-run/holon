@@ -1,171 +1,18 @@
 //! Tool result summarization and round recap generation.
 
-use crate::tool::names as tn;
 use serde_json::Value;
 
 use crate::tool::{
     helpers::command_digest,
+    names as tn,
     spec::{ToolResultEnvelope, ToolResultStatus},
+    summary::tool_result_summary,
     ToolCall,
 };
 
 use super::projection::estimate_text_tokens;
 use super::truncate_preview;
 use super::{TurnRoundRecord, RECAP_TEXT_PREVIEW_LIMIT};
-
-pub(super) fn artifact_paths(value: &Value) -> Vec<String> {
-    value
-        .get("artifacts")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|artifact| artifact.get("path").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-pub(super) fn summarize_exec_command_result(result: &Value) -> String {
-    let disposition = result
-        .get("disposition")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    match disposition {
-        "completed" => {
-            let exit_status = result
-                .get("exit_status")
-                .and_then(Value::as_i64)
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "unknown".into());
-            let truncated = result
-                .get("truncated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let artifacts = artifact_paths(result);
-            let artifact_note = if artifacts.is_empty() {
-                String::new()
-            } else {
-                format!(" artifacts={}", artifacts.join(", "))
-            };
-            format!("completed exit_status={exit_status} truncated={truncated}{artifact_note}")
-        }
-        "promoted_to_task" => {
-            let task_id = result
-                .get("task_handle")
-                .and_then(|handle| handle.get("task_id"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let truncated = result
-                .get("initial_output_truncated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            format!("promoted_to_task task_id={task_id} initial_output_truncated={truncated}")
-        }
-        "already_running" => {
-            let task_id = result
-                .get("task_handle")
-                .and_then(|handle| handle.get("task_id"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = result
-                .get("task_handle")
-                .and_then(|handle| handle.get("status"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("already_running task_id={task_id} status={status}")
-        }
-        _ => format!("disposition={disposition}"),
-    }
-}
-
-pub(super) fn summarize_task_output_result(result: &Value) -> String {
-    let retrieval_status = result
-        .get("retrieval_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let task = result.get("task").unwrap_or(result);
-    let task_id = task.get("id").and_then(Value::as_str).unwrap_or("unknown");
-    let truncated = task
-        .get("output_truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let exit_status = task
-        .get("exit_status")
-        .and_then(Value::as_i64)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unknown".into());
-    let artifacts = artifact_paths(task);
-    let artifact_note = if artifacts.is_empty() {
-        String::new()
-    } else {
-        format!(" artifacts={}", artifacts.join(", "))
-    };
-    format!(
-        "retrieval_status={retrieval_status} task_id={task_id} output_truncated={truncated} exit_status={exit_status}{artifact_note}"
-    )
-}
-
-pub(super) fn summarize_spawn_agent_result(result: &Value) -> Option<String> {
-    let agent_id = result.get("agent_id").and_then(Value::as_str)?;
-    let task_id = result
-        .get("task_handle")
-        .and_then(|handle| handle.get("task_id"))
-        .and_then(Value::as_str);
-    Some(match task_id {
-        Some(task_id) => format!("agent_id={agent_id} task_id={task_id}"),
-        None => format!("agent_id={agent_id}"),
-    })
-}
-
-pub(super) fn summarize_view_image_result(result: &Value) -> Option<String> {
-    let reference = result.get("visual_reference")?;
-    let observation = result.get("observation")?;
-    let reference_id = reference
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let mime = reference
-        .get("mime")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let schema = observation
-        .get("schema")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let prompt = observation
-        .get("prompt")
-        .and_then(Value::as_str)
-        .map(|prompt| truncate_preview(prompt, RECAP_TEXT_PREVIEW_LIMIT));
-    let summary = observation
-        .get("summary")
-        .and_then(Value::as_str)
-        .map(|summary| truncate_preview(summary, RECAP_TEXT_PREVIEW_LIMIT));
-    let ocr = observation
-        .get("ocr")
-        .and_then(Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| entry.get("text").and_then(Value::as_str))
-                .take(3)
-                .map(|text| truncate_preview(text, 80))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let mut parts = vec![format!(
-        "visual_observation schema={schema} ref={reference_id} mime={mime}"
-    )];
-    if let Some(prompt) = prompt {
-        parts.push(format!("prompt=\"{prompt}\""));
-    }
-    if let Some(summary) = summary {
-        parts.push(format!("summary=\"{summary}\""));
-    }
-    if !ocr.is_empty() {
-        parts.push(format!("ocr=[{}]", ocr.join(" | ")));
-    }
-    Some(parts.join(" "))
-}
 
 pub(super) fn summarize_tool_result_envelope(envelope: &ToolResultEnvelope) -> String {
     match envelope.status {
@@ -174,27 +21,15 @@ pub(super) fn summarize_tool_result_envelope(envelope: &ToolResultEnvelope) -> S
             let kind = error
                 .map(|error| error.kind.as_str())
                 .unwrap_or("tool_execution_failed");
-            let message = envelope
-                .summary_text
-                .as_deref()
-                .or_else(|| error.map(|error| error.message.as_str()))
-                .unwrap_or("tool failed");
-            format!("{} error {}: {}", envelope.tool_name, kind, message)
+            format!(
+                "{} error {}: {}",
+                envelope.tool_name,
+                kind,
+                tool_result_summary(envelope)
+            )
         }
         ToolResultStatus::Success => {
-            let detail = envelope
-                .result
-                .as_ref()
-                .and_then(|result| match envelope.tool_name.as_str() {
-                    tn::EXEC_COMMAND => Some(summarize_exec_command_result(result)),
-                    tn::TASK_OUTPUT => Some(summarize_task_output_result(result)),
-                    tn::SPAWN_AGENT => summarize_spawn_agent_result(result),
-                    tn::VIEW_IMAGE => summarize_view_image_result(result),
-                    _ => None,
-                })
-                .or_else(|| envelope.summary_text.clone())
-                .unwrap_or_else(|| "completed".into());
-            format!("{} {}", envelope.tool_name, detail)
+            format!("{} {}", envelope.tool_name, tool_result_summary(envelope))
         }
     }
 }

@@ -5,7 +5,7 @@ use std::{collections::HashSet, time::Instant};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::config::ModelRef;
 use crate::prompt::EffectivePrompt;
@@ -440,6 +440,91 @@ impl RuntimeHandle {
         .run()
         .await
     }
+}
+
+pub(super) const TOOL_AUDIT_INPUT_STRING_LIMIT: usize = 4_096;
+pub(super) const TOOL_AUDIT_INPUT_PREVIEW_LIMIT: usize = 240;
+const TOOL_AUDIT_REDACTED: &str = "[REDACTED]";
+
+pub(super) fn tool_audit_input_field(call: &ToolCall) -> Option<Value> {
+    if call.name == crate::tool::names::APPLY_PATCH {
+        return Some(audit_large_input(&call.input));
+    }
+    Some(sanitize_audit_input(&call.input, None))
+}
+
+fn sanitize_audit_input(value: &Value, key: Option<&str>) -> Value {
+    if key.is_some_and(is_sensitive_audit_input_key) {
+        return Value::String(TOOL_AUDIT_REDACTED.into());
+    }
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), sanitize_audit_input(value, Some(key.as_str()))))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| sanitize_audit_input(value, None))
+                .collect(),
+        ),
+        Value::String(value) => Value::String(truncate_audit_input_string(
+            value,
+            TOOL_AUDIT_INPUT_STRING_LIMIT,
+        )),
+        _ => value.clone(),
+    }
+}
+
+fn audit_large_input(value: &Value) -> Value {
+    let serialized = value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string());
+    let mut audit = Map::new();
+    audit.insert(
+        "preview".into(),
+        Value::String(truncate_audit_input_string(
+            &serialized,
+            TOOL_AUDIT_INPUT_PREVIEW_LIMIT,
+        )),
+    );
+    audit.insert("bytes".into(), Value::from(serialized.len() as u64));
+    audit.insert(
+        "truncated".into(),
+        Value::Bool(serialized.chars().count() > TOOL_AUDIT_INPUT_PREVIEW_LIMIT),
+    );
+    Value::Object(audit)
+}
+
+fn is_sensitive_audit_input_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', ' '], "_");
+    [
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "authorization",
+        "password",
+        "material",
+        "capability",
+    ]
+    .iter()
+    .any(|sensitive| normalized.contains(sensitive))
+}
+
+fn truncate_audit_input_string(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 pub(super) fn provider_lineage_failure_text(text: &str) -> String {
@@ -1448,6 +1533,7 @@ impl TurnExecution<'_> {
                             "turn_index": turn_index,
                             "run_id": run_id,
                             "work_item_id": work_item_id,
+                            "input": tool_audit_input_field(&call),
                             "exec_command_cmd": command_preview_field(&call),
                             "exec_command_display": command_display_field(&call),
                             "exec_command_batch_items": command_batch_preview_field(&call),
@@ -1602,6 +1688,7 @@ impl TurnExecution<'_> {
                                 status: record.status.clone(),
                                 duration_ms,
                                 summary: record.summary.clone(),
+                                input: tool_audit_input_field(&call),
                                 exec_command_cmd: command_preview_field(&call),
                                 exec_command_display: command_display_field(&call),
                                 exec_command_batch_items: command_batch_preview_field(&call),

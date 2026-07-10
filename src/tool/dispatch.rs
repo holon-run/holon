@@ -187,7 +187,7 @@ impl ToolRegistry {
             },
             input: call.input.clone(),
             output: output_value,
-            summary: tool_result_summary(&result),
+            summary: super::summary::tool_result_summary(&result.envelope),
             invocation_surface: tool_invocation_surface(call),
         };
         Ok((result, record))
@@ -239,35 +239,6 @@ fn is_model_facing_tool(name: &str) -> bool {
     !super::names::HIDDEN_FROM_MODEL_TOOLS.contains(&name)
 }
 
-fn tool_result_summary(result: &ToolResult) -> String {
-    if let Some(error) = result.tool_error() {
-        return super::helpers::truncate_text(&error.message, 200);
-    }
-    let summary = result
-        .summary_text()
-        .map(ToString::to_string)
-        .or_else(|| summary_from_result_payload(result.envelope.result.as_ref()))
-        .unwrap_or_else(|| result.envelope.tool_name.clone());
-    super::helpers::truncate_text(&summary, 200)
-}
-
-fn summary_from_result_payload(value: Option<&Value>) -> Option<String> {
-    let object = value?.as_object()?;
-    for field in [
-        "disposition",
-        "retrieval_status",
-        "status",
-        "task_id",
-        "agent_id",
-        "id",
-    ] {
-        if let Some(summary) = object.get(field).and_then(Value::as_str) {
-            return Some(summary.to_string());
-        }
-    }
-    None
-}
-
 fn build_tool_spec_catalog() -> Result<ToolSpecCatalog> {
     Ok(ToolSpecCatalog {
         entries: tools::builtin_tool_definitions()?
@@ -283,16 +254,13 @@ fn catalog_entry(family: ToolCapabilityFamily, spec: ToolSpec) -> ToolCatalogEnt
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_tool_spec_catalog, summary_from_result_payload, tool_result_summary, ToolRegistry,
-    };
+    use super::{build_tool_spec_catalog, ToolRegistry};
     use crate::{
         provider::{emitted_tool_json_schema, validate_emitted_tool_schema, ToolSchemaContract},
         tool::schema::validate_source_tool_schema,
-        tool::{ToolError, ToolResult},
         types::ToolCapabilityFamily,
     };
-    use serde_json::{json, Value};
+    use serde_json::Value;
     use std::path::PathBuf;
 
     fn assert_final_schema_shape(schema: &Value) {
@@ -563,44 +531,6 @@ mod tests {
                     .is_some_and(|modes| modes.iter().any(|mode| mode.as_str() == Some("inherit")))
         });
         assert!(constrains_workspace_mode_for_public_named);
-    }
-
-    #[test]
-    fn summary_from_result_payload_prefers_small_status_fields() {
-        assert_eq!(
-            summary_from_result_payload(Some(&json!({
-                "disposition": "completed",
-                "stdout_preview": "ignored"
-            }))),
-            Some("completed".to_string())
-        );
-        assert_eq!(
-            summary_from_result_payload(Some(&json!({
-                "retrieval_status": "success",
-                "task": {"status": "completed"}
-            }))),
-            Some("success".to_string())
-        );
-        assert_eq!(
-            summary_from_result_payload(Some(&json!({"stdout_preview": "only"}))),
-            None
-        );
-    }
-
-    #[test]
-    fn tool_result_summary_falls_back_to_tool_name_when_payload_has_no_small_fields() {
-        let result = ToolResult::success(
-            "AgentGet",
-            json!({
-                "profile": {"name": "default"},
-                "active_tasks": [{"id": "task-1"}]
-            }),
-            None,
-        );
-        assert_eq!(tool_result_summary(&result), "AgentGet");
-
-        let error = ToolResult::error("ExecCommand", ToolError::new("failure", "command exploded"));
-        assert_eq!(tool_result_summary(&error), "command exploded");
     }
 
     #[test]

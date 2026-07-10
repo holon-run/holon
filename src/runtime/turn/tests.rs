@@ -54,6 +54,52 @@ fn truncated_mutation_recovery_hint_is_tool_specific() {
 }
 
 #[test]
+fn tool_audit_input_redacts_sensitive_values_and_truncates_long_strings() {
+    let call = ToolCall {
+        id: "call-audit".into(),
+        name: "GenerateImage".into(),
+        input: serde_json::json!({
+            "prompt": "x".repeat(5_000),
+            "api_key": "super-secret",
+            "nested": {"authorization": "Bearer secret", "size": "1024x1024"}
+        }),
+    };
+
+    let input = tool_audit_input_field(&call).expect("audit input");
+
+    assert_eq!(input["api_key"], "[REDACTED]");
+    assert_eq!(input["nested"]["authorization"], "[REDACTED]");
+    assert_eq!(input["nested"]["size"], "1024x1024");
+    assert_eq!(
+        input["prompt"].as_str().expect("prompt").chars().count(),
+        TOOL_AUDIT_INPUT_STRING_LIMIT
+    );
+}
+
+#[test]
+fn tool_audit_input_replaces_apply_patch_body_with_a_bounded_preview() {
+    let patch = format!(
+        "*** Begin Patch\n*** Add File: large.txt\n+{}\n*** End Patch\n",
+        "x".repeat(10_000)
+    );
+    let call = ToolCall {
+        id: "call-patch".into(),
+        name: crate::tool::names::APPLY_PATCH.into(),
+        input: Value::String(patch.clone()),
+    };
+
+    let input = tool_audit_input_field(&call).expect("audit input");
+
+    assert_eq!(input["bytes"], patch.len() as u64);
+    assert_eq!(input["truncated"], true);
+    assert!(
+        input["preview"].as_str().expect("preview").chars().count()
+            <= TOOL_AUDIT_INPUT_PREVIEW_LIMIT
+    );
+    assert!(input.get("output").is_none());
+}
+
+#[test]
 fn turn_local_round_recap_preserves_command_recovery_identity() {
     let command = "python - <<'PY'\nprint('turn_recap_hidden_1246')\nPY";
     let round = fixture_round_with_tool(

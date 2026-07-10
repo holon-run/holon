@@ -179,7 +179,7 @@ describe("reduceAgentSessionTimeline", () => {
         events: [
           toolEvent("view-image", "ViewImage", {
             duration_ms: 9700,
-            path: "/Users/jolestar/Desktop/Screenshot.png",
+            input: { path: "/Users/jolestar/Desktop/Screenshot.png" },
             view_image_result: {
               dimensions: { width: 1200, height: 800 },
               visual_observation: "A browser screenshot showing the conversation timeline.",
@@ -196,6 +196,48 @@ describe("reduceAgentSessionTimeline", () => {
         body: "Viewed image · Screenshot.png · 1200×800 · A browser screenshot showing the conversation timeline. · 9.7s",
       }),
     );
+  });
+
+  it("projects tool call parameters from sanitized audit input", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("spawn-agent-1", "SpawnAgent", {
+            input: {
+              agent_id: "reviewer",
+              preset: "public_named",
+              template: "holon-reviewer",
+              initial_message: "Review issue #2150",
+            },
+            summary: "agent_id=reviewer",
+          }),
+          toolEvent("use-workspace-2", "UseWorkspace", {
+            input: { workspace_id: "ws_issue_2150", mode: "isolated" },
+            summary: "completed",
+          }),
+          toolEvent("enqueue-3", "Enqueue", {
+            input: { priority: "next", text: "Continue issue #2150 implementation" },
+            summary: "completed",
+          }),
+          toolEvent("generate-image-4", "GenerateImage", {
+            input: { name: "timeline", size: "1536x1024", prompt: "A tool execution timeline" },
+            summary: "completed",
+          }),
+          toolEvent("agent-get-5", "AgentGet", {
+            input: { agent_id: "holon-dev" },
+            summary: "completed",
+          }),
+        ],
+      },
+    });
+
+    expect(timeline.map((item) => item.body)).toEqual([
+      expect.stringContaining("Spawned agent · reviewer · public_named · holon-reviewer · Review issue #2150"),
+      expect.stringContaining("Switched workspace · ws_issue_2150 · isolated"),
+      expect.stringContaining("Enqueued follow-up · next · Continue issue #2150 implementation"),
+      expect.stringContaining("Generated image · timeline · 1536x1024 · A tool execution timeline"),
+      expect.stringContaining("Inspected agent · holon-dev"),
+    ]);
   });
 
   it("projects ListTasks tools as readable active task summaries", () => {
