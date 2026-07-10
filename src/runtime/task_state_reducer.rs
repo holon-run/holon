@@ -44,6 +44,21 @@ impl<'a> TaskTransition<'a> {
 
 impl RuntimeHandle {
     pub(super) async fn apply_task_transition(&self, transition: TaskTransition<'_>) -> Result<()> {
+        self.apply_task_transition_inner(transition, true).await
+    }
+
+    pub(super) async fn apply_task_transition_silent(
+        &self,
+        transition: TaskTransition<'_>,
+    ) -> Result<()> {
+        self.apply_task_transition_inner(transition, false).await
+    }
+
+    async fn apply_task_transition_inner(
+        &self,
+        transition: TaskTransition<'_>,
+        emit_event: bool,
+    ) -> Result<()> {
         let task = transition.task;
         if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, task) {
             return Ok(());
@@ -60,10 +75,12 @@ impl RuntimeHandle {
             }
             guard.persist_state(&self.inner.storage)?;
         }
-        self.inner.storage.append_event(&AuditEvent::new(
-            transition.event_kind,
-            to_json_value(&TaskLifecycleAuditEvent::from_task(task)),
-        ))?;
+        if emit_event {
+            self.inner.storage.append_event(&AuditEvent::new(
+                transition.event_kind,
+                to_json_value(&TaskLifecycleAuditEvent::from_task(task)),
+            ))?;
+        }
         Ok(())
     }
 

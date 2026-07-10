@@ -665,7 +665,6 @@ impl RuntimeHandle {
                             Some(&err.to_string()),
                             true,
                         ),
-                        "command_task_result_persisted_after_runner_failure",
                     )
                     .await;
                 runtime
@@ -750,7 +749,6 @@ impl RuntimeHandle {
             &task_record,
             terminal.status.clone(),
             detail.clone(),
-            "command_task_terminal_persisted",
         )
         .await?;
         let result_text = build_command_task_result_text(
@@ -799,13 +797,8 @@ impl RuntimeHandle {
                         "error": err.to_string(),
                     }),
                 ))?;
-            self.persist_command_task_terminal_state(
-                &task_record,
-                terminal.status.clone(),
-                detail,
-                "command_task_result_persisted_after_enqueue_failure",
-            )
-            .await?;
+            self.persist_command_task_terminal_state(&task_record, terminal.status.clone(), detail)
+                .await?;
         }
 
         self.inner.task_handles.lock().await.remove(&task_record.id);
@@ -863,33 +856,6 @@ impl RuntimeHandle {
                     false,
                 )),
                 recovery: task_record.recovery.clone(),
-            };
-            self.apply_task_transition(task_state_reducer::TaskTransition::new(
-                &running_task,
-                "task_status_updated",
-            ))
-            .await?;
-            self.inner
-                .storage
-                .append_event(&crate::types::AuditEvent::new(
-                    "command_task_running_persisted",
-                    serde_json::json!({
-                        "task_id": task_record.id,
-                    }),
-                ))?;
-
-            let running_task = TaskRecord {
-                status: TaskStatus::Running,
-                updated_at: chrono::Utc::now(),
-                detail: Some(command_task_detail(
-                    resolved,
-                    promoted_from_exec_command,
-                    captured,
-                    None,
-                    None,
-                    false,
-                )),
-                ..task_record.clone()
             };
             self.apply_task_transition(task_state_reducer::TaskTransition::new(
                 &running_task,
@@ -965,7 +931,6 @@ impl RuntimeHandle {
         task_record: &TaskRecord,
         status: TaskStatus,
         detail: serde_json::Value,
-        event_kind: &'static str,
     ) -> Result<()> {
         let fallback = TaskRecord {
             id: task_record.id.clone(),
@@ -980,8 +945,9 @@ impl RuntimeHandle {
             detail: Some(detail),
             recovery: task_record.recovery.clone(),
         };
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
-            &fallback, event_kind,
+        self.apply_task_transition_silent(task_state_reducer::TaskTransition::new(
+            &fallback,
+            "command_task_terminal_persisted",
         ))
         .await?;
         Ok(())
@@ -1779,10 +1745,23 @@ mod tests {
             .contains("failed to query command status"));
 
         let events = runtime.inner.storage.read_recent_events(20).unwrap();
-        assert!(events.iter().any(|event| {
-            event.kind == "command_task_terminal_persisted"
-                && event.data["task_id"].as_str() == Some(task.id.as_str())
-        }));
+        assert!(!events
+            .iter()
+            .any(|event| event.kind == "command_task_terminal_persisted"));
+        assert!(!events
+            .iter()
+            .any(|event| event.kind == "command_task_running_persisted"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| {
+                    event.kind == "task_status_updated"
+                        && event.data["task_id"].as_str() == Some(task.id.as_str())
+                        && event.data["status"].as_str() == Some("running")
+                })
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
