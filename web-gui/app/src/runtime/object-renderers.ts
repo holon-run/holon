@@ -120,7 +120,7 @@ function renderTaskObject(obj: TaskObject, ctx: RenderContext): AgentTimelineIte
   return {
     id: obj.id,
     kind: "tool" as const,
-    label: taskStatusLabel(obj.status),
+    label: taskStatusLabel(obj.initialStatus ?? obj.status),
     body: summary,
     timestamp: obj.render.timestamp,
     meta: obj.render.meta,

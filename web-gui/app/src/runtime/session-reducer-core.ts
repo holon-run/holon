@@ -206,6 +206,7 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
   } else if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
     const taskId = stringField(payload, "task_id");
     const taskObjId = taskId ? `task:${taskId}` : eventId;
+    const existingTask = state.tasks.get(taskObjId);
     const taskStatus = firstStringField(payload, ["task_status", "status"]) as TaskObject["status"];
     const summary = stringField(payload, "summary") ?? state.tasks.get(taskObjId)?.summary;
     const isActivity = eventType !== "task_created";
@@ -214,6 +215,7 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
       ...baseFields,
       id: taskObjId,
       status: taskStatus ?? (eventType === "task_created" ? "created" : "running"),
+      initialStatus: existingTask?.initialStatus ?? (taskStatus ?? "created"),
       summary,
       activityIds,
     } as DomainObject);
