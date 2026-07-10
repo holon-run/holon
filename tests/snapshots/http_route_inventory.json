@@ -955,6 +955,22 @@
   },
   {
     "method": "post",
+    "path": "/api/auth/{provider}/device/start",
+    "handler": "start_oauth_device_login",
+    "operation_id": "startOAuthDeviceLogin",
+    "tag": "auth",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/callbacks/enqueue/{callback_token}",
     "handler": "callback_ingress_enqueue",
     "operation_id": "callbackEnqueue",
