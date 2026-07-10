@@ -893,21 +893,27 @@ impl PresentationReducer {
                 }
 
                 "assistant_round_recorded" | "text_only_round_observed" => {
-                    if let Some(text) = round_text_preview(event) {
-                        let text_key = normalized_event_text_key(event, &text);
-                        if !text.trim().is_empty()
-                            && !matches_final_brief_text(event, &text, &final_brief_texts)
-                            && self.observed_assistant_text_keys.insert(text_key)
-                        {
-                            self.observed_assistant_texts
-                                .insert(strip_preview_ellipsis(normalized_text(&text).as_str()));
-                            items.push(TimedItem::from_event(
-                                PresentationItem::AssistantProgress {
-                                    text,
-                                    state: ItemState::Stable,
-                                },
-                                event,
-                            ));
+                    let runtime_checkpoint =
+                        event.payload.get("round_purpose").and_then(Value::as_str)
+                            == Some("runtime_checkpoint");
+                    if !runtime_checkpoint {
+                        if let Some(text) = round_text_preview(event) {
+                            let text_key = normalized_event_text_key(event, &text);
+                            if !text.trim().is_empty()
+                                && !matches_final_brief_text(event, &text, &final_brief_texts)
+                                && self.observed_assistant_text_keys.insert(text_key)
+                            {
+                                self.observed_assistant_texts.insert(strip_preview_ellipsis(
+                                    normalized_text(&text).as_str(),
+                                ));
+                                items.push(TimedItem::from_event(
+                                    PresentationItem::AssistantProgress {
+                                        text,
+                                        state: ItemState::Stable,
+                                    },
+                                    event,
+                                ));
+                            }
                         }
                     }
                 }
@@ -3729,6 +3735,27 @@ mod tests {
             }
             other => panic!("expected AssistantProgress, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn reducer_hides_runtime_checkpoint_assistant_rounds() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "round_purpose": "runtime_checkpoint",
+                "text_preview": "internal checkpoint text"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(
+            &[assistant],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
+
+        assert!(items.is_empty());
     }
 
     #[test]

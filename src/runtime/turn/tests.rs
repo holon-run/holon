@@ -1455,14 +1455,21 @@ fn build_turn_local_projection_strict_fallback_preserves_one_exact_round() {
         fixture_round(2, &"beta ".repeat(170)),
         fixture_round(3, &"gamma ".repeat(170)),
     ];
+    let prompt_frame = fixture_prompt_frame();
+    let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
+    let prompt_budget = estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation)
+        + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 
     let projection = build_turn_local_projection(
-        &fixture_prompt_frame(),
+        &prompt_frame,
         &rounds,
         &[],
         &TurnLocalCheckpointState::default(),
         Some("req-1".into()),
-        700 + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT),
+        prompt_budget,
         120,
     );
 
@@ -1491,14 +1498,27 @@ fn build_turn_local_projection_adds_checkpoint_prompt_when_compaction_applies() 
         fixture_round(2, &"beta ".repeat(170)),
         fixture_round(3, &"gamma ".repeat(170)),
     ];
+    let prompt_frame = fixture_prompt_frame();
+    let checkpoint_state = TurnLocalCheckpointState::default();
+    let checkpoint_request =
+        build_turn_local_checkpoint_request(&checkpoint_state, Some("req-1".into()));
+    let mut checkpointed_minimum_conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    checkpointed_minimum_conversation.extend(exact_round_messages(&rounds[2]));
+    checkpointed_minimum_conversation
+        .push(ConversationMessage::UserText(checkpoint_request.prompt));
+    let prompt_budget =
+        estimate_projection_tokens(&prompt_frame, &checkpointed_minimum_conversation)
+            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 
     let projection = build_turn_local_projection(
-        &fixture_prompt_frame(),
+        &prompt_frame,
         &rounds,
         &[],
-        &TurnLocalCheckpointState::default(),
+        &checkpoint_state,
         Some("req-1".into()),
-        700 + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT),
+        prompt_budget,
         120,
     );
 
@@ -1550,14 +1570,26 @@ fn build_turn_local_projection_uses_structured_checkpoint_state_for_delta_prompt
         ),
     ];
     let checkpoint_state = checkpoint_state_with_latest("结构化记录：继续处理 #495。", 2, 0);
+    let prompt_frame = fixture_prompt_frame();
+    let checkpoint_request =
+        build_turn_local_checkpoint_request(&checkpoint_state, Some("req-delta".into()));
+    let mut checkpointed_minimum_conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    checkpointed_minimum_conversation.extend(exact_round_messages(&rounds[2]));
+    checkpointed_minimum_conversation
+        .push(ConversationMessage::UserText(checkpoint_request.prompt));
+    let prompt_budget =
+        estimate_projection_tokens(&prompt_frame, &checkpointed_minimum_conversation)
+            + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 
     let projection = build_turn_local_projection(
-        &fixture_prompt_frame(),
+        &prompt_frame,
         &rounds,
         &[],
         &checkpoint_state,
         Some("req-delta".into()),
-        700 + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT),
+        prompt_budget,
         120,
     );
 
@@ -1845,14 +1877,21 @@ fn build_turn_local_projection_keeps_follow_up_prompt_final_during_compaction() 
         fixture_round(2, &"beta ".repeat(170)),
         fixture_round_with_follow_up(3, &"gamma ".repeat(170), follow_up),
     ];
+    let prompt_frame = fixture_prompt_frame();
+    let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
+        prompt_frame.context_blocks.clone(),
+    )];
+    minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
+    let prompt_budget = estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation)
+        + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 
     let projection = build_turn_local_projection(
-        &fixture_prompt_frame(),
+        &prompt_frame,
         &rounds,
         &[],
         &TurnLocalCheckpointState::default(),
         Some("req-1".into()),
-        700 + estimate_text_tokens(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT),
+        prompt_budget,
         120,
     );
 

@@ -1179,6 +1179,40 @@ describe("reduceAgentSessionTimeline", () => {
       }),
     );
   });
+
+  it("keeps runtime checkpoint assistant rounds out of the curated timeline", () => {
+    const checkpoint = event({
+      id: "checkpoint-round",
+      event_seq: 25,
+      type: "assistant_round_recorded",
+      payload: {
+        assistant_round_id: "round_checkpoint",
+        round_purpose: "runtime_checkpoint",
+        checkpoint_mode: "full",
+        text_preview: "Internal checkpoint text.",
+      },
+    });
+    const timeline = reduceAgentSessionTimeline({
+      events: { events: [checkpoint] },
+      transcriptEntriesById: {
+        round_checkpoint: {
+          id: "round_checkpoint",
+          data: {
+            round_purpose: "runtime_checkpoint",
+            blocks: [{ type: "text", text: "Internal checkpoint text." }],
+          },
+        },
+      },
+    });
+
+    expect(timeline).toEqual([]);
+    expect(debugAgentSessionEvents([checkpoint])).toEqual([
+      expect.objectContaining({
+        id: "debug:checkpoint-round",
+        rawEvent: checkpoint,
+      }),
+    ]);
+  });
 });
 
 describe("filterTimelineByDisplayLevel", () => {

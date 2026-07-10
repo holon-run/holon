@@ -364,6 +364,13 @@ fn event_visibility(
     category: OperatorEventCategory,
     context: &OperatorPresentationContext,
 ) -> OperatorVisibility {
+    if matches!(
+        kind,
+        "assistant_round_recorded" | "provider_round_completed" | "text_only_round_observed"
+    ) && is_runtime_checkpoint_round(payload)
+    {
+        return OperatorVisibility::Trace;
+    }
     match (kind, category) {
         ("operator_notification_requested", _) => OperatorVisibility::ActionRequired,
         ("brief_created", _) => brief_visibility(payload, context),
@@ -450,6 +457,9 @@ fn turn_terminal_provider_lineage(payload: &Value) -> bool {
 }
 
 fn is_verbose_event(kind: &str, payload: &Value) -> bool {
+    if is_runtime_checkpoint_round(payload) {
+        return false;
+    }
     match kind {
         "assistant_round_recorded" => payload_text_present(payload, "text_preview"),
         "text_only_round_observed" => {
@@ -570,6 +580,10 @@ fn payload_text_present(payload: &Value, field: &str) -> bool {
         .get(field)
         .and_then(Value::as_str)
         .is_some_and(|text| !text.trim().is_empty())
+}
+
+fn is_runtime_checkpoint_round(payload: &Value) -> bool {
+    payload.get("round_purpose").and_then(Value::as_str) == Some("runtime_checkpoint")
 }
 
 fn provider_round_has_useful_telemetry(payload: &Value) -> bool {
@@ -1587,6 +1601,18 @@ fn legacy_command_summary(summary: &str) -> Option<(&str, &str)> {
 }
 
 fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, String) {
+    if is_runtime_checkpoint_round(payload) {
+        let mode = payload
+            .get("checkpoint_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let body = format!("Internal continuity evidence (mode={mode})");
+        return (
+            "Runtime checkpoint".into(),
+            Some(body.clone()),
+            format!("Runtime checkpoint: {body}"),
+        );
+    }
     let text = payload
         .get("text_preview")
         .and_then(Value::as_str)
@@ -2478,6 +2504,39 @@ mod tests {
             empty.summary,
             "Assistant round completed without text (stop=end_turn)"
         );
+    }
+
+    #[test]
+    fn runtime_checkpoint_round_is_debug_only_and_explicitly_labeled() {
+        let context = OperatorPresentationContext::default();
+        let payload = json!({
+            "round_purpose": "runtime_checkpoint",
+            "checkpoint_mode": "full",
+            "text_preview": "internal checkpoint text"
+        });
+        let checkpoint =
+            present_operator_event("assistant_round_recorded", &payload, "fallback", &context);
+
+        assert_eq!(checkpoint.visibility, OperatorVisibility::Trace);
+        assert_eq!(checkpoint.title, "Runtime checkpoint");
+        assert_eq!(
+            checkpoint.body.as_deref(),
+            Some("Internal continuity evidence (mode=full)")
+        );
+        assert!(!super::is_operator_event_in_display_mode(
+            "assistant_round_recorded",
+            &payload,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Verbose
+        ));
+        assert!(super::is_operator_event_in_display_mode(
+            "assistant_round_recorded",
+            &payload,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Debug
+        ));
     }
 
     #[test]

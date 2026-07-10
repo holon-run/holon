@@ -79,7 +79,9 @@ const OPERATOR_INTERJECTION_HEADER: &str =
     "[Operator message received while this turn was in progress]";
 const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
 [Runtime-generated full progress checkpoint request]
-You are crossing a context compaction boundary. Before continuing, include a concise progress checkpoint for continuation in your next assistant message.
+You are crossing a context compaction boundary. Produce a concise runtime-private progress checkpoint for continuation in your next assistant message.
+This checkpoint is internal continuity state, not operator-facing prose. Do not treat it as a status update or later repeat its headings or metadata to the operator unless explicitly asked.
+Best effort: write the checkpoint in the current target response language inferred from the trusted prompt and context. Language mismatch must not prevent checkpoint creation or continuation.
 
 Include:
 - current user goal
@@ -97,7 +99,7 @@ Do not assume the task requires code changes unless the user goal does.";
 const DELTA_CHECKPOINT_PREVIEW_LIMIT: usize = 1_200;
 const CHECKPOINT_RESUME_PROMPT: &str = "\
 [Runtime-generated checkpoint continuation]
-Continue from the checkpoint's next goal-aligned action now. Do not restate the checkpoint. If the checkpoint says enough evidence exists to act, call the concrete mutation, verification, or delivery tool next; otherwise run only the named bounded command/query.";
+Continue from the checkpoint's next goal-aligned action now. The preceding checkpoint is runtime-private continuity state, not operator-facing prose. Do not restate its headings, metadata, or content unless the operator explicitly asks about it. If the checkpoint says enough evidence exists to act, call the concrete mutation, verification, or delivery tool next; otherwise run only the named bounded command/query.";
 
 fn truncate_preview(text: &str, limit: usize) -> String {
     let trimmed = text.trim();

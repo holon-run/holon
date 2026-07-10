@@ -4551,6 +4551,22 @@ pub enum TranscriptEntryKind {
     SubagentAssistantRound,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantRoundPurpose {
+    AgentResponse,
+    RuntimeCheckpoint,
+}
+
+impl AssistantRoundPurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentResponse => "agent_response",
+            Self::RuntimeCheckpoint => "runtime_checkpoint",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TranscriptEntry {
     pub id: String,

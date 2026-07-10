@@ -374,6 +374,7 @@ returned and Holon accepted as the assistant side of the conversation.
 It may include:
 
 - block list;
+- round purpose (`agent_response` or `runtime_checkpoint`);
 - round number;
 - stop reason;
 - token usage;
@@ -384,6 +385,12 @@ It may include:
 
 Briefs may reference an assistant round when their text is derived from that
 assistant output.
+
+`runtime_checkpoint` rounds are runtime-private continuity evidence. They are
+not eligible as the source of terminal text or a brief. This does not imply a
+one-to-one relationship between ordinary assistant rounds, turn terminals, and
+briefs: a turn may still produce multiple independently identified briefs, and
+WorkItem completion promotion may occur before the turn terminates.
 
 ### Tool Results
 
