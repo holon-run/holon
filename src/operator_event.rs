@@ -282,7 +282,6 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "supervised_child_task_monitor_reattached"
         | "supervised_child_task_recovery_failed"
         | "command_task_runner_failed"
-        | "command_task_running_persisted"
         | "command_task_result_enqueue_failed" => OperatorEventCategory::Task,
         "callback_delivered"
         | "timer_create_requested"
@@ -561,8 +560,7 @@ fn is_debug_event(kind: &str, payload: &Value) -> bool {
         | "working_memory_updated"
         | "operator_delivery_submitted"
         | "operator_delivery_completed"
-        | "operator_transport_binding_upserted"
-        | "command_task_running_persisted" => true,
+        | "operator_transport_binding_upserted" => true,
         _ => false,
     }
 }
@@ -679,7 +677,6 @@ fn event_text(
             simple_event_text("Child task recovery failed", error_or_task_body(payload))
         }
         "command_task_runner_failed" => command_task_runner_failed_text(payload, fallback_summary),
-        "command_task_running_persisted" => command_task_running_persisted_text(payload),
         "command_task_result_enqueue_failed" => {
             command_task_result_enqueue_failed_text(payload, fallback_summary)
         }
@@ -1190,15 +1187,6 @@ fn command_task_runner_failed_text(
         (None, None) => "Command task runner failed".into(),
     };
     ("Command task runner failed".into(), body, summary)
-}
-
-fn command_task_running_persisted_text(payload: &Value) -> (String, Option<String>, String) {
-    let task_id = payload.get("task_id").and_then(Value::as_str);
-    let body = task_id.map(ToString::to_string);
-    let summary = task_id
-        .map(|task_id| format!("Command task running: {task_id}"))
-        .unwrap_or_else(|| "Command task running".into());
-    ("Command task running".into(), body, summary)
 }
 
 fn command_task_result_enqueue_failed_text(
@@ -2093,7 +2081,6 @@ mod tests {
         "supervised_child_task_monitor_reattached",
         "supervised_child_task_recovery_failed",
         "command_task_runner_failed",
-        "command_task_running_persisted",
         "command_task_result_enqueue_failed",
         "callback_delivered",
         "timer_create_requested",
