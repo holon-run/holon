@@ -978,9 +978,15 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
     }));
 
     let tool_records = runtime.storage().read_recent_tool_executions(10)?;
-    assert!(!tool_records.iter().any(|record| {
-        record.tool_name == "ExecCommand" || record.tool_name == "DefinitelyNotATool"
-    }));
+    // Failed tool executions now persist ToolExecutionRecord records (with Error
+    // status) so the frontend can render tool detail for failures instead of 404.
+    for expected_name in ["ExecCommand", "DefinitelyNotATool", "Read"] {
+        assert!(
+            tool_records.iter().any(|record| record.tool_name == expected_name
+                && matches!(record.status, holon::types::ToolExecutionStatus::Error)),
+            "{expected_name} should have an Error-status tool execution record"
+        );
+    }
 
     let briefs = runtime.recent_briefs(10).await?;
     assert!(briefs
