@@ -143,11 +143,11 @@ async function fetchAgentDetail(
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
-  const briefRecordsById = await fetchBriefRecordsForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? [], transcriptEntriesById);
+  const briefRecordsById = await fetchBriefRecordsForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
   const agent = projectAgent(
     fallbackEntry,
     state,
-    newestBriefFromEvents(events.events ?? [], transcriptEntriesById, briefRecordsById),
+    newestBriefFromEvents(events.events ?? [], briefRecordsById),
     workItems,
   );
   const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById, briefRecordsById });
@@ -1259,7 +1259,6 @@ async function fetchBriefRecordsForEvents(
   headers: Record<string, string>,
   agentId: string,
   events: EventEnvelopeDto[],
-  transcriptEntriesById: Record<string, RuntimeTranscriptEntry>,
 ): Promise<Record<string, RuntimeBriefRecord>> {
   const briefIds = Array.from(
     new Set(
@@ -1267,8 +1266,7 @@ async function fetchBriefRecordsForEvents(
         .filter((event) => event.type === "brief_created")
         .filter((event) => {
           const payload = asRecord(event.payload);
-          const entryId = transcriptEntryIdForPayload(payload);
-          return !((entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ?? stringValue(payload?.text));
+          return !stringValue(payload?.text);
         })
         .map((event) => briefIdForPayload(asRecord(event.payload)))
         .filter((briefId): briefId is string => Boolean(briefId)),
@@ -1932,17 +1930,14 @@ function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[]
 
 function newestBriefFromEvents(
   events: EventEnvelopeDto[],
-  transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
   briefRecordsById: Record<string, RuntimeBriefRecord> = {},
 ): BriefRecordDto | undefined {
   return events
     .filter((event) => event.type === "brief_created")
     .map((event) => {
       const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
-      const entryId = transcriptEntryIdForPayload(payload);
       const briefId = briefIdForPayload(payload);
-      const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ??
-        (briefId ? briefRecordsById[briefId]?.text : undefined) ??
+      const text = (briefId ? briefRecordsById[briefId]?.text : undefined) ??
         (typeof payload.text === "string" ? payload.text : undefined);
       const createdAt = typeof payload.created_at === "string" ? payload.created_at : event.ts;
       const kind = typeof payload.kind === "string" ? payload.kind : undefined;
@@ -1950,18 +1945,6 @@ function newestBriefFromEvents(
     })
     .filter((brief) => brief.text)
     .sort((left, right) => sortableTime(right.created_at) - sortableTime(left.created_at))[0];
-}
-
-function transcriptEntryText(entry: RuntimeTranscriptEntry | undefined): string | undefined {
-  const data = asRecord(entry?.data);
-  const text = stringValue(data?.text);
-  if (text) return text;
-  const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
-  const parts = blocks.flatMap((block) => {
-    const record = asRecord(block);
-    return stringValue(record?.text) ?? stringValue(record?.content) ?? [];
-  });
-  return parts.filter(Boolean).join("\n\n") || undefined;
 }
 
 function sortableTime(value: string | undefined): number {

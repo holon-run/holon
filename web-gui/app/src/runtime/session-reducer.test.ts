@@ -1098,6 +1098,87 @@ describe("reduceAgentSessionTimeline", () => {
       }),
     );
   });
+
+  it("uses the persisted brief instead of associated transcript thinking", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "brief-event",
+            event_seq: 23,
+            type: "brief_created",
+            payload: {
+              brief_id: "brief_123",
+              kind: "result",
+              finalizes_assistant_round_id: "round_123",
+            },
+          }),
+        ],
+      },
+      transcriptEntriesById: {
+        round_123: {
+          id: "round_123",
+          data: {
+            blocks: [
+              { type: "thinking", thinking: "Internal reasoning must not be visible." },
+              { type: "text", text: "Transcript final text." },
+            ],
+          },
+        },
+      },
+      briefRecordsById: {
+        brief_123: {
+          id: "brief_123",
+          text: "Canonical persisted brief.",
+          kind: "result",
+        },
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "brief-event",
+        body: "Canonical persisted brief.",
+      }),
+    );
+  });
+
+  it("projects only text blocks for verbose assistant rounds", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "assistant-round",
+            event_seq: 24,
+            type: "assistant_round_recorded",
+            payload: {
+              assistant_round_id: "round_123",
+            },
+          }),
+        ],
+      },
+      transcriptEntriesById: {
+        round_123: {
+          id: "round_123",
+          data: {
+            blocks: [
+              { type: "thinking", text: "Internal reasoning must not be visible." },
+              { type: "text", text: "Operator-visible response." },
+              { type: "tool_use", content: "Internal tool block." },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "assistant-round",
+        body: "Operator-visible response.",
+        minDisplayLevel: "verbose",
+      }),
+    );
+  });
 });
 
 describe("filterTimelineByDisplayLevel", () => {

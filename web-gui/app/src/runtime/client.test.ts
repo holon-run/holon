@@ -514,4 +514,82 @@ describe("createRuntimeClient", () => {
     );
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/work-items/work%2Fdetail"]);
   });
+
+  it("hydrates persisted brief text even when the associated transcript is available", async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("/agents/list")) {
+        return Response.json([{ identity: { agent_id: "agent-one" } }]);
+      }
+      if (url.endsWith("/agents/agent-one/state")) {
+        return Response.json({});
+      }
+      if (url.includes("/agents/agent-one/events?")) {
+        return Response.json({
+          events: [
+            {
+              id: "brief-event",
+              agent_id: "agent-one",
+              event_seq: 23,
+              ts: "2026-07-10T00:00:00Z",
+              type: "brief_created",
+              payload: {
+                brief_id: "brief-123",
+                kind: "result",
+                finalizes_assistant_round_id: "round-123",
+              },
+            },
+          ],
+          has_older: false,
+        });
+      }
+      if (url.endsWith("/agents/agent-one/work-items?limit=50")) {
+        return Response.json([]);
+      }
+      if (url.endsWith("/agents/agent-one/transcript:batchGet")) {
+        return Response.json({
+          entries: [
+            {
+              id: "round-123",
+              data: {
+                blocks: [
+                  { type: "thinking", text: "Internal reasoning must not be visible." },
+                  { type: "text", text: "Transcript final text." },
+                ],
+              },
+            },
+          ],
+          missing_entry_ids: [],
+        });
+      }
+      if (url.endsWith("/agents/agent-one/briefs/brief-123")) {
+        return Response.json({
+          id: "brief-123",
+          text: "Canonical persisted brief.",
+          kind: "result",
+          created_at: "2026-07-10T00:00:00Z",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const detail = await client.getAgentDetail("agent-one");
+
+    expect(detail.agent.lastBrief).toBe("Canonical persisted brief.");
+    expect(detail.timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "brief-event",
+        body: "Canonical persisted brief.",
+      }),
+    );
+    expect(seen).toContain("http://example.test:7878/api/agents/agent-one/briefs/brief-123");
+  });
 });
