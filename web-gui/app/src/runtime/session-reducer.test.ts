@@ -935,6 +935,7 @@ describe("reduceAgentSessionTimeline", () => {
             event_seq: 50,
             type: "tool_executed",
             payload: {
+              tool_execution_id: "tool-1",
               tool_name: "ExecCommand",
               exec_command_cmd: "npm test",
               exec_command_exit_status: 0,
@@ -948,8 +949,43 @@ describe("reduceAgentSessionTimeline", () => {
     expect(timeline).toHaveLength(1);
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "exec-1",
-        stateObjectRef: { kind: "tool_execution", id: "exec-1", toolName: "ExecCommand", status: "completed" },
+        id: "tool-1",
+        sourceIds: ["exec-1"],
+        stateObjectRef: { kind: "tool_execution", id: "tool-1", toolName: "ExecCommand", status: "completed" },
+      }),
+    );
+  });
+
+  it("uses payload tool_execution_id as the canonical tool execution identity", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "event-1",
+            event_seq: 51,
+            type: "tool_executed",
+            payload: {
+              tool_execution_id: "tool_558ea102579f604",
+              tool_name: "ExecCommand",
+              exec_command_cmd: "npm test",
+              exec_command_exit_status: 0,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "tool_558ea102579f604",
+        sourceIds: ["event-1"],
+        stateObjectRef: {
+          kind: "tool_execution",
+          id: "tool_558ea102579f604",
+          toolName: "ExecCommand",
+          status: "completed",
+        },
       }),
     );
   });
@@ -963,6 +999,7 @@ describe("reduceAgentSessionTimeline", () => {
             event_seq: 60,
             type: "tool_executed",
             payload: {
+              tool_execution_id: "tool-promoted",
               tool_name: "ExecCommand",
               exec_command_cmd: "cargo build",
               exec_command_disposition: "promoted_to_task",
@@ -984,11 +1021,11 @@ describe("reduceAgentSessionTimeline", () => {
     });
 
     // Tool execution with promoted status has relatedStateObjectRef pointing to the task
-    const toolItem = timeline.find((item) => item.id === "exec-promoted");
+    const toolItem = timeline.find((item) => item.id === "tool-promoted");
     expect(toolItem).toEqual(
       expect.objectContaining({
         relatedStateObjectRef: { kind: "task", id: "task:task_xyz", status: "running", summary: undefined },
-        stateObjectRef: { kind: "tool_execution", id: "exec-promoted", toolName: "ExecCommand", status: "promoted" },
+        stateObjectRef: { kind: "tool_execution", id: "tool-promoted", toolName: "ExecCommand", status: "promoted" },
       }),
     );
     // Task card exists and has stateObjectRef

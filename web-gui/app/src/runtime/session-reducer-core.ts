@@ -187,13 +187,14 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
       role: originKind === "operator" ? "operator" : "unknown",
     } as DomainObject);
   } else if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
+    const toolExecutionId = firstStringField(payload, ["tool_execution_id", "toolExecutionId"]) ?? eventId;
     const result = asRecord(payload?.exec_command_result);
     const disposition = firstStringField(payload, ["exec_command_disposition"]) ?? firstStringField(result, ["disposition"]);
     const promoted = disposition === "promoted_to_task";
     const promotedTaskId = promoted ? firstStringField(asRecord(payload?.task_handle), ["task_id"]) : undefined;
-    upsertObject(state, "tool_execution", eventId, {
+    upsertObject(state, "tool_execution", toolExecutionId, {
       ...baseFields,
-      id: eventId,
+      id: toolExecutionId,
       status: eventType === "tool_execution_failed" ? "failed" : promoted ? "promoted" : "completed",
       toolName: stringField(payload, "tool_name") ?? "tool",
       taskId: promotedTaskId,

@@ -2447,7 +2447,10 @@ function inspectorDetailRefs(activity: AgentTimelineActivity): { toolExecutionId
   const rawEvent = asRecord(activity.rawEvent);
   const payload = asRecord(rawEvent?.payload) ?? asRecord(activity.rawEvent);
   return {
-    toolExecutionId: firstStringField(payload, ["tool_execution_id", "toolExecutionId"]),
+    toolExecutionId:
+      activity.stateObjectRef?.kind === "tool_execution"
+        ? activity.stateObjectRef.id
+        : firstStringField(payload, ["tool_execution_id", "toolExecutionId"]),
     taskId: firstStringField(payload, ["task_id", "taskId"]),
   };
 }
