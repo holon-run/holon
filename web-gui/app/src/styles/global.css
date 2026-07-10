@@ -5281,3 +5281,172 @@ code {
 @keyframes tooltip-fade-in {
   to { opacity: 1; }
 }
+
+/* Tool execution detail — structured field renderers */
+
+.tool-detail-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.tool-detail-field-label {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tool-detail-field-content {
+  overflow-x: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #000 18%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--page) 72%, var(--surface));
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-detail-field--error .tool-detail-field-content {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--page));
+  color: var(--danger);
+}
+
+.tool-detail-field--diff .tool-detail-field-content {
+  background: color-mix(in srgb, #0f172a 94%, var(--warning));
+  color: #fef3c7;
+}
+
+.tool-detail-simple {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.tool-detail-simple-label {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tool-detail-simple-value {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Batch item card */
+
+.tool-detail-batch-item {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 84%, var(--page));
+}
+
+.tool-detail-batch-item-title {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* File list for ApplyPatch */
+
+.tool-detail-file-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+ padding: 0;
+ list-style: none;
+}
+
+.tool-detail-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.tool-detail-file-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--surface);
+  background: var(--faint);
+}
+
+.tool-detail-file--A .tool-detail-file-action { background: var(--success); }
+.tool-detail-file--M .tool-detail-file-action { background: var(--warning); color: #1a1a2e; }
+.tool-detail-file--D .tool-detail-file-action { background: var(--danger); }
+.tool-detail-file--R .tool-detail-file-action { background: var(--accent); }
+
+.tool-detail-file-path {
+  color: var(--text);
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+}
+
+/* Diagnostics list */
+
+.tool-detail-diagnostic-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-detail-diagnostic {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.tool-detail-diagnostic-level {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--surface);
+  background: var(--faint);
+}
+
+.tool-detail-diagnostic--warning .tool-detail-diagnostic-level {
+  background: var(--warning);
+  color: #1a1a2e;
+}
+
+.tool-detail-diagnostic--error .tool-detail-diagnostic-level {
+  background: var(--danger);
+}
+
+.tool-detail-diagnostic-message {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}

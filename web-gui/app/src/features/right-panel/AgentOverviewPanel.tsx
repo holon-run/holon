@@ -4,7 +4,7 @@ import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
-import { formatToolExecutionDetail } from "../inspector/ActivityInspectorPanel";
+import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
@@ -677,7 +677,6 @@ export function ToolExecutionDetailPanel({
   const { t } = useTranslation();
   const loading = detailState?.loading && !detailState?.toolExecution;
   const record = detailState?.toolExecution;
-  const formatted = record ? formatToolExecutionDetail(record) : undefined;
 
   return (
     <article className="tool-execution-detail inspector-list-item featured">
@@ -702,11 +701,7 @@ export function ToolExecutionDetailPanel({
           </div>
         ) : null}
       </dl>
-      {formatted ? (
-        <section className="work-item-detail-section">
-          <pre className={formatted.tone === "output" ? "tool-output" : "tool-data"}>{formatted.text}</pre>
-        </section>
-      ) : null}
+      {record ? <ToolExecutionContent record={record} /> : null}
     </article>
   );
 }
