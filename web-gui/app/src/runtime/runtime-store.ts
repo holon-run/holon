@@ -317,7 +317,7 @@ export interface RuntimeStoreState {
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined) => Promise<void>;
-  loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined) => Promise<void>;
+  loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
@@ -934,7 +934,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
     if (activity.stateObjectRef?.kind === "tool_execution") {
       get().showToolExecutionDetail(agentId, activity.stateObjectRef.id, activity.stateObjectRef.toolName);
-      void get().loadAgentToolExecutionDetail(agentId, activity.stateObjectRef.id);
+      void get().loadAgentToolExecutionDetail(agentId, activity.stateObjectRef.id, activity);
       return;
     }
 
@@ -1872,7 +1872,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
-  loadAgentToolExecutionDetail: async (agentId, toolExecutionId) => {
+  loadAgentToolExecutionDetail: async (agentId, toolExecutionId, fallbackActivity) => {
     if (!agentId || !toolExecutionId) return;
     const key = `${agentId}:${toolExecutionId}`;
     const cached = get().sessionsByAgentId[agentId]?.toolExecutionDetailsById[toolExecutionId];
@@ -1883,6 +1883,20 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       const toolExecution = await runtimeClient.getToolExecution(agentId, toolExecutionId);
       setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: false, toolExecution });
     } catch (error) {
+      // If the tool execution record doesn't exist (e.g. historical events
+      // without tool_execution_id), fall back to the activity inspector
+      // which renders structured detail from the raw event payload.
+      if (fallbackActivity) {
+        set((state) => {
+          const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+          return {
+            rightPanelViewStack: stack,
+            rightPanelView: { kind: "activity_inspector", agentId, activity: fallbackActivity },
+          };
+        });
+        void hydrateInspectorActivityDetail(get, set, agentId, fallbackActivity);
+        return;
+      }
       setToolExecutionDetailState(set, agentId, toolExecutionId, {
         loading: false,
         error: error instanceof Error ? error.message : String(error),
@@ -2383,11 +2397,15 @@ function hydrateInspectorActivityDetail(
   inspectorDetailInFlight.add(key);
   setInspectorActivityDetailState(set, agentId, activity.id, { loading: true });
 
-  void Promise.all([
+  // Use allSettled so a 404 on one fetch (e.g. historical tool execution
+  // without a persisted record) doesn't wipe out the other detail.
+  void Promise.allSettled([
     refs.toolExecutionId ? runtimeClient.getToolExecution(agentId, refs.toolExecutionId) : Promise.resolve(undefined),
     refs.taskId ? runtimeClient.getTaskOutput(agentId, refs.taskId) : Promise.resolve(undefined),
   ])
-    .then(([toolExecution, taskOutput]) => {
+    .then(([toolExecResult, taskOutputResult]) => {
+      const toolExecution = toolExecResult.status === "fulfilled" ? toolExecResult.value : undefined;
+      const taskOutput = taskOutputResult.status === "fulfilled" ? taskOutputResult.value : undefined;
       setInspectorActivityDetailState(set, agentId, activity.id, {
         loading: false,
         toolExecution,
