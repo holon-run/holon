@@ -1019,7 +1019,10 @@ async fn apply_file_patches(
             PatchOperationKind::Add { path } => {
                 let target = resolve_patch_path(workspace_root, path)?;
                 let existing = load_state(&target, &mut state, &mut originals).await?;
-                if existing.is_some() {
+                if existing
+                    .as_ref()
+                    .is_some_and(|state| !state.lines.is_empty())
+                {
                     return Err(existing_file(path));
                 }
                 let updated = apply_hunks(
@@ -2166,6 +2169,47 @@ mod tests {
             "hello\n"
         );
         assert!(!tokio::fs::try_exists(&doomed).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_add_allows_existing_empty_file() {
+        let dir = tempdir().unwrap();
+        let existing_empty = dir.path().join("created.txt");
+        tokio::fs::write(&existing_empty, "").await.unwrap();
+
+        let patch = r#"--- /dev/null
++++ b/created.txt
+@@ -0,0 +1,1 @@
++hello
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&existing_empty).await.unwrap(),
+            "hello\n"
+        );
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Add);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_add_still_rejects_existing_non_empty_file() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("created.txt");
+        tokio::fs::write(&existing, "existing\n").await.unwrap();
+
+        let patch = r#"--- /dev/null
++++ b/created.txt
+@@ -0,0 +1,1 @@
++hello
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "existing_file");
+        assert_eq!(
+            tokio::fs::read_to_string(&existing).await.unwrap(),
+            "existing\n"
+        );
     }
 
     #[test]
