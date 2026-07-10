@@ -987,11 +987,15 @@ function projectWorkItemMutationTool(payload: Record<string, unknown> | undefine
 }
 
 function projectViewImageTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const input = asRecord(payload?.input);
   const result = asRecord(payload?.view_image_result) ?? asRecord(payload?.result);
   const dimensions = asRecord(result?.dimensions);
   const width = numberField(result, "width") ?? numberField(dimensions, "width");
   const height = numberField(result, "height") ?? numberField(dimensions, "height");
-  const imagePath = firstStringField(payload, ["path", "image_path"]) ?? firstStringField(result, ["path", "image_path"]);
+  const imagePath =
+    firstStringField(input, ["path", "image_path"]) ??
+    firstStringField(payload, ["path", "image_path"]) ??
+    firstStringField(result, ["path", "image_path"]);
   const observation = firstStringField(result, ["visual_observation", "observation", "text_preview"]);
   const body = compactJoin([
     "Viewed image",
@@ -1121,11 +1125,13 @@ function formatBytesRead(bytes: number): string {
 }
 
 function projectSpawnAgentTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const input = asRecord(payload?.input);
   const result = asRecord(payload?.spawn_agent_result) ?? unwrapToolResult(payload);
-  const agentId = stringField(result, "agent_id") ?? stringField(payload, "agent_id");
-  const preset = stringField(payload, "preset") ?? stringField(result, "preset");
-  const template = stringField(payload, "template") ?? stringField(result, "template");
-  const initialMessage = stringField(payload, "initial_message") ?? stringField(result, "initial_message");
+  const agentId = stringField(result, "agent_id") ?? stringField(input, "agent_id") ?? stringField(payload, "agent_id");
+  const preset = stringField(input, "preset") ?? stringField(payload, "preset") ?? stringField(result, "preset");
+  const template = stringField(input, "template") ?? stringField(payload, "template") ?? stringField(result, "template");
+  const initialMessage =
+    stringField(input, "initial_message") ?? stringField(payload, "initial_message") ?? stringField(result, "initial_message");
   const body = compactJoin([
     "Spawned agent",
     agentId ?? "agent",
@@ -1137,9 +1143,10 @@ function projectSpawnAgentTool(payload: Record<string, unknown> | undefined): Pi
 }
 
 function projectUseWorkspaceTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
-  const path = stringField(payload, "path");
-  const workspaceId = stringField(payload, "workspace_id");
-  const mode = stringField(payload, "mode");
+  const input = asRecord(payload?.input);
+  const path = stringField(input, "path") ?? stringField(payload, "path");
+  const workspaceId = stringField(input, "workspace_id") ?? stringField(payload, "workspace_id");
+  const mode = stringField(input, "mode") ?? stringField(payload, "mode");
   const body = compactJoin([
     "Switched workspace",
     path ?? workspaceId,
@@ -1149,8 +1156,9 @@ function projectUseWorkspaceTool(payload: Record<string, unknown> | undefined): 
 }
 
 function projectEnqueueTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
-  const text = stringField(payload, "text");
-  const priority = stringField(payload, "priority");
+  const input = asRecord(payload?.input);
+  const text = stringField(input, "text") ?? stringField(payload, "text");
+  const priority = stringField(input, "priority") ?? stringField(payload, "priority");
   const body = compactJoin([
     "Enqueued follow-up",
     priority && priority !== "normal" ? priority : undefined,
@@ -1160,10 +1168,11 @@ function projectEnqueueTool(payload: Record<string, unknown> | undefined): Pick<
 }
 
 function projectGenerateImageTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const input = asRecord(payload?.input);
   const result = asRecord(payload?.generate_image_result) ?? unwrapToolResult(payload);
-  const prompt = stringField(payload, "prompt") ?? stringField(result, "prompt");
-  const name = stringField(payload, "name") ?? stringField(result, "name");
-  const size = stringField(payload, "size") ?? stringField(result, "size");
+  const prompt = stringField(input, "prompt") ?? stringField(payload, "prompt") ?? stringField(result, "prompt");
+  const name = stringField(input, "name") ?? stringField(payload, "name") ?? stringField(result, "name");
+  const size = stringField(input, "size") ?? stringField(payload, "size") ?? stringField(result, "size");
   const imageUri = firstStringField(result, ["image_uri", "uri", "path"]);
   const body = compactJoin([
     "Generated image",
@@ -1175,7 +1184,8 @@ function projectGenerateImageTool(payload: Record<string, unknown> | undefined):
 }
 
 function projectAgentGetTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
-  const agentId = stringField(payload, "agent_id");
+  const input = asRecord(payload?.input);
+  const agentId = stringField(input, "agent_id") ?? stringField(payload, "agent_id");
   const result = unwrapToolResult(payload);
   const visibility = stringField(result, "visibility");
   const ownership = stringField(result, "ownership");

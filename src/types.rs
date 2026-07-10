@@ -4374,6 +4374,8 @@ pub struct ToolExecutionAuditEvent {
     pub duration_ms: u64,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_command_cmd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_command_display: Option<String>,
@@ -5953,6 +5955,7 @@ mod tests {
             status: ToolExecutionStatus::Success,
             duration_ms: 42,
             summary: "command completed".into(),
+            input: Some(serde_json::json!({"cmd": "cargo test"})),
             exec_command_cmd: Some("cargo test".into()),
             exec_command_display: Some("cargo test".into()),
             exec_command_batch_items: None,
@@ -5966,6 +5969,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(payload["tool_execution_id"], "tool-1");
+        assert_eq!(payload["input"]["cmd"], "cargo test");
         assert!(payload.get("output").is_none());
         assert!(payload.get("tool_result").is_none());
         assert!(payload.get("exec_command_result").is_none());

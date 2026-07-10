@@ -17,6 +17,7 @@ pub(crate) mod helpers;
 pub mod names;
 pub(crate) mod schema_support;
 pub mod spec;
+pub(crate) mod summary;
 pub(crate) mod tools;
 
 pub(crate) use schema_support as schema;
