@@ -3011,18 +3011,6 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function transcriptEntryText(entry: RuntimeTranscriptEntry | undefined): string | undefined {
-  const data = asRecord(entry?.data);
-  const text = stringField(data, "text");
-  if (text) return text;
-  const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
-  const parts = blocks.flatMap((block) => {
-    const record = asRecord(block);
-    return stringField(record, "text") ?? stringField(record, "content") ?? [];
-  });
-  return parts.filter(Boolean).join("\n\n") || undefined;
-}
-
 function countAgentsNeedingAttention(agents: AgentSummary[]): number {
   return agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
 }
@@ -3207,7 +3195,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
     const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
     const runPatch = agentRunPatchFromEvents(uniqueEvents);
-    const briefPatch = agentBriefPatchFromEvents(uniqueEvents, current.transcriptEntriesById, current.briefRecordsById);
+    const briefPatch = agentBriefPatchFromEvents(uniqueEvents, current.briefRecordsById);
     const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
     const detail = patchedBaseDetail
       ? {
@@ -3405,20 +3393,16 @@ function scheduleBriefHydration(
     });
 }
 
-function agentBriefPatchFromEvents(
+export function agentBriefPatchFromEvents(
   events: StreamEventEnvelopeDto[],
-  transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
   briefRecordsById: Record<string, RuntimeBriefRecord> = {},
 ): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
   let patch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined;
   for (const event of events) {
     if (event.type !== "brief_created") continue;
     const payload = asRecord(event.payload);
-    const entryId = transcriptEntryIdForPayload(payload);
     const briefId = briefIdForPayload(payload);
-    const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ?? stringField(payload, "text");
-    const fallbackText = briefId ? briefRecordsById[briefId]?.text : undefined;
-    const resolvedText = text ?? fallbackText;
+    const resolvedText = (briefId ? briefRecordsById[briefId]?.text : undefined) ?? stringField(payload, "text");
     if (!resolvedText) continue;
     const createdAt = stringField(payload, "created_at") ?? event.ts;
     patch = {
@@ -3466,7 +3450,7 @@ function missingTranscriptEntryIdsForHydration(session: AgentSessionState | unde
   return missing;
 }
 
-function missingBriefIdsForHydration(session: AgentSessionState | undefined): string[] {
+export function missingBriefIdsForHydration(session: AgentSessionState | undefined): string[] {
   if (!session) return [];
   const seen = new Set<string>();
   const missing: string[] = [];
@@ -3478,9 +3462,7 @@ function missingBriefIdsForHydration(session: AgentSessionState | undefined): st
     if (!briefId || seen.has(briefId) || session.briefRecordsById[briefId] || session.missingBriefIds[briefId]) {
       continue;
     }
-    const entryId = transcriptEntryIdForPayload(payload);
-    const hydratedByTranscript = entryId ? transcriptEntryText(session.transcriptEntriesById[entryId]) : undefined;
-    if (hydratedByTranscript || stringField(payload, "text")) continue;
+    if (stringField(payload, "text")) continue;
     seen.add(briefId);
     missing.push(briefId);
   }
@@ -3573,7 +3555,7 @@ function mergeHydratedTranscriptEntriesIntoSession(
     transcriptEntriesById,
     briefRecordsById: current.briefRecordsById,
   });
-  const briefPatch = agentBriefPatchFromEvents(events, transcriptEntriesById, current.briefRecordsById);
+  const briefPatch = agentBriefPatchFromEvents(events, current.briefRecordsById);
   const detail = current.detail
     ? patchAgentDetail(
         {
@@ -3637,7 +3619,7 @@ function mergeHydratedBriefRecordsIntoSession(
     transcriptEntriesById: current.transcriptEntriesById,
     briefRecordsById,
   });
-  const briefPatch = agentBriefPatchFromEvents(events, current.transcriptEntriesById, briefRecordsById);
+  const briefPatch = agentBriefPatchFromEvents(events, briefRecordsById);
   const detail = current.detail
     ? patchAgentDetail(
         {

@@ -402,7 +402,6 @@ export function projectRuntimeEvent(
       kind: "assistant",
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
       body:
-        transcriptTextForPayload(payload, transcriptEntriesById) ||
         briefTextForPayload(payload, briefRecordsById) ||
         readableTextWithoutSummary(payload) ||
         "Brief text unavailable.",
@@ -1623,6 +1622,7 @@ function transcriptEntryText(entry: RuntimeTranscriptEntry | undefined): string 
   const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
   const parts = blocks.flatMap((block) => {
     const record = asRecord(block);
+    if (stringField(record, "type") !== "text") return [];
     return stringField(record, "text") ?? stringField(record, "content") ?? [];
   });
   return compactJoin(parts);

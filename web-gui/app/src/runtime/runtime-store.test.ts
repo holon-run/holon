@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  agentBriefPatchFromEvents,
   canUseRemoteRuntimeConnections,
   isLoopbackWebHostname,
+  missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
   readStoredRuntimeConnectionConfig,
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
+import type { AgentSessionState } from "./runtime-store";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -224,5 +227,80 @@ describe("roster activity unread state", () => {
 
     expect(afterOperatorMessage["agent-a"]?.unreadCount).toBeUndefined();
     expect(afterOperatorMessage["agent-a"]?.operatorAt).toBe("2026-01-01T00:00:01.000Z");
+  });
+});
+
+describe("brief projection and hydration", () => {
+  it("uses persisted brief text for roster patches", () => {
+    const patch = agentBriefPatchFromEvents(
+      [
+        {
+          agent_id: "agent-a",
+          event_seq: 23,
+          ts: "2026-07-10T00:00:00Z",
+          type: "brief_created",
+          payload: {
+            brief_id: "brief-123",
+            finalizes_assistant_round_id: "round-123",
+          },
+        },
+      ],
+      {
+        "brief-123": {
+          id: "brief-123",
+          text: "Canonical persisted brief.",
+        },
+      },
+    );
+
+    expect(patch).toEqual(
+      expect.objectContaining({
+        lastBrief: "Canonical persisted brief.",
+      }),
+    );
+  });
+
+  it("hydrates a missing brief even when its associated transcript is loaded", () => {
+    const session: AgentSessionState = {
+      loading: false,
+      loadingOlder: false,
+      liveStatus: "idle",
+      sendingPrompt: false,
+      detail: null,
+      eventsBySeq: {
+        23: {
+          agent_id: "agent-a",
+          event_seq: 23,
+          ts: "2026-07-10T00:00:00Z",
+          type: "brief_created",
+          payload: {
+            brief_id: "brief-123",
+            finalizes_assistant_round_id: "round-123",
+          },
+        },
+      },
+      eventSeqs: [23],
+      messagesById: {},
+      missingMessageIds: {},
+      transcriptEntriesById: {
+        "round-123": {
+          id: "round-123",
+          data: {
+            blocks: [
+              { type: "thinking", text: "Internal reasoning must not be visible." },
+              { type: "text", text: "Transcript final text." },
+            ],
+          },
+        },
+      },
+      missingTranscriptEntryIds: {},
+      briefRecordsById: {},
+      missingBriefIds: {},
+      workItemDetailsById: {},
+      taskDetailsById: {},
+      toolExecutionDetailsById: {},
+    };
+
+    expect(missingBriefIdsForHydration(session)).toEqual(["brief-123"]);
   });
 });
