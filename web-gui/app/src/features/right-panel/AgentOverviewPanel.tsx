@@ -624,6 +624,10 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
         <div>
+          <dt>{t("inspector.taskId")}</dt>
+          <dd><code>{task.id}</code></dd>
+        </div>
+        <div>
           <dt>{t("inspector.kind")}</dt>
           <dd>{task.kind}</dd>
         </div>
