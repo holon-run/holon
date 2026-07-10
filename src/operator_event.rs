@@ -268,6 +268,8 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "work_item_turn_end_commit_skipped"
         | "work_item_delegation_created"
         | "work_item_delegation_completed"
+        | "work_item_completion_report_promoted"
+        | "work_item_completion_report_candidate_promoted"
         | "work_item_stale_reminder_injected"
         | "work_item_stale_reminder_skipped"
         | "missing_current_work_item_before_wait" => OperatorEventCategory::WorkItem,
@@ -486,6 +488,8 @@ fn is_verbose_event(kind: &str, payload: &Value) -> bool {
         | "work_item_turn_end_commit_skipped"
         | "work_item_delegation_created"
         | "work_item_delegation_completed"
+        | "work_item_completion_report_promoted"
+        | "work_item_completion_report_candidate_promoted"
         | "missing_current_work_item_before_wait"
         | "work_item_stale_reminder_injected"
         | "work_item_stale_reminder_skipped"

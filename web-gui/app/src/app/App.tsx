@@ -705,6 +705,7 @@ export function App() {
           skillCatalogError={agentSkillCatalogError}
           workItemDetailsById={selectedAgentSession?.workItemDetailsById ?? {}}
           taskDetailsById={selectedAgentSession?.taskDetailsById ?? {}}
+          toolExecutionDetailsById={selectedAgentSession?.toolExecutionDetailsById ?? {}}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
           open={rightPanelOpen}
           onLoadWorkItemDetail={(workItemId) => loadAgentWorkItemDetail(selectedAgent.id, workItemId)}

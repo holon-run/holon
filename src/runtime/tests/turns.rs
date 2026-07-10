@@ -312,7 +312,7 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
             .read_recent_tool_executions(10)
             .unwrap()
             .len(),
-        0
+        1
     );
 
     let events = runtime.storage().read_recent_events(20).unwrap();

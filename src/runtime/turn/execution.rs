@@ -1405,17 +1405,49 @@ impl TurnExecution<'_> {
                     let audit_error = error.render();
                     let result = crate::tool::ToolResult::error(&tool_name, error.clone());
                     let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
-                    let (turn_index, run_id) = {
+                    let (turn_index, run_id, work_item_id, turn_id) = {
                         let guard = runtime.inner.agent.lock().await;
-                        (guard.state.turn_index, guard.state.current_run_id.clone())
+                        (
+                            guard.state.turn_index,
+                            guard.state.current_run_id.clone(),
+                            guard
+                                .state
+                                .current_turn_work_item_id
+                                .clone()
+                                .or_else(|| guard.state.current_work_item_id.clone()),
+                            guard.state.current_turn_id.clone(),
+                        )
                     };
+                    let failed_id = crate::ids::tool_execution_id();
+                    let now = chrono::Utc::now();
+                    let failed_record = crate::types::ToolExecutionRecord {
+                        id: failed_id.clone(),
+                        agent_id: agent_id.to_string(),
+                        work_item_id: work_item_id.clone(),
+                        turn_index,
+                        turn_id: turn_id.clone(),
+                        tool_name: tool_name.clone(),
+                        created_at: now,
+                        completed_at: Some(now),
+                        duration_ms: 0,
+                        authority_class: authority_class.clone(),
+                        status: crate::types::ToolExecutionStatus::Error,
+                        input: call.input.clone(),
+                        output: serde_json::json!({ "error": audit_error }),
+                        summary: format!("Failed: {tool_name} not exposed for round"),
+                        invocation_surface: None,
+                    };
+                    runtime.persist_tool_execution_evidence(&failed_record)?;
+                    tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
                     runtime.inner.storage.append_event(&AuditEvent::new(
                         "tool_execution_failed",
                         serde_json::json!({
                             "tool_call_id": tool_call_id,
+                            "tool_execution_id": failed_id,
                             "tool_name": tool_name,
                             "turn_index": turn_index,
                             "run_id": run_id,
+                            "work_item_id": work_item_id,
                             "exec_command_cmd": command_preview_field(&call),
                             "exec_command_display": command_display_field(&call),
                             "exec_command_batch_items": command_batch_preview_field(&call),
@@ -1627,13 +1659,46 @@ impl TurnExecution<'_> {
                             let guard = runtime.inner.agent.lock().await;
                             (guard.state.turn_index, guard.state.current_run_id.clone())
                         };
+                        let (work_item_id, turn_id) = {
+                            let guard = runtime.inner.agent.lock().await;
+                            (
+                                guard
+                                    .state
+                                    .current_turn_work_item_id
+                                    .clone()
+                                    .or_else(|| guard.state.current_work_item_id.clone()),
+                                guard.state.current_turn_id.clone(),
+                            )
+                        };
+                        let failed_id = crate::ids::tool_execution_id();
+                        let failed_record = crate::types::ToolExecutionRecord {
+                            id: failed_id.clone(),
+                            agent_id: agent_id.to_string(),
+                            work_item_id: work_item_id.clone(),
+                            turn_index,
+                            turn_id: turn_id.clone(),
+                            tool_name: tool_name.clone(),
+                            created_at: chrono::Utc::now(),
+                            completed_at: Some(chrono::Utc::now()),
+                            duration_ms: tool_exec_started.elapsed().as_millis() as u64,
+                            authority_class: authority_class.clone(),
+                            status: crate::types::ToolExecutionStatus::Error,
+                            input: call.input.clone(),
+                            output: serde_json::json!({ "error": audit_error }),
+                            summary: format!("Failed: {tool_name}"),
+                            invocation_surface: None,
+                        };
+                        runtime.persist_tool_execution_evidence(&failed_record)?;
+                        tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
                         runtime.inner.storage.append_event(&AuditEvent::new(
                             "tool_execution_failed",
                             serde_json::json!({
                                 "tool_call_id": tool_call_id,
+                                "tool_execution_id": failed_id,
                                 "tool_name": tool_name,
                                 "turn_index": turn_index,
                                 "run_id": run_id,
+                                "work_item_id": work_item_id,
                                 "exec_command_cmd": command_preview_field(&call),
                                 "exec_command_display": command_display_field(&call),
                                 "exec_command_batch_items": command_batch_preview_field(&call),

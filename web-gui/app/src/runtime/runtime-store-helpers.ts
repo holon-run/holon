@@ -11,9 +11,10 @@ import type {
   RuntimeTranscriptEntry,
   WorkItemDetailState,
   TaskDetailState,
+  ToolExecutionDetailState,
 } from "./types";
 
-export type { WorkItemDetailState, TaskDetailState };
+export type { WorkItemDetailState, TaskDetailState, ToolExecutionDetailState };
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 
@@ -43,4 +44,5 @@ export interface AgentSessionState {
   modelError?: string;
   workItemDetailsById: Record<string, WorkItemDetailState>;
   taskDetailsById: Record<string, TaskDetailState>;
+  toolExecutionDetailsById: Record<string, ToolExecutionDetailState>;
 }

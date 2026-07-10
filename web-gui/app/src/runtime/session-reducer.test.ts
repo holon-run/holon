@@ -443,7 +443,7 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
-  it("renders work_item_picked objective and reason without internal ids", () => {
+  it("renders work_item_picked as a WorkItem state object plus activity view", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
@@ -463,13 +463,32 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
+    expect(timeline.map((item) => item.id)).toEqual(["work_123", "picked"]);
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "picked",
+        id: "work_123",
         kind: "system",
         label: "Work item",
-        body: "Picked work item · Fix timeline · next priority",
+        body: "Fix timeline",
         minDisplayLevel: "verbose",
+        stateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Fix timeline",
+          state: undefined,
+        },
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "picked",
+        body: "Picked work item · Fix timeline · next priority",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Fix timeline",
+          state: undefined,
+        },
       }),
     );
   });
@@ -494,11 +513,105 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "work-item-updated",
+        id: "work_123",
         kind: "system",
         label: "Work item",
-        body: "Work Item Updated · Improve slim event display · ready",
+        body: "Improve slim event display",
         minDisplayLevel: "verbose",
+      }),
+    );
+  });
+
+  it("merges work item events by nested work_item id", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "nested-written",
+            event_seq: 15,
+            type: "work_item_written",
+            payload: {
+              work_item: {
+                id: "work_nested",
+                objective: "Merge nested work item",
+                plan_status: "draft",
+              },
+            },
+          }),
+          event({
+            id: "nested-picked",
+            event_seq: 16,
+            type: "work_item_picked",
+            payload: {
+              reason: "resume",
+              record: {
+                id: "work_nested",
+                objective: "Merge nested work item",
+                readiness: "runnable",
+              },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "work_nested",
+        body: "Merge nested work item",
+        sourceIds: ["nested-written", "nested-picked"],
+        stateObjectRef: {
+          kind: "work_item",
+          id: "work_nested",
+          objective: "Merge nested work item",
+          state: "runnable",
+        },
+      }),
+    );
+    expect(timeline.slice(1).map((item) => item.id)).toEqual(["nested-picked"]);
+    expect(timeline.slice(1).map((item) => item.relatedStateObjectRef?.id)).toEqual(["work_nested"]);
+  });
+
+  it("merges work item state-update events by work item id without creating activities", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "written",
+            event_seq: 15,
+            type: "work_item_written",
+            payload: {
+              work_item_id: "work_123",
+              objective_preview: "Improve slim event display",
+              plan_status: "draft",
+            },
+          }),
+          event({
+            id: "refs-updated",
+            event_seq: 16,
+            type: "work_item_refs_updated",
+            payload: {
+              work_item_id: "work_123",
+              objective_preview: "Improve slim event display",
+              plan_status: "ready",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "work_123",
+        body: "Improve slim event display",
+        sourceIds: ["written", "refs-updated"],
+        stateObjectRef: {
+          kind: "work_item",
+          id: "work_123",
+          objective: "Improve slim event display",
+          state: "ready",
+        },
       }),
     );
   });
@@ -523,7 +636,19 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
+        body: "Work item",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "focus-released",
         body: "Released work item focus · yielded · runnable",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_456",
+          objective: undefined,
+          state: "runnable",
+        },
       }),
     );
   });
@@ -549,11 +674,11 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "released",
+        id: "work_456",
         kind: "system",
         label: "Work item",
-        body: "Released work item focus · completed · ready",
-        minDisplayLevel: "debug",
+        body: "Work item",
+        minDisplayLevel: "verbose",
       }),
     );
   });
@@ -580,10 +705,22 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "promoted",
+        id: "work_789",
         kind: "system",
         label: "Work item",
+        body: "Work item",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "promoted",
         body: "Promoted completion report · Finished the implementation.",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_789",
+          objective: undefined,
+          state: undefined,
+        },
       }),
     );
   });
@@ -610,10 +747,22 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "candidate-promoted",
+        id: "work_abc",
         kind: "system",
         label: "Work item",
+        body: "Work item",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "candidate-promoted",
         body: "Promoted completion report candidate · Candidate completion text.",
+        relatedStateObjectRef: {
+          kind: "work_item",
+          id: "work_abc",
+          objective: undefined,
+          state: undefined,
+        },
       }),
     );
   });
@@ -649,18 +798,22 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline[0]).toEqual(
+    // Task StateObject renders as a stable card; task_result_received is an
+    // ActivityView that gets flattened back into the timeline by compactAgentTimelineItems.
+    expect(timeline).toHaveLength(2);
+    const taskCard = timeline.find((item) => item.kind === "tool");
+    expect(taskCard).toEqual(
       expect.objectContaining({
-        id: "task-created",
-        kind: "event",
-        label: "Task queued",
+        id: "task:task_123",
+        kind: "tool",
+        label: "Task completed",
         body: "Run command: npm test",
-        minDisplayLevel: "verbose",
+        stateObjectRef: { kind: "task", id: "task:task_123", status: "completed", summary: "Run command: npm test" },
       }),
     );
-    expect(timeline[1]).toEqual(
+    const activity = timeline.find((item) => item.id === "task-result");
+    expect(activity).toEqual(
       expect.objectContaining({
-        id: "task-result",
         kind: "event",
         label: "Task completed",
         body: "Run command: npm test · exit 0 · 42 tests passed",
@@ -693,11 +846,196 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline[0]).toEqual(
+    expect(timeline).toHaveLength(2);
+    const card = timeline.find((item) => item.kind === "tool");
+    expect(card).toEqual(
+      expect.objectContaining({
+        label: "Task failed",
+        body: "Run command: cargo test",
+        minDisplayLevel: "info",
+      }),
+    );
+    const activity = timeline.find((item) => item.id === "task-failed");
+    expect(activity).toEqual(
       expect.objectContaining({
         label: "Task failed",
         body: "Run command: cargo test · exit 101 · tests failed",
         minDisplayLevel: "info",
+      }),
+    );
+  });
+
+  it("merges intermediate task status updates into final lifecycle item", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "t-created",
+            event_seq: 40,
+            type: "task_created",
+            payload: {
+              task_id: "task_abc",
+              status: "queued",
+              summary: "npm run build",
+            },
+          }),
+          event({
+            id: "t-running",
+            event_seq: 41,
+            type: "task_status_updated",
+            payload: {
+              task_id: "task_abc",
+              status: "running",
+              summary: "npm run build",
+            },
+          }),
+          event({
+            id: "t-done",
+            event_seq: 42,
+            type: "task_result_received",
+            payload: {
+              task_id: "task_abc",
+              status: "completed",
+              summary: "npm run build",
+              exit_status: 0,
+            },
+          }),
+        ],
+      },
+    });
+
+    // Task card + 2 flattened activities (running, completed) = 3 items
+    expect(timeline).toHaveLength(3);
+    const card = timeline.find((item) => item.kind === "tool");
+    expect(card).toEqual(
+      expect.objectContaining({
+        id: "task:task_abc",
+        kind: "tool",
+        label: "Task completed",
+        body: "npm run build",
+        stateObjectRef: { kind: "task", id: "task:task_abc", status: "completed", summary: "npm run build" },
+      }),
+    );
+    const runningActivity = timeline.find((item) => item.id === "t-running");
+    expect(runningActivity).toEqual(
+      expect.objectContaining({ label: "Task running", body: "npm run build" }),
+    );
+    const doneActivity = timeline.find((item) => item.id === "t-done");
+    expect(doneActivity).toEqual(
+      expect.objectContaining({ label: "Task completed", body: "npm run build · exit 0" }),
+    );
+  });
+
+  it("adds stateObjectRef to tool execution items", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "exec-1",
+            event_seq: 50,
+            type: "tool_executed",
+            payload: {
+              tool_execution_id: "tool-1",
+              tool_name: "ExecCommand",
+              exec_command_cmd: "npm test",
+              exec_command_exit_status: 0,
+              exec_command_duration_ms: 500,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "tool-1",
+        sourceIds: ["exec-1"],
+        stateObjectRef: { kind: "tool_execution", id: "tool-1", toolName: "ExecCommand", status: "completed" },
+      }),
+    );
+  });
+
+  it("uses payload tool_execution_id as the canonical tool execution identity", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "event-1",
+            event_seq: 51,
+            type: "tool_executed",
+            payload: {
+              tool_execution_id: "tool_558ea102579f604",
+              tool_name: "ExecCommand",
+              exec_command_cmd: "npm test",
+              exec_command_exit_status: 0,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "tool_558ea102579f604",
+        sourceIds: ["event-1"],
+        stateObjectRef: {
+          kind: "tool_execution",
+          id: "tool_558ea102579f604",
+          toolName: "ExecCommand",
+          status: "completed",
+        },
+      }),
+    );
+  });
+
+  it("links promoted tool execution to task via relatedStateObjectRef", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "exec-promoted",
+            event_seq: 60,
+            type: "tool_executed",
+            payload: {
+              tool_execution_id: "tool-promoted",
+              tool_name: "ExecCommand",
+              exec_command_cmd: "cargo build",
+              exec_command_disposition: "promoted_to_task",
+              task_handle: { task_id: "task_xyz" },
+            },
+          }),
+          event({
+            id: "task-created-xyz",
+            event_seq: 61,
+            type: "task_created",
+            payload: {
+              task_id: "task_xyz",
+              status: "queued",
+              summary: "cargo build",
+            },
+          }),
+        ],
+      },
+    });
+
+    // Tool execution with promoted status has relatedStateObjectRef pointing to the task
+    const toolItem = timeline.find((item) => item.id === "tool-promoted");
+    expect(toolItem).toEqual(
+      expect.objectContaining({
+        relatedStateObjectRef: { kind: "task", id: "task:task_xyz", status: "running", summary: undefined },
+        stateObjectRef: { kind: "tool_execution", id: "tool-promoted", toolName: "ExecCommand", status: "promoted" },
+      }),
+    );
+    // Task card exists and has stateObjectRef
+    const taskCard = timeline.find((item) => item.id === "task:task_xyz");
+    expect(taskCard).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Task queued",
+        body: "cargo build",
+        stateObjectRef: { kind: "task", id: "task:task_xyz", status: "queued", summary: "cargo build" },
       }),
     );
   });

@@ -30,6 +30,7 @@ import type {
   AgentTemplateDetailState,
   AgentTimelineActivity,
   AgentTimelineItem,
+  TimelineStateObjectRef,
   DisplayLevel,
   MemorySourceContent,
   RightPanelView,
@@ -57,7 +58,7 @@ import type {
   WorkspaceFileContent,
 } from "./types";
 
-import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState, TaskDetailState } from "./runtime-store-helpers";
+import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState, TaskDetailState, ToolExecutionDetailState } from "./runtime-store-helpers";
 export type { AgentLiveStatus, AgentSessionState };
 
 export interface BootstrapRefreshOptions {
@@ -273,6 +274,7 @@ export interface RuntimeStoreState {
   showAgentOverview: (agentId?: string) => void;
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
+  showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
   showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
@@ -316,6 +318,7 @@ export interface RuntimeStoreState {
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined) => Promise<void>;
+  loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
@@ -385,6 +388,7 @@ const inspectorDetailInFlight = new Set<string>();
 const workItemRefreshInFlight = new Set<string>();
 const workItemDetailInFlight = new Set<string>();
 const taskDetailInFlight = new Set<string>();
+const toolExecutionDetailInFlight = new Set<string>();
 const agentStateRefreshInFlight = new Set<string>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
@@ -882,6 +886,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rightPanelView: { kind: "task_detail", agentId, task },
       };
     }),
+  showToolExecutionDetail: (agentId, toolExecutionId, toolName, relatedStateObjectRef) =>
+    set((state) => {
+      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+      return {
+      rightPanelViewStack: stack,
+      rightPanelOpen: true,
+      rightPanelView: { kind: "tool_execution_detail", agentId, toolExecutionId, toolName, relatedStateObjectRef },
+      };
+    }),
   showFileBrowser: (agentId, workspaceId, initialPath, executionRootId, initialFilePath) =>
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
@@ -896,6 +909,42 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   fetchWorkspaceFileBlob: (workspaceId, path, executionRootId) => runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId),
   workspaceFileUrl: (workspaceId, path, download, executionRootId) => runtimeClient.workspaceFileUrl(workspaceId, path, download, executionRootId),
   inspectActivity: (agentId, activity) => {
+    // Use relatedStateObjectRef as fallback for task/work_item navigation,
+    // since their child activities (status_updated, result_received, etc.)
+    // only carry relatedStateObjectRef without their own stateObjectRef.
+    const ref = activity.stateObjectRef ?? activity.relatedStateObjectRef;
+    if (ref?.kind === "work_item") {
+      const workItem: WorkItemSummary = {
+        id: ref.id,
+        objective: ref.objective ?? activity.body,
+        state: ref.state ?? "unknown",
+      };
+      get().showWorkItemDetail(agentId, workItem);
+      void get().loadAgentWorkItemDetail(agentId, ref.id);
+      return;
+    }
+
+    if (ref?.kind === "task") {
+      const taskId = ref.id.replace(/^task:/, "");
+      const task: TaskSummary = {
+        id: taskId,
+        kind: "task",
+        status: ref.status ?? "unknown",
+        summary: ref.summary ?? activity.body,
+      };
+      get().showTaskDetail(agentId, task);
+      void get().loadAgentTaskDetail(agentId, taskId);
+      return;
+    }
+
+    if (activity.stateObjectRef?.kind === "tool_execution") {
+      get().showToolExecutionDetail(agentId, activity.stateObjectRef.id, activity.stateObjectRef.toolName, activity.relatedStateObjectRef);
+      void get().loadAgentToolExecutionDetail(agentId, activity.stateObjectRef.id, activity);
+      return;
+    }
+
+    // Other stateObjectRef kinds fall through to the
+    // activity inspector, which shows structured detail for the event.
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
       return {
@@ -1828,6 +1877,47 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  loadAgentToolExecutionDetail: async (agentId, toolExecutionId, fallbackActivity) => {
+    if (!agentId || !toolExecutionId) return;
+    const key = `${agentId}:${toolExecutionId}`;
+    const cached = get().sessionsByAgentId[agentId]?.toolExecutionDetailsById[toolExecutionId];
+    if (cached?.toolExecution || cached?.loading || toolExecutionDetailInFlight.has(key)) return;
+    toolExecutionDetailInFlight.add(key);
+    setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: true, error: undefined });
+    try {
+      const toolExecution = await runtimeClient.getToolExecution(agentId, toolExecutionId);
+      setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: false, toolExecution });
+    } catch (error) {
+      // If the tool execution record doesn't exist (e.g. historical events
+      // without tool_execution_id), fall back to the activity inspector
+      // which renders structured detail from the raw event payload.
+      if (fallbackActivity) {
+        set((state) => {
+          const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+          return {
+            rightPanelViewStack: stack,
+            rightPanelView: { kind: "activity_inspector", agentId, activity: fallbackActivity },
+          };
+        });
+        void hydrateInspectorActivityDetail(get, set, agentId, fallbackActivity);
+        return;
+      }
+      setToolExecutionDetailState(set, agentId, toolExecutionId, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      toolExecutionDetailInFlight.delete(key);
+      const selection = get().rightPanelView;
+      if (selection?.kind === "tool_execution_detail" && selection.agentId === agentId && selection.toolExecutionId === toolExecutionId) {
+        const detail = get().sessionsByAgentId[agentId]?.toolExecutionDetailsById[toolExecutionId];
+        if (detail) {
+          set({ rightPanelView: { ...selection, detailState: detail } });
+        }
+      }
+    }
+  },
+
   loadOlderAgentEvents: async (agentId, displayLevel) => {
     if (!agentId) return;
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -2080,6 +2170,7 @@ function emptyAgentSession(): AgentSessionState {
     missingBriefIds: {},
     workItemDetailsById: {},
     taskDetailsById: {},
+    toolExecutionDetailsById: {},
   };
 }
 
@@ -2311,11 +2402,15 @@ function hydrateInspectorActivityDetail(
   inspectorDetailInFlight.add(key);
   setInspectorActivityDetailState(set, agentId, activity.id, { loading: true });
 
-  void Promise.all([
+  // Use allSettled so a 404 on one fetch (e.g. historical tool execution
+  // without a persisted record) doesn't wipe out the other detail.
+  void Promise.allSettled([
     refs.toolExecutionId ? runtimeClient.getToolExecution(agentId, refs.toolExecutionId) : Promise.resolve(undefined),
     refs.taskId ? runtimeClient.getTaskOutput(agentId, refs.taskId) : Promise.resolve(undefined),
   ])
-    .then(([toolExecution, taskOutput]) => {
+    .then(([toolExecResult, taskOutputResult]) => {
+      const toolExecution = toolExecResult.status === "fulfilled" ? toolExecResult.value : undefined;
+      const taskOutput = taskOutputResult.status === "fulfilled" ? taskOutputResult.value : undefined;
       setInspectorActivityDetailState(set, agentId, activity.id, {
         loading: false,
         toolExecution,
@@ -2417,11 +2512,41 @@ function setTaskDetailState(
   });
 }
 
+function setToolExecutionDetailState(
+  set: StoreSet,
+  agentId: string,
+  toolExecutionId: string,
+  detailState: ToolExecutionDetailState,
+): void {
+  set((state) => {
+    const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const previous = session.toolExecutionDetailsById[toolExecutionId] ?? {};
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...session,
+          toolExecutionDetailsById: {
+            ...session.toolExecutionDetailsById,
+            [toolExecutionId]: {
+              ...previous,
+              ...detailState,
+            },
+          },
+        },
+      },
+    };
+  });
+}
+
 function inspectorDetailRefs(activity: AgentTimelineActivity): { toolExecutionId?: string; taskId?: string } {
   const rawEvent = asRecord(activity.rawEvent);
   const payload = asRecord(rawEvent?.payload) ?? asRecord(activity.rawEvent);
   return {
-    toolExecutionId: firstStringField(payload, ["tool_execution_id", "toolExecutionId"]),
+    toolExecutionId:
+      activity.stateObjectRef?.kind === "tool_execution"
+        ? activity.stateObjectRef.id
+        : firstStringField(payload, ["tool_execution_id", "toolExecutionId"]),
     taskId: firstStringField(payload, ["task_id", "taskId"]),
   };
 }
