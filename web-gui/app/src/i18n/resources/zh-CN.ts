@@ -643,6 +643,7 @@ const zh: Record<string, any> = {
     initialOutput: "初始输出",
     error: "错误",
     exit: "退出码",
+    duration: "耗时",
     changedFiles: "变更文件",
     diagnostics: "诊断",
     patchPreview: "补丁预览",

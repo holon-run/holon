@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { AgentSummary, RightPanelView, SkillCatalogState, TaskDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, RightPanelView, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
-import { AgentOverviewPanel, AgentSkillManagerPanel, TaskDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
+import { AgentOverviewPanel, AgentSkillManagerPanel, TaskDetailPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { FileBrowserPanel } from "./FileBrowserPanel";
 import { useTranslation } from "react-i18next";
 
@@ -16,6 +16,7 @@ interface RightSidePanelProps {
   skillCatalogError?: string;
   workItemDetailsById?: Record<string, WorkItemDetailState>;
   taskDetailsById?: Record<string, TaskDetailState>;
+  toolExecutionDetailsById?: Record<string, ToolExecutionDetailState>;
   view?: RightPanelView;
   open: boolean;
   onLoadWorkItemDetail: (workItemId: string) => void;
@@ -42,6 +43,7 @@ export function RightSidePanel({
   skillCatalogError,
   workItemDetailsById = {},
   taskDetailsById = {},
+  toolExecutionDetailsById = {},
   view,
   open,
   onLoadWorkItemDetail,
@@ -115,6 +117,8 @@ export function RightSidePanel({
         ? t("rightPanel.workItemDetail")
         : activeView.kind === "task_detail"
           ? t("rightPanel.taskDetail")
+          : activeView.kind === "tool_execution_detail"
+            ? t("inspector.toolExecution")
           : activeView.kind === "file_browser"
             ? t("rightPanel.fileBrowser")
           : t("panel.agentOverview");
@@ -125,6 +129,9 @@ export function RightSidePanel({
       ?? activeView.workItem
     : undefined;
   const taskDetailState = activeView.kind === "task_detail" ? activeView.detailState ?? taskDetailsById[activeView.task.id] : undefined;
+  const toolExecutionDetailState = activeView.kind === "tool_execution_detail"
+    ? activeView.detailState ?? toolExecutionDetailsById[activeView.toolExecutionId]
+    : undefined;
 
   useEffect(() => {
     setShowSkillManager(false);
@@ -184,6 +191,10 @@ export function RightSidePanel({
         ) : activeView.kind === "task_detail" ? (
           <div className="inspector-stack">
             <TaskDetailPanel task={activeView.task} detailState={taskDetailState} />
+          </div>
+        ) : activeView.kind === "tool_execution_detail" ? (
+          <div className="inspector-stack">
+            <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} />
           </div>
         ) : activeView.kind === "file_browser" ? (
           <FileBrowserPanel key={`${activeView.workspaceId}:${activeView.initialFilePath ?? ""}`} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} onClose={onNavigateBack} />

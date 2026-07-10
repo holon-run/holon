@@ -516,6 +516,12 @@ export interface TaskDetailState {
   output?: RuntimeTaskOutputResult;
 }
 
+export interface ToolExecutionDetailState {
+  loading?: boolean;
+  error?: string;
+  toolExecution?: RuntimeToolExecutionRecord;
+}
+
 export interface WorkspaceFileEntry {
   name: string;
   type: "directory" | "file" | "symlink";
@@ -562,6 +568,13 @@ export type RightPanelView =
       agentId: string;
       task: TaskSummary;
       detailState?: TaskDetailState;
+    }
+  | {
+      kind: "tool_execution_detail";
+      agentId: string;
+      toolExecutionId: string;
+      toolName?: string;
+      detailState?: ToolExecutionDetailState;
     }
   | {
       kind: "file_browser";

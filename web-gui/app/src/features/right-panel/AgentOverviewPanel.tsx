@@ -4,7 +4,8 @@ import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
-import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import { formatToolExecutionDetail } from "../inspector/ActivityInspectorPanel";
+import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -658,6 +659,52 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
         <section className="work-item-detail-section">
           <h3>{t("rightPanel.stderr")}</h3>
           <pre>{stderrText}</pre>
+        </section>
+      ) : null}
+    </article>
+  );
+}
+
+export function ToolExecutionDetailPanel({
+  toolExecutionId,
+  toolName,
+  detailState,
+}: {
+  toolExecutionId: string;
+  toolName?: string;
+  detailState?: ToolExecutionDetailState;
+}) {
+  const { t } = useTranslation();
+  const loading = detailState?.loading && !detailState?.toolExecution;
+  const record = detailState?.toolExecution;
+  const formatted = record ? formatToolExecutionDetail(record) : undefined;
+
+  return (
+    <article className="tool-execution-detail inspector-list-item featured">
+      <div className="inspector-list-head">
+        <strong>{toolName ?? record?.tool_name ?? t("inspector.toolExecution")}</strong>
+        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}
+      </div>
+      {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
+      <dl className="inspector-facts">
+        <div>
+          <dt>{t("inspector.tool")}</dt>
+          <dd>{record?.tool_name ?? toolName ?? "—"}</dd>
+        </div>
+        <div>
+          <dt>{t("common.status")}</dt>
+          <dd>{record?.status ?? "—"}</dd>
+        </div>
+        {record?.duration_ms != null ? (
+          <div>
+            <dt>{t("inspector.duration")}</dt>
+            <dd>{record.duration_ms}ms</dd>
+          </div>
+        ) : null}
+      </dl>
+      {formatted ? (
+        <section className="work-item-detail-section">
+          <pre className={formatted.tone === "output" ? "tool-output" : "tool-data"}>{formatted.text}</pre>
         </section>
       ) : null}
     </article>

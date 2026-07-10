@@ -27,6 +27,7 @@ function makeSession(overrides: Partial<AgentSessionState> = {}): AgentSessionSt
     missingBriefIds: {},
     workItemDetailsById: {},
     taskDetailsById: {},
+    toolExecutionDetailsById: {},
     ...overrides,
   };
 }

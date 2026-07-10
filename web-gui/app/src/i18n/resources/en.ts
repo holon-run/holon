@@ -641,6 +641,7 @@ const en = {
     initialOutput: "Initial output",
     error: "Error",
     exit: "Exit",
+    duration: "Duration",
     changedFiles: "Changed files",
     diagnostics: "Diagnostics",
     patchPreview: "Patch preview",
