@@ -280,6 +280,8 @@ pub struct ProviderIncrementalContinuationDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_side_context_may_be_lost: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incremental_input_items: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_input_items: Option<usize>,
