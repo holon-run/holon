@@ -219,7 +219,8 @@ export function SettingsPage({
   const { languageMode, resolvedLanguageLabel, setLanguageMode } = useI18nSettings();
   const surface = runtimeConfig.surface;
   const [modelDefault, setModelDefault] = useState("");
-  const [modelFallbacks, setModelFallbacks] = useState("");
+  const [modelFallbacks, setModelFallbacks] = useState<string[]>([]);
+  const [fallbackInput, setFallbackInput] = useState("");
   const [visionDefault, setVisionDefault] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
@@ -264,7 +265,7 @@ export function SettingsPage({
   useEffect(() => {
     if (!surface) return;
     setModelDefault(surface.modelDefault);
-    setModelFallbacks(surface.modelFallbacks.join(", "));
+    setModelFallbacks(surface.modelFallbacks ?? []);
     setVisionDefault(surface.visionDefault ?? "");
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
@@ -359,7 +360,7 @@ export function SettingsPage({
     setSaveMessage(undefined);
     const updates = [
       { key: "model.default", value: modelDefault.trim() },
-      { key: "model.fallbacks", value: splitCsv(modelFallbacks) },
+      { key: "model.fallbacks", value: modelFallbacks },
       { key: "runtime.default_tool_output_tokens", value: numberFromInput(defaultToolOutputTokens) },
       { key: "runtime.max_tool_output_tokens", value: numberFromInput(maxToolOutputTokens) },
       { key: "runtime.disable_provider_fallback", value: disableProviderFallback },
@@ -756,7 +757,65 @@ export function SettingsPage({
                   <summary>{t("settings.tabAdvanced")}</summary>
                   <label>
                     <span>{t("settings.fallbackModels")}</span>
-                    <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
+                   <div className="settings-chip-input">
+                     {modelFallbacks.map((model) => (
+                       <span key={model} className="settings-chip">
+                         {model}
+                         <button
+                           type="button"
+                           className="settings-chip-remove"
+                           onClick={() => setModelFallbacks(modelFallbacks.filter((m) => m !== model))}
+                         >
+                           ×
+                         </button>
+                       </span>
+                     ))}
+                     <input
+                       value={fallbackInput}
+                       onChange={(e) => setFallbackInput(e.target.value)}
+                       onKeyDown={(e) => {
+                         if (e.key === "Enter") {
+                           e.preventDefault();
+                           const trimmed = fallbackInput.trim();
+                           if (trimmed && !modelFallbacks.includes(trimmed)) {
+                             setModelFallbacks([...modelFallbacks, trimmed]);
+                           }
+                           setFallbackInput("");
+                         } else if (e.key === "Backspace" && !fallbackInput && modelFallbacks.length > 0) {
+                           setModelFallbacks(modelFallbacks.slice(0, -1));
+                         }
+                       }}
+                       placeholder={modelFallbacks.length === 0 ? "provider/model" : ""}
+                     />
+                     {fallbackInput && (
+                       availableModels
+                         .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.model))
+                         .slice(0, 10)
+                         .length > 0 && (
+                         <div className="settings-chip-suggestions">
+                           {availableModels
+                             .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.model))
+                             .slice(0, 10)
+                             .map((model) => (
+                               <button
+                                 key={model.model}
+                                 type="button"
+                                 className="settings-chip-suggestion"
+                                 onClick={() => {
+                                   if (!modelFallbacks.includes(model.model)) {
+                                     setModelFallbacks([...modelFallbacks, model.model]);
+                                   }
+                                   setFallbackInput("");
+                                 }}
+                               >
+                                 <span className="settings-chip-suggestion-name">{model.displayName}</span>
+                                 <span className="settings-chip-suggestion-model">{model.model}</span>
+                               </button>
+                             ))}
+                         </div>
+                       )
+                     )}
+                   </div>
                   </label>
                   <div className="settings-form-row">
                     <label>
