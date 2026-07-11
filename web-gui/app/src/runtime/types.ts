@@ -243,6 +243,7 @@ export interface RuntimeModelOption {
   available: boolean;
   unavailableReason?: string;
   supportsImageInput: boolean;
+  supportsImageGeneration: boolean;
   supportsReasoningEffort: boolean;
 }
 
@@ -278,6 +279,7 @@ export interface RuntimeConfigSurface {
   modelDefault: string;
   modelFallbacks: string[];
   visionDefault?: string;
+  imageGenerationDefault: string;
   modelCatalog: string[];
   unknownModelFallbackConfigured: boolean;
   runtimeMaxOutputTokens: number;

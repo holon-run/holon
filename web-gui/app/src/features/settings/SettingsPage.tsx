@@ -58,6 +58,10 @@ export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: st
   return [trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }];
 }
 
+export function buildImageGenerationConfigUpdates(imageGenDefault: string): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const trimmed = imageGenDefault.trim();
+  return [trimmed ? { key: "image_generation.default", value: trimmed } : { key: "image_generation.default", unset: true }];
+}
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
   "transport" | "baseUrl" | "oauthSupported" | "apiKeySupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
@@ -221,6 +225,7 @@ export function SettingsPage({
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState("");
   const [visionDefault, setVisionDefault] = useState("");
+  const [imageGenDefault, setImageGenDefault] = useState("");
   const [runtimeMaxOutputTokens, setRuntimeMaxOutputTokens] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
@@ -240,6 +245,7 @@ export function SettingsPage({
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
   const [searchProviderSaveMessage, setSearchProviderSaveMessage] = useState<string | undefined>();
   const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
+  const [imageGenSaveMessage, setImageGenSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
   const [activeTab, setActiveTab] = useState<SettingsTabKey>("models");
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
@@ -249,6 +255,7 @@ export function SettingsPage({
   const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
+  const imageGenModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageGeneration), [modelCatalog.options]);
   const providersWithModels = useMemo(
     () => new Set(modelCatalog.options.map((m) => m.provider)),
     [modelCatalog.options],
@@ -267,6 +274,7 @@ export function SettingsPage({
     setModelDefault(surface.modelDefault);
     setModelFallbacks(surface.modelFallbacks.join(", "));
     setVisionDefault(surface.visionDefault ?? "");
+    setImageGenDefault(surface.imageGenerationDefault ?? "");
     setRuntimeMaxOutputTokens(String(surface.runtimeMaxOutputTokens));
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
@@ -356,6 +364,7 @@ export function SettingsPage({
   const searchProviderCount = surface?.webSearchProviders.length ?? 0;
   const configuredSearchProviderCount = surface?.webSearchProviders.filter((provider) => provider.credentialConfigured).length ?? 0;
   const visionProviderReady = visionDefault ? surface?.providers.find((provider) => provider.id === visionDefault.split("/")[0])?.credentialConfigured : undefined;
+  const imageGenProviderReady = imageGenDefault ? surface?.providers.find((provider) => provider.id === imageGenDefault.split("/")[0])?.credentialConfigured : undefined;
 
   async function saveRuntimeConfig() {
     setSaveMessage(undefined);
@@ -491,6 +500,20 @@ export function SettingsPage({
         : result.changed
           ? "Saved Vision default to config.json. Changes applied via hot-reload."
           : "No Vision config changes were persisted.",
+    );
+  }
+
+  async function saveImageGenConfig() {
+    setImageGenSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig(buildImageGenerationConfigUpdates(imageGenDefault));
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setImageGenSaveMessage(
+      rejected.length
+        ? `${rejected.length} image generation setting${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? "Saved image generation default to config.json. Changes applied via hot-reload."
+          : "No image generation config changes were persisted.",
     );
   }
 
@@ -862,6 +885,56 @@ export function SettingsPage({
                     <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
                   )}
                   {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
+                </div>
+              </form>
+            )}
+          </Card>
+
+          {/* ── Image generation defaults ── */}
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "vision"}>
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">{t("settings.tabVision")}</span>
+                <h2>{t("settings.imageGeneration")}</h2>
+              </div>
+            </div>
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>{t("settings.imageGenConfigUnavailable")}</strong>
+                <span>{t("settings.connectLiveVision")}</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveImageGenConfig();
+                }}
+              >
+                <label>
+                  <span>{t("settings.imageGenDefaultModel")}</span>
+                  <input list="image-gen-models" value={imageGenDefault} onChange={(event) => setImageGenDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                  <datalist id="image-gen-models">
+                    {imageGenModels.map((model) => (
+                      <option key={model.model} value={model.model}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                  </datalist>
+                </label>
+                <p className="settings-hint">
+                  {t("settings.imageGenAutoDiscoverHint")}
+                </p>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveImageGen")}
+                  </Button>
+                  {imageGenDefault ? (
+                    <StatusChip className={`settings-status ${imageGenProviderReady ? "available" : "unavailable"}`} tone={imageGenProviderReady ? "success" : "error"} iconOnly title={imageGenProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")} />
+                  ) : (
+                    <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
+                  )}
+                  {imageGenSaveMessage ? <span>{imageGenSaveMessage}</span> : null}
                 </div>
               </form>
             )}

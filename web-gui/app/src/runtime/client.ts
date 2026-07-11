@@ -375,6 +375,7 @@ interface RuntimeAvailableModelDto {
   display_name?: string;
   capabilities?: {
     image_input?: boolean;
+    image_generation?: boolean;
     reasoning_summaries?: boolean;
     supports_reasoning?: boolean;
   };
@@ -382,6 +383,7 @@ interface RuntimeAvailableModelDto {
     supported_parameters?: string[];
     capabilities?: {
       image_input?: boolean;
+      image_generation?: boolean;
       reasoning_summaries?: boolean;
       supports_reasoning?: boolean;
     };
@@ -399,6 +401,7 @@ interface ModelAvailabilityDto {
     supported_parameters?: string[];
     capabilities?: {
       image_input?: boolean;
+      image_generation?: boolean;
       reasoning_summaries?: boolean;
       supports_reasoning?: boolean;
     };
@@ -428,6 +431,7 @@ interface RuntimeConfigSurfaceDto {
   model_default?: string;
   model_fallbacks?: string[];
   vision_default?: string | null;
+  image_generation_default?: string;
   model_catalog?: string[];
   unknown_model_fallback_configured?: boolean;
   runtime_max_output_tokens?: number;
@@ -1717,6 +1721,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
     modelDefault: surface.model_default ?? "",
     modelFallbacks: surface.model_fallbacks ?? [],
     visionDefault: surface.vision_default ?? undefined,
+    imageGenerationDefault: surface.image_generation_default ?? "auto",
     modelCatalog: surface.model_catalog ?? [],
     unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,
     runtimeMaxOutputTokens: surface.runtime_max_output_tokens ?? 0,
@@ -1968,6 +1973,7 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
         available: entry.available ?? false,
         unavailableReason: entry.unavailable_reason,
         supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
+        supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? false,
         supportsReasoningEffort: supportsReasoningEffort(entry),
       }))
       .sort(compareModelOptions);
@@ -1983,6 +1989,7 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
         displayName: typeof entry === "string" ? model : (entry.display_name ?? model),
         available: true,
         supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),
+        supportsImageGeneration: typeof entry === "string" ? false : (entry.capabilities?.image_generation ?? false),
         supportsReasoningEffort: typeof entry === "string" ? false : supportsReasoningEffort(entry),
       };
     })
