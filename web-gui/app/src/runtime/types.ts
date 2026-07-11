@@ -264,6 +264,7 @@ export interface RuntimeProviderSummary {
   transport: string;
   baseUrl: string;
   oauthSupported: boolean;
+  apiKeySupported: boolean;
   credentialSource: string;
   credentialKind: string;
   credentialEnv?: string;

@@ -443,6 +443,7 @@ interface RuntimeProviderSummaryDto {
   id?: string;
   transport?: string;
   oauth_supported?: boolean;
+  api_key_supported?: boolean;
   base_url?: string;
   credential_source?: string;
   credential_kind?: string;
@@ -1727,6 +1728,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       transport: provider.transport ?? "unknown",
       baseUrl: provider.base_url ?? "",
       oauthSupported: provider.oauth_supported ?? false,
+      apiKeySupported: provider.api_key_supported ?? true,
       credentialSource: provider.credential_source ?? "unknown",
       credentialKind: provider.credential_kind ?? "unknown",
       credentialEnv: provider.credential_env,
