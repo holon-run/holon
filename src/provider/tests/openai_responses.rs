@@ -30,6 +30,22 @@ fn openai_tool_call_response(response_id: &str) -> Value {
     })
 }
 
+fn openai_non_object_tool_call_response(response_id: &str) -> Value {
+    json!({
+        "id": response_id,
+        "status": "completed",
+        "usage": { "input_tokens": 256, "output_tokens": 2 },
+        "output": [{
+            "type": "function_call",
+            "id": "fc_non_persisted",
+            "status": "completed",
+            "call_id": "invented-1",
+            "name": "x_semantic_search",
+            "arguments": "[\"holon\"]"
+        }]
+    })
+}
+
 fn openai_text_response(response_id: &str, text: &str) -> Value {
     openai_text_response_with_input_tokens(response_id, text, 2)
 }
@@ -318,6 +334,80 @@ async fn openai_responses_uses_incremental_continuation_for_strict_append() {
     assert_eq!(bodies[1]["instructions"], json!("rendered system"));
     assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 1);
     assert_eq!(bodies[1]["input"][0]["type"], json!("function_call_output"));
+}
+
+#[tokio::test]
+async fn openai_responses_normalizes_non_object_tool_arguments_before_continuation() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Json(openai_non_object_tool_call_response("resp_1"))
+                } else {
+                    Json(openai_text_response("resp_2", "done"))
+                }
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let first = provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    assert_eq!(first.blocks.len(), 1);
+    match &first.blocks[0] {
+        ModelBlock::ToolUse { id, name, input } => {
+            assert_eq!(id, "invented-1");
+            assert_eq!(name, "x_semantic_search");
+            assert_eq!(input, &json!({ "_raw": ["holon"] }));
+        }
+        block => panic!("expected tool use, got {block:?}"),
+    }
+
+    let mut continuation = provider_turn_request_with_prompt_frame();
+    continuation.conversation.extend([
+        ConversationMessage::AssistantBlocks(first.blocks),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "invented-1".into(),
+            content: "Failed: x_semantic_search not exposed for round".into(),
+            is_error: true,
+            error: None,
+        }]),
+    ]);
+    let response = provider.complete_turn(continuation).await.unwrap();
+
+    assert_eq!(
+        response
+            .request_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.request_lowering_mode.as_str()),
+        Some("provider_window_replay")
+    );
+    let bodies = captured_bodies.lock().unwrap();
+    assert!(bodies[1].get("previous_response_id").is_none());
+    let replay = bodies[1]["input"].as_array().unwrap();
+    assert_eq!(replay.len(), 3);
+    assert_eq!(replay[1]["type"], json!("function_call"));
+    assert_eq!(replay[1]["arguments"], json!("{\"_raw\":[\"holon\"]}"));
+    assert_eq!(replay[2]["type"], json!("function_call_output"));
 }
 
 #[tokio::test]

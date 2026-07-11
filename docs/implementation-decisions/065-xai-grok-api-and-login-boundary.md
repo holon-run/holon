@@ -18,6 +18,17 @@ contract; full requests retain them.
 The OAuth profile is explicit provider credential material with refresh
 lifecycle managed by Holon. Browser cookies, private consumer session files,
 and implicit subscription-state reuse remain outside the HTTP provider path.
+Holon-managed web search remains the PascalCase `WebSearch` function tool.
+Names such as `x_search`, `x_semantic_search`, and `x_keyword_search` are not
+client-callable Holon tools. `x_search` is only valid as the xAI server-side
+tool type above; invented client function names remain subject to the current
+round's tool allowlist.
+
+X/xAI account login reuse is left out of the HTTP provider path. If Holon later
+supports X-account-backed Grok sessions, it should integrate through an
+official Grok Build surface such as the Grok CLI / ACP process boundary, not by
+reusing browser cookies, private session files, or consumer subscription state
+as an xAI API key.
 
 ## Reason
 

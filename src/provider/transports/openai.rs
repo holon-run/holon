@@ -249,6 +249,7 @@ pub(crate) struct ParsedOpenAiResponse {
     pub(crate) response: ProviderTurnResponse,
     pub(crate) response_id: Option<String>,
     pub(crate) output_items: Vec<Value>,
+    supports_id_continuation: bool,
 }
 
 impl OpenAiProvider {
@@ -2697,6 +2698,7 @@ fn update_openai_continuation(
     let next = match (parsed.response_id.as_ref(), parsed.output_items.is_empty()) {
         (Some(response_id), false) => {
             state.next_generation = state.next_generation.saturating_add(1);
+            let response_id = parsed.supports_id_continuation.then(|| response_id.clone());
             let mut items = provider_input
                 .into_iter()
                 .map(|item| canonicalize_openai_provider_item(&item))
@@ -2710,7 +2712,7 @@ fn update_openai_continuation(
             let mut append_match_items = append_match_input;
             append_match_items.extend(openai_append_match_output_items(&parsed.output_items));
             Some(OpenAiProviderWindow {
-                response_id: Some(response_id.clone()),
+                response_id,
                 request_shape,
                 latest_compaction_index: latest_openai_compaction_index(&items),
                 items,
@@ -2726,6 +2728,23 @@ fn update_openai_continuation(
     } else {
         state.windows.remove(&scope);
     }
+}
+
+fn openai_output_supports_id_continuation(output_items: &[Value]) -> bool {
+    output_items.iter().all(|item| {
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            return true;
+        }
+        match item.get("arguments") {
+            Some(Value::Object(_)) => true,
+            Some(Value::String(arguments)) => {
+                arguments.trim().is_empty()
+                    || serde_json::from_str::<Value>(arguments)
+                        .is_ok_and(|arguments| arguments.is_object())
+            }
+            _ => false,
+        }
+    })
 }
 
 fn openai_append_match_output_items(output_items: &[Value]) -> Vec<Value> {
@@ -3552,14 +3571,11 @@ fn canonicalize_openai_provider_item(item: &Value) -> Value {
         object.remove("status");
     }
     if object.get("type").and_then(Value::as_str) == Some("function_call") {
-        if let Some(arguments) = object.get("arguments").and_then(Value::as_str) {
-            if let Ok(parsed_arguments) = serde_json::from_str::<Value>(arguments) {
-                object.insert(
-                    "arguments".into(),
-                    Value::String(canonical_json(&parsed_arguments)),
-                );
-            }
-        }
+        let arguments = normalize_openai_function_arguments(object.get("arguments"));
+        object.insert(
+            "arguments".into(),
+            Value::String(canonical_json(&arguments)),
+        );
     }
     item
 }
@@ -3655,12 +3671,9 @@ fn canonicalize_openai_append_match_content_item(role: &str, item: &Value) -> Va
 fn canonicalize_openai_append_match_function_call(
     object: &serde_json::Map<String, Value>,
 ) -> Value {
-    let arguments = object
-        .get("arguments")
-        .and_then(Value::as_str)
-        .map(canonicalize_openai_arguments_string)
-        .map(Value::String)
-        .unwrap_or_else(|| object.get("arguments").cloned().unwrap_or(Value::Null));
+    let arguments = Value::String(canonical_json(&normalize_openai_function_arguments(
+        object.get("arguments"),
+    )));
     json!({
         "type": "function_call",
         "call_id": object.get("call_id").cloned().unwrap_or(Value::Null),
@@ -3680,10 +3693,19 @@ fn canonicalize_openai_append_match_custom_tool_call(
     })
 }
 
-fn canonicalize_openai_arguments_string(arguments: &str) -> String {
-    serde_json::from_str::<Value>(arguments)
-        .map(|parsed| canonical_json(&parsed))
-        .unwrap_or_else(|_| arguments.to_string())
+fn normalize_openai_function_arguments(arguments: Option<&Value>) -> Value {
+    let parsed = match arguments {
+        Some(Value::String(arguments)) if arguments.trim().is_empty() => return json!({}),
+        Some(Value::String(arguments)) => {
+            serde_json::from_str(arguments).unwrap_or_else(|_| Value::String(arguments.clone()))
+        }
+        Some(arguments) => arguments.clone(),
+        None => return json!({}),
+    };
+    match parsed {
+        Value::Object(_) => parsed,
+        raw => json!({ "_raw": raw }),
+    }
 }
 
 fn openai_without_provider_item_id(item: &Value) -> Value {
@@ -3800,7 +3822,9 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                                     "type": "function_call",
                                     "call_id": id,
                                     "name": name,
-                                    "arguments": canonical_json(input),
+                                    "arguments": canonical_json(
+                                        &normalize_openai_function_arguments(Some(input))
+                                    ),
                                 }));
                             }
                         }
@@ -4231,6 +4255,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
         },
         response_id,
         output_items,
+        supports_id_continuation: true,
     })
 }
 
@@ -5423,6 +5448,7 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
                 "missing output array",
             )
         })?;
+    let supports_id_continuation = openai_output_supports_id_continuation(output);
     let output_items = output
         .iter()
         .map(canonicalize_openai_provider_item)
@@ -5465,15 +5491,7 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
                         "missing name",
                     )
                 })?;
-                let input = match item.get("arguments") {
-                    Some(Value::String(arguments)) if !arguments.trim().is_empty() => {
-                        serde_json::from_str(arguments).map_err(|error| {
-                            invalid_response_error("invalid function_call arguments", error)
-                        })?
-                    }
-                    Some(Value::Object(arguments)) => Value::Object(arguments.clone()),
-                    _ => json!({}),
-                };
+                let input = normalize_openai_function_arguments(item.get("arguments"));
                 blocks.push(ModelBlock::ToolUse {
                     id: id.to_string(),
                     name: name.to_string(),
@@ -5572,6 +5590,7 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
         },
         response_id,
         output_items,
+        supports_id_continuation,
     })
 }
 
