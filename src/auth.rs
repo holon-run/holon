@@ -14,6 +14,194 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthDeviceProtocol {
+    Codex,
+    Standard,
+}
+
+pub fn load_oauth_profile_credential(material: &str, profile: &str) -> Result<OAuthCredential> {
+    let auth: AuthDotJson = serde_json::from_str(material)
+        .with_context(|| format!("failed to parse Holon credential profile {profile}"))?;
+    let tokens = auth
+        .tokens
+        .ok_or_else(|| anyhow!("OAuth credential profile {profile} did not contain tokens"))?;
+    let expires_at = parse_jwt_expiration(&tokens.access_token)
+        .ok()
+        .flatten()
+        .or_else(|| auth.last_refresh.map(|ts| ts + chrono::Duration::hours(6)));
+    Ok(OAuthCredential {
+        access_token: tokens.access_token,
+        expires_at,
+    })
+}
+
+pub async fn refresh_oauth_profile_material(
+    client: &reqwest::Client,
+    config: &OAuthProviderConfig,
+    material: &str,
+    profile: &str,
+) -> std::result::Result<RefreshedOAuthProfile, CodexOAuthRefreshFailure> {
+    if config.device_protocol == OAuthDeviceProtocol::Codex {
+        let refreshed = refresh_codex_oauth_profile_material(client, material, profile).await?;
+        return Ok(RefreshedOAuthProfile {
+            material: refreshed.material,
+            credential: OAuthCredential {
+                access_token: refreshed.credential.access_token,
+                expires_at: refreshed.credential.expires_at,
+            },
+        });
+    }
+    let mut auth: AuthDotJson =
+        serde_json::from_str(material).map_err(|error| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            message: format!("failed to parse Holon credential profile {profile}: {error}"),
+        })?;
+    let refresh_token = auth
+        .tokens
+        .as_ref()
+        .map(|tokens| tokens.refresh_token.clone())
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            message: format!("Holon credential profile {profile} does not contain a refresh token"),
+        })?;
+    let discovery =
+        discover_oauth_endpoints(config)
+            .await
+            .map_err(|error| CodexOAuthRefreshFailure {
+                kind: CodexOAuthRefreshFailureKind::Other,
+                message: error.to_string(),
+            })?;
+    let response = oauth_http_client()
+        .map_err(|error| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            message: error.to_string(),
+        })?
+        .post(discovery.token_endpoint)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+            ("client_id", config.client_id),
+        ])
+        .send()
+        .await
+        .map_err(|error| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            message: format!(
+                "failed to refresh {} OAuth token: {error}",
+                config.provider_id
+            ),
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(CodexOAuthRefreshFailure {
+            kind: classify_refresh_failure_kind(&body),
+            message: format!(
+                "{} OAuth refresh failed with HTTP {status}: {}",
+                config.provider_id,
+                try_parse_refresh_error_message(&body).unwrap_or(body)
+            ),
+        });
+    }
+    let refreshed = response
+        .json::<StandardTokenResponse>()
+        .await
+        .map_err(|error| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            message: format!(
+                "failed to parse {} OAuth refresh response: {error}",
+                config.provider_id
+            ),
+        })?;
+    apply_standard_token_response(&mut auth, refreshed);
+    let material = serde_json::to_string(&auth).map_err(|error| CodexOAuthRefreshFailure {
+        kind: CodexOAuthRefreshFailureKind::Other,
+        message: format!(
+            "failed to serialize refreshed Holon credential profile {profile}: {error}"
+        ),
+    })?;
+    let credential = load_oauth_profile_credential(&material, profile).map_err(|error| {
+        CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            message: error.to_string(),
+        }
+    })?;
+    Ok(RefreshedOAuthProfile {
+        material,
+        credential,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct RefreshedOAuthProfile {
+    pub material: String,
+    pub credential: OAuthCredential,
+}
+
+#[derive(Debug, Clone)]
+pub struct OAuthCredential {
+    pub access_token: String,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OAuthProviderConfig {
+    pub provider_id: &'static str,
+    pub issuer: &'static str,
+    pub client_id: &'static str,
+    pub scopes: &'static [&'static str],
+    pub profile_name: &'static str,
+    pub device_protocol: OAuthDeviceProtocol,
+}
+
+impl OAuthProviderConfig {
+    pub fn codex() -> Self {
+        Self {
+            provider_id: "openai-codex",
+            issuer: CODEX_OAUTH_ISSUER,
+            client_id: CODEX_OAUTH_CLIENT_ID,
+            scopes: &[
+                "openid",
+                "profile",
+                "email",
+                "offline_access",
+                "api.connectors.read",
+                "api.connectors.invoke",
+            ],
+            profile_name: "openai-codex",
+            device_protocol: OAuthDeviceProtocol::Codex,
+        }
+    }
+
+    pub fn xai() -> Self {
+        Self {
+            provider_id: "xai",
+            issuer: "https://auth.x.ai",
+            client_id: "b1a00492-073a-47ea-816f-4c329264a828",
+            scopes: &[
+                "openid",
+                "profile",
+                "email",
+                "offline_access",
+                "grok-cli:access",
+                "api:access",
+            ],
+            profile_name: "xai",
+            device_protocol: OAuthDeviceProtocol::Standard,
+        }
+    }
+}
+
+pub fn oauth_provider_config(provider_id: &str) -> Option<OAuthProviderConfig> {
+    match provider_id {
+        "openai-codex" | "codex" => Some(OAuthProviderConfig::codex()),
+        "xai" => Some(OAuthProviderConfig::xai()),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexCliCredential {
     pub access_token: String,
@@ -55,12 +243,15 @@ pub struct CodexOAuthLoginResult {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexDeviceCode {
+    pub provider_id: String,
     pub verification_url: String,
     pub user_code: String,
     pub interval: u64,
     pub expires_at: DateTime<Utc>,
     #[serde(skip)]
-    device_auth_id: String,
+    secret: String,
+    #[serde(skip)]
+    token_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,7 +399,31 @@ pub fn run_codex_oauth_login_profile_material() -> Result<CodexOAuthLoginResult>
     run_codex_oauth_login_profile_material_with_browser(true)
 }
 
+pub fn run_oauth_device_login_profile_material(
+    config: OAuthProviderConfig,
+) -> Result<CodexOAuthLoginResult> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to create OAuth device login runtime")?;
+    runtime.block_on(async move {
+        let device_code = request_oauth_device_code(&config).await?;
+        eprintln!(
+            "Open {} and enter code {} to authorize {}.",
+            device_code.verification_url, device_code.user_code, config.provider_id
+        );
+        complete_oauth_device_login(&config, device_code).await
+    })
+}
+
 pub async fn request_codex_device_code() -> Result<CodexDeviceCode> {
+    request_oauth_device_code(&OAuthProviderConfig::codex()).await
+}
+
+pub async fn request_oauth_device_code(config: &OAuthProviderConfig) -> Result<CodexDeviceCode> {
+    if config.device_protocol == OAuthDeviceProtocol::Standard {
+        return request_standard_oauth_device_code(config).await;
+    }
     let issuer = std::env::var(CODEX_OAUTH_ISSUER_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| CODEX_OAUTH_ISSUER.to_string());
     let base_url = issuer.trim_end_matches('/');
@@ -238,17 +453,36 @@ pub async fn request_codex_device_code() -> Result<CodexDeviceCode> {
         .unwrap_or(CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS)
         .clamp(1, CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS);
     Ok(CodexDeviceCode {
+        provider_id: config.provider_id.to_string(),
         verification_url: format!("{base_url}/codex/device"),
         user_code: body.user_code,
         interval: body.interval,
         expires_at: Utc::now() + chrono::Duration::seconds(expires_in),
-        device_auth_id: body.device_auth_id,
+        secret: body.device_auth_id,
+        token_endpoint: None,
     })
 }
 
 pub async fn complete_codex_device_login(
     device_code: CodexDeviceCode,
 ) -> Result<CodexOAuthLoginResult> {
+    complete_oauth_device_login(&OAuthProviderConfig::codex(), device_code).await
+}
+
+pub async fn complete_oauth_device_login(
+    config: &OAuthProviderConfig,
+    device_code: CodexDeviceCode,
+) -> Result<CodexOAuthLoginResult> {
+    if device_code.provider_id != config.provider_id {
+        anyhow::bail!(
+            "OAuth device code belongs to provider {}, not {}",
+            device_code.provider_id,
+            config.provider_id
+        );
+    }
+    if config.device_protocol == OAuthDeviceProtocol::Standard {
+        return complete_standard_oauth_device_login(config, &device_code).await;
+    }
     let issuer = std::env::var(CODEX_OAUTH_ISSUER_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| CODEX_OAUTH_ISSUER.to_string());
     let base_url = issuer.trim_end_matches('/');
@@ -262,6 +496,249 @@ pub async fn complete_codex_device_login(
     )
     .await?;
     codex_oauth_tokens_to_login_result(tokens)
+}
+
+#[derive(Debug, Deserialize)]
+struct OidcDiscoveryDocument {
+    token_endpoint: String,
+    #[serde(default)]
+    device_authorization_endpoint: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandardDeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    #[serde(alias = "verification_url")]
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    expires_in: i64,
+    #[serde(default, deserialize_with = "deserialize_device_interval")]
+    interval: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandardTokenResponse {
+    access_token: String,
+    refresh_token: String,
+    #[serde(default)]
+    id_token: Option<String>,
+}
+
+fn apply_standard_token_response(auth: &mut AuthDotJson, refreshed: StandardTokenResponse) {
+    let tokens = auth.tokens.get_or_insert_with(|| TokenData {
+        access_token: String::new(),
+        refresh_token: String::new(),
+        account_id: None,
+        id_token: None,
+    });
+    tokens.access_token = refreshed.access_token;
+    tokens.refresh_token = refreshed.refresh_token;
+    if let Some(id_token) = refreshed.id_token {
+        tokens.id_token = Some(Value::String(id_token));
+    }
+    auth.last_refresh = Some(Utc::now());
+}
+
+fn oauth_http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("failed to build OAuth HTTP client")
+}
+
+async fn discover_oauth_endpoints(config: &OAuthProviderConfig) -> Result<OidcDiscoveryDocument> {
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        config.issuer.trim_end_matches('/')
+    );
+    validate_oauth_endpoint(config, &discovery_url)?;
+    let response = oauth_http_client()?
+        .get(&discovery_url)
+        .send()
+        .await
+        .with_context(|| format!("failed to discover {} OAuth endpoints", config.provider_id))?
+        .error_for_status()
+        .with_context(|| format!("{} OAuth discovery failed", config.provider_id))?;
+    let document = response
+        .json::<OidcDiscoveryDocument>()
+        .await
+        .with_context(|| format!("failed to parse {} OIDC discovery", config.provider_id))?;
+    validate_oauth_endpoint(config, &document.token_endpoint)?;
+    if let Some(endpoint) = document.device_authorization_endpoint.as_deref() {
+        validate_oauth_endpoint(config, endpoint)?;
+    }
+    Ok(document)
+}
+
+fn validate_oauth_endpoint(config: &OAuthProviderConfig, endpoint: &str) -> Result<()> {
+    let url = url::Url::parse(endpoint)
+        .with_context(|| format!("invalid {} OAuth endpoint", config.provider_id))?;
+    if url.scheme() != "https" {
+        anyhow::bail!("{} OAuth endpoint must use HTTPS", config.provider_id);
+    }
+    let issuer = url::Url::parse(config.issuer)
+        .with_context(|| format!("invalid {} OAuth issuer", config.provider_id))?;
+    let issuer_host = issuer
+        .host_str()
+        .context("OAuth issuer must include a host")?;
+    let endpoint_host = url
+        .host_str()
+        .context("OAuth endpoint must include a host")?;
+    if endpoint_host != issuer_host
+        && !endpoint_host
+            .strip_suffix(issuer_host)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+    {
+        anyhow::bail!(
+            "{} OAuth endpoint host {} is outside {}",
+            config.provider_id,
+            endpoint_host,
+            issuer_host
+        );
+    }
+    Ok(())
+}
+
+async fn request_standard_oauth_device_code(
+    config: &OAuthProviderConfig,
+) -> Result<CodexDeviceCode> {
+    let discovery = discover_oauth_endpoints(config).await?;
+    let endpoint = discovery
+        .device_authorization_endpoint
+        .unwrap_or_else(|| format!("{}/oauth2/device/code", config.issuer.trim_end_matches('/')));
+    validate_oauth_endpoint(config, &endpoint)?;
+    let response = oauth_http_client()?
+        .post(endpoint)
+        .form(&[
+            ("client_id", config.client_id),
+            ("scope", &config.scopes.join(" ")),
+        ])
+        .send()
+        .await
+        .with_context(|| format!("failed to request {} device code", config.provider_id))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "{} device code request failed with HTTP {status}: {}",
+            config.provider_id,
+            try_parse_refresh_error_message(&body).unwrap_or(body)
+        );
+    }
+    let body = response
+        .json::<StandardDeviceCodeResponse>()
+        .await
+        .with_context(|| format!("failed to parse {} device code", config.provider_id))?;
+    Ok(CodexDeviceCode {
+        provider_id: config.provider_id.to_string(),
+        verification_url: body
+            .verification_uri_complete
+            .unwrap_or(body.verification_uri),
+        user_code: body.user_code,
+        interval: body.interval.max(1),
+        expires_at: Utc::now() + chrono::Duration::seconds(body.expires_in.max(1)),
+        secret: body.device_code,
+        token_endpoint: Some(discovery.token_endpoint),
+    })
+}
+
+async fn complete_standard_oauth_device_login(
+    config: &OAuthProviderConfig,
+    device_code: &CodexDeviceCode,
+) -> Result<CodexOAuthLoginResult> {
+    let endpoint = device_code
+        .token_endpoint
+        .as_deref()
+        .context("OAuth device code did not retain its token endpoint")?;
+    validate_oauth_endpoint(config, endpoint)?;
+    let deadline = device_code.expires_at;
+    let mut interval = device_code.interval.max(1);
+    let client = oauth_http_client()?;
+    loop {
+        let response = client
+            .post(endpoint)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", device_code.secret.as_str()),
+                ("client_id", config.client_id),
+            ])
+            .send()
+            .await
+            .with_context(|| format!("failed to poll {} device login", config.provider_id))?;
+        let status = response.status();
+        if status.is_success() {
+            let tokens = response
+                .json::<StandardTokenResponse>()
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to parse {} OAuth token response",
+                        config.provider_id
+                    )
+                })?;
+            return oauth_tokens_to_login_result(
+                config,
+                tokens.access_token,
+                tokens.refresh_token,
+                tokens.id_token,
+            );
+        }
+        let body = response.text().await.unwrap_or_default();
+        match classify_device_poll_status(status, &body) {
+            DevicePollStatus::Pending => {}
+            DevicePollStatus::SlowDown => interval = interval.saturating_add(5),
+            DevicePollStatus::Expired => {
+                anyhow::bail!(
+                    "{} device login expired before authorization",
+                    config.provider_id
+                )
+            }
+            DevicePollStatus::AccessDenied => {
+                anyhow::bail!("{} device login was denied by the user", config.provider_id)
+            }
+            DevicePollStatus::Failed(message) => anyhow::bail!(
+                "{} device login failed with HTTP {status}: {message}",
+                config.provider_id
+            ),
+        }
+        if Utc::now() >= deadline {
+            anyhow::bail!("{} device login expired", config.provider_id);
+        }
+        tokio::time::sleep(Duration::from_secs(interval)).await;
+    }
+}
+
+fn oauth_tokens_to_login_result(
+    config: &OAuthProviderConfig,
+    access_token: String,
+    refresh_token: String,
+    id_token: Option<String>,
+) -> Result<CodexOAuthLoginResult> {
+    let account_id = extract_account_id_from_access_token(&access_token).or_else(|| {
+        id_token
+            .as_ref()
+            .and_then(|token| extract_account_id_from_id_token(&Value::String(token.clone())))
+    });
+    let auth = AuthDotJson {
+        tokens: Some(TokenData {
+            access_token,
+            refresh_token,
+            account_id: account_id.clone(),
+            id_token: id_token.map(Value::String),
+        }),
+        last_refresh: Some(Utc::now()),
+    };
+    Ok(CodexOAuthLoginResult {
+        material: serde_json::to_string(&auth).with_context(|| {
+            format!(
+                "failed to serialize {} OAuth credential",
+                config.provider_id
+            )
+        })?,
+        account_id,
+    })
 }
 
 fn run_codex_oauth_login_profile_material_with_browser(
@@ -491,7 +968,7 @@ async fn poll_codex_device_code_for_authorization(
             .post(&endpoint)
             .header("Content-Type", "application/json")
             .json(&DeviceTokenPollRequest {
-                device_auth_id: &device_code.device_auth_id,
+                device_auth_id: &device_code.secret,
                 user_code: &device_code.user_code,
             })
             .send()
@@ -1032,6 +1509,76 @@ mod tests {
         assert_eq!(result.account_id.as_deref(), Some("acct_login"));
         assert_eq!(credential.account_id, "acct_login");
         assert_eq!(credential.source, "credential_profile:openai-codex");
+    }
+
+    #[test]
+    fn xai_oauth_config_matches_public_cli_contract() {
+        let config = OAuthProviderConfig::xai();
+
+        assert_eq!(config.issuer, "https://auth.x.ai");
+        assert_eq!(config.client_id, "b1a00492-073a-47ea-816f-4c329264a828");
+        assert!(config.scopes.contains(&"grok-cli:access"));
+        assert!(config.scopes.contains(&"api:access"));
+        assert_eq!(config.device_protocol, OAuthDeviceProtocol::Standard);
+    }
+
+    #[test]
+    fn xai_oauth_endpoint_validation_accepts_xai_hosts_only() {
+        let config = OAuthProviderConfig::xai();
+
+        validate_oauth_endpoint(&config, "https://auth.x.ai/oauth2/token")
+            .expect("issuer host should be accepted");
+        validate_oauth_endpoint(&config, "https://login.auth.x.ai/oauth2/token")
+            .expect("issuer subdomain should be accepted");
+        assert!(validate_oauth_endpoint(&config, "http://auth.x.ai/oauth2/token").is_err());
+        assert!(validate_oauth_endpoint(&config, "https://x.ai.evil.example/token").is_err());
+        assert!(validate_oauth_endpoint(&config, "https://example.com/token").is_err());
+    }
+
+    #[test]
+    fn xai_oauth_material_uses_existing_profile_shape() {
+        let result = oauth_tokens_to_login_result(
+            &OAuthProviderConfig::xai(),
+            make_token(json!({"exp": 1_900_000_000, "sub": "user_123"})),
+            "refresh_xai".to_string(),
+            None,
+        )
+        .expect("xAI OAuth material should serialize");
+        let auth: AuthDotJson =
+            serde_json::from_str(&result.material).expect("material should use auth.json shape");
+
+        let tokens = auth.tokens.expect("tokens should be present");
+        assert_eq!(tokens.refresh_token, "refresh_xai");
+        assert_eq!(tokens.account_id, None);
+        assert_eq!(result.account_id, None);
+    }
+
+    #[test]
+    fn standard_oauth_refresh_rotates_refresh_token() {
+        let mut auth = AuthDotJson {
+            tokens: Some(TokenData {
+                access_token: "old-access".into(),
+                refresh_token: "old-refresh".into(),
+                account_id: None,
+                id_token: None,
+            }),
+            last_refresh: None,
+        };
+
+        apply_standard_token_response(
+            &mut auth,
+            StandardTokenResponse {
+                access_token: "new-access".into(),
+                refresh_token: "rotated-refresh".into(),
+                id_token: Some("new-id-token".into()),
+            },
+        );
+
+        let tokens = auth.tokens.expect("tokens should remain present");
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token, "rotated-refresh");
+        assert_eq!(tokens.id_token, Some(Value::String("new-id-token".into())));
+        assert!(auth.last_refresh.is_some());
     }
 
     #[test]

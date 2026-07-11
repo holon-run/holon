@@ -57,6 +57,7 @@ impl ProviderId {
     pub const OPENAI: &'static str = "openai";
     pub const ANTHROPIC: &'static str = "anthropic";
     pub const GEMINI: &'static str = "gemini";
+    pub const XAI: &'static str = "xai";
 }
 
 pub const DEFAULT_LOCAL_AGENT_ID: &str = "main";

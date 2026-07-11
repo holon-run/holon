@@ -452,6 +452,10 @@ pub fn router(state: AppState) -> Router {
             post(auth::start_codex_device_login),
         )
         .route(
+            "/auth/{provider}/device/start",
+            post(auth::start_oauth_device_login),
+        )
+        .route(
             "/control/runtime/credentials",
             get(control::list_credentials),
         )

@@ -6109,6 +6109,54 @@
         ]
       }
     },
+    "/api/auth/{provider}/device/start": {
+      "post": {
+        "description": "Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex and xai.",
+        "operationId": "startOAuthDeviceLogin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Start OAuth device login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/briefs": {
       "get": {
         "description": "Compatibility alias for the default agent briefs route. Query parameter: limit.",

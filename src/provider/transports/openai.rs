@@ -15,7 +15,9 @@ use std::{
 use crate::{
     auth::{
         load_codex_cli_credential, load_codex_oauth_profile_credential,
-        refresh_codex_oauth_profile_material, CodexCliCredential, CodexOAuthRefreshFailure,
+        load_oauth_profile_credential, oauth_provider_config, refresh_codex_oauth_profile_material,
+        refresh_oauth_profile_material, CodexCliCredential, CodexOAuthRefreshFailure,
+        OAuthCredential,
     },
     config::{
         load_credential_store_at, save_credential_store_at, AppConfig, CredentialKind,
@@ -53,6 +55,9 @@ pub struct OpenAiProvider {
     provider_id: String,
     base_url: String,
     api_key: Option<String>,
+    credential_profile: Option<String>,
+    credential_material: Option<String>,
+    credential_store_path: Option<PathBuf>,
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
@@ -277,7 +282,12 @@ impl OpenAiProvider {
         compaction_policy: OpenAiCompactionPolicy,
     ) -> Result<Self> {
         let client = build_http_client()?;
+        let oauth_profile = matches!(
+            (provider_config.auth.source, provider_config.auth.kind),
+            (CredentialSource::AuthProfile, CredentialKind::OAuth)
+        );
         let api_key = match (provider_config.auth.source, provider_config.auth.kind) {
+            (CredentialSource::AuthProfile, CredentialKind::OAuth) => None,
             (CredentialSource::None, CredentialKind::None) => None,
             _ => Some(
                 provider_config
@@ -301,6 +311,17 @@ impl OpenAiProvider {
             provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
+            credential_profile: oauth_profile.then(|| {
+                provider_config
+                    .auth
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| provider_config.id.as_str().to_string())
+            }),
+            credential_material: oauth_profile
+                .then(|| provider_config.credential.clone())
+                .flatten(),
+            credential_store_path: provider_config.credential_store_path.clone(),
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
@@ -309,6 +330,101 @@ impl OpenAiProvider {
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
+    }
+
+    fn resolve_oauth_credential(&self) -> Result<Option<OAuthCredential>> {
+        let Some(profile) = self.credential_profile.as_deref() else {
+            return Ok(None);
+        };
+        let material = self
+            .credential_material
+            .as_deref()
+            .filter(|material| !material.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing OAuth credential profile {profile}"))?;
+        load_oauth_profile_credential(material, profile).map(Some)
+    }
+
+    async fn resolve_auth_headers(&self) -> Result<Vec<(&'static str, String)>> {
+        if let Some(api_key) = self.api_key.as_ref() {
+            return Ok(vec![("authorization", format!("Bearer {api_key}"))]);
+        }
+        let Some(credential) = self.resolve_oauth_credential()? else {
+            return Ok(Vec::new());
+        };
+        let credential = if credential
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= Utc::now() + chrono::Duration::hours(1))
+        {
+            self.refresh_oauth_profile(false).await?
+        } else {
+            credential
+        };
+        Ok(vec![(
+            "authorization",
+            format!("Bearer {}", credential.access_token),
+        )])
+    }
+
+    async fn refresh_oauth_profile(&self, force: bool) -> Result<OAuthCredential> {
+        let profile = self
+            .credential_profile
+            .as_deref()
+            .context("provider does not use an OAuth credential profile")?;
+        let config = oauth_provider_config(&self.provider_id).ok_or_else(|| {
+            anyhow::anyhow!("provider {} has no OAuth configuration", self.provider_id)
+        })?;
+        let store_path = self.credential_store_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Holon-managed OAuth profile {profile} cannot refresh because the credential store path is unavailable"
+            )
+        })?;
+        let lock_path = store_path.with_extension("json.lock");
+        let _lock = CredentialStoreRefreshLock::acquire(&lock_path)?;
+        let mut store = load_credential_store_at(store_path)?;
+        let entry = store.profiles.get(profile).cloned().ok_or_else(|| {
+            anyhow::anyhow!("Holon credential profile {profile} disappeared before refresh")
+        })?;
+        if entry.kind != CredentialKind::OAuth {
+            anyhow::bail!(
+                "Holon credential profile {profile} has kind {}, but OAuth refresh requires oauth",
+                entry.kind.as_str()
+            );
+        }
+        let current = load_oauth_profile_credential(&entry.material, profile)?;
+        if !force
+            && !current
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= Utc::now() + chrono::Duration::hours(1))
+        {
+            return Ok(current);
+        }
+        let refreshed =
+            refresh_oauth_profile_material(&self.client, &config, &entry.material, profile)
+                .await
+                .map_err(|failure| codex_refresh_error(profile, failure))?;
+        store.profiles.insert(
+            profile.to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: refreshed.material,
+            },
+        );
+        save_credential_store_at(store_path, &store)?;
+        Ok(refreshed.credential)
+    }
+
+    async fn refresh_auth_headers_after_failure(
+        &self,
+        error: &anyhow::Error,
+    ) -> Result<Option<Vec<(&'static str, String)>>> {
+        if self.credential_profile.is_none() || !is_openai_codex_auth_status_error(error) {
+            return Ok(None);
+        }
+        let credential = self.refresh_oauth_profile(true).await?;
+        Ok(Some(vec![(
+            "authorization",
+            format!("Bearer {}", credential.access_token),
+        )]))
     }
 }
 
@@ -818,11 +934,7 @@ impl AgentProvider for OpenAiProvider {
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
-        let headers = self
-            .api_key
-            .as_ref()
-            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-            .unwrap_or_default();
+        let mut headers = self.resolve_auth_headers().await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
             &self.continuation,
@@ -842,7 +954,7 @@ impl AgentProvider for OpenAiProvider {
         let parsed = match send_openai_responses_request(
             &self.client,
             openai_responses_url(&self.base_url),
-            plan.body,
+            plan.body.clone(),
             headers.clone(),
             trace.as_ref(),
             request_agent_id(&request),
@@ -851,8 +963,29 @@ impl AgentProvider for OpenAiProvider {
         {
             Ok(parsed) => parsed,
             Err(error) => {
-                invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
-                return Err(error);
+                let Some(refreshed_headers) =
+                    self.refresh_auth_headers_after_failure(&error).await?
+                else {
+                    invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
+                    return Err(error);
+                };
+                headers = refreshed_headers;
+                match send_openai_responses_request(
+                    &self.client,
+                    openai_responses_url(&self.base_url),
+                    plan.body,
+                    headers.clone(),
+                    trace.as_ref(),
+                    request_agent_id(&request),
+                )
+                .await
+                {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
+                        return Err(error);
+                    }
+                }
             }
         };
         update_openai_continuation(
@@ -885,21 +1018,37 @@ impl AgentProvider for OpenAiProvider {
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
         let body = build_openai_images_request(&self.model, &request);
-        let headers = self
-            .api_key
-            .as_ref()
-            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-            .unwrap_or_default();
+        let mut headers = self.resolve_auth_headers().await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        let images = send_openai_images_request(
+        let images = match send_openai_images_request(
             &self.client,
             openai_images_generations_url(&self.base_url),
-            body,
-            headers,
+            body.clone(),
+            headers.clone(),
             trace.as_ref(),
             None,
         )
-        .await?;
+        .await
+        {
+            Ok(images) => images,
+            Err(error) => {
+                let Some(refreshed_headers) =
+                    self.refresh_auth_headers_after_failure(&error).await?
+                else {
+                    return Err(error);
+                };
+                headers = refreshed_headers;
+                send_openai_images_request(
+                    &self.client,
+                    openai_images_generations_url(&self.base_url),
+                    body,
+                    headers,
+                    trace.as_ref(),
+                    None,
+                )
+                .await?
+            }
+        };
         Ok(ProviderGenerateImageResponse {
             provider: self.provider_id.clone(),
             model: self.model.clone(),
@@ -951,21 +1100,37 @@ impl AgentProvider for OpenAiProvider {
             self.reasoning_effort.as_deref(),
             None,
         )?;
-        let headers = self
-            .api_key
-            .as_ref()
-            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-            .unwrap_or_default();
+        let mut headers = self.resolve_auth_headers().await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        send_openai_responses_request(
+        match send_openai_responses_request(
             &self.client,
             openai_responses_url(&self.base_url),
-            body,
-            headers,
+            body.clone(),
+            headers.clone(),
             trace.as_ref(),
             None,
         )
-        .await?;
+        .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                let Some(refreshed_headers) =
+                    self.refresh_auth_headers_after_failure(&error).await?
+                else {
+                    return Err(error);
+                };
+                headers = refreshed_headers;
+                send_openai_responses_request(
+                    &self.client,
+                    openai_responses_url(&self.base_url),
+                    body,
+                    headers,
+                    trace.as_ref(),
+                    None,
+                )
+                .await?;
+            }
+        }
         Ok(())
     }
 }
@@ -5383,8 +5548,9 @@ mod tests {
         openai_provider_window_compaction_candidate,
         parse_openai_codex_image_generation_response_items, plan_openai_responses_request,
         resolve_openai_codex_credential, CredentialStoreRefreshLock, OpenAiCodexProvider,
-        OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProviderWindow, OpenAiRequestPlan,
-        OpenAiRequestShape, OpenAiResponsesTransportContract, ToolSchemaContract,
+        OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProvider, OpenAiProviderWindow,
+        OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesTransportContract,
+        ToolSchemaContract,
     };
     use crate::auth::CodexCliCredential;
     use crate::config::{
@@ -5469,6 +5635,31 @@ mod tests {
         }
     }
 
+    fn test_xai_oauth_config(credential: String) -> ProviderRuntimeConfig {
+        let xai = ProviderId::parse("xai").unwrap();
+        ProviderRuntimeConfig {
+            id: xai.clone(),
+            route_provider: xai,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
+            transport: ProviderTransportKind::OpenAiResponses,
+            base_url: "https://api.x.ai/v1".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some("xai".into()),
+                external: None,
+            },
+            credential: Some(credential),
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: Some("medium".into()),
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     #[test]
     fn chat_completions_url_accepts_openai_compatible_base_urls() {
         assert_eq!(
@@ -5494,6 +5685,31 @@ mod tests {
         assert_eq!(
             chat_completions_url("https://proxy.example/chat/completions"),
             "https://proxy.example/chat/completions"
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_provider_uses_xai_oauth_profile_as_bearer_token() {
+        let access_token = make_token(json!({
+            "exp": Utc::now().timestamp() + 7200
+        }));
+        let material = json!({
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": "refresh"
+            }
+        })
+        .to_string();
+        let config = test_xai_oauth_config(material);
+        let home = tempfile::tempdir().unwrap();
+        let provider =
+            OpenAiProvider::from_runtime_config(&config, "grok-test", 1024, home.path()).unwrap();
+
+        let headers = provider.resolve_auth_headers().await.unwrap();
+
+        assert_eq!(
+            headers,
+            vec![("authorization", format!("Bearer {access_token}"))]
         );
     }
 

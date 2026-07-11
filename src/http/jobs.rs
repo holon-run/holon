@@ -445,26 +445,38 @@ pub(super) async fn create_template_remote_source_sync_job(
         .into_response())
 }
 
-pub(super) fn create_codex_device_login_job(
+pub(super) fn create_oauth_device_login_job(
     state: Arc<AppState>,
+    oauth_config: crate::auth::OAuthProviderConfig,
     device_code: crate::auth::CodexDeviceCode,
 ) -> JobSnapshot {
+    let provider_id = oauth_config.provider_id;
+    let profile = oauth_config.profile_name;
+    let provider_label = if provider_id == crate::config::ProviderId::OPENAI_CODEX {
+        "OpenAI Codex"
+    } else {
+        provider_id
+    };
     let id = format!("job_{}", Uuid::new_v4().simple());
     let now = Utc::now();
     let job = JobSnapshot {
         id: id.clone(),
-        kind: "auth.codex.device_login".into(),
+        kind: if provider_id == crate::config::ProviderId::OPENAI_CODEX {
+            "auth.codex.device_login".into()
+        } else {
+            format!("auth.{provider_id}.device_login")
+        },
         status: JobStatus::Queued,
         phase: "waiting_for_user".into(),
         progress: JobProgress {
             current: 1,
             total: 3,
         },
-        summary: "Waiting for OpenAI Codex device authorization".into(),
+        summary: format!("Waiting for {provider_label} device authorization"),
         items: vec![JobItem {
             id: "device_authorization".into(),
             status: JobStatus::Running,
-            summary: "Waiting for user to authorize the OpenAI Codex device code".into(),
+            summary: format!("Waiting for user to authorize the {provider_label} device code"),
             error: None,
         }],
         result: None,
@@ -481,21 +493,26 @@ pub(super) fn create_codex_device_login_job(
         jobs.update(&job_id, |job| {
             job.status = JobStatus::Running;
         });
-        match crate::auth::complete_codex_device_login(device_code).await {
+        let login_result =
+            if oauth_config.device_protocol == crate::auth::OAuthDeviceProtocol::Codex {
+                crate::auth::complete_codex_device_login(device_code).await
+            } else {
+                crate::auth::complete_oauth_device_login(&oauth_config, device_code).await
+            };
+        match login_result {
             Ok(login) => {
                 jobs.update(&job_id, |job| {
                     job.phase = "persisting_credentials".into();
                     job.progress.current = 2;
-                    job.summary = "Persisting OpenAI Codex OAuth credential".into();
+                    job.summary = format!("Persisting {provider_label} OAuth credential");
                     job.items = vec![JobItem {
                         id: "credential_profile".into(),
                         status: JobStatus::Running,
-                        summary: "Writing openai-codex credential profile".into(),
+                        summary: format!("Writing {profile} credential profile"),
                         error: None,
                     }];
                 });
                 let config = host.config();
-                let profile = crate::config::OPENAI_CODEX_CREDENTIAL_PROFILE;
                 let credential_path = credential_store_path(&config.home_dir);
                 match set_credential_profile_at(
                     &credential_path,
@@ -507,22 +524,23 @@ pub(super) fn create_codex_device_login_job(
                         if let Err(error) = host.reload_all_agents_config().await {
                             tracing::warn!(
                                 error = %error,
-                                "OpenAI Codex device credential saved but hot-reload failed; restart needed"
+                                provider_id,
+                                "OAuth device credential saved but hot-reload failed; restart needed"
                             );
                         }
                         jobs.update(&job_id, |job| {
                             job.status = JobStatus::Completed;
                             job.phase = "completed".into();
                             job.progress.current = 3;
-                            job.summary = "OpenAI Codex OAuth login completed".into();
+                            job.summary = format!("{provider_label} OAuth login completed");
                             job.items = vec![JobItem {
                                 id: "credential_profile".into(),
                                 status: JobStatus::Completed,
-                                summary: "Configured openai-codex OAuth credential profile".into(),
+                                summary: format!("Configured {profile} OAuth credential profile"),
                                 error: None,
                             }];
                             job.result = Some(json!({
-                                "provider_id": crate::config::ProviderId::OPENAI_CODEX,
+                                "provider_id": provider_id,
                                 "profile": profile_status.profile,
                                 "auth_kind": profile_status.kind,
                                 "configured": true,
@@ -533,7 +551,7 @@ pub(super) fn create_codex_device_login_job(
                     Err(error) => fail_codex_device_login_job(
                         &jobs,
                         &job_id,
-                        "OpenAI Codex credential persist failed",
+                        &format!("{provider_label} credential persist failed"),
                         error.to_string(),
                     ),
                 }
@@ -541,7 +559,7 @@ pub(super) fn create_codex_device_login_job(
             Err(error) => fail_codex_device_login_job(
                 &jobs,
                 &job_id,
-                "OpenAI Codex device login failed",
+                &format!("{provider_label} device login failed"),
                 error.to_string(),
             ),
         }
@@ -558,7 +576,7 @@ fn fail_codex_device_login_job(jobs: &JobRegistry, job_id: &str, summary: &str, 
         job.summary = summary.into();
         job.error = Some(message.clone());
         job.items = vec![JobItem {
-            id: "auth.codex.device_login".into(),
+            id: "oauth.device_login".into(),
             status: JobStatus::Failed,
             summary: summary.into(),
             error: Some(message),
