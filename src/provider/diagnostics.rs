@@ -195,15 +195,14 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
                 || provider
                     .map(provider_static_credential_configured)
                     .unwrap_or(false);
+            let provider_family = first_model
+                .map(|model| model.provider_family.clone())
+                .or_else(|| provider.map(|provider| provider.route_provider.as_str().to_string()))
+                .unwrap_or_else(|| provider_id.clone());
 
             ModelProviderEntry {
                 id: provider_id.clone(),
-                provider_family: first_model
-                    .map(|model| model.provider_family.clone())
-                    .or_else(|| {
-                        provider.map(|provider| provider.route_provider.as_str().to_string())
-                    })
-                    .unwrap_or_else(|| provider_id.clone()),
+                provider_family: provider_family.clone(),
                 endpoint: first_model
                     .map(|model| model.endpoint.clone())
                     .or_else(|| {
@@ -211,7 +210,11 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
                     })
                     .unwrap_or_else(|| "default".to_string()),
                 route_provider: route_provider_id.to_string(),
-                display_name: first_model.map(|model| model.provider_family.clone()),
+                display_name: Some(
+                    first_model
+                        .map(|model| model.provider_family.clone())
+                        .unwrap_or_else(|| provider_family.clone()),
+                ),
                 availability,
                 provider_configured,
                 provider_source,
@@ -260,6 +263,8 @@ pub(crate) fn provider_models_from_availability_for_runtime(
     models
         .iter()
         .filter(|model| {
+            // Accept catalog identity, canonical route family, runtime config id,
+            // and endpoint-qualified group ids exposed by ListModelProviders.
             model.provider == provider
                 || model.provider_family == provider
                 || model.route_provider == provider
@@ -501,7 +506,7 @@ mod tests {
 
     use super::{
         provider_doctor, resolved_model_availability, resolved_model_providers,
-        resolved_provider_models,
+        resolved_model_providers_from_availability_for_runtime, resolved_provider_models,
     };
 
     struct TestConfigFixture {
@@ -673,6 +678,20 @@ mod tests {
             openai.availability,
             crate::types::ModelProviderAvailability::Available
         );
+    }
+
+    #[test]
+    fn resolved_model_providers_keep_display_names_for_empty_configured_groups() {
+        let fixture = test_config(Some("openai-key"));
+        let providers =
+            resolved_model_providers_from_availability_for_runtime(Some(&fixture.config), &[]);
+        let openai = providers
+            .iter()
+            .find(|entry| entry.id == "openai")
+            .expect("configured openai provider entry");
+
+        assert_eq!(openai.model_count, 0);
+        assert_eq!(openai.display_name.as_deref(), Some("openai"));
     }
 
     #[test]
