@@ -60,7 +60,7 @@ export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: st
 
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
-  "transport" | "baseUrl" | "oauthSupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
+  "transport" | "baseUrl" | "oauthSupported" | "apiKeySupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
 >;
 
 type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "credentialProfile">;
@@ -246,6 +246,7 @@ export function SettingsPage({
   const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
   const [searchCredentialMessages, setSearchCredentialMessages] = useState<Record<string, string>>({});
+  const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
   const providersWithModels = useMemo(
@@ -299,6 +300,7 @@ export function SettingsPage({
             transport: provider.transport,
             baseUrl: provider.baseUrl,
             oauthSupported: provider.oauthSupported,
+            apiKeySupported: provider.apiKeySupported,
             credentialSource: provider.credentialSource,
             credentialKind: provider.credentialKind,
             credentialEnv: provider.credentialEnv ?? "",
@@ -319,27 +321,23 @@ export function SettingsPage({
     void onRefreshCredentialStore();
   }, [onRefreshCredentialStore]);
 
+  // Auto-save auth config when OAuth device login completes
+  useEffect(() => {
+    if (codexDeviceLogin.status === "completed" && deviceLoginProviderId) {
+      const providerId = deviceLoginProviderId;
+      const draft = providerDrafts[providerId];
+      if (draft && draft.credentialKind === "oauth") {
+        void onUpdateRuntimeConfig([
+          { key: `providers.${providerId}.auth.source`, value: "credential_profile" },
+          { key: `providers.${providerId}.auth.kind`, value: "oauth" },
+          { key: `providers.${providerId}.auth.profile`, value: draft.credentialProfile?.trim() || providerId },
+        ]).then(() => setDeviceLoginProviderId(null));
+      }
+    }
+  }, [codexDeviceLogin.status, deviceLoginProviderId, providerDrafts, onUpdateRuntimeConfig]);
+
   function isCredentialProfileConfigured(profile: string): boolean {
     return credentialStore.profiles.some((p) => p.profile === profile && p.configured);
-  }
-
-  async function saveApiKey(providerId: string, credentialProfile: string, credentialKind: string) {
-    const key = apiKeyDrafts[providerId]?.trim();
-    if (!key || !credentialProfile) return;
-    setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
-    // Switch provider to credential_profile so the stored key is used
-    await onUpdateRuntimeConfig([
-      { key: `providers.${providerId}.auth.source`, value: "credential_profile" },
-      { key: `providers.${providerId}.auth.kind`, value: credentialKind },
-      { key: `providers.${providerId}.auth.profile`, value: credentialProfile },
-    ]);
-    const result = await onSetCredential(credentialProfile, credentialKind, key);
-    if (result) {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
-      setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
-    } else {
-      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
-    }
   }
 
   async function removeApiKey(providerId: string, credentialProfile: string) {
@@ -504,6 +502,7 @@ export function SettingsPage({
           transport: "openai_responses",
           baseUrl: "",
           oauthSupported: false,
+          apiKeySupported: true,
           credentialSource: "env",
           credentialKind: "api_key",
           credentialEnv: "",
@@ -519,6 +518,24 @@ export function SettingsPage({
     const draft = providerDrafts[providerId];
     if (!draft) return;
     setProviderSaveMessage(undefined);
+
+    // Unified save: if API Key mode and user entered a key, save credential first
+    if (draft.credentialKind === "api_key") {
+      const key = apiKeyDrafts[providerId]?.trim();
+      const profile = draft.credentialProfile?.trim() || `${providerId}:default`;
+      if (key) {
+        setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
+        const credResult = await onSetCredential(profile, "api_key", key);
+        if (credResult) {
+          setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
+          setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
+        } else {
+          setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
+          return;
+        }
+      }
+    }
+
     const result = await onUpdateRuntimeConfig([
       { key: `providers.${providerId}.base_url`, value: draft.baseUrl.trim() },
       { key: `providers.${providerId}.auth.source`, value: draft.credentialSource },
@@ -1223,37 +1240,51 @@ export function SettingsPage({
                         {t("settings.noModelsForProvider")}
                       </p>
                     ) : null}
-                    <div className="settings-form-row">
-                      <label>
-                        <span>{t("settings.authMode")}</span>
-                        <select
-                          value={authMode}
-                          onChange={(event) => {
-                            const nextMode = event.target.value;
-                            if (nextMode === "oauth") {
+                    {/* Auth mode: dropdown only when both modes available */}
+                    {draft.apiKeySupported && draft.oauthSupported ? (
+                      <div className="settings-form-row">
+                        <label>
+                          <span>{t("settings.authMode")}</span>
+                          <select
+                            value={authMode}
+                            onChange={(event) => {
+                              const nextMode = event.target.value;
+                              if (nextMode === "oauth") {
+                                updateProviderDraft(provider.id, {
+                                  credentialKind: "oauth",
+                                  credentialSource: "credential_profile",
+                                  credentialProfile: draft.credentialProfile?.trim() || provider.id,
+                                  credentialEnv: "",
+                                  credentialExternal: "",
+                                });
+                                return;
+                              }
                               updateProviderDraft(provider.id, {
-                                credentialKind: "oauth",
+                                credentialKind: "api_key",
                                 credentialSource: "credential_profile",
-                                credentialProfile: draft.credentialProfile?.trim() || provider.id,
+                                credentialProfile: draft.credentialProfile?.trim() || `${provider.id}:default`,
                                 credentialEnv: "",
                                 credentialExternal: "",
                               });
-                              return;
-                            }
-                            updateProviderDraft(provider.id, {
-                              credentialKind: "api_key",
-                              credentialSource: "credential_profile",
-                              credentialProfile: draft.credentialProfile?.trim() || `${provider.id}:default`,
-                              credentialEnv: "",
-                              credentialExternal: "",
-                            });
-                          }}
-                        >
-                          <option value="api_key">{t("settings.authModeApiKey")}</option>
-                          {draft.oauthSupported ? <option value="oauth">{t("settings.authModeOAuth")}</option> : null}
-                        </select>
-                      </label>
-                    </div>
+                            }}
+                          >
+                            <option value="api_key">{t("settings.authModeApiKey")}</option>
+                            <option value="oauth">{t("settings.authModeOAuth")}</option>
+                          </select>
+                        </label>
+                      </div>
+                    ) : (
+                      <div className="settings-form-row">
+                        <label>
+                          <span>{t("settings.authMode")}</span>
+                          <input
+                            value={draft.oauthSupported ? t("settings.authModeOAuth") : t("settings.authModeApiKey")}
+                            readOnly
+                            disabled
+                          />
+                        </label>
+                      </div>
+                    )}
                     {/* Primary: API Key management */}
                     {draft.credentialKind === "api_key" ? (
                       <div className="settings-api-key-section">
@@ -1278,14 +1309,6 @@ export function SettingsPage({
                           </label>
                         </div>
                         <div className="settings-actions">
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            disabled={!apiKeyDrafts[provider.id]?.trim()}
-                            onClick={() => void saveApiKey(provider.id, effectiveProfile, draft.credentialKind)}
-                          >
-                           {t("settings.saveApiKey")}
-                          </Button>
                           {isCredentialProfileConfigured(effectiveProfile) ? (
                             <Button
                               type="button"
@@ -1314,7 +1337,7 @@ export function SettingsPage({
                           <>
                           <div className="settings-actions">
                             <Button type="button" variant="secondary" disabled={credentialStoreLoading}
-                              onClick={() => void onStartCodexDeviceLogin(provider.id)}>
+                              onClick={() => { setDeviceLoginProviderId(provider.id); void onStartCodexDeviceLogin(provider.id); }}>
                               {provider.credentialConfigured ? "Re-login" : "Login with Device Flow"}
                             </Button>
                           </div>

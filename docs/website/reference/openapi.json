@@ -1669,6 +1669,9 @@
               "providers": {
                 "items": {
                   "properties": {
+                    "api_key_supported": {
+                      "type": "boolean"
+                    },
                     "base_url": {
                       "type": "string"
                     },
@@ -1717,6 +1720,7 @@
                     "transport",
                     "base_url",
                     "oauth_supported",
+                    "api_key_supported",
                     "credential_source",
                     "credential_kind",
                     "credential_configured",
@@ -1946,6 +1950,9 @@
               "providers": {
                 "items": {
                   "properties": {
+                    "api_key_supported": {
+                      "type": "boolean"
+                    },
                     "base_url": {
                       "type": "string"
                     },
@@ -1994,6 +2001,7 @@
                     "transport",
                     "base_url",
                     "oauth_supported",
+                    "api_key_supported",
                     "credential_source",
                     "credential_kind",
                     "credential_configured",

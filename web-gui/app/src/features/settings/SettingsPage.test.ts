@@ -14,6 +14,7 @@ function provider(id: string, credentialConfigured: boolean): RuntimeProviderSum
     oauthSupported: false,
     transport: "openai",
     baseUrl: "https://example.test/v1",
+    apiKeySupported: true,
     credentialSource: "credential_profile",
     credentialKind: "api_key",
     credentialProfile: `${id}:default`,

@@ -101,6 +101,7 @@ pub struct RuntimeProviderSummary {
     pub transport: String,
     pub base_url: String,
     pub oauth_supported: bool,
+    pub api_key_supported: bool,
     pub credential_source: String,
     pub credential_kind: String,
     pub credential_env: Option<String>,
@@ -166,6 +167,7 @@ impl RuntimeConfigSurface {
                     base_url: provider.base_url.clone(),
                     oauth_supported: crate::auth::oauth_provider_config(provider.id.as_str())
                         .is_some(),
+                    api_key_supported: provider.transport.as_str() != "openai_codex_responses",
                     credential_source: provider.auth.source.as_str().to_string(),
                     credential_kind: provider.auth.kind.as_str().to_string(),
                     credential_env: provider.auth.env.clone(),
