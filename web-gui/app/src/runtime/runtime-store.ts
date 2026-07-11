@@ -350,11 +350,27 @@ export interface SkillInstallJob {
 }
 
 const SKILL_INSTALL_JOBS_STORAGE_KEY = "holon.webGui.skillInstallJobs.v1";
+const SKILL_JOB_TERMINAL_RETENTION = 20;
+
+function retainSkillJobs(jobs: SkillInstallJob[]): SkillInstallJob[] {
+  let terminalToDrop = Math.max(
+    0,
+    jobs.filter((job) => job.status === "completed" || job.status === "failed").length
+      - SKILL_JOB_TERMINAL_RETENTION,
+  );
+  return jobs.filter((job) => {
+    if (job.status === "queued" || job.status === "running" || terminalToDrop === 0) {
+      return true;
+    }
+    terminalToDrop -= 1;
+    return false;
+  });
+}
 
 function loadSkillInstallJobs(): SkillInstallJob[] {
   try {
     const raw = localStorage.getItem(SKILL_INSTALL_JOBS_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as SkillInstallJob[]) : [];
+    return raw ? retainSkillJobs(JSON.parse(raw) as SkillInstallJob[]) : [];
   } catch {
     return [];
   }
@@ -362,8 +378,9 @@ function loadSkillInstallJobs(): SkillInstallJob[] {
 
 function saveSkillInstallJobs(jobs: SkillInstallJob[]): void {
   try {
-    if (jobs.length) {
-      localStorage.setItem(SKILL_INSTALL_JOBS_STORAGE_KEY, JSON.stringify(jobs));
+    const retainedJobs = retainSkillJobs(jobs);
+    if (retainedJobs.length) {
+      localStorage.setItem(SKILL_INSTALL_JOBS_STORAGE_KEY, JSON.stringify(retainedJobs));
     } else {
       localStorage.removeItem(SKILL_INSTALL_JOBS_STORAGE_KEY);
     }
@@ -1383,7 +1400,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       const source = "package" in input ? input.package : "path" in input ? input.path : "name" in input ? input.name : "unknown";
       const job: SkillInstallJob = { jobId, source, status: "queued" };
       set((state) => {
-        const jobs = [...state.skillInstallJobs, job];
+        const jobs = retainSkillJobs([...state.skillInstallJobs, job]);
         saveSkillInstallJobs(jobs);
         return { skillInstallJobs: jobs };
       });
@@ -1425,7 +1442,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         status: "queued",
       };
       set((state) => {
-        const jobs = [...state.skillInstallJobs, job];
+        const jobs = retainSkillJobs([...state.skillInstallJobs, job]);
         saveSkillInstallJobs(jobs);
         return { skillInstallJobs: jobs };
       });
@@ -2779,8 +2796,10 @@ function updateSkillInstallJob(
   summary?: string,
 ): void {
   set((state) => {
-    const jobs = state.skillInstallJobs.map((j) =>
-      j.jobId === jobId ? { ...j, status, error, summary } : j
+    const jobs = retainSkillJobs(
+      state.skillInstallJobs.map((j) =>
+        j.jobId === jobId ? { ...j, status, error, summary } : j
+      ),
     );
     saveSkillInstallJobs(jobs);
     return { skillInstallJobs: jobs };
