@@ -1,0 +1,145 @@
+import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import "../../i18n/config";
+
+import { ToolExecutionContent } from "./ToolExecutionRenderers";
+import type { RuntimeToolExecutionRecord } from "../../runtime/types";
+
+function renderTool(record: RuntimeToolExecutionRecord): string {
+  return renderToStaticMarkup(<ToolExecutionContent record={record} />);
+}
+
+describe("ToolExecutionContent", () => {
+  it("renders ViewImage details with path, dimensions, and visual observation", () => {
+    const html = renderTool({
+      tool_name: "ViewImage",
+      input: { path: "/tmp/screenshot.png" },
+      output: {
+        envelope: {
+          result: {
+            dimensions: { width: 1024, height: 768 },
+            visual_observation: "A timeline screenshot.",
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("Path");
+    expect(html).toContain("/tmp/screenshot.png");
+    expect(html).toContain("1024×768");
+    expect(html).toContain("A timeline screenshot.");
+  });
+
+  it("renders GenerateImage details with prompt and generated image URI", () => {
+    const html = renderTool({
+      tool_name: "GenerateImage",
+      input: { name: "hero", size: "1536x1024", prompt: "A Holon agent dashboard" },
+      output: {
+        envelope: {
+          result: {
+            image_uri: "workspace://agent_home/holon-dev/media/generated/hero.png",
+            output_format: "png",
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("hero");
+    expect(html).toContain("1536x1024");
+    expect(html).toContain("workspace://agent_home/holon-dev/media/generated/hero.png");
+    expect(html).toContain("A Holon agent dashboard");
+  });
+
+  it("renders WebSearch details as a structured result list", () => {
+    const html = renderTool({
+      tool_name: "WebSearch",
+      input: { query: "rust runtime" },
+      output: {
+        envelope: {
+          result: {
+            query: "rust runtime",
+            provider: "brave",
+            mode: "single",
+            results: [{ title: "Tokio", url: "https://tokio.rs", source: "tokio.rs", snippet: "Async runtime" }],
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("Query");
+    expect(html).toContain("rust runtime");
+    expect(html).toContain("brave");
+    expect(html).toContain("1 found");
+    expect(html).toContain("1. Tokio");
+    expect(html).toContain("https://tokio.rs");
+    expect(html).toContain("Async runtime");
+  });
+
+  it("renders WebFetch details with URL metadata and content", () => {
+    const html = renderTool({
+      tool_name: "WebFetch",
+      input: { url: "https://example.com" },
+      output: {
+        envelope: {
+          result: {
+            url: "https://example.com",
+            final_url: "https://www.example.com",
+            status: 200,
+            content_type: "text/html",
+            bytes_read: 2048,
+            truncated: true,
+            text: "# Example\n\nFetched content.",
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("https://example.com");
+    expect(html).toContain("https://www.example.com");
+    expect(html).toContain("200");
+    expect(html).toContain("text/html");
+    expect(html).toContain("2048");
+    expect(html).toContain("# Example");
+    expect(html).toContain("Fetched content.");
+  });
+
+  it("renders MemorySearch details with source refs and previews", () => {
+    const html = renderTool({
+      tool_name: "MemorySearch",
+      input: { query: "device oauth" },
+      output: {
+        envelope: {
+          result: {
+            query: "device oauth",
+            results: [{ source_ref: "turn:abc", score: 0.95, preview: "Device OAuth implementation notes" }],
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("device oauth");
+    expect(html).toContain("1 found");
+    expect(html).toContain("1. turn:abc");
+    expect(html).toContain("score: 0.95");
+    expect(html).toContain("Device OAuth implementation notes");
+  });
+
+  it("renders MemoryGet details with source ref and fetched content", () => {
+    const html = renderTool({
+      tool_name: "MemoryGet",
+      input: { source_ref: "turn:abc" },
+      output: {
+        envelope: {
+          result: {
+            source_ref: "turn:abc",
+            truncated: false,
+            content: "Full memory content",
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("turn:abc");
+    expect(html).toContain("Full memory content");
+  });
+});
