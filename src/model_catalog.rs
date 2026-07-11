@@ -281,6 +281,10 @@ impl BuiltInModelCatalog {
             ),
             ModelRef::new(provider_id("volcengine"), "doubao-seedream-5.0-lite"),
         );
+        aliases.insert(
+            ModelRef::new(provider_id("dashscope-token-plan"), "qwen-3.7"),
+            ModelRef::new(provider_id("dashscope"), "qwen3.7-max"),
+        );
         aliases
     }
 

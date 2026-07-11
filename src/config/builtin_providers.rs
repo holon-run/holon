@@ -835,7 +835,7 @@ impl BuiltInProviderCatalog {
     }
 }
 
-fn built_in_provider_endpoint_identity(
+pub(crate) fn built_in_provider_endpoint_identity(
     legacy_provider: &ProviderId,
 ) -> Result<(ProviderId, ProviderEndpointId)> {
     let (provider, endpoint) = match legacy_provider.as_str() {
