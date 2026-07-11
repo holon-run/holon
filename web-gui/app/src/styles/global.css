@@ -4391,6 +4391,120 @@ code {
   content: "▾ ";
 }
 
+.settings-chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  position: relative;
+  min-height: 38px;
+}
+
+.settings-chip-input > input {
+  flex: 1;
+  min-width: 120px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.settings-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  font-size: var(--font-size-xs, 12px);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.settings-chip[draggable] {
+  cursor: grab;
+  user-select: none;
+}
+
+.settings-chip[draggable]:active {
+  cursor: grabbing;
+}
+
+.settings-chip.dragging {
+  opacity: 0.4;
+}
+
+.settings-chip-grip {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: grab;
+}
+
+.settings-chip-remove {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.settings-chip-remove:hover {
+  color: var(--text);
+}
+
+.settings-chip-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.settings-chip-suggestion {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.settings-chip-suggestion:hover {
+  background: var(--surface-soft);
+}
+
+.settings-chip-suggestion-name {
+  font-size: var(--font-size-sm, 13px);
+  color: var(--text);
+}
+
+.settings-chip-suggestion-model {
+  font-size: var(--font-size-xs, 11px);
+  color: var(--muted);
+  font-family: var(--font-mono, monospace);
+}
+
 .settings-diagnostics summary {
   cursor: pointer;
   width: fit-content;

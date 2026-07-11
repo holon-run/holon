@@ -282,7 +282,6 @@ export interface RuntimeConfigSurface {
   imageGenerationDefault: string;
   modelCatalog: string[];
   unknownModelFallbackConfigured: boolean;
-  runtimeMaxOutputTokens: number;
   defaultToolOutputTokens: number;
   maxToolOutputTokens: number;
   disableProviderFallback: boolean;
