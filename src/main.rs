@@ -5,6 +5,7 @@ use std::{
     io::{IsTerminal, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -3015,12 +3016,26 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             .await
         }
         SkillsCommands::Update { name } => {
-            post_control_json(
+            let response = post_control_json_value(
                 config,
                 "/skills/catalog/update",
                 &holon::types::UpdateSkillRequest { name },
             )
-            .await
+            .await?;
+            let job_id = response["job"]["id"]
+                .as_str()
+                .ok_or_else(|| anyhow!("skill update response did not include a job id"))?;
+            let job = wait_for_job(config, job_id).await?;
+            if job["status"] == "failed" {
+                return Err(anyhow!(
+                    "{}",
+                    job["error"]
+                        .as_str()
+                        .or_else(|| job["summary"].as_str())
+                        .unwrap_or("skill update failed")
+                ));
+            }
+            print_json(job.get("result").unwrap_or(&job))
         }
         SkillsCommands::Check { name } => {
             post_control_json(
@@ -3166,6 +3181,28 @@ async fn post_control_json<T: serde::Serialize>(
     let client = LocalClient::new(config.clone())?;
     let value: serde_json::Value = client.post_control_json(path, payload).await?;
     print_json(&value)
+}
+
+async fn post_control_json_value<T: serde::Serialize>(
+    config: &AppConfig,
+    path: &str,
+    payload: &T,
+) -> Result<serde_json::Value> {
+    let client = LocalClient::new(config.clone())?;
+    client.post_control_json(path, payload).await
+}
+
+async fn wait_for_job(config: &AppConfig, job_id: &str) -> Result<serde_json::Value> {
+    loop {
+        let response = get_json(config, &format!("/jobs/{job_id}")).await?;
+        let job = response
+            .get("job")
+            .ok_or_else(|| anyhow!("job response did not include a job"))?;
+        if matches!(job["status"].as_str(), Some("completed") | Some("failed")) {
+            return Ok(job.clone());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 async fn get_json(config: &AppConfig, path: &str) -> Result<serde_json::Value> {

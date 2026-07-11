@@ -102,7 +102,7 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/skills/catalog/remove", "removeSkillFromCatalog", "skills", "Remove skill from library", "Remove a skill from the local Skill Library.", Some("RemoveSkillRequest"), AuthKind::Control),
     route("post", "/skills/catalog/reconcile", "reconcileSkillCatalog", "skills", "Reconcile skill library lock", "Reconcile local Skill Library contents with .skill-lock.json, then check consistency. This does not fetch remote updates.", Some("ReconcileSkillRequest"), AuthKind::Control),
     route("post", "/skills/catalog/refresh", "refreshSkillCatalog", "skills", "Refresh runtime catalog", "Refresh runtime Skill Library catalog by rescanning local skill roots. Does not reconcile with lock file or fetch remote updates.", Some("RefreshCatalogRequest"), AuthKind::Control),
-    route("post", "/skills/catalog/update", "updateSkillCatalog", "skills", "Update skill library", "Fetch supported remote Skill Library entries described by .skill-lock.json and update changed skills. Returns per-skill status.", Some("UpdateSkillRequest"), AuthKind::Control),
+    route_with_response("post", "/skills/catalog/update", "updateSkillCatalog", "skills", "Update skill library", "Queue an asynchronous update of supported remote Skill Library entries described by .skill-lock.json. Progress and per-skill results are available through the returned job.", Some("UpdateSkillRequest"), "JobResponse", AuthKind::Control),
     route("post", "/skills/catalog/check", "checkSkillCatalog", "skills", "Check skill library", "Check Skill Library and lock-file consistency.", Some("CheckSkillRequest"), AuthKind::Control),
     route("get", "/templates/catalog", "templatesCatalog", "templates", "Template catalog", "Return the global AgentTemplate catalog (user global library + synced remote sources).", None, AuthKind::RemoteAccess),
     route("get", "/templates/catalog/{catalog_id}", "templateDetail", "templates", "Template detail", "Return template detail with full AGENTS.md content, manifest, and skill dependencies.", None, AuthKind::RemoteAccess),
@@ -525,7 +525,7 @@ fn component_schemas() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "kind": { "type": "string", "enum": ["skill.install"] },
+                "kind": { "type": "string", "enum": ["skill.install", "skill.update"] },
                 "params": { "$ref": "#/components/schemas/AddSkillRequest" }
             },
             "required": ["kind", "params"],

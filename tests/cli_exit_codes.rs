@@ -20,6 +20,54 @@ fn holon_bin() -> PathBuf {
         .expect("CARGO_BIN_EXE_holon should be set for integration tests")
 }
 
+fn write_json_response(stream: &mut TcpStream, body: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .expect("write mock response");
+}
+
+#[test]
+fn skills_update_waits_for_job_and_prints_result() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock control plane");
+    let addr = listener.local_addr().expect("mock control plane address");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept update request");
+        let request = read_http_request(&mut stream);
+        assert!(request.starts_with("POST /api/skills/catalog/update "));
+        let body = r#"{"ok":true,"job":{"id":"job_test","status":"queued"}}"#;
+        write_json_response(&mut stream, body);
+
+        let (mut stream, _) = listener.accept().expect("accept job request");
+        let request = read_http_request(&mut stream);
+        assert!(request.starts_with("GET /api/jobs/job_test "));
+        let body = r#"{"ok":true,"job":{"id":"job_test","status":"completed","result":{"statuses":[{"name":"demo","status":"updated"}]}}}"#;
+        write_json_response(&mut stream, body);
+    });
+
+    let (mut command, _home) = isolated_holon_command();
+    let output = command
+        .env("HOLON_HTTP_ADDR", addr.to_string())
+        .args(["skills", "update"])
+        .output()
+        .expect("run holon");
+    handle.join().expect("mock control plane thread");
+
+    let expected = serde_json::json!({
+        "statuses": [{"name": "demo", "status": "updated"}]
+    });
+    let (stdout, stderr) = output_text(&output);
+    assert_eq!(output.status.code(), Some(0), "stderr:\n{stderr}");
+    assert!(stderr.is_empty(), "stderr should stay empty: {stderr}");
+    assert_eq!(
+        stdout,
+        format!("{}\n", serde_json::to_string_pretty(&expected).unwrap())
+    );
+}
+
 #[test]
 fn control_plane_post_commands_pretty_print_json_stdout() {
     let cases: &[(&[&str], &str)] = &[
@@ -62,7 +110,6 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
         (&["skills", "remove", "ghx"], "/api/skills/catalog/remove"),
         (&["skills", "refresh"], "/api/skills/catalog/refresh"),
         (&["skills", "reconcile"], "/api/skills/catalog/reconcile"),
-        (&["skills", "update"], "/api/skills/catalog/update"),
         (&["skills", "check"], "/api/skills/catalog/check"),
         (
             &["skills", "enable", "ghx"],

@@ -367,7 +367,8 @@
         "properties": {
           "kind": {
             "enum": [
-              "skill.install"
+              "skill.install",
+              "skill.update"
             ],
             "type": "string"
           },
@@ -9770,7 +9771,7 @@
     },
     "/api/skills/catalog/update": {
       "post": {
-        "description": "Fetch supported remote Skill Library entries described by .skill-lock.json and update changed skills. Returns per-skill status.",
+        "description": "Queue an asynchronous update of supported remote Skill Library entries described by .skill-lock.json. Progress and per-skill results are available through the returned job.",
         "operationId": "updateSkillCatalog",
         "parameters": [],
         "requestBody": {
@@ -9788,11 +9789,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/JobResponse"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
