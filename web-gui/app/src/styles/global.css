@@ -3124,6 +3124,25 @@ code {
   font-size: 13px;
 }
 
+.skills-update-feedback {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.skills-update-feedback.success {
+  border: 1px solid color-mix(in srgb, var(--success) 32%, var(--line));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
+  color: var(--success);
+}
+
+.skills-update-feedback.error {
+  border: 1px solid color-mix(in srgb, var(--danger, var(--attention)) 32%, var(--line));
+  background: color-mix(in srgb, var(--danger, var(--attention)) 8%, var(--surface));
+  color: var(--danger, var(--attention));
+}
+
 .skills-install-jobs {
   display: flex;
   flex-direction: column;

@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowLeft, PackageOpen, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
@@ -46,6 +46,7 @@ export function SkillsPage({
   const [addSkillName, setAddSkillName] = useState("");
   const [addMode, setAddMode] = useState<SkillInstallMode>("linked");
   const stats = useMemo(() => skillStats(skills), [skills]);
+  const [updateFeedback, setUpdateFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const visibleSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return skills.filter((skill) => {
@@ -70,12 +71,26 @@ export function SkillsPage({
     }
   }
 
+  useEffect(() => {
+    if (!updateFeedback) return;
+    const timer = setTimeout(() => setUpdateFeedback(null), 4000);
+    return () => clearTimeout(timer);
+  }, [updateFeedback]);
+
   async function removeSkill(name: string) {
     await onRemoveSkill(name);
   }
 
   async function updateSkill(name?: string) {
-    await onUpdateSkill(name);
+    const ok = await onUpdateSkill(name);
+    if (ok) {
+      setUpdateFeedback({
+        ok: true,
+        message: name ? t("skillsPage.updateSingleSuccess", { name }) : t("skillsPage.updateAllSuccess"),
+      });
+    } else {
+      setUpdateFeedback({ ok: false, message: t("skillsPage.updateFailed") });
+    }
   }
 
   return (
@@ -97,6 +112,11 @@ export function SkillsPage({
       </section>
 
       <section className="skills-summary" aria-label={t("skillsPage.librarySummary")}>
+        {updateFeedback ? (
+          <div className={`skills-update-feedback ${updateFeedback.ok ? "success" : "error"}`} role="status">
+            {updateFeedback.message}
+          </div>
+        ) : null}
         {stats.map((stat) => (
           <Card className="skills-stat" key={stat.label}>
             <strong>{stat.value}</strong>
