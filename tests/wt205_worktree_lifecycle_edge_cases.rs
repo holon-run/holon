@@ -39,7 +39,10 @@ fn test_config() -> AppConfig {
         api_cors: Default::default(),
         config_file_path: home_dir.join("config.json"),
         stored_config: Default::default(),
-        default_model: holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+        default_model: holon::config::ModelRouteRef::parse_compatible(
+            "anthropic/claude-sonnet-4-6",
+        )
+        .unwrap(),
         fallback_models: Vec::new(),
         vision_model: None,
         image_generation_model: None,

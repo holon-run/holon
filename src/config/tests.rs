@@ -23,11 +23,11 @@ use crate::config::{
     save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
     validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig,
     ControlAuthMode, CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile,
-    ModelConfigFile, ModelRef, ModelRouteCapability, ModelsConfigFile, ProviderAuthConfig,
-    ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderEndpointConfigFile,
-    ProviderEndpointId, ProviderId, ProviderPlanConfigFile, ProviderRegistry,
-    ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
-    OPENAI_CODEX_CREDENTIAL_PROFILE,
+    ModelConfigFile, ModelRef, ModelRouteCapability, ModelRouteRef, ModelsConfigFile,
+    ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
+    ProviderEndpointConfigFile, ProviderEndpointId, ProviderId, ProviderPlanConfigFile,
+    ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog,
+    DEFAULT_LOCAL_AGENT_ID, OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 
 struct EnvVarSnapshot {
@@ -123,6 +123,10 @@ struct TestAppConfigFixture {
     config: AppConfig,
 }
 
+fn route_ref(value: &str) -> ModelRouteRef {
+    ModelRouteRef::parse_compatible(value).unwrap()
+}
+
 fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConfigFixture {
     let home_dir = tempdir().unwrap();
     let workspace_dir = tempdir().unwrap();
@@ -150,10 +154,10 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         api_cors: Default::default(),
         config_file_path: home_path.join("config.json"),
         stored_config: Default::default(),
-        default_model: ModelRef::parse(default_model).unwrap(),
+        default_model: route_ref(default_model),
         fallback_models: fallback_models
             .iter()
-            .map(|value| ModelRef::parse(value).unwrap())
+            .map(|value| route_ref(value))
             .collect(),
         vision_model: None,
         image_generation_model: None,
@@ -453,7 +457,7 @@ fn set_get_and_unset_round_trip_model_default() {
     set_config_key(&mut config, "model.default", "openai-codex/gpt-5.4").unwrap();
     assert_eq!(
         get_config_key(&config, "model.default").unwrap(),
-        json!("openai-codex/gpt-5.4")
+        json!("openai-codex@default/gpt-5.4")
     );
 
     unset_config_key(&mut config, "model.default").unwrap();
@@ -1659,23 +1663,26 @@ fn model_selection_explicit_config_wins() {
     );
 
     let (default_model, fallback_models) = super::resolve_model_selection_from_explicit(
-        Some(ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()),
+        Some(route_ref("anthropic/claude-sonnet-4-6")),
         Some(vec![
-            ModelRef::parse("openai/gpt-5.4").unwrap(),
-            ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            route_ref("openai/gpt-5.4"),
+            route_ref("anthropic/claude-sonnet-4-6"),
         ]),
         &providers,
         &HashMap::new(),
     )
     .unwrap();
 
-    assert_eq!(default_model.as_string(), "anthropic/claude-sonnet-4-6");
+    assert_eq!(
+        default_model.as_string(),
+        "anthropic@default/claude-sonnet-4-6"
+    );
     assert_eq!(
         fallback_models
             .into_iter()
             .map(|model| model.as_string())
             .collect::<Vec<_>>(),
-        vec!["openai/gpt-5.4"]
+        vec!["openai@default/gpt-5.4"]
     );
 }
 
@@ -1691,13 +1698,13 @@ fn model_selection_derives_from_authenticated_providers() {
         super::resolve_model_selection_from_explicit(None, None, &providers, &HashMap::new())
             .unwrap();
 
-    assert_eq!(default_model.as_string(), "openai/gpt-5.4");
+    assert_eq!(default_model.as_string(), "openai@default/gpt-5.4");
     assert_eq!(
         fallback_models
             .into_iter()
             .map(|model| model.as_string())
             .collect::<Vec<_>>(),
-        vec!["anthropic/claude-sonnet-4-6"]
+        vec!["anthropic@default/claude-sonnet-4-6"]
     );
 }
 
@@ -1808,7 +1815,7 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
     assert_eq!(view.id, "custom-openai");
     assert!(view.configured_in_config);
     assert!(!view.credential_configured);
-    assert_eq!(config.default_model.as_string(), "openai/unknown");
+    assert_eq!(config.default_model.as_string(), "openai@default/unknown");
 }
 
 #[test]
@@ -1852,7 +1859,7 @@ fn model_selection_derives_custom_provider_from_catalog_override() {
     let (default_model, fallback_models) =
         super::resolve_model_selection_from_explicit(None, None, &providers, &overrides).unwrap();
 
-    assert_eq!(default_model.as_string(), "custom-openai/model-a");
+    assert_eq!(default_model.as_string(), "custom-openai@default/model-a");
     assert!(fallback_models.is_empty());
 }
 
@@ -1911,9 +1918,9 @@ fn provider_chain_preserves_effective_order_and_deduplicates() {
     assert_eq!(
         chain,
         vec![
-            "openai/gpt-5.4",
-            "anthropic/claude-sonnet-4-6",
-            "openai-codex/gpt-5.4",
+            "openai@default/gpt-5.4",
+            "anthropic@default/claude-sonnet-4-6",
+            "openai-codex@default/gpt-5.4",
         ]
     );
 }
@@ -1921,8 +1928,11 @@ fn provider_chain_preserves_effective_order_and_deduplicates() {
 #[test]
 fn provider_chain_returns_only_effective_model_when_fallback_disabled() {
     let mut fixture = test_app_config(
-        "openai/gpt-5.4",
-        &["anthropic/claude-sonnet-4-6", "openai-codex/gpt-5.4"],
+        "openai@default/gpt-5.4",
+        &[
+            "anthropic@default/claude-sonnet-4-6",
+            "openai-codex@default/gpt-5.4",
+        ],
     );
     fixture
         .config
@@ -1938,17 +1948,20 @@ fn provider_chain_returns_only_effective_model_when_fallback_disabled() {
         .map(|model| model.as_string())
         .collect::<Vec<_>>();
 
-    assert_eq!(chain, vec!["openai/gpt-5.4"]);
+    assert_eq!(chain, vec!["openai@default/gpt-5.4"]);
 }
 
 #[test]
 fn provider_chain_with_override_inserts_override_before_runtime_default() {
     let fixture = test_app_config(
-        "anthropic/claude-sonnet-4-6",
-        &["openai/gpt-5.4", "anthropic/claude-sonnet-4-6"],
+        "anthropic@default/claude-sonnet-4-6",
+        &[
+            "openai@default/gpt-5.4",
+            "anthropic@default/claude-sonnet-4-6",
+        ],
     );
 
-    let override_model = ModelRef::parse("openai/gpt-5.4-mini").unwrap();
+    let override_model = route_ref("openai@default/gpt-5.4-mini");
     let chain = fixture
         .config
         .provider_chain_with_override(Some(&override_model))
@@ -1959,9 +1972,9 @@ fn provider_chain_with_override_inserts_override_before_runtime_default() {
     assert_eq!(
         chain,
         vec![
-            "openai/gpt-5.4-mini",
-            "anthropic/claude-sonnet-4-6",
-            "openai/gpt-5.4",
+            "openai@default/gpt-5.4-mini",
+            "anthropic@default/claude-sonnet-4-6",
+            "openai@default/gpt-5.4",
         ]
     );
 }
@@ -1969,14 +1982,14 @@ fn provider_chain_with_override_inserts_override_before_runtime_default() {
 #[test]
 fn provider_chain_for_turn_starts_at_pending_fallback_model() {
     let fixture = test_app_config(
-        "openai/gpt-5.4",
+        "openai@default/gpt-5.4",
         &[
-            "anthropic/claude-sonnet-4-6",
-            "openai-codex/gpt-5.3-codex-spark",
+            "anthropic@default/claude-sonnet-4-6",
+            "openai-codex@default/gpt-5.3-codex-spark",
         ],
     );
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
-    let pending = ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap();
+    let pending = route_ref("anthropic/claude-sonnet-4-6");
 
     let chain = catalog
         .provider_chain_for_turn(None, Some(&pending))
@@ -1987,8 +2000,8 @@ fn provider_chain_for_turn_starts_at_pending_fallback_model() {
     assert_eq!(
         chain,
         vec![
-            "anthropic/claude-sonnet-4-6",
-            "openai-codex/gpt-5.3-codex-spark",
+            "anthropic@default/claude-sonnet-4-6",
+            "openai-codex@default/gpt-5.3-codex-spark",
         ]
     );
 }
@@ -1996,8 +2009,8 @@ fn provider_chain_for_turn_starts_at_pending_fallback_model() {
 #[test]
 fn provider_chain_with_override_returns_only_override_when_fallback_disabled() {
     let mut fixture = test_app_config(
-        "anthropic/claude-sonnet-4-6",
-        &["openai/gpt-5.4", "openai-codex/gpt-5.4"],
+        "anthropic@default/claude-sonnet-4-6",
+        &["openai@default/gpt-5.4", "openai-codex@default/gpt-5.4"],
     );
     fixture
         .config
@@ -2006,7 +2019,7 @@ fn provider_chain_with_override_returns_only_override_when_fallback_disabled() {
         .disable_provider_fallback = Some(true);
     fixture.config.disable_provider_fallback = true;
 
-    let override_model = ModelRef::parse("openai/gpt-5.4-mini").unwrap();
+    let override_model = route_ref("openai/gpt-5.4-mini");
     let chain = fixture
         .config
         .provider_chain_with_override(Some(&override_model))
@@ -2014,16 +2027,16 @@ fn provider_chain_with_override_returns_only_override_when_fallback_disabled() {
         .map(|model| model.as_string())
         .collect::<Vec<_>>();
 
-    assert_eq!(chain, vec!["openai/gpt-5.4-mini"]);
+    assert_eq!(chain, vec!["openai@default/gpt-5.4-mini"]);
 }
 
 #[test]
-fn model_ref_serializes_as_string() {
-    let model_ref = ModelRef::parse("openai/gpt-5.4").unwrap();
+fn model_route_ref_serializes_as_string() {
+    let model_ref = ModelRouteRef::parse("openai@default/gpt-5.4").unwrap();
     let encoded = serde_json::to_value(&model_ref).unwrap();
-    assert_eq!(encoded, json!("openai/gpt-5.4"));
+    assert_eq!(encoded, json!("openai@default/gpt-5.4"));
 
-    let decoded: ModelRef = serde_json::from_value(encoded).unwrap();
+    let decoded: ModelRouteRef = serde_json::from_value(encoded).unwrap();
     assert_eq!(decoded, model_ref);
 }
 
@@ -2038,7 +2051,7 @@ fn persisted_config_round_trips() {
     let loaded = load_persisted_config_at(&path).unwrap();
     assert_eq!(
         get_config_key(&loaded, "model.default").unwrap(),
-        json!("openai/gpt-5.4")
+        json!("openai@default/gpt-5.4")
     );
 }
 
@@ -2355,10 +2368,8 @@ fn runtime_model_catalog_resolves_config_override_and_unknown_fallback() {
     assert_eq!(known.prompt_budget_estimated_tokens, 24_000);
     assert_eq!(known.runtime_max_output_tokens, 4_096);
 
-    let unknown = catalog.resolved_model_policy(
-        &base_context,
-        Some(&ModelRef::parse("openai/custom-model").unwrap()),
-    );
+    let unknown =
+        catalog.resolved_model_policy(&base_context, Some(&route_ref("openai/custom-model")));
     assert_eq!(unknown.prompt_budget_estimated_tokens, 12_000);
     assert_eq!(unknown.compaction_trigger_estimated_tokens, 10_000);
     assert_eq!(
@@ -2370,7 +2381,7 @@ fn runtime_model_catalog_resolves_config_override_and_unknown_fallback() {
 #[test]
 fn view_image_vision_selection_uses_primary_when_image_capable() {
     let mut fixture = test_app_config("openai/gpt-5.4", &["anthropic/claude-sonnet-4-6"]);
-    fixture.config.vision_candidate_models = vec![ModelRef::parse("openai/gpt-5.4").unwrap()];
+    fixture.config.vision_candidate_models = vec![route_ref("openai/gpt-5.4")];
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
@@ -2390,7 +2401,7 @@ fn view_image_vision_selection_uses_primary_when_image_capable() {
 #[test]
 fn view_image_vision_selection_uses_explicit_vision_model() {
     let mut fixture = test_app_config("arcee/trinity-mini", &["openai/gpt-5.4-mini"]);
-    fixture.config.vision_model = Some(ModelRef::parse("openai/gpt-5.4").unwrap());
+    fixture.config.vision_model = Some(route_ref("openai/gpt-5.4"));
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
@@ -2414,7 +2425,7 @@ fn view_image_vision_selection_uses_explicit_vision_model() {
 #[test]
 fn view_image_vision_selection_auto_discovers_authenticated_adapter() {
     let mut fixture = test_app_config("arcee/trinity-mini", &[]);
-    fixture.config.vision_candidate_models = vec![ModelRef::parse("openai/gpt-5.4-mini").unwrap()];
+    fixture.config.vision_candidate_models = vec![route_ref("openai/gpt-5.4-mini")];
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
@@ -2440,7 +2451,8 @@ fn view_image_vision_selection_auto_discovers_authenticated_adapter() {
 fn view_image_vision_selection_uses_configured_custom_auto_discovery_capabilities() {
     let mut fixture = test_app_config("arcee/trinity-mini", &[]);
     let custom_model = ModelRef::parse("custom-openai/my-vision-model").unwrap();
-    fixture.config.vision_candidate_models = vec![custom_model.clone()];
+    fixture.config.vision_candidate_models =
+        vec![ModelRouteRef::from_legacy_model_ref(&custom_model)];
     fixture.config.providers.insert(
         custom_model.provider.clone(),
         ProviderRuntimeConfig {
@@ -2513,8 +2525,7 @@ fn view_image_vision_selection_uses_configured_custom_auto_discovery_capabilitie
 #[test]
 fn view_image_vision_selection_uses_anthropic_messages_when_image_capable() {
     let mut fixture = test_app_config("anthropic/claude-sonnet-4-6", &[]);
-    fixture.config.vision_candidate_models =
-        vec![ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()];
+    fixture.config.vision_candidate_models = vec![route_ref("anthropic/claude-sonnet-4-6")];
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
@@ -2543,7 +2554,7 @@ fn view_image_vision_selection_uses_anthropic_messages_when_image_capable() {
 #[test]
 fn view_image_vision_selection_skips_image_capable_unsupported_transports() {
     let mut fixture = test_app_config("gemini/gemini-2.5-pro", &[]);
-    fixture.config.vision_candidate_models = vec![ModelRef::parse("openai/gpt-5.4-mini").unwrap()];
+    fixture.config.vision_candidate_models = vec![route_ref("openai/gpt-5.4-mini")];
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
@@ -2620,8 +2631,8 @@ fn view_image_vision_selection_prefers_primary_over_other_candidates() {
     // be selected first because it is tried before other candidates.
     let mut fixture = test_app_config("openai/gpt-5.4", &["anthropic/claude-sonnet-4-6"]);
     fixture.config.vision_candidate_models = vec![
-        ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-        ModelRef::parse("openai/gpt-5.4").unwrap(),
+        route_ref("anthropic/claude-sonnet-4-6"),
+        route_ref("openai/gpt-5.4"),
     ];
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
@@ -2740,11 +2751,11 @@ fn image_generation_config_accepts_explicit_model_ref() {
 
     assert_eq!(
         config.image_generation.default.as_deref(),
-        Some("openai-codex/gpt-5.5")
+        Some("openai-codex@default/gpt-5.5")
     );
     assert_eq!(
         get_config_key(&config, "image_generation.default").unwrap(),
-        json!("openai-codex/gpt-5.5")
+        json!("openai-codex@default/gpt-5.5")
     );
 
     unset_config_key(&mut config, "image_generation.default").unwrap();
@@ -2763,26 +2774,26 @@ fn generate_image_selection_auto_uses_turn_chain() {
         .select_generate_image_model(&ContextConfig::default(), None, None)
         .unwrap();
 
-    assert_eq!(selected.as_string(), "openai/gpt-image-2");
+    assert_eq!(selected.as_string(), "openai@default/gpt-image-2");
 }
 
 #[test]
 fn generate_image_selection_uses_explicit_image_generation_model() {
-    let mut fixture = test_app_config("openai/gpt-image-2", &[]);
-    fixture.config.image_generation_model = Some(ModelRef::parse("openai-codex/gpt-5.5").unwrap());
+    let mut fixture = test_app_config("openai@default/gpt-image-2", &[]);
+    fixture.config.image_generation_model = Some(route_ref("openai-codex@default/gpt-5.5"));
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selected = catalog
         .select_generate_image_model(&ContextConfig::default(), None, None)
         .unwrap();
 
-    assert_eq!(selected.as_string(), "openai-codex/gpt-5.5");
+    assert_eq!(selected.as_string(), "openai-codex@default/gpt-5.5");
 }
 
 #[test]
 fn generate_image_selection_requires_explicit_model_capability() {
-    let mut fixture = test_app_config("openai/gpt-image-2", &[]);
-    fixture.config.image_generation_model = Some(ModelRef::parse("openai/gpt-5.4").unwrap());
+    let mut fixture = test_app_config("openai@default/gpt-image-2", &[]);
+    fixture.config.image_generation_model = Some(route_ref("openai@default/gpt-5.4"));
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     assert!(catalog
@@ -2792,9 +2803,10 @@ fn generate_image_selection_requires_explicit_model_capability() {
 
 #[test]
 fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
-    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
-    fixture.config.image_generation_model =
-        Some(ModelRef::parse("volcengine-image-openai/doubao-seedream-5.0-lite").unwrap());
+    let mut fixture = test_app_config("openai@default/gpt-5.4", &[]);
+    fixture.config.image_generation_model = Some(route_ref(
+        "volcengine-image-openai/doubao-seedream-5.0-lite",
+    ));
     fixture.config.providers.insert(
         ProviderId::parse("volcengine-image-openai").unwrap(),
         ProviderRuntimeConfig {
@@ -2819,14 +2831,17 @@ fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
         .select_generate_image_model(&ContextConfig::default(), None, None)
         .unwrap();
 
-    assert_eq!(selected.as_string(), "volcengine/doubao-seedream-5.0-lite");
+    assert_eq!(
+        selected.as_string(),
+        "volcengine@plan/doubao-seedream-5.0-lite"
+    );
 }
 
 #[test]
 fn generate_image_selection_accepts_canonical_volcengine_seedream() {
-    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
+    let mut fixture = test_app_config("openai@default/gpt-5.4", &[]);
     fixture.config.image_generation_model =
-        Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
+        Some(route_ref("volcengine@plan/doubao-seedream-5.0-lite"));
     let legacy_provider = ProviderId::parse("volcengine-agent").unwrap();
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
     fixture.config.providers.insert(
@@ -2839,14 +2854,17 @@ fn generate_image_selection_accepts_canonical_volcengine_seedream() {
         .select_generate_image_model(&ContextConfig::default(), None, None)
         .unwrap();
 
-    assert_eq!(selected.as_string(), "volcengine/doubao-seedream-5.0-lite");
+    assert_eq!(
+        selected.as_string(),
+        "volcengine@plan/doubao-seedream-5.0-lite"
+    );
 }
 
 #[test]
 fn runtime_model_catalog_resolves_canonical_seedream_route_endpoint() {
-    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
+    let mut fixture = test_app_config("openai@default/gpt-5.4", &[]);
     fixture.config.image_generation_model =
-        Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
+        Some(route_ref("volcengine@plan/doubao-seedream-5.0-lite"));
     let legacy_provider = ProviderId::parse("volcengine-agent").unwrap();
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
     fixture.config.providers.insert(
@@ -3070,7 +3088,7 @@ fn default_provider_ready_false_for_credential_source_none() {
             builtin_web_search: None,
         },
     );
-    fixture.config.default_model = ModelRef::parse("vllm/test-model").unwrap();
+    fixture.config.default_model = route_ref("vllm/test-model");
     assert!(
         !fixture.config.default_provider_ready(),
         "CredentialSource::None providers should not be considered ready"
@@ -3080,7 +3098,7 @@ fn default_provider_ready_false_for_credential_source_none() {
 #[test]
 fn default_provider_ready_false_when_provider_missing() {
     let mut fixture = test_app_config("openai/gpt-4o", &[]);
-    fixture.config.default_model = ModelRef::parse("nonexistent/model").unwrap();
+    fixture.config.default_model = route_ref("nonexistent/model");
     assert!(
         !fixture.config.default_provider_ready(),
         "missing provider should not be ready"

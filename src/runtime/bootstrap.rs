@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{
-    config::{AppConfig, ModelRef, ModelRouteCapability, RuntimeModelCatalog},
+    config::{AppConfig, ModelRef, ModelRouteCapability, ModelRouteRef, RuntimeModelCatalog},
     context::ContextConfig,
     host::RuntimeHostBridge,
     model_catalog::BuiltInModelMetadata,
@@ -336,13 +336,13 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn apply_patch_surface_for_state(&self, state: &AgentState) -> ApplyPatchSurface {
-        let model_ref = self
+        let route_ref = self
             .selected_model_ref_for_state(state)
             .unwrap_or_else(|| self.model_state_for(state).effective_model);
-        ApplyPatchSurface::for_model_ref(&model_ref.as_string())
+        ApplyPatchSurface::for_model_ref(&route_ref.model_ref().as_string())
     }
 
-    fn selected_model_ref_for_state(&self, state: &AgentState) -> Option<ModelRef> {
+    fn selected_model_ref_for_state(&self, state: &AgentState) -> Option<ModelRouteRef> {
         let snap = self.inner.config_snapshot.load();
         snap.model_catalog
             .provider_chain_for_turn(

@@ -1212,8 +1212,8 @@ mod tests {
         }
     }
 
-    fn model_ref() -> crate::config::ModelRef {
-        crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()
+    fn model_ref() -> crate::config::ModelRouteRef {
+        crate::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap()
     }
 
     fn agent_summary(status: AgentStatus, posture: AgentSchedulingPosture) -> AgentSummary {

@@ -159,7 +159,9 @@ async fn apply_spawn_model_resolution(
         return Ok(());
     }
     let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
-    let model_ref = crate::config::ModelRef::new(provider, resolution.resolved_model.clone());
+    let model_ref = crate::config::ModelRouteRef::from_legacy_model_ref(
+        &crate::config::ModelRef::new(provider, resolution.resolved_model.clone()),
+    );
     let reasoning_effort = resolution
         .resolved_parameters
         .as_ref()
@@ -1115,7 +1117,8 @@ impl RuntimeHost {
             .clone()
             .map(Ok)
             .unwrap_or_else(|| build_provider_from_config(&config))?;
-        let apply_patch_surface = ApplyPatchSurface::for_model_ref(&model_ref.as_string());
+        let apply_patch_surface =
+            ApplyPatchSurface::for_model_ref(&model_ref.model_ref().as_string());
         let registry = ToolRegistry::new(execution.execution_root.clone());
         let available_tools = registry
             .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
@@ -2192,7 +2195,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::{
-        config::{provider_registry_for_tests, ControlAuthMode, ModelRef},
+        config::{provider_registry_for_tests, ControlAuthMode, ModelRouteRef},
         provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
         runtime::RuntimeHandle,
         runtime_db::RuntimeDb,
@@ -2371,7 +2374,7 @@ mod tests {
             api_cors: Default::default(),
             config_file_path: home_path.join("config.json"),
             stored_config: Default::default(),
-            default_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            default_model: ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap(),
             fallback_models: Vec::new(),
             vision_model: None,
             image_generation_model: None,
@@ -2657,7 +2660,10 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
         parent
-            .set_model_override(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap(), None)
+            .set_model_override(
+                ModelRouteRef::parse_compatible("anthropic/claude-haiku-4-5").unwrap(),
+                None,
+            )
             .await
             .unwrap();
 
@@ -2832,7 +2838,7 @@ mod tests {
         let child_summary = child.agent_summary().await.unwrap();
         assert_eq!(
             child_summary.model.override_model.unwrap().as_string(),
-            "anthropic/claude-haiku-4-5"
+            "anthropic@default/claude-haiku-4-5"
         );
         assert_eq!(
             child_summary.model.override_reasoning_effort.as_deref(),
@@ -3056,7 +3062,7 @@ mod tests {
         );
         assert_eq!(
             inherited.model.effective_model.as_string(),
-            "anthropic/claude-sonnet-4-6"
+            "anthropic@default/claude-sonnet-4-6"
         );
         assert!(inherited.model.override_model.is_none());
         assert_eq!(
@@ -3068,17 +3074,23 @@ mod tests {
         );
 
         let updated = runtime
-            .set_model_override(ModelRef::parse("openai/gpt-5.4").unwrap(), None)
+            .set_model_override(
+                ModelRouteRef::parse_compatible("openai@default/gpt-5.4").unwrap(),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(
             updated.source,
             crate::types::AgentModelSource::AgentOverride
         );
-        assert_eq!(updated.effective_model.as_string(), "openai/gpt-5.4");
+        assert_eq!(
+            updated.effective_model.as_string(),
+            "openai@default/gpt-5.4"
+        );
         assert_eq!(
             updated.runtime_default_model.as_string(),
-            "anthropic/claude-sonnet-4-6"
+            "anthropic@default/claude-sonnet-4-6"
         );
         assert_eq!(
             updated
@@ -3086,7 +3098,7 @@ mod tests {
                 .iter()
                 .map(|model| model.as_string())
                 .collect::<Vec<_>>(),
-            vec!["anthropic/claude-sonnet-4-6"]
+            vec!["anthropic@default/claude-sonnet-4-6"]
         );
         assert_eq!(
             updated.resolved_policy.prompt_budget_estimated_tokens,
@@ -3109,7 +3121,7 @@ mod tests {
         assert!(cleared.override_model.is_none());
         assert_eq!(
             cleared.effective_model.as_string(),
-            "anthropic/claude-sonnet-4-6"
+            "anthropic@default/claude-sonnet-4-6"
         );
         assert_eq!(
             cleared.resolved_policy.prompt_budget_estimated_tokens,
@@ -3131,7 +3143,8 @@ mod tests {
         )
         .unwrap();
         let mut state = AgentState::new("default");
-        state.model_override = Some(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap());
+        state.model_override =
+            Some(ModelRouteRef::parse_compatible("anthropic/claude-haiku-4-5").unwrap());
         storage.write_agent(&state).unwrap();
 
         let runtime = RuntimeHandle::new_reconfigurable_with_host_bridge(
@@ -3151,8 +3164,8 @@ mod tests {
         assert_eq!(
             runtime.current_provider().await.configured_model_refs(),
             vec![
-                "anthropic/claude-haiku-4-5".to_string(),
-                "anthropic/claude-sonnet-4-6".to_string(),
+                "anthropic@default/claude-haiku-4-5".to_string(),
+                "anthropic@default/claude-sonnet-4-6".to_string(),
             ]
         );
     }
@@ -3163,7 +3176,10 @@ mod tests {
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
         parent
-            .set_model_override(ModelRef::parse("anthropic/claude-haiku-4-5").unwrap(), None)
+            .set_model_override(
+                ModelRouteRef::parse_compatible("anthropic@default/claude-haiku-4-5").unwrap(),
+                None,
+            )
             .await
             .unwrap();
         let parent_state = parent.agent_state().await.unwrap();
@@ -3199,8 +3215,8 @@ mod tests {
         assert_eq!(
             child.current_provider().await.configured_model_refs(),
             vec![
-                "anthropic/claude-haiku-4-5".to_string(),
-                "anthropic/claude-sonnet-4-6".to_string(),
+                "anthropic@default/claude-haiku-4-5".to_string(),
+                "anthropic@default/claude-sonnet-4-6".to_string(),
             ]
         );
     }
@@ -4319,7 +4335,9 @@ mod tests {
         assert!(err
             .to_string()
             .contains("no available providers for configured model chain"));
-        assert!(err.to_string().contains("anthropic/claude-sonnet-4-6"));
+        assert!(err
+            .to_string()
+            .contains("anthropic@default/claude-sonnet-4-6"));
     }
 
     #[tokio::test]

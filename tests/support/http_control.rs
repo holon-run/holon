@@ -1138,7 +1138,8 @@ pub async fn skill_library_reconcile_and_check_lock_file() -> Result<()> {
 
 pub async fn control_agent_model_override_set_and_clear_updates_status() -> Result<()> {
     let mut config = test_config();
-    config.default_model = holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap();
+    config.default_model =
+        holon::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap();
     config
         .providers
         .get_mut(&holon::config::ProviderId::anthropic())
@@ -1157,7 +1158,7 @@ pub async fn control_agent_model_override_set_and_clear_updates_status() -> Resu
     assert_eq!(set_payload["model"]["source"], "agent_override");
     assert_eq!(
         set_payload["model"]["effective_model"],
-        "anthropic/claude-haiku-4-5"
+        "anthropic@default/claude-haiku-4-5"
     );
 
     let status_payload: serde_json::Value = client
@@ -1169,7 +1170,7 @@ pub async fn control_agent_model_override_set_and_clear_updates_status() -> Resu
     assert_eq!(status_payload["model"]["source"], "agent_override");
     assert_eq!(
         status_payload["agent"]["model_override"],
-        "anthropic/claude-haiku-4-5"
+        "anthropic@default/claude-haiku-4-5"
     );
 
     let clear_response = client
@@ -2038,12 +2039,18 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     );
     assert_eq!(
         valid_model_payload["runtime_surface"]["model_default"],
-        "openai/gpt-4.1"
+        "openai@default/gpt-4.1"
     );
-    assert_eq!(host.config().default_model.as_string(), "openai/gpt-4.1");
+    assert_eq!(
+        host.config().default_model.as_string(),
+        "openai@default/gpt-4.1"
+    );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
-    assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
+    assert_eq!(
+        persisted.model.default.as_deref(),
+        Some("openai@default/gpt-4.1")
+    );
 
     let provider_config_response = client
         .patch(format!("http://{addr}/api/control/runtime/config"))
@@ -2204,7 +2211,10 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
-    assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
+    assert_eq!(
+        persisted.model.default.as_deref(),
+        Some("openai@default/gpt-4.1")
+    );
     assert_eq!(
         persisted
             .web

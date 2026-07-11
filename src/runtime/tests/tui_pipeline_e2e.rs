@@ -3,7 +3,7 @@ use super::support::*;
 
 use crate::{
     client::{AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StreamEventEnvelope},
-    config::ModelRef,
+    config::ModelRouteRef,
     model_catalog::ResolvedRuntimeModelPolicy,
     provider::test_support::{ScriptedAgentProvider, ScriptedProviderStep},
     system::{ExecutionProfile, ExecutionSnapshot},
@@ -42,11 +42,13 @@ fn minimal_agent_summary(agent_id: &str) -> AgentSummary {
         lifecycle: AgentLifecycleHint::default(),
         scheduling_posture: Default::default(),
         model: AgentModelState {
-            effective_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            effective_model: ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6")
+                .unwrap(),
             requested_model: None,
             active_model: None,
             fallback_active: false,
-            runtime_default_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            runtime_default_model: ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6")
+                .unwrap(),
             override_model: None,
             override_reasoning_effort: None,
             source: AgentModelSource::RuntimeDefault,

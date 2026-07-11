@@ -19,6 +19,7 @@ describe("projectModelOptions", () => {
     expect(options).toEqual([
       expect.objectContaining({
         model: "openai-codex/gpt-5.5",
+        routeRef: "openai-codex@default/gpt-5.5",
         provider: "openai-codex",
         supportsReasoningEffort: true,
       }),
@@ -47,6 +48,7 @@ describe("projectModelOptions", () => {
 
     expect(options).toEqual([
       expect.objectContaining({
+        routeRef: "volcengine@plan/doubao-seedream-5.0-lite",
         provider: "volcengine",
         providerFamily: "volcengine",
         endpoint: "plan",
@@ -76,6 +78,7 @@ describe("projectModelOptions", () => {
 
     expect(options[0]).toEqual(
       expect.objectContaining({
+        routeRef: "volcengine@plan/doubao-seed-2.0-pro",
         providerFamily: "volcengine",
         endpoint: "plan",
         routeProvider: "volcengine-agent",

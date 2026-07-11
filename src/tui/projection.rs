@@ -1303,10 +1303,10 @@ impl TuiProjection {
         let has_requested_model = payload.get("requested_model").is_some();
         let has_active_model = payload.get("active_model").is_some();
         let requested_model = payload.get("requested_model").and_then(|value| {
-            decode_value::<Option<crate::config::ModelRef>>(value.clone()).unwrap_or(None)
+            decode_value::<Option<crate::config::ModelRouteRef>>(value.clone()).unwrap_or(None)
         });
         let active_model = payload.get("active_model").and_then(|value| {
-            decode_value::<Option<crate::config::ModelRef>>(value.clone()).unwrap_or(None)
+            decode_value::<Option<crate::config::ModelRouteRef>>(value.clone()).unwrap_or(None)
         });
         let fallback_active = payload.get("fallback_active").and_then(Value::as_bool);
 
@@ -1817,6 +1817,10 @@ mod tests {
 
     fn test_log_writer() -> crate::tui::logging::TuiLogWriter {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap()
+    }
+
+    fn route_ref(value: &str) -> crate::config::ModelRouteRef {
+        crate::config::ModelRouteRef::parse_compatible(value).unwrap()
     }
 
     #[test]
@@ -2852,7 +2856,7 @@ mod tests {
     fn projection_updates_model_from_override_lifecycle_events() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let mut model = projection.agent.model.clone();
-        let override_model = crate::config::ModelRef::parse("openai/gpt-5.4").unwrap();
+        let override_model = route_ref("openai/gpt-5.4");
         model.source = AgentModelSource::AgentOverride;
         model.effective_model = override_model.clone();
         model.requested_model = Some(override_model.clone());
@@ -2879,7 +2883,7 @@ mod tests {
                 .override_model
                 .as_ref()
                 .map(|model| model.as_string()),
-            Some("openai/gpt-5.4".into())
+            Some("openai@default/gpt-5.4".into())
         );
         assert_eq!(
             projection.agent.model.override_reasoning_effort.as_deref(),
@@ -2910,7 +2914,7 @@ mod tests {
                 .requested_model
                 .as_ref()
                 .map(|model| model.as_string()),
-            Some("openai/gpt-5.4".into())
+            Some("openai@default/gpt-5.4".into())
         );
         assert_eq!(
             projection
@@ -2919,7 +2923,7 @@ mod tests {
                 .active_model
                 .as_ref()
                 .map(|model| model.as_string()),
-            Some("anthropic/claude-sonnet-4-6".into())
+            Some("anthropic@default/claude-sonnet-4-6".into())
         );
         assert!(projection.agent.model.fallback_active);
         assert!(!projection.stale_slices.contains(&ProjectionSlice::Agent));
@@ -3489,19 +3493,11 @@ mod tests {
             lifecycle: AgentLifecycleHint::default(),
             scheduling_posture: Default::default(),
             model: AgentModelState {
-                effective_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")
-                    .unwrap(),
-                requested_model: Some(
-                    crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-                ),
-                active_model: Some(
-                    crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-                ),
+                effective_model: route_ref("anthropic/claude-sonnet-4-6"),
+                requested_model: Some(route_ref("anthropic/claude-sonnet-4-6")),
+                active_model: Some(route_ref("anthropic/claude-sonnet-4-6")),
                 fallback_active: false,
-                runtime_default_model: crate::config::ModelRef::parse(
-                    "anthropic/claude-sonnet-4-6",
-                )
-                .unwrap(),
+                runtime_default_model: route_ref("anthropic/claude-sonnet-4-6"),
                 override_model: None,
                 override_reasoning_effort: None,
                 source: AgentModelSource::RuntimeDefault,

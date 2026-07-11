@@ -19,6 +19,7 @@ pub mod http;
 pub mod ingress;
 pub mod memory;
 pub mod model_catalog;
+pub mod model_config_migration;
 pub mod model_discovery;
 pub mod notes_catalog;
 pub mod object_query_cache;

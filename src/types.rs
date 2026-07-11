@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::config::ModelRef;
+use crate::config::ModelRouteRef;
 use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;
 use crate::system::{
@@ -1872,15 +1872,15 @@ pub struct AgentState {
     #[serde(default)]
     pub last_continuation: Option<ContinuationResolution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_override: Option<ModelRef>,
+    pub model_override: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_fallback_model: Option<ModelRef>,
+    pub pending_fallback_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_requested_model: Option<ModelRef>,
+    pub last_requested_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_active_model: Option<ModelRef>,
+    pub last_active_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_turn_terminal: Option<TurnTerminalRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4402,13 +4402,13 @@ pub struct AgentModelOverrideAuditEvent {
     #[serde(alias = "session_id")]
     pub agent_id: String,
     pub source: AgentModelSource,
-    pub effective_model: ModelRef,
+    pub effective_model: ModelRouteRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_model: Option<ModelRef>,
+    pub requested_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_model: Option<ModelRef>,
+    pub active_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_model: Option<ModelRef>,
+    pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
     #[serde(default)]
@@ -4736,18 +4736,18 @@ pub enum AgentModelSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentModelState {
     pub source: AgentModelSource,
-    pub runtime_default_model: ModelRef,
-    pub effective_model: ModelRef,
+    pub runtime_default_model: ModelRouteRef,
+    pub effective_model: ModelRouteRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_model: Option<ModelRef>,
+    pub requested_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_model: Option<ModelRef>,
+    pub active_model: Option<ModelRouteRef>,
     #[serde(default)]
     pub fallback_active: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effective_fallback_models: Vec<ModelRef>,
+    pub effective_fallback_models: Vec<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_model: Option<ModelRef>,
+    pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
     #[serde(default)]
@@ -4906,18 +4906,18 @@ pub struct AgentSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentListModelSummary {
     pub source: AgentModelSource,
-    pub runtime_default_model: ModelRef,
-    pub effective_model: ModelRef,
+    pub runtime_default_model: ModelRouteRef,
+    pub effective_model: ModelRouteRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_model: Option<ModelRef>,
+    pub requested_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_model: Option<ModelRef>,
+    pub active_model: Option<ModelRouteRef>,
     #[serde(default)]
     pub fallback_active: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effective_fallback_models: Vec<ModelRef>,
+    pub effective_fallback_models: Vec<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_model: Option<ModelRef>,
+    pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
 }
@@ -5368,7 +5368,7 @@ mod tests {
 
         assert_eq!(
             model.effective_model,
-            ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()
+            ModelRouteRef::parse("anthropic@default/claude-sonnet-4-6").unwrap()
         );
         assert_eq!(
             model.resolved_policy.source,

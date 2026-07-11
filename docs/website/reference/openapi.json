@@ -664,6 +664,163 @@
         "title": "MemoryGetResult",
         "type": "object"
       },
+      "ModelConfigMigrationReport": {
+        "properties": {
+          "agent_state": {
+            "properties": {
+              "backup_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "changed": {
+                "type": "boolean"
+              },
+              "fields": {
+                "items": {
+                  "properties": {
+                    "current": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "proposed": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "canonical",
+                        "legacy",
+                        "invalid",
+                        "ambiguous"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "location",
+                    "status",
+                    "current"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "changed",
+              "fields"
+            ],
+            "type": "object"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "config": {
+            "properties": {
+              "backup_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "changed": {
+                "type": "boolean"
+              },
+              "fields": {
+                "items": {
+                  "properties": {
+                    "current": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "proposed": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "canonical",
+                        "legacy",
+                        "invalid",
+                        "ambiguous"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "location",
+                    "status",
+                    "current"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "changed",
+              "fields"
+            ],
+            "type": "object"
+          },
+          "config_file_path": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "runtime_db_path": {
+            "type": "string"
+          },
+          "write": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "write",
+          "changed",
+          "config_file_path",
+          "runtime_db_path",
+          "config",
+          "agent_state"
+        ],
+        "title": "ModelConfigMigrationReport",
+        "type": "object"
+      },
+      "ModelConfigMigrationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "write": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "title": "ModelConfigMigrationRequest",
+        "type": "object"
+      },
       "OperatorIngressRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -8336,6 +8493,64 @@
           }
         ],
         "summary": "Update runtime config",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/config/migrate-model-routes": {
+      "post": {
+        "description": "Inspect legacy model route references or persist a complete canonical migration across config.json and agent state.",
+        "operationId": "migrateModelConfigRoutes",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelConfigMigrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelConfigMigrationReport"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Migrate model config routes",
         "tags": [
           "runtime"
         ]

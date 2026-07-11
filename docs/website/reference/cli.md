@@ -150,10 +150,19 @@ holon agent abort reviewer
 ### Model selection
 
 ```bash
-holon config set model.default "deepseek-anthropic/deepseek-v4-pro"
-holon agent model set "anthropic/claude-sonnet-4-6" reviewer
+holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
+holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 holon agent model get reviewer
 holon agent model clear reviewer
+```
+
+Executable model selections use canonical
+`provider@endpoint/model` route refs. Legacy `provider/model` input remains
+accepted. Inspect or rewrite persisted legacy values with:
+
+```bash
+holon config migrate-model-routes          # dry-run
+holon config migrate-model-routes --write  # validated canonical rewrite
 ```
 
 ### Daemon management

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    config::{provider_registry_for_tests, AppConfig, ControlAuthMode, ModelRef},
+    config::{provider_registry_for_tests, AppConfig, ControlAuthMode},
     prompt::PromptStability,
     tool::{ToolRegistry, ToolSpec},
 };
@@ -291,10 +291,10 @@ pub fn test_config(
         api_cors: Default::default(),
         config_file_path: home_path.join("config.json"),
         stored_config: Default::default(),
-        default_model: ModelRef::parse(default_model).unwrap(),
+        default_model: crate::config::ModelRouteRef::parse_compatible(default_model).unwrap(),
         fallback_models: fallback_models
             .iter()
-            .map(|value| ModelRef::parse(value).unwrap())
+            .map(|value| crate::config::ModelRouteRef::parse_compatible(value).unwrap())
             .collect(),
         vision_model: None,
         image_generation_model: None,

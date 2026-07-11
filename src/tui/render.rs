@@ -1063,6 +1063,10 @@ mod tests {
     use serde_json::{json, Value};
     use std::path::PathBuf;
 
+    fn route_ref(value: &str) -> crate::config::ModelRouteRef {
+        crate::config::ModelRouteRef::parse_compatible(value).unwrap()
+    }
+
     fn sample_agent_summary() -> AgentSummary {
         let mut state = AgentState::new("default");
         state.status = crate::types::AgentStatus::AwakeIdle;
@@ -1084,19 +1088,11 @@ mod tests {
             lifecycle: AgentLifecycleHint::default(),
             scheduling_posture: Default::default(),
             model: AgentModelState {
-                effective_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")
-                    .unwrap(),
-                requested_model: Some(
-                    crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-                ),
-                active_model: Some(
-                    crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-                ),
+                effective_model: route_ref("anthropic/claude-sonnet-4-6"),
+                requested_model: Some(route_ref("anthropic/claude-sonnet-4-6")),
+                active_model: Some(route_ref("anthropic/claude-sonnet-4-6")),
                 fallback_active: false,
-                runtime_default_model: crate::config::ModelRef::parse(
-                    "anthropic/claude-sonnet-4-6",
-                )
-                .unwrap(),
+                runtime_default_model: route_ref("anthropic/claude-sonnet-4-6"),
                 override_model: None,
                 override_reasoning_effort: None,
                 source: AgentModelSource::RuntimeDefault,
@@ -1263,30 +1259,25 @@ mod tests {
         let inherited = sample_agent_summary();
         assert_eq!(
             render_model_status(&inherited),
-            "model: anthropic/claude-sonnet-4-6"
+            "model: anthropic@default/claude-sonnet-4-6"
         );
 
         let mut overridden = sample_agent_summary();
-        overridden.model.override_model =
-            Some(crate::config::ModelRef::parse("openai/gpt-5.4").unwrap());
-        overridden.model.effective_model =
-            crate::config::ModelRef::parse("openai/gpt-5.4").unwrap();
-        overridden.model.active_model =
-            Some(crate::config::ModelRef::parse("openai/gpt-5.4").unwrap());
+        overridden.model.override_model = Some(route_ref("openai/gpt-5.4"));
+        overridden.model.effective_model = route_ref("openai/gpt-5.4");
+        overridden.model.active_model = Some(route_ref("openai/gpt-5.4"));
         assert_eq!(
             render_model_status(&overridden),
-            "model: openai/gpt-5.4 (agent override)"
+            "model: openai@default/gpt-5.4 (agent override)"
         );
 
         let mut fallback = overridden;
-        fallback.model.requested_model =
-            Some(crate::config::ModelRef::parse("openai/gpt-5.4").unwrap());
-        fallback.model.active_model =
-            Some(crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap());
+        fallback.model.requested_model = Some(route_ref("openai/gpt-5.4"));
+        fallback.model.active_model = Some(route_ref("anthropic/claude-sonnet-4-6"));
         fallback.model.fallback_active = true;
         assert_eq!(
             render_model_status(&fallback),
-            "model: anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"
+            "model: anthropic@default/claude-sonnet-4-6 (fallback from openai@default/gpt-5.4)"
         );
     }
 

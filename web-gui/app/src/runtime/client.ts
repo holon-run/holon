@@ -1971,19 +1971,25 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
   if (response.model_availability?.length) {
     return response.model_availability
       .filter((entry): entry is ModelAvailabilityDto & { model: string } => Boolean(entry.model))
-      .map((entry) => ({
-        model: entry.model,
-        provider: entry.provider ?? entry.model.split("/")[0] ?? "unknown",
-        providerFamily: entry.provider_family ?? entry.provider ?? entry.model.split("/")[0] ?? "unknown",
-        endpoint: entry.endpoint ?? "default",
-        routeProvider: entry.route_provider ?? entry.provider ?? entry.model.split("/")[0] ?? "unknown",
-        displayName: entry.display_name ?? entry.model,
-        available: entry.available ?? false,
-        unavailableReason: entry.unavailable_reason,
-        supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
-        supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? false,
-        supportsReasoningEffort: supportsReasoningEffort(entry),
-      }))
+      .map((entry) => {
+        const provider = entry.provider ?? entry.model.split("/")[0] ?? "unknown";
+        const providerFamily = entry.provider_family ?? provider;
+        const endpoint = entry.endpoint ?? "default";
+        return {
+          model: entry.model,
+          routeRef: modelRouteRef(entry.model, providerFamily, endpoint),
+          provider,
+          providerFamily,
+          endpoint,
+          routeProvider: entry.route_provider ?? provider,
+          displayName: entry.display_name ?? entry.model,
+          available: entry.available ?? false,
+          unavailableReason: entry.unavailable_reason,
+          supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
+          supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? false,
+          supportsReasoningEffort: supportsReasoningEffort(entry),
+        };
+      })
       .sort(compareModelOptions);
   }
 
@@ -1991,12 +1997,16 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
     .map((entry) => {
       const model = typeof entry === "string" ? entry : entry.model;
       if (!model) return undefined;
+      const provider = typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider ?? model.split("/")[0] ?? "unknown");
+      const providerFamily = typeof entry === "string" ? provider : (entry.provider_family ?? provider);
+      const endpoint = typeof entry === "string" ? "default" : (entry.endpoint ?? "default");
       return {
         model,
-        provider: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider ?? model.split("/")[0] ?? "unknown"),
-        providerFamily: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider_family ?? entry.provider ?? model.split("/")[0] ?? "unknown"),
-        endpoint: typeof entry === "string" ? "default" : (entry.endpoint ?? "default"),
-        routeProvider: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.route_provider ?? entry.provider ?? model.split("/")[0] ?? "unknown"),
+        routeRef: modelRouteRef(model, providerFamily, endpoint),
+        provider,
+        providerFamily,
+        endpoint,
+        routeProvider: typeof entry === "string" ? provider : (entry.route_provider ?? provider),
         displayName: typeof entry === "string" ? model : (entry.display_name ?? model),
         available: true,
         supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),
@@ -2006,6 +2016,13 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
     })
     .filter((entry): entry is RuntimeModelOption => Boolean(entry))
     .sort(compareModelOptions);
+}
+
+function modelRouteRef(model: string, providerFamily: string, endpoint: string): string {
+  const separator = model.indexOf("/");
+  if (separator > 0 && model.slice(0, separator).includes("@")) return model;
+  const modelName = separator >= 0 ? model.slice(separator + 1) : model;
+  return `${providerFamily}@${endpoint}/${modelName}`;
 }
 
 function supportsReasoningEffort(entry: ModelAvailabilityDto | RuntimeAvailableModelDto): boolean {

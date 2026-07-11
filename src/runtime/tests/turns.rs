@@ -970,11 +970,11 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
     );
     assert_eq!(
         assistant_round.data["requested_model"].as_str(),
-        Some("openai/gpt-5.4")
+        Some("openai@default/gpt-5.4")
     );
     assert_eq!(
         assistant_round.data["active_model"].as_str(),
-        Some("anthropic/claude-sonnet-4-6")
+        Some("anthropic@default/claude-sonnet-4-6")
     );
     assert_eq!(
         assistant_round.data["fallback_active"].as_bool(),
@@ -1026,11 +1026,11 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
         .is_some());
     assert_eq!(
         provider_event.data["requested_model"].as_str(),
-        Some("openai/gpt-5.4")
+        Some("openai@default/gpt-5.4")
     );
     assert_eq!(
         provider_event.data["active_model"].as_str(),
-        Some("anthropic/claude-sonnet-4-6")
+        Some("anthropic@default/claude-sonnet-4-6")
     );
     assert_eq!(provider_event.data["fallback_active"].as_bool(), Some(true));
 }
@@ -1070,7 +1070,7 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
             .as_ref()
             .map(|model| model.as_string())
             .as_deref(),
-        Some("anthropic/claude-sonnet-4-6")
+        Some("anthropic@default/claude-sonnet-4-6")
     );
     assert_eq!(
         state.last_turn_terminal.as_ref().map(|record| record.kind),

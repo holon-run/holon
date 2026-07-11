@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::config::ModelRef;
+use crate::config::ModelRouteRef;
 use crate::provider::{
     ConversationMessage, ModelBlock, PromptContentBlock, ProviderAttemptTimeline,
     ProviderPromptFrame, ToolResultBlock,
@@ -148,8 +148,8 @@ pub(super) fn estimate_prompt_frame_tokens(prompt_frame: &ProviderPromptFrame) -
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ProviderAttemptModelState {
-    pub(super) requested_model: Option<ModelRef>,
-    pub(super) active_model: Option<ModelRef>,
+    pub(super) requested_model: Option<ModelRouteRef>,
+    pub(super) active_model: Option<ModelRouteRef>,
     pub(super) fallback_active: bool,
 }
 
@@ -185,13 +185,13 @@ pub(super) fn provider_attempt_model_state(
         return ProviderAttemptModelState::default();
     };
     let requested_model = (!timeline.requested_model_ref.is_empty())
-        .then(|| ModelRef::parse(&timeline.requested_model_ref).ok())
+        .then(|| ModelRouteRef::parse_compatible(&timeline.requested_model_ref).ok())
         .flatten();
     let active_model = timeline
         .active_model_ref
         .as_deref()
         .or(timeline.winning_model_ref.as_deref())
-        .and_then(|model| ModelRef::parse(model).ok());
+        .and_then(|model| ModelRouteRef::parse_compatible(model).ok());
     let fallback_active = requested_model
         .as_ref()
         .zip(active_model.as_ref())

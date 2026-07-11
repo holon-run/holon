@@ -363,12 +363,12 @@ export function SettingsPage({
   const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
   const searchProviderCount = surface?.webSearchProviders.length ?? 0;
   const configuredSearchProviderCount = surface?.webSearchProviders.filter((provider) => provider.credentialConfigured).length ?? 0;
-  const visionRouteProvider = modelCatalog.options.find((model) => model.model === visionDefault)?.routeProvider
+  const visionRouteProvider = modelCatalog.options.find((model) => model.routeRef === visionDefault)?.routeProvider
     ?? visionDefault.split("/")[0];
   const visionProviderReady = visionDefault
     ? surface?.providers.find((provider) => provider.id === visionRouteProvider)?.credentialConfigured
     : undefined;
-  const imageGenRouteProvider = modelCatalog.options.find((model) => model.model === imageGenDefault)?.routeProvider
+  const imageGenRouteProvider = modelCatalog.options.find((model) => model.routeRef === imageGenDefault)?.routeProvider
     ?? imageGenDefault.split("/")[0];
   const imageGenProviderReady = imageGenDefault
     ? surface?.providers.find((provider) => provider.id === imageGenRouteProvider)?.credentialConfigured
@@ -779,7 +779,7 @@ export function SettingsPage({
                   <input list="available-models" value={modelDefault} onChange={(event) => setModelDefault(event.target.value)} />
                   <datalist id="available-models">
                     {availableModels.map((model) => (
-                      <option key={model.model} value={model.model}>
+                      <option key={model.routeRef} value={model.routeRef}>
                         {model.displayName}
                       </option>
                     ))}
@@ -833,25 +833,25 @@ export function SettingsPage({
                            setModelFallbacks(modelFallbacks.slice(0, -1));
                          }
                        }}
-                       placeholder={modelFallbacks.length === 0 ? "provider/model" : ""}
+                         placeholder={modelFallbacks.length === 0 ? "provider@endpoint/model" : ""}
                      />
                      {fallbackInput && (
                        availableModels
-                         .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.model))
+                         .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.routeRef))
                          .slice(0, 10)
                          .length > 0 && (
                          <div className="settings-chip-suggestions">
                            {availableModels
-                             .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.model))
+                             .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.routeRef))
                              .slice(0, 10)
                              .map((model) => (
                                <button
-                                 key={model.model}
+                                 key={model.routeRef}
                                  type="button"
                                  className="settings-chip-suggestion"
                                  onClick={() => {
-                                   if (!modelFallbacks.includes(model.model)) {
-                                     setModelFallbacks([...modelFallbacks, model.model]);
+                                   if (!modelFallbacks.includes(model.routeRef)) {
+                                     setModelFallbacks([...modelFallbacks, model.routeRef]);
                                    }
                                    setFallbackInput("");
                                  }}
@@ -940,10 +940,10 @@ export function SettingsPage({
               >
                 <label>
                   <span>{t("settings.visionDefaultModel")}</span>
-                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider@endpoint/model or empty for auto" />
                   <datalist id="vision-models">
                     {visionModels.map((model) => (
-                      <option key={model.model} value={model.model}>
+                      <option key={model.routeRef} value={model.routeRef}>
                         {model.displayName}
                       </option>
                     ))}
@@ -990,10 +990,10 @@ export function SettingsPage({
               >
                 <label>
                   <span>{t("settings.imageGenDefaultModel")}</span>
-                  <input list="image-gen-models" value={imageGenDefault} onChange={(event) => setImageGenDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                  <input list="image-gen-models" value={imageGenDefault} onChange={(event) => setImageGenDefault(event.target.value)} placeholder="provider@endpoint/model or empty for auto" />
                   <datalist id="image-gen-models">
                     {imageGenModels.map((model) => (
-                      <option key={model.model} value={model.model}>
+                      <option key={model.routeRef} value={model.routeRef}>
                         {model.displayName}
                       </option>
                     ))}
@@ -1639,7 +1639,7 @@ export function SettingsPage({
                   </header>
                   <div className="model-table" role="table" aria-label={`${provider} models`}>
                     {models.map((model) => (
-                      <div className="model-table-row" role="row" key={model.model}>
+                      <div className="model-table-row" role="row" key={model.routeRef}>
                         <div role="cell">
                           <strong>{model.displayName}</strong>
                           <span>{model.model}</span>

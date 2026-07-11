@@ -8,8 +8,8 @@ use std::sync::{
 use super::support::*;
 use super::*;
 use crate::config::{
-    CredentialKind, CredentialSource, ModelRef, ProviderAuthConfig, ProviderEndpointId, ProviderId,
-    ProviderRuntimeConfig, ProviderTransportKind,
+    CredentialKind, CredentialSource, ModelRouteRef, ProviderAuthConfig, ProviderEndpointId,
+    ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
 };
 use crate::provider::retry::{
     classify_provider_error, ProviderFailureKind, RetryDisposition, PROVIDER_MAX_RETRIES,
@@ -18,13 +18,17 @@ use axum::{extract::State, http::header, response::IntoResponse, routing::post, 
 use chrono::Utc;
 use serde_json::{json, Value};
 
+fn route_ref(value: &str) -> ModelRouteRef {
+    ModelRouteRef::parse_compatible(value).unwrap()
+}
+
 #[test]
 fn build_candidate_routes_openai_model_refs() {
     let fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
     let config = &fixture.config;
-    let model_ref = ModelRef::parse("openai/gpt-5.4").unwrap();
+    let model_ref = route_ref("openai/gpt-5.4");
     let candidate = build_candidate(config, &model_ref).unwrap();
-    assert_eq!(candidate.model_ref, "openai/gpt-5.4");
+    assert_eq!(candidate.model_ref, "openai@default/gpt-5.4");
 
     let provider = OpenAiProvider::from_config(config, "gpt-5.4").unwrap();
     let _typed: Arc<dyn super::super::AgentProvider> = Arc::new(provider);
@@ -33,16 +37,16 @@ fn build_candidate_routes_openai_model_refs() {
 #[test]
 fn build_candidate_routes_anthropic_model_refs() {
     let fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
+        "anthropic@default/claude-sonnet-4-6",
         &[],
         None,
         Some("anthropic-token"),
         false,
     );
     let config = &fixture.config;
-    let model_ref = ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap();
+    let model_ref = route_ref("anthropic@default/claude-sonnet-4-6");
     let candidate = build_candidate(config, &model_ref).unwrap();
-    assert_eq!(candidate.model_ref, "anthropic/claude-sonnet-4-6");
+    assert_eq!(candidate.model_ref, "anthropic@default/claude-sonnet-4-6");
 
     let provider = AnthropicProvider::from_config_with_model(config, "claude-sonnet-4-6").unwrap();
     let _typed: Arc<dyn super::super::AgentProvider> = Arc::new(provider);
@@ -50,11 +54,11 @@ fn build_candidate_routes_anthropic_model_refs() {
 
 #[test]
 fn build_candidate_routes_codex_model_refs() {
-    let fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    let fixture = test_config("openai-codex@default/gpt-5.4", &[], None, None, true);
     let config = &fixture.config;
-    let model_ref = ModelRef::parse("openai-codex/gpt-5.4").unwrap();
+    let model_ref = route_ref("openai-codex@default/gpt-5.4");
     let candidate = build_candidate(config, &model_ref).unwrap();
-    assert_eq!(candidate.model_ref, "openai-codex/gpt-5.4");
+    assert_eq!(candidate.model_ref, "openai-codex@default/gpt-5.4");
 
     let provider = OpenAiCodexProvider::from_config(config, "gpt-5.4").unwrap();
     let _typed: Arc<dyn super::super::AgentProvider> = Arc::new(provider);
@@ -62,7 +66,7 @@ fn build_candidate_routes_codex_model_refs() {
 
 #[test]
 fn build_candidate_routes_gemini_model_refs() {
-    let mut fixture = test_config("gemini/gemini-3-pro", &[], None, None, false);
+    let mut fixture = test_config("gemini@default/gemini-3-pro", &[], None, None, false);
     let gemini = fixture
         .config
         .providers
@@ -71,9 +75,9 @@ fn build_candidate_routes_gemini_model_refs() {
     gemini.credential = Some("gemini-key".into());
 
     let config = &fixture.config;
-    let model_ref = ModelRef::parse("gemini/gemini-3-pro").unwrap();
+    let model_ref = route_ref("gemini/gemini-3-pro");
     let candidate = build_candidate(config, &model_ref).unwrap();
-    assert_eq!(candidate.model_ref, "gemini/gemini-3-pro");
+    assert_eq!(candidate.model_ref, "gemini@default/gemini-3-pro");
 
     let provider_config = config.providers.get(&ProviderId::gemini()).unwrap();
     let provider = GeminiProvider::from_runtime_config(
@@ -88,41 +92,33 @@ fn build_candidate_routes_gemini_model_refs() {
 
 #[test]
 fn build_candidate_reports_missing_auth_for_each_provider() {
-    let openai = test_config("openai/gpt-5.4", &[], None, None, false);
-    let openai_err = build_candidate(&openai.config, &ModelRef::parse("openai/gpt-5.4").unwrap())
+    let openai = test_config("openai@default/gpt-5.4", &[], None, None, false);
+    let openai_err = build_candidate(&openai.config, &route_ref("openai@default/gpt-5.4"))
         .err()
         .expect("missing OPENAI_API_KEY should fail openai candidate");
     assert!(openai_err.to_string().contains("missing OPENAI_API_KEY"));
 
     let anthropic = test_config("anthropic/claude-sonnet-4-6", &[], None, None, false);
-    let anthropic_err = build_candidate(
-        &anthropic.config,
-        &ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-    )
-    .err()
-    .expect("missing ANTHROPIC_AUTH_TOKEN should fail anthropic candidate");
+    let anthropic_err =
+        build_candidate(&anthropic.config, &route_ref("anthropic/claude-sonnet-4-6"))
+            .err()
+            .expect("missing ANTHROPIC_AUTH_TOKEN should fail anthropic candidate");
     assert!(anthropic_err
         .to_string()
         .contains("missing ANTHROPIC_AUTH_TOKEN"));
 
     let codex = test_config("openai-codex/gpt-5.4", &[], None, None, false);
-    let codex_err = build_candidate(
-        &codex.config,
-        &ModelRef::parse("openai-codex/gpt-5.4").unwrap(),
-    )
-    .err()
-    .expect("missing Codex auth should fail codex candidate");
+    let codex_err = build_candidate(&codex.config, &route_ref("openai-codex/gpt-5.4"))
+        .err()
+        .expect("missing Codex auth should fail codex candidate");
     assert!(codex_err
         .to_string()
         .contains("no Holon openai-codex credential profile or usable Codex CLI credentials"));
 
     let gemini = test_config("gemini/gemini-3-pro", &[], None, None, false);
-    let gemini_err = build_candidate(
-        &gemini.config,
-        &ModelRef::parse("gemini/gemini-3-pro").unwrap(),
-    )
-    .err()
-    .expect("missing GEMINI_API_KEY should fail gemini candidate");
+    let gemini_err = build_candidate(&gemini.config, &route_ref("gemini/gemini-3-pro"))
+        .err()
+        .expect("missing GEMINI_API_KEY should fail gemini candidate");
     assert!(gemini_err.to_string().contains("missing GEMINI_API_KEY"));
 }
 
@@ -212,20 +208,20 @@ fn build_provider_from_config_uses_effective_fallback_order() {
 
     let doctor = provider_doctor(config);
     let providers = doctor["providers"].as_array().unwrap();
-    assert_eq!(providers[0]["model"], "openai-codex/gpt-5.4");
+    assert_eq!(providers[0]["model"], "openai-codex@default/gpt-5.4");
     assert_eq!(providers[0]["availability"]["available"], Value::Bool(true));
-    assert_eq!(providers[1]["model"], "openai/gpt-5.4");
+    assert_eq!(providers[1]["model"], "openai@default/gpt-5.4");
     assert_eq!(
         providers[1]["availability"]["available"],
         Value::Bool(false)
     );
-    assert_eq!(providers[2]["model"], "anthropic/claude-sonnet-4-6");
+    assert_eq!(providers[2]["model"], "anthropic@default/claude-sonnet-4-6");
     assert_eq!(providers[2]["availability"]["available"], Value::Bool(true));
 }
 
 #[tokio::test]
 async fn openai_codex_expired_cli_token_fails_fast_with_login_hint() {
-    let fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    let fixture = test_config("openai-codex@default/gpt-5.4", &[], None, None, true);
     let codex_home = fixture
         .config
         .providers
@@ -331,16 +327,18 @@ fn build_provider_from_config_fails_when_no_provider_is_available() {
     assert!(err
         .to_string()
         .contains("no available providers for configured model chain"));
-    assert!(err.to_string().contains("openai-codex/gpt-5.4"));
-    assert!(err.to_string().contains("openai/gpt-5.4"));
-    assert!(err.to_string().contains("anthropic/claude-sonnet-4-6"));
+    assert!(err.to_string().contains("openai-codex@default/gpt-5.4"));
+    assert!(err.to_string().contains("openai@default/gpt-5.4"));
+    assert!(err
+        .to_string()
+        .contains("anthropic@default/claude-sonnet-4-6"));
 }
 
 #[test]
 fn fallback_provider_reports_conservative_prompt_capability_intersection() {
     let fixture = test_config(
-        "openai/gpt-5.4",
-        &["anthropic/claude-sonnet-4-6"],
+        "openai@default/gpt-5.4",
+        &["anthropic@default/claude-sonnet-4-6"],
         Some("sk-test-key"),
         Some("sk-ant-test-token"),
         false,
@@ -403,12 +401,12 @@ fn provider_doctor_reports_when_provider_fallback_is_disabled() {
     assert_eq!(doctor["disable_provider_fallback"], Value::Bool(true));
     let providers = doctor["providers"].as_array().unwrap();
     assert_eq!(providers.len(), 1);
-    assert_eq!(providers[0]["model"], "anthropic/claude-sonnet-4-6");
+    assert_eq!(providers[0]["model"], "anthropic@default/claude-sonnet-4-6");
 }
 
 #[test]
 fn provider_doctor_reports_codex_as_available_when_credentials_exist() {
-    let fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    let fixture = test_config("openai-codex@default/gpt-5.4", &[], None, None, true);
     let doctor = provider_doctor(&fixture.config);
     assert_eq!(
         doctor["retry_policy"]["max_retries_per_provider"],
@@ -993,7 +991,7 @@ async fn openai_provider_retries_transient_server_errors() {
     let timeline = diagnostics.expect("missing attempt timeline");
     assert_eq!(
         timeline.winning_model_ref.as_deref(),
-        Some("openai/gpt-5.4")
+        Some("openai@default/gpt-5.4")
     );
     assert_eq!(
         timeline
@@ -1199,7 +1197,7 @@ async fn provider_fallback_defers_after_retry_exhaustion() {
     assert_eq!(timeline.winning_model_ref.as_deref(), None);
     assert_eq!(
         timeline.pending_fallback_model_ref.as_deref(),
-        Some("anthropic/claude-sonnet-4-6")
+        Some("anthropic@default/claude-sonnet-4-6")
     );
     assert_eq!(
         timeline
@@ -1289,12 +1287,12 @@ async fn provider_fallback_defers_after_fail_fast_error() {
     assert_eq!(anthropic_attempts.load(Ordering::SeqCst), 0);
     let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
     assert_eq!(timeline.attempts.len(), 1);
-    assert_eq!(timeline.requested_model_ref, "openai/gpt-5.4");
+    assert_eq!(timeline.requested_model_ref, "openai@default/gpt-5.4");
     assert_eq!(timeline.active_model_ref.as_deref(), None);
     assert_eq!(timeline.winning_model_ref.as_deref(), None);
     assert_eq!(
         timeline.pending_fallback_model_ref.as_deref(),
-        Some("anthropic/claude-sonnet-4-6")
+        Some("anthropic@default/claude-sonnet-4-6")
     );
     assert_eq!(
         timeline.attempts[0].outcome,
@@ -1483,9 +1481,9 @@ fn build_provider_from_config_preserves_order_of_unique_models() {
     assert_eq!(
         refs.as_slice(),
         &[
-            "anthropic/claude-sonnet-4-6",
-            "openai/gpt-5.4",
-            "openai-codex/gpt-5.4"
+            "anthropic@default/claude-sonnet-4-6",
+            "openai@default/gpt-5.4",
+            "openai-codex@default/gpt-5.4"
         ]
     );
 }
@@ -1493,8 +1491,11 @@ fn build_provider_from_config_preserves_order_of_unique_models() {
 #[test]
 fn build_provider_from_config_skips_unavailable_models_and_continues() {
     let fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &["openai/gpt-5.4", "anthropic/claude-sonnet-4-6"],
+        "anthropic@default/claude-sonnet-4-6",
+        &[
+            "openai@default/gpt-5.4",
+            "anthropic@default/claude-sonnet-4-6",
+        ],
         None,
         Some("anthropic-token"),
         false,
@@ -1502,14 +1503,14 @@ fn build_provider_from_config_skips_unavailable_models_and_continues() {
     let provider = build_provider_from_config(&fixture.config).unwrap();
     let refs = provider.configured_model_refs();
     assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0], "anthropic/claude-sonnet-4-6");
+    assert_eq!(refs[0], "anthropic@default/claude-sonnet-4-6");
 }
 
 #[test]
 fn build_provider_from_config_fails_on_unavailable_primary_when_fallback_disabled() {
     let mut fixture = test_config(
-        "openai/gpt-5.4",
-        &["anthropic/claude-sonnet-4-6"],
+        "openai@default/gpt-5.4",
+        &["anthropic@default/claude-sonnet-4-6"],
         None,
         Some("anthropic-token"),
         false,
@@ -1527,15 +1528,20 @@ fn build_provider_from_config_fails_on_unavailable_primary_when_fallback_disable
     assert!(err
         .to_string()
         .contains("no available providers for configured model chain"));
-    assert!(err.to_string().contains("openai/gpt-5.4"));
-    assert!(!err.to_string().contains("anthropic/claude-sonnet-4-6"));
+    assert!(err.to_string().contains("openai@default/gpt-5.4"));
+    assert!(!err
+        .to_string()
+        .contains("anthropic@default/claude-sonnet-4-6"));
 }
 
 #[test]
 fn build_provider_from_config_fails_when_all_models_unavailable() {
     let fixture = test_config(
-        "openai/gpt-5.4",
-        &["anthropic/claude-sonnet-4-6", "openai-codex/gpt-5.4"],
+        "openai@default/gpt-5.4",
+        &[
+            "anthropic@default/claude-sonnet-4-6",
+            "openai-codex@default/gpt-5.4",
+        ],
         None,
         None,
         false,
@@ -1544,14 +1550,16 @@ fn build_provider_from_config_fails_when_all_models_unavailable() {
         .err()
         .expect("should fail when all providers unavailable");
     assert!(err.to_string().contains("no available providers"));
-    assert!(err.to_string().contains("openai/gpt-5.4"));
-    assert!(err.to_string().contains("anthropic/claude-sonnet-4-6"));
-    assert!(err.to_string().contains("openai-codex/gpt-5.4"));
+    assert!(err.to_string().contains("openai@default/gpt-5.4"));
+    assert!(err
+        .to_string()
+        .contains("anthropic@default/claude-sonnet-4-6"));
+    assert!(err.to_string().contains("openai-codex@default/gpt-5.4"));
 }
 
 #[test]
 fn build_provider_from_config_uses_custom_openai_responses_provider() {
-    let mut fixture = test_config("openrouter/custom-model", &[], None, None, false);
+    let mut fixture = test_config("openrouter@default/custom-model", &[], None, None, false);
     let provider_id = ProviderId::parse("openrouter").unwrap();
     fixture.config.providers.insert(
         provider_id.clone(),
@@ -1581,7 +1589,7 @@ fn build_provider_from_config_uses_custom_openai_responses_provider() {
     let provider = build_provider_from_config(&fixture.config).unwrap();
     assert_eq!(
         provider.configured_model_refs(),
-        vec!["openrouter/custom-model"]
+        vec!["openrouter@default/custom-model"]
     );
 
     let doctor = provider_doctor(&fixture.config);
@@ -1625,26 +1633,29 @@ fn build_candidate_accepts_openai_responses_without_auth() {
         },
     );
 
-    let candidate = build_candidate(
-        &fixture.config,
-        &ModelRef::parse("local-openai/custom-model").unwrap(),
-    )
-    .unwrap();
+    let candidate =
+        build_candidate(&fixture.config, &route_ref("local-openai/custom-model")).unwrap();
 
-    assert_eq!(candidate.model_ref, "local-openai/custom-model");
+    assert_eq!(candidate.model_ref, "local-openai@default/custom-model");
     assert_eq!(candidate.provider_name, "local-openai");
 }
 
 #[test]
 fn build_candidate_handles_multiple_openai_models() {
-    let fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    let fixture = test_config(
+        "openai@default/gpt-5.4",
+        &[],
+        Some("openai-key"),
+        None,
+        false,
+    );
     let config = &fixture.config;
 
-    let gpt54 = build_candidate(config, &ModelRef::parse("openai/gpt-5.4").unwrap()).unwrap();
-    let gpt53 = build_candidate(config, &ModelRef::parse("openai/gpt-5.3").unwrap()).unwrap();
+    let gpt54 = build_candidate(config, &route_ref("openai@default/gpt-5.4")).unwrap();
+    let gpt53 = build_candidate(config, &route_ref("openai@default/gpt-5.3")).unwrap();
 
-    assert_eq!(gpt54.model_ref, "openai/gpt-5.4");
-    assert_eq!(gpt53.model_ref, "openai/gpt-5.3");
+    assert_eq!(gpt54.model_ref, "openai@default/gpt-5.4");
+    assert_eq!(gpt53.model_ref, "openai@default/gpt-5.3");
     assert_eq!(gpt54.provider_name, "openai");
     assert_eq!(gpt53.provider_name, "openai");
 }
@@ -1652,7 +1663,7 @@ fn build_candidate_handles_multiple_openai_models() {
 #[test]
 fn build_candidate_handles_multiple_anthropic_models() {
     let fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
+        "anthropic@default/claude-sonnet-4-6",
         &[],
         None,
         Some("anthropic-token"),
@@ -1660,19 +1671,11 @@ fn build_candidate_handles_multiple_anthropic_models() {
     );
     let config = &fixture.config;
 
-    let sonnet = build_candidate(
-        config,
-        &ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-    )
-    .unwrap();
-    let haiku = build_candidate(
-        config,
-        &ModelRef::parse("anthropic/claude-haiku-4-5").unwrap(),
-    )
-    .unwrap();
+    let sonnet = build_candidate(config, &route_ref("anthropic/claude-sonnet-4-6")).unwrap();
+    let haiku = build_candidate(config, &route_ref("anthropic/claude-haiku-4-5")).unwrap();
 
-    assert_eq!(sonnet.model_ref, "anthropic/claude-sonnet-4-6");
-    assert_eq!(haiku.model_ref, "anthropic/claude-haiku-4-5");
+    assert_eq!(sonnet.model_ref, "anthropic@default/claude-sonnet-4-6");
+    assert_eq!(haiku.model_ref, "anthropic@default/claude-haiku-4-5");
     assert_eq!(sonnet.provider_name, "anthropic");
     assert_eq!(haiku.provider_name, "anthropic");
 }
@@ -1680,8 +1683,8 @@ fn build_candidate_handles_multiple_anthropic_models() {
 #[test]
 fn provider_doctor_includes_partial_availability_in_chain() {
     let fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &["openai/gpt-5.4", "openai-codex/gpt-5.4"],
+        "anthropic@default/claude-sonnet-4-6",
+        &["openai@default/gpt-5.4", "openai-codex@default/gpt-5.4"],
         None,
         Some("anthropic-token"),
         false,
@@ -1691,17 +1694,17 @@ fn provider_doctor_includes_partial_availability_in_chain() {
     assert_eq!(providers.len(), 3);
 
     // Default model should be available
-    assert_eq!(providers[0]["model"], "anthropic/claude-sonnet-4-6");
+    assert_eq!(providers[0]["model"], "anthropic@default/claude-sonnet-4-6");
     assert_eq!(providers[0]["availability"]["available"], Value::Bool(true));
 
     // Fallbacks should be unavailable
-    assert_eq!(providers[1]["model"], "openai/gpt-5.4");
+    assert_eq!(providers[1]["model"], "openai@default/gpt-5.4");
     assert_eq!(
         providers[1]["availability"]["available"],
         Value::Bool(false)
     );
 
-    assert_eq!(providers[2]["model"], "openai-codex/gpt-5.4");
+    assert_eq!(providers[2]["model"], "openai-codex@default/gpt-5.4");
     assert_eq!(
         providers[2]["availability"]["available"],
         Value::Bool(false)
@@ -1717,7 +1720,7 @@ fn build_candidate_reports_empty_api_key_as_missing() {
         .get_mut(&ProviderId::openai())
         .unwrap()
         .credential = Some("".to_string());
-    let err = build_candidate(&fixture.config, &ModelRef::parse("openai/gpt-5.4").unwrap())
+    let err = build_candidate(&fixture.config, &route_ref("openai/gpt-5.4"))
         .err()
         .expect("empty API key should fail");
     assert!(err.to_string().contains("missing OPENAI_API_KEY"));
@@ -1732,7 +1735,7 @@ fn build_candidate_reports_whitespace_api_key_as_missing() {
         .get_mut(&ProviderId::openai())
         .unwrap()
         .credential = Some("   ".to_string());
-    let err = build_candidate(&fixture.config, &ModelRef::parse("openai/gpt-5.4").unwrap())
+    let err = build_candidate(&fixture.config, &route_ref("openai/gpt-5.4"))
         .err()
         .expect("whitespace API key should fail");
     assert!(err.to_string().contains("missing OPENAI_API_KEY"));
@@ -1756,18 +1759,14 @@ fn build_candidate_requires_at_least_one_available_provider_in_chain() {
 #[test]
 fn build_candidate_succeeds_with_valid_codex_auth() {
     let fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
-    let candidate = build_candidate(
-        &fixture.config,
-        &ModelRef::parse("openai-codex/gpt-5.4").unwrap(),
-    )
-    .unwrap();
-    assert_eq!(candidate.model_ref, "openai-codex/gpt-5.4");
+    let candidate = build_candidate(&fixture.config, &route_ref("openai-codex/gpt-5.4")).unwrap();
+    assert_eq!(candidate.model_ref, "openai-codex@default/gpt-5.4");
     assert_eq!(candidate.provider_name, "openai-codex");
 }
 
 #[test]
 fn provider_doctor_distinguishes_auth_from_other_errors() {
-    let fixture = test_config("openai/gpt-5.4", &[], None, None, false);
+    let fixture = test_config("openai@default/gpt-5.4", &[], None, None, false);
     let doctor = provider_doctor(&fixture.config);
     let providers = doctor["providers"].as_array().unwrap();
     let provider = &providers[0];
@@ -1793,7 +1792,7 @@ fn provider_doctor_distinguishes_auth_from_other_errors() {
 #[test]
 fn build_candidate_fails_when_openai_env_auth_missing() {
     let fixture = test_config("openai/gpt-5.4", &[], None, None, false);
-    let err = build_candidate(&fixture.config, &ModelRef::parse("openai/gpt-5.4").unwrap())
+    let err = build_candidate(&fixture.config, &route_ref("openai/gpt-5.4"))
         .err()
         .expect("missing env auth should fail");
     assert!(err.to_string().contains("missing OPENAI_API_KEY"));
@@ -1802,24 +1801,18 @@ fn build_candidate_fails_when_openai_env_auth_missing() {
 #[test]
 fn build_candidate_fails_when_anthropic_env_auth_missing() {
     let fixture = test_config("anthropic/claude-sonnet-4-6", &[], None, None, false);
-    let err = build_candidate(
-        &fixture.config,
-        &ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
-    )
-    .err()
-    .expect("missing env auth should fail");
+    let err = build_candidate(&fixture.config, &route_ref("anthropic/claude-sonnet-4-6"))
+        .err()
+        .expect("missing env auth should fail");
     assert!(err.to_string().contains("missing ANTHROPIC_AUTH_TOKEN"));
 }
 
 #[test]
 fn build_candidate_fails_when_codex_external_cli_auth_missing() {
     let fixture = test_config("openai-codex/gpt-5.4", &[], None, None, false);
-    let err = build_candidate(
-        &fixture.config,
-        &ModelRef::parse("openai-codex/gpt-5.4").unwrap(),
-    )
-    .err()
-    .expect("missing external CLI auth should fail");
+    let err = build_candidate(&fixture.config, &route_ref("openai-codex/gpt-5.4"))
+        .err()
+        .expect("missing external CLI auth should fail");
     assert!(err
         .to_string()
         .contains("no Holon openai-codex credential profile or usable Codex CLI credentials"));
@@ -1828,16 +1821,16 @@ fn build_candidate_fails_when_codex_external_cli_auth_missing() {
 #[test]
 fn build_candidate_succeeds_with_openai_env_auth() {
     let fixture = test_config("openai/gpt-5.4", &[], Some("sk-test-key"), None, false);
-    let candidate = build_candidate(&fixture.config, &ModelRef::parse("openai/gpt-5.4").unwrap())
+    let candidate = build_candidate(&fixture.config, &route_ref("openai/gpt-5.4"))
         .expect("valid env auth should succeed");
-    assert_eq!(candidate.model_ref, "openai/gpt-5.4");
+    assert_eq!(candidate.model_ref, "openai@default/gpt-5.4");
     assert_eq!(candidate.provider_name, "openai");
 }
 
 #[test]
 fn build_candidate_succeeds_with_anthropic_env_auth() {
     let fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
+        "anthropic@default/claude-sonnet-4-6",
         &[],
         None,
         Some("sk-ant-test-token"),
@@ -1845,16 +1838,16 @@ fn build_candidate_succeeds_with_anthropic_env_auth() {
     );
     let candidate = build_candidate(
         &fixture.config,
-        &ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+        &route_ref("anthropic@default/claude-sonnet-4-6"),
     )
     .expect("valid env auth should succeed");
-    assert_eq!(candidate.model_ref, "anthropic/claude-sonnet-4-6");
+    assert_eq!(candidate.model_ref, "anthropic@default/claude-sonnet-4-6");
     assert_eq!(candidate.provider_name, "anthropic");
 }
 
 #[test]
 fn provider_doctor_reports_missing_openai_env_auth() {
-    let fixture = test_config("openai/gpt-5.4", &[], None, None, false);
+    let fixture = test_config("openai@default/gpt-5.4", &[], None, None, false);
     let doctor = provider_doctor(&fixture.config);
     let providers = doctor["providers"].as_array().unwrap();
     let openai_provider = providers

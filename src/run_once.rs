@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::task::JoinHandle;
 
 use crate::{
-    config::{AppConfig, ModelRef},
+    config::{AppConfig, ModelRouteRef},
     host::RuntimeHost,
     ingress::InboundRequest,
     provider::ProviderCacheUsage,
@@ -100,9 +100,9 @@ pub struct RunOnceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cache_usage: Option<RunProviderCacheUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub requested_model: Option<ModelRef>,
+    pub requested_model: Option<ModelRouteRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_model: Option<ModelRef>,
+    pub active_model: Option<ModelRouteRef>,
     pub fallback_active: bool,
     pub model_rounds: u64,
     pub tool_calls: usize,
@@ -1084,9 +1084,9 @@ fn batched_exec_command_items(tools: &[ToolExecutionRecord]) -> usize {
 
 fn latest_run_model_state(
     events: &[AuditEvent],
-    fallback_requested_model: Option<ModelRef>,
-    fallback_active_model: Option<ModelRef>,
-) -> (Option<ModelRef>, Option<ModelRef>, bool) {
+    fallback_requested_model: Option<ModelRouteRef>,
+    fallback_active_model: Option<ModelRouteRef>,
+) -> (Option<ModelRouteRef>, Option<ModelRouteRef>, bool) {
     let mut requested_model = fallback_requested_model;
     let mut active_model = fallback_active_model;
     let mut fallback_active = requested_model
@@ -1102,13 +1102,13 @@ fn latest_run_model_state(
             .data
             .get("requested_model")
             .and_then(|value| value.as_str())
-            .and_then(|value| ModelRef::parse(value).ok())
+            .and_then(|value| ModelRouteRef::parse_compatible(value).ok())
             .or(requested_model);
         active_model = event
             .data
             .get("active_model")
             .and_then(|value| value.as_str())
-            .and_then(|value| ModelRef::parse(value).ok())
+            .and_then(|value| ModelRouteRef::parse_compatible(value).ok())
             .or(active_model);
         fallback_active = event
             .data

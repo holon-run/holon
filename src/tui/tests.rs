@@ -67,7 +67,10 @@ fn test_config() -> AppConfig {
         api_cors: Default::default(),
         config_file_path: temp.join("config.json"),
         stored_config: Default::default(),
-        default_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+        default_model: crate::config::ModelRouteRef::parse_compatible(
+            "anthropic/claude-sonnet-4-6",
+        )
+        .unwrap(),
         fallback_models: Vec::new(),
         vision_model: None,
         image_generation_model: None,
@@ -201,16 +204,23 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
         lifecycle: AgentLifecycleHint::default(),
         scheduling_posture: Default::default(),
         model: AgentModelState {
-            effective_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            effective_model: crate::config::ModelRouteRef::parse_compatible(
+                "anthropic/claude-sonnet-4-6",
+            )
+            .unwrap(),
             requested_model: Some(
-                crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+                crate::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6")
+                    .unwrap(),
             ),
             active_model: Some(
-                crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+                crate::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6")
+                    .unwrap(),
             ),
             fallback_active: false,
-            runtime_default_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")
-                .unwrap(),
+            runtime_default_model: crate::config::ModelRouteRef::parse_compatible(
+                "anthropic/claude-sonnet-4-6",
+            )
+            .unwrap(),
             override_model: None,
             override_reasoning_effort: None,
             source: AgentModelSource::RuntimeDefault,
@@ -711,7 +721,7 @@ fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
         .contains("opensource/src/github.com/holon-run/holon)"));
     assert!(view_model
         .context_line
-        .contains("anthropic/claude-sonnet-4-6"));
+        .contains("anthropic@default/claude-sonnet-4-6"));
     assert!(!view_model.context_line.contains("model:"));
 }
 
@@ -786,7 +796,7 @@ fn statusbar_view_model_converges_from_provider_round_model_event() {
 
     assert!(view_model
         .context_line
-        .contains("anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"));
+        .contains("anthropic@default/claude-sonnet-4-6 (fallback from openai@default/gpt-5.4)"));
 }
 
 #[test]

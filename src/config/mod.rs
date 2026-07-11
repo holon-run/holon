@@ -62,11 +62,11 @@ pub struct AppConfig {
     pub config_file_path: PathBuf,
     pub stored_config: HolonConfigFile,
     pub web_config: crate::web::WebConfig,
-    pub default_model: ModelRef,
-    pub fallback_models: Vec<ModelRef>,
-    pub vision_model: Option<ModelRef>,
-    pub image_generation_model: Option<ModelRef>,
-    pub vision_candidate_models: Vec<ModelRef>,
+    pub default_model: ModelRouteRef,
+    pub fallback_models: Vec<ModelRouteRef>,
+    pub vision_model: Option<ModelRouteRef>,
+    pub image_generation_model: Option<ModelRouteRef>,
+    pub vision_candidate_models: Vec<ModelRouteRef>,
     pub runtime_max_output_tokens: u32,
     pub default_tool_output_tokens: u32,
     pub max_tool_output_tokens: u32,
@@ -138,7 +138,11 @@ impl AppConfig {
     /// exist in the builtin registry regardless of whether the service is running.
     pub fn default_provider_ready(&self) -> bool {
         self.providers
-            .get(&self.default_model.provider)
+            .values()
+            .find(|provider| {
+                provider.route_provider == self.default_model.provider
+                    && provider.route_endpoint == self.default_model.endpoint
+            })
             .map(provider_has_usable_auth)
             .unwrap_or(false)
     }
@@ -276,12 +280,19 @@ impl AppConfig {
             Ok(selection) => selection,
             Err(error) if mode.allow_unresolved_model() => {
                 tracing::debug!(error = %error, "using unresolved diagnostic model for config inspection");
-                (ModelRef::new(ProviderId::openai(), "unknown"), Vec::new())
+                (
+                    ModelRouteRef::new(
+                        ProviderId::openai(),
+                        ProviderEndpointId::default_endpoint(),
+                        "unknown",
+                    ),
+                    Vec::new(),
+                )
             }
             Err(error) => return Err(error),
         };
         let vision_candidate_models =
-            authenticated_model_candidates(&providers, &validated_model_overrides);
+            authenticated_model_route_candidates(&providers, &validated_model_overrides);
         let tui_alternate_screen = env::var("HOLON_TUI_ALTERNATE_SCREEN")
             .ok()
             .map(|value| AltScreenMode::parse(&value))
@@ -361,11 +372,14 @@ impl AppConfig {
         }
     }
 
-    pub fn provider_chain(&self) -> Vec<ModelRef> {
+    pub fn provider_chain(&self) -> Vec<ModelRouteRef> {
         RuntimeModelCatalog::from_config(self).provider_chain(None)
     }
 
-    pub fn provider_chain_with_override(&self, model_override: Option<&ModelRef>) -> Vec<ModelRef> {
+    pub fn provider_chain_with_override(
+        &self,
+        model_override: Option<&ModelRouteRef>,
+    ) -> Vec<ModelRouteRef> {
         RuntimeModelCatalog::from_config(self).provider_chain(model_override)
     }
 

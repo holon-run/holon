@@ -56,32 +56,32 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         },
         ConfigSchemaEntry {
             key: "model.default",
-            kind: "model_ref",
-            description: "Explicit default provider/model ref. When unset, the runtime derives one from authenticated providers.",
+            kind: "model_route_ref",
+            description: "Explicit default provider@endpoint/model route ref. Legacy provider/model input remains accepted. When unset, the runtime derives one from authenticated providers.",
             default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "model.fallbacks",
-            kind: "model_ref_list",
+            kind: "model_route_ref_list",
             description:
-                "Explicit fallback provider/model refs. Null or an empty persisted list means unset; when unset, the runtime derives fallbacks from authenticated providers.",
+                "Explicit fallback provider@endpoint/model route refs. Legacy provider/model input remains accepted. Null or an empty persisted list means unset; when unset, the runtime derives fallbacks from authenticated providers.",
             default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "vision.default",
-            kind: "model_ref",
+            kind: "model_route_ref",
             description:
-                "Explicit provider/model ref for ViewImage visual observation generation. When unset, ViewImage auto-discovers an authenticated image-capable provider and keeps model.fallbacks only as a compatibility candidate source.",
+                "Explicit provider@endpoint/model route ref for ViewImage visual observation generation. Legacy provider/model input remains accepted. When unset, ViewImage auto-discovers an authenticated image-capable provider and keeps model.fallbacks only as a compatibility candidate source.",
             default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "image_generation.default",
-            kind: "model_ref_or_auto",
+            kind: "model_route_ref_or_auto",
             description:
-                "Provider/model ref for GenerateImage. The default auto mode selects the first configured turn model that supports image_generation.",
+                "Provider@endpoint/model route ref for GenerateImage. Legacy provider/model input remains accepted. The default auto mode selects the first configured turn model that supports image_generation.",
             default: json!("auto"),
             allowed_values: vec!["auto"],
         },
@@ -864,7 +864,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             config.api.cors.max_age_seconds = Some(parse_positive_u64_key(key, raw_value)?);
         }
         "model.default" => {
-            let parsed = ModelRef::parse(raw_value)?;
+            let parsed = ModelRouteRef::parse_compatible(raw_value)?;
             config.model.default = Some(parsed.as_string());
         }
         "model.fallbacks" => {
@@ -874,14 +874,14 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 .collect();
         }
         "vision.default" => {
-            let parsed = ModelRef::parse(raw_value)?;
+            let parsed = ModelRouteRef::parse_compatible(raw_value)?;
             config.vision.default = Some(parsed.as_string());
         }
         "image_generation.default" => {
             if raw_value.trim().eq_ignore_ascii_case("auto") {
                 config.image_generation.default = None;
             } else {
-                let parsed = ModelRef::parse(raw_value)?;
+                let parsed = ModelRouteRef::parse_compatible(raw_value)?;
                 config.image_generation.default = Some(parsed.as_string());
             }
         }

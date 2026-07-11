@@ -9,11 +9,12 @@ use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
         BatchGetMessagesRequest, CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest,
-        MemoryGetRequest, PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
-        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
-        UpdateWorkItemRequest,
+        MemoryGetRequest, ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
+        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+        SearchRequest, SearchResponse, UpdateWorkItemRequest,
     },
     memory::MemoryGetResult,
+    model_config_migration::ModelConfigMigrationReport,
     types::{
         AddSkillRequest, BriefRecord, TaskInputResult, TaskOutputResult, TaskStatusSnapshot,
         TaskStopResult, TimerRecord, ToolExecutionRecord, WorkItemRecord,
@@ -138,6 +139,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/control/runtime/performance", "runtimePerformance", "runtime", "Runtime performance diagnostics", "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.", None, "PerformanceDiagnosticsSnapshot", AuthKind::Control),
     route_with_response("get", "/control/runtime/config", "runtimeConfig", "runtime", "Runtime config", "Return the daemon effective runtime configuration surface.", None, "RuntimeConfigReadResponse", AuthKind::Control),
     route_with_response("patch", "/control/runtime/config", "runtimeConfigUpdate", "runtime", "Update runtime config", "Persist runtime-mutable config updates and classify their effect as restart/reload-required or rejected.", Some("RuntimeConfigUpdateRequest"), "RuntimeConfigUpdateResponse", AuthKind::Control),
+    route_with_response("post", "/control/runtime/config/migrate-model-routes", "migrateModelConfigRoutes", "runtime", "Migrate model config routes", "Inspect legacy model route references or persist a complete canonical migration across config.json and agent state.", Some("ModelConfigMigrationRequest"), "ModelConfigMigrationReport", AuthKind::Control),
     route("get", "/control/runtime/credentials", "runtimeCredentials", "runtime", "Runtime credential profiles", "List credential profiles stored in the runtime credential store.", None, AuthKind::Control),
     route("put", "/control/runtime/credentials/{profile}", "setRuntimeCredential", "runtime", "Set runtime credential", "Set an API key credential profile in the runtime credential store.", Some("SetCredentialRequest"), AuthKind::Control),
     route("delete", "/control/runtime/credentials/{profile}", "deleteRuntimeCredential", "runtime", "Delete runtime credential", "Remove a credential profile from the runtime credential store.", None, AuthKind::Control),
@@ -604,6 +606,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "RuntimeConfigUpdateResponse".into(),
         component_schema::<RuntimeConfigUpdateResponse>(),
+    );
+    schemas.insert(
+        "ModelConfigMigrationRequest".into(),
+        component_schema::<ModelConfigMigrationRequest>(),
+    );
+    schemas.insert(
+        "ModelConfigMigrationReport".into(),
+        component_schema::<ModelConfigMigrationReport>(),
     );
     schemas.insert(
         "PickWorkItemRequest".into(),
