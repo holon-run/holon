@@ -109,14 +109,17 @@ impl ModelRouteRef {
     }
 
     pub fn parse_compatible(value: &str) -> Result<Self> {
-        if value
-            .trim()
+        let trimmed = value.trim();
+        let accepted_formats = || {
+            format!("invalid model reference {trimmed}; expected provider@endpoint/model or legacy provider/model")
+        };
+        if trimmed
             .split_once('/')
             .is_some_and(|(route, _)| route.contains('@'))
         {
-            return Self::parse(value);
+            return Self::parse(trimmed).with_context(accepted_formats);
         }
-        let model_ref = ModelRef::parse(value)?;
+        let model_ref = ModelRef::parse(trimmed).with_context(accepted_formats)?;
         Ok(Self::from_legacy_model_ref(&model_ref))
     }
 
@@ -1081,6 +1084,31 @@ mod tests {
         assert_eq!(route_ref.provider.as_str(), "volcengine");
         assert_eq!(route_ref.endpoint.as_str(), "plan");
         assert_eq!(route_ref.model, "doubao-seedream-5.0-lite");
+    }
+
+    #[test]
+    fn compatible_model_route_ref_rejects_malformed_route_segments() {
+        for value in [
+            "openai@/gpt-5.4",
+            "openai@@default/gpt-5.4",
+            "openai@default/",
+        ] {
+            let error = ModelRouteRef::parse_compatible(value)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("expected provider@endpoint/model or legacy provider/model"),
+                "unexpected error for {value}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn compatible_model_route_ref_reports_both_accepted_formats() {
+        let error = ModelRouteRef::parse_compatible("not-a-model-ref")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected provider@endpoint/model or legacy provider/model"));
     }
 
     #[test]

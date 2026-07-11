@@ -3060,6 +3060,45 @@ fn default_provider_ready_with_configured_credential() {
 }
 
 #[test]
+fn default_provider_ready_matches_the_selected_endpoint() {
+    let mut fixture = test_app_config("openai@coding/gpt-4o", &[]);
+    let openai = ProviderId::openai();
+    let default_provider = fixture.config.providers.get_mut(&openai).unwrap();
+    default_provider.credential = None;
+
+    let coding_alias = ProviderId::parse("openai-coding").unwrap();
+    fixture.config.providers.insert(
+        coding_alias.clone(),
+        ProviderRuntimeConfig {
+            id: coding_alias,
+            route_provider: openai,
+            route_endpoint: ProviderEndpointId::parse("coding").unwrap(),
+            transport: ProviderTransportKind::OpenAiResponses,
+            base_url: "https://coding.example/v1".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("OPENAI_CODING_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            credential: Some("coding-key".into()),
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
+
+    assert!(
+        fixture.config.default_provider_ready(),
+        "the selected coding endpoint credential should determine readiness"
+    );
+}
+
+#[test]
 fn default_provider_ready_false_for_credential_source_none() {
     let mut fixture = test_app_config("openai/gpt-4o", &[]);
     // Simulate a local provider (e.g. vllm) with CredentialSource::None.
