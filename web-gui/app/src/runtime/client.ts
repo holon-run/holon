@@ -1016,14 +1016,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       await deleteJson<unknown>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, requestHeaders);
     },
-    async startCodexDeviceLogin(): Promise<CodexDeviceLoginResponse> {
+    async startCodexDeviceLogin(providerId = "openai-codex"): Promise<CodexDeviceLoginResponse> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
       const response = await postJson<CodexDeviceStartDto>(
         fetchImpl,
         baseUrl,
-        "/auth/codex/device/start",
+        `/auth/${encodeURIComponent(providerId)}/device/start`,
         {},
         requestHeaders,
       );
