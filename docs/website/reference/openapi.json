@@ -1705,6 +1705,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "oauth_supported": {
+                      "type": "boolean"
+                    },
                     "transport": {
                       "type": "string"
                     }
@@ -1713,6 +1716,7 @@
                     "id",
                     "transport",
                     "base_url",
+                    "oauth_supported",
                     "credential_source",
                     "credential_kind",
                     "credential_configured",
@@ -1978,6 +1982,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "oauth_supported": {
+                      "type": "boolean"
+                    },
                     "transport": {
                       "type": "string"
                     }
@@ -1986,6 +1993,7 @@
                     "id",
                     "transport",
                     "base_url",
+                    "oauth_supported",
                     "credential_source",
                     "credential_kind",
                     "credential_configured",
