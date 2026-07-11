@@ -55,6 +55,14 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function truncatedText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const truncated = value.slice(0, maxChars - 1);
+  const lastNewline = truncated.lastIndexOf("\n");
+  const cutPoint = lastNewline > maxChars * 0.6 ? lastNewline : truncated.length;
+  return `${truncated.slice(0, cutPoint)}…`;
+}
+
 function patchInputText(input: unknown): string {
   if (typeof input === "string") return input;
   if (!isRecord(input)) return "";
@@ -233,6 +241,147 @@ function ApplyPatchRenderer({ record }: { record: RuntimeToolExecutionRecord }) 
   );
 }
 
+function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+  const { t } = useTranslation();
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = asResultRecord(output, "view_image_result");
+  const dimensions = isRecord(result?.dimensions) ? result.dimensions : undefined;
+  const width = nestedValue(result, ["width"]) ?? nestedValue(dimensions, ["width"]);
+  const height = nestedValue(result, ["height"]) ?? nestedValue(dimensions, ["height"]);
+  const path = nestedValue(record.input, ["path", "image_path"]) ?? nestedValue(result, ["path", "image_path"]);
+  const observation = nestedText(result, ["visual_observation", "observation", "text_preview"]);
+  const summary = textField(result?.summary_text) || record.summary;
+
+  return (
+    <>
+      <SimpleField label={t("inspector.path")} value={path} />
+      {width != null && height != null ? <SimpleField label={t("inspector.dimensions")} value={`${width}×${height}`} /> : null}
+      {observation ? <OutputField label={t("inspector.observation")} value={observation} /> : null}
+      {summary ? <OutputField label={t("inspector.result")} value={summary} /> : null}
+      {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
+    </>
+  );
+}
+
+function GenerateImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+  const { t } = useTranslation();
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = asResultRecord(output, "generate_image_result");
+  const prompt = nestedValue(record.input, ["prompt"]) ?? nestedValue(result, ["prompt"]);
+  const name = nestedValue(record.input, ["name"]) ?? nestedValue(result, ["name"]);
+  const size = nestedValue(record.input, ["size"]) ?? nestedValue(result, ["size"]);
+  const background = nestedValue(record.input, ["background"]) ?? nestedValue(result, ["background"]);
+  const outputFormat = nestedValue(record.input, ["output_format"]) ?? nestedValue(result, ["output_format"]);
+  const imageUri = nestedValue(result, ["image_uri", "uri", "path"]);
+  const summary = textField(result?.summary_text) || record.summary;
+
+  return (
+    <>
+      <SimpleField label={t("rightPanel.name")} value={name} />
+      <SimpleField label={t("inspector.dimensions")} value={size} />
+      <SimpleField label={t("inspector.path")} value={imageUri} />
+      <SimpleField label={t("inspector.mode")} value={background} />
+      <SimpleField label={t("rightPanel.output")} value={outputFormat} />
+      {prompt ? <OutputField label={t("inspector.input")} value={String(prompt)} /> : null}
+      {summary ? <OutputField label={t("inspector.result")} value={summary} /> : null}
+      {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
+    </>
+  );
+}
+
+function WebSearchRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+  const { t } = useTranslation();
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const results = arrayRecords(nestedValue(output, ["results"]));
+  const query = nestedValue(output, ["query"]) ?? nestedValue(input, ["query", "search_query", "q"]);
+  const provider = nestedValue(output, ["provider"]);
+  const mode = nestedValue(output, ["mode"]);
+
+  return (
+    <>
+      <SimpleField label={t("inspector.query")} value={query} />
+      <SimpleField label={t("inspector.provider")} value={provider} />
+      <SimpleField label={t("inspector.mode")} value={mode} />
+      <SimpleField label={t("inspector.results")} value={t("inspector.resultsCount", { count: results.length })} />
+      {results.slice(0, 15).map((item, index) => {
+        const title = nestedText(item, ["title"]) || t("inspector.untitled");
+        const url = nestedText(item, ["url"]);
+        const source = nestedText(item, ["source"]);
+        const publishedAt = nestedText(item, ["published_at"]);
+        const snippet = nestedText(item, ["snippet"]);
+        const text = [url, source ? `(${source})` : "", publishedAt, snippet ? truncatedText(snippet, 300) : ""].filter(Boolean).join("\n");
+        return <OutputField key={index} label={`${index + 1}. ${title}`} value={text} />;
+      })}
+      {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
+    </>
+  );
+}
+
+function WebFetchRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+  const { t } = useTranslation();
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const url = nestedValue(output, ["url"]) ?? nestedValue(input, ["url"]);
+  const finalUrl = nestedValue(output, ["final_url"]);
+  const truncated = nestedValue(output, ["truncated"]) === true;
+  const content = nestedText(output, ["text"]);
+
+  return (
+    <>
+      <SimpleField label={t("inspector.url")} value={url} />
+      {finalUrl && finalUrl !== url ? <SimpleField label={t("inspector.finalUrl")} value={finalUrl} /> : null}
+      <SimpleField label={t("inspector.status")} value={nestedValue(output, ["status"])} />
+      <SimpleField label={t("inspector.contentType")} value={nestedValue(output, ["content_type"])} />
+      <SimpleField label={t("inspector.bytesRead")} value={nestedValue(output, ["bytes_read"])} />
+      {truncated ? <SimpleField label={t("inspector.truncated")} value={t("inspector.yes")} /> : null}
+      {content ? <OutputField label={t("inspector.content")} value={truncatedText(content, 2000)} /> : null}
+      {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
+    </>
+  );
+}
+
+function MemorySearchRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+  const { t } = useTranslation();
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const results = arrayRecords(nestedValue(output, ["results"]));
+  const query = nestedValue(output, ["query"]) ?? nestedValue(input, ["query"]);
+
+  return (
+    <>
+      <SimpleField label={t("inspector.query")} value={query} />
+      <SimpleField label={t("inspector.results")} value={t("inspector.resultsCount", { count: results.length })} />
+      {results.slice(0, 15).map((item, index) => {
+        const sourceRef = nestedText(item, ["source_ref"]) || t("inspector.unknownSource");
+        const score = nestedText(item, ["score"]);
+        const preview = nestedText(item, ["preview"]);
+        const text = [score ? `score: ${score}` : "", preview ? truncatedText(preview, 300) : ""].filter(Boolean).join("\n");
+        return <OutputField key={index} label={`${index + 1}. ${sourceRef}`} value={text} />;
+      })}
+      {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
+    </>
+  );
+}
+
+function MemoryGetRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
+  const { t } = useTranslation();
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const sourceRef = nestedValue(output, ["source_ref"]) ?? nestedValue(input, ["source_ref"]);
+  const content = nestedText(output, ["content"]);
+  const truncated = nestedValue(output, ["truncated"]) === true;
+
+  return (
+    <>
+      <SimpleField label={t("inspector.sourceRef")} value={sourceRef} />
+      {truncated ? <SimpleField label={t("inspector.truncated")} value={t("inspector.yes")} /> : null}
+      {content ? <OutputField label={t("inspector.content")} value={truncatedText(content, 2000)} /> : null}
+      {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
+    </>
+  );
+}
+
 // Generic fallback renderer
 
 function GenericToolRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
@@ -250,6 +399,18 @@ export function ToolExecutionContent({ record }: { record: RuntimeToolExecutionR
       return <ExecCommandBatchRenderer record={record} />;
     case "ApplyPatch":
       return <ApplyPatchRenderer record={record} />;
+    case "ViewImage":
+      return <ViewImageRenderer record={record} />;
+    case "GenerateImage":
+      return <GenerateImageRenderer record={record} />;
+    case "WebSearch":
+      return <WebSearchRenderer record={record} />;
+    case "WebFetch":
+      return <WebFetchRenderer record={record} />;
+    case "MemorySearch":
+      return <MemorySearchRenderer record={record} />;
+    case "MemoryGet":
+      return <MemoryGetRenderer record={record} />;
     default:
       return <GenericToolRenderer record={record} />;
   }
