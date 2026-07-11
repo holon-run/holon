@@ -60,10 +60,7 @@ export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: st
 
 export function buildImageGenerationConfigUpdates(imageGenDefault: string): Array<{ key: string; value?: unknown; unset?: boolean }> {
   const trimmed = imageGenDefault.trim();
-  if (!trimmed || trimmed.toLowerCase() === "auto") {
-    return [{ key: "image_generation.default", value: "auto" }];
-  }
-  return [{ key: "image_generation.default", value: trimmed }];
+  return [trimmed ? { key: "image_generation.default", value: trimmed } : { key: "image_generation.default", unset: true }];
 }
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
@@ -228,7 +225,7 @@ export function SettingsPage({
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState("");
   const [visionDefault, setVisionDefault] = useState("");
-  const [imageGenDefault, setImageGenDefault] = useState("auto");
+  const [imageGenDefault, setImageGenDefault] = useState("");
   const [runtimeMaxOutputTokens, setRuntimeMaxOutputTokens] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
@@ -277,7 +274,7 @@ export function SettingsPage({
     setModelDefault(surface.modelDefault);
     setModelFallbacks(surface.modelFallbacks.join(", "));
     setVisionDefault(surface.visionDefault ?? "");
-    setImageGenDefault(surface.imageGenerationDefault ?? "auto");
+    setImageGenDefault(surface.imageGenerationDefault ?? "");
     setRuntimeMaxOutputTokens(String(surface.runtimeMaxOutputTokens));
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
@@ -367,7 +364,7 @@ export function SettingsPage({
   const searchProviderCount = surface?.webSearchProviders.length ?? 0;
   const configuredSearchProviderCount = surface?.webSearchProviders.filter((provider) => provider.credentialConfigured).length ?? 0;
   const visionProviderReady = visionDefault ? surface?.providers.find((provider) => provider.id === visionDefault.split("/")[0])?.credentialConfigured : undefined;
-  const imageGenProviderReady = imageGenDefault && imageGenDefault.trim().toLowerCase() !== "auto" ? surface?.providers.find((provider) => provider.id === imageGenDefault.split("/")[0])?.credentialConfigured : undefined;
+  const imageGenProviderReady = imageGenDefault ? surface?.providers.find((provider) => provider.id === imageGenDefault.split("/")[0])?.credentialConfigured : undefined;
 
   async function saveRuntimeConfig() {
     setSaveMessage(undefined);
@@ -916,7 +913,7 @@ export function SettingsPage({
               >
                 <label>
                   <span>{t("settings.imageGenDefaultModel")}</span>
-                  <input list="image-gen-models" value={imageGenDefault} onChange={(event) => setImageGenDefault(event.target.value)} placeholder="auto or provider/model" />
+                  <input list="image-gen-models" value={imageGenDefault} onChange={(event) => setImageGenDefault(event.target.value)} placeholder="provider/model or empty for auto" />
                   <datalist id="image-gen-models">
                     {imageGenModels.map((model) => (
                       <option key={model.model} value={model.model}>
@@ -932,8 +929,8 @@ export function SettingsPage({
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
                     {runtimeConfigSaving ? t("settings.saving") : t("settings.saveImageGen")}
                   </Button>
-                  {imageGenProviderReady === false ? (
-                    <StatusChip className="settings-status unavailable" tone="error" iconOnly title={t("settings.providerCredentialMissing")} />
+                  {imageGenDefault ? (
+                    <StatusChip className={`settings-status ${imageGenProviderReady ? "available" : "unavailable"}`} tone={imageGenProviderReady ? "success" : "error"} iconOnly title={imageGenProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")} />
                   ) : (
                     <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
                   )}
