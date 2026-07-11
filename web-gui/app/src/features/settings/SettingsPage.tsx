@@ -519,13 +519,21 @@ export function SettingsPage({
     if (!draft) return;
     setProviderSaveMessage(undefined);
 
+    // For API Key mode, the UI manages credentials exclusively through credential profiles.
+    // Ensure the provider config references the credential profile, even if the draft was
+    // loaded from a builtin provider that originally used env-based auth.
+    const effectiveProfile = draft.credentialKind === "api_key"
+      ? (draft.credentialProfile?.trim() || `${providerId}:default`)
+      : (draft.credentialProfile?.trim() ?? "");
+    const effectiveSource = draft.credentialKind === "api_key" ? "credential_profile" : draft.credentialSource;
+    const effectiveEnv = draft.credentialKind === "api_key" ? "" : (draft.credentialEnv?.trim() ?? "");
+
     // Unified save: if API Key mode and user entered a key, save credential first
     if (draft.credentialKind === "api_key") {
       const key = apiKeyDrafts[providerId]?.trim();
-      const profile = draft.credentialProfile?.trim() || `${providerId}:default`;
       if (key) {
         setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
-        const credResult = await onSetCredential(profile, "api_key", key);
+        const credResult = await onSetCredential(effectiveProfile, "api_key", key);
         if (credResult) {
           setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
           setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
@@ -538,10 +546,10 @@ export function SettingsPage({
 
     const result = await onUpdateRuntimeConfig([
       { key: `providers.${providerId}.base_url`, value: draft.baseUrl.trim() },
-      { key: `providers.${providerId}.auth.source`, value: draft.credentialSource },
+      { key: `providers.${providerId}.auth.source`, value: effectiveSource },
       { key: `providers.${providerId}.auth.kind`, value: draft.credentialKind },
-      { key: `providers.${providerId}.auth.env`, value: draft.credentialEnv?.trim() ?? "" },
-      { key: `providers.${providerId}.auth.profile`, value: draft.credentialProfile?.trim() ?? "" },
+      { key: `providers.${providerId}.auth.env`, value: effectiveEnv },
+      { key: `providers.${providerId}.auth.profile`, value: effectiveProfile },
       { key: `providers.${providerId}.auth.external`, value: draft.credentialExternal?.trim() ?? "" },
     ]);
     if (!result) return;
