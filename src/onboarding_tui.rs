@@ -24,7 +24,7 @@ use crate::{
         oauth_provider_config, run_codex_oauth_login_profile_material,
         run_oauth_device_login_profile_material,
     },
-    config::{AppConfig, CredentialKind, ModelRef, ProviderId},
+    config::{AppConfig, CredentialKind, ModelRef, ModelRouteRef, ProviderId},
     onboarding::{
         onboarding_model_choices, onboarding_provider_choices, onboarding_search_choices,
         OnboardingModelChoice, OnboardingProviderChoice, OnboardingSearchChoice,
@@ -270,7 +270,7 @@ impl OnboardingTuiApp {
                     self.selected_model = None;
                     self.custom_model_input.clear();
                     self.status =
-                        "Enter a model id. Use `provider/model` or a model name for this provider."
+                        "Enter a model id. Use `provider@endpoint/model`, legacy `provider/model`, or a model name for this provider."
                             .into();
                     self.step = Step::CustomModel;
                 } else {
@@ -387,15 +387,18 @@ impl OnboardingTuiApp {
     }
 }
 
-fn parse_custom_model_ref(provider: &OnboardingProviderChoice, input: &str) -> Result<ModelRef> {
+fn parse_custom_model_ref(
+    provider: &OnboardingProviderChoice,
+    input: &str,
+) -> Result<ModelRouteRef> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         anyhow::bail!("enter a model id before continuing");
     }
     let model_ref = if trimmed.contains('/') {
-        ModelRef::parse(trimmed)?
+        ModelRouteRef::parse_compatible(trimmed)?
     } else {
-        ModelRef::new(provider.id.clone(), trimmed)
+        ModelRouteRef::from_legacy_model_ref(&ModelRef::new(provider.id.clone(), trimmed))
     };
     if model_ref.provider != provider.id {
         anyhow::bail!(
@@ -663,7 +666,7 @@ fn draw_custom_model(frame: &mut Frame<'_>, area: Rect, app: &OnboardingTuiApp) 
                 .map(|provider| provider.id.as_str().to_string())
                 .unwrap_or_else(|| "-".into())
         )),
-        Line::from("accepted forms: provider/model or model-name"),
+        Line::from("accepted forms: provider@endpoint/model, legacy provider/model, or model-name"),
         Line::from(""),
         Line::from(format!("model: {}", app.custom_model_input)),
     ]);

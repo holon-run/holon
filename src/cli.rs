@@ -302,6 +302,14 @@ pub enum ConfigCommands {
         #[command(subcommand)]
         command: ConfigModelCommands,
     },
+    #[command(about = "Inspect or rewrite legacy model selections as canonical route refs")]
+    MigrateModelRoutes {
+        #[arg(
+            long,
+            help = "Persist the migration after a complete successful preflight"
+        )]
+        write: bool,
+    },
     List,
     Schema,
     Doctor,

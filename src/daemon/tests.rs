@@ -13,7 +13,7 @@ use super::{
     runtime_activity_summary, DaemonLifecycleState, RuntimeActivityState, RuntimeConfigSurface,
     RuntimeControlAuthMode, RuntimeServiceMetadata, RuntimeStartupSurface, RuntimeStatusResponse,
 };
-use crate::config::{provider_registry_for_tests, AppConfig, ModelRef, ProviderId};
+use crate::config::{provider_registry_for_tests, AppConfig, ProviderId};
 use crate::{
     host::RuntimeHost,
     provider::StubProvider,
@@ -78,10 +78,11 @@ fn test_config() -> AppConfig {
         api_cors: Default::default(),
         config_file_path: home.path().join("config.json"),
         stored_config: Default::default(),
-        default_model: ModelRef {
-            provider: ProviderId::anthropic(),
-            model: "claude-sonnet-4-6".into(),
-        },
+        default_model: crate::config::ModelRouteRef::new(
+            ProviderId::anthropic(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+            "claude-sonnet-4-6",
+        ),
         fallback_models: vec![],
         vision_model: None,
         image_generation_model: None,

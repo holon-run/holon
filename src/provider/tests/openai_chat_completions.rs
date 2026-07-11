@@ -2,7 +2,7 @@
 
 use super::support::*;
 use super::*;
-use crate::config::{ModelRef, ProviderId, ProviderTransportKind};
+use crate::config::{ModelRouteRef, ProviderId, ProviderTransportKind};
 use crate::provider::provider_transport_diagnostics;
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
 use crate::provider::transports::build_chat_completion_messages;
@@ -19,10 +19,13 @@ fn build_candidate_creates_chat_completions_provider() {
         .unwrap()
         .transport = ProviderTransportKind::OpenAiChatCompletions;
 
-    let candidate = build_candidate(&fixture.config, &ModelRef::parse("openai/gpt-5.4").unwrap())
-        .expect("chat completions provider should build");
+    let candidate = build_candidate(
+        &fixture.config,
+        &ModelRouteRef::parse_compatible("openai/gpt-5.4").unwrap(),
+    )
+    .expect("chat completions provider should build");
 
-    assert_eq!(candidate.model_ref, "openai/gpt-5.4");
+    assert_eq!(candidate.model_ref, "openai@default/gpt-5.4");
     assert_eq!(candidate.provider_name, "openai");
 }
 

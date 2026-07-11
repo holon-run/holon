@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 
 use crate::{
     config::{
-        AppConfig, ModelRef, ModelRouteCapability, ProviderTransportKind, ResolvedModelRoute,
+        AppConfig, ModelRouteCapability, ModelRouteRef, ProviderTransportKind, ResolvedModelRoute,
         RuntimeModelCatalog,
     },
     context::ContextConfig,
@@ -32,7 +32,7 @@ pub fn build_provider_from_config(config: &AppConfig) -> Result<Arc<dyn AgentPro
 
 pub fn build_provider_from_model_chain(
     config: &AppConfig,
-    provider_chain: &[ModelRef],
+    provider_chain: &[ModelRouteRef],
 ) -> Result<Arc<dyn AgentProvider>> {
     let mut candidates = Vec::new();
     let mut errors = Vec::new();
@@ -67,9 +67,10 @@ pub fn build_provider_from_model_chain(
 
 pub(crate) fn build_candidate(
     config: &AppConfig,
-    model_ref: &ModelRef,
+    route_ref: &ModelRouteRef,
 ) -> Result<ProviderCandidate> {
-    let route = resolve_model_route_for_candidate(config, model_ref, ModelRouteCapability::Turn)?;
+    let route =
+        resolve_explicit_model_route_for_candidate(config, route_ref, ModelRouteCapability::Turn)?;
     build_candidate_from_model_route(&config.home_dir, &route)
 }
 
@@ -134,34 +135,26 @@ pub(crate) fn build_candidate_from_model_route(
         }
     };
     Ok(ProviderCandidate {
-        model_ref: model_ref.as_string(),
+        model_ref: route.route_ref.as_string(),
         provider_name: route.provider_name().to_string(),
         provider,
     })
 }
 
-pub(crate) fn resolve_model_route_for_candidate(
+pub(crate) fn resolve_explicit_model_route_for_candidate(
     config: &AppConfig,
-    model_ref: &ModelRef,
+    route_ref: &ModelRouteRef,
     requested_capability: ModelRouteCapability,
 ) -> Result<ResolvedModelRoute> {
-    let provider_config = config.providers.get(&model_ref.provider).ok_or_else(|| {
-        anyhow!(
-            "unknown provider {}; configure providers.{}",
-            model_ref.provider.as_str(),
-            model_ref.provider.as_str()
-        )
-    })?;
-
     let base_context_config = base_context_config_for_candidate(config);
     RuntimeModelCatalog::from_config(config)
-        .resolve_model_route(&base_context_config, model_ref, requested_capability)
+        .resolve_explicit_model_route(&base_context_config, route_ref, requested_capability)
         .ok_or_else(|| {
             anyhow!(
-                "provider {} default endpoint transport {} cannot route model {} for requested route capability {:?}",
-                model_ref.provider.as_str(),
-                provider_config.transport.as_str(),
-                model_ref.as_string(),
+                "provider endpoint {}@{} cannot route model {} for requested route capability {:?}",
+                route_ref.provider.as_str(),
+                route_ref.endpoint.as_str(),
+                route_ref.as_string(),
                 requested_capability
             )
         })

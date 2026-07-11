@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use holon::{
-    config::{AppConfig, ControlAuthMode, ModelRef},
+    config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
     provider::{
         test_support::{ScriptedAgentProvider, ScriptedProviderStep},
@@ -38,7 +38,10 @@ fn test_config() -> AppConfig {
         api_cors: Default::default(),
         config_file_path: home_dir.join("config.json"),
         stored_config: Default::default(),
-        default_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+        default_model: holon::config::ModelRouteRef::parse_compatible(
+            "anthropic/claude-sonnet-4-6",
+        )
+        .unwrap(),
         fallback_models: Vec::new(),
         vision_model: None,
         image_generation_model: None,

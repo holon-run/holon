@@ -30,7 +30,7 @@ fn live_runtime_config() -> Result<(AppConfig, tempfile::TempDir, tempfile::Temp
 
     let model = live_prompt_continuity_model()?;
     config.default_agent_id = "live-prompt-continuity".into();
-    config.default_model = model.clone();
+    config.default_model = holon::config::ModelRouteRef::from_legacy_model_ref(&model);
     config.fallback_models.clear();
     config.disable_provider_fallback = true;
     config.home_dir = data_dir.path().to_path_buf();

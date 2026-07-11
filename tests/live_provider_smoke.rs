@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use holon::{
-    config::{AppConfig, ModelRef, ProviderId, ProviderTransportKind},
+    config::{AppConfig, ModelRef, ModelRouteRef, ProviderId, ProviderTransportKind},
     context::ContextConfig,
     model_catalog::{BuiltInModelCatalog, ResolvedRuntimeModelPolicy},
     provider::{
@@ -44,7 +44,7 @@ struct SmokeResult {
 /// Only providers that appear in the chain (i.e. have a valid credential) are
 /// included.
 fn provider_model_map(config: &AppConfig) -> BTreeMap<ProviderId, String> {
-    let chain: Vec<ModelRef> = config.provider_chain();
+    let chain: Vec<ModelRouteRef> = config.provider_chain();
     let mut map = BTreeMap::new();
     for model_ref in chain {
         map.entry(model_ref.provider.clone())

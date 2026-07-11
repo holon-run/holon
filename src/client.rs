@@ -14,9 +14,9 @@ use crate::{
         AttachWorkspaceRequest, BatchGetMessagesRequest, BatchGetMessagesResponse,
         BatchGetTranscriptEntriesRequest, BatchGetTranscriptEntriesResponse,
         ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest, DebugPromptRequest,
-        DetachWorkspaceRequest, ExitWorkspaceRequest, RuntimeConfigReadResponse,
-        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
-        TaskInputRequest, TaskStopRequest,
+        DetachWorkspaceRequest, ExitWorkspaceRequest, ModelConfigMigrationRequest,
+        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+        SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
     },
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
@@ -412,6 +412,17 @@ impl LocalClient {
     ) -> Result<RuntimeConfigUpdateResponse> {
         self.patch_control_json("/control/runtime/config", request)
             .await
+    }
+
+    pub async fn migrate_model_config_routes(
+        &self,
+        write: bool,
+    ) -> Result<crate::model_config_migration::ModelConfigMigrationReport> {
+        self.post_control_json(
+            "/control/runtime/config/migrate-model-routes",
+            &ModelConfigMigrationRequest { write },
+        )
+        .await
     }
 
     #[cfg(unix)]

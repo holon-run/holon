@@ -9,8 +9,8 @@ use crate::{
     config::{
         built_in_provider_default_config, credential_store_path, load_persisted_config_at,
         save_persisted_config_at, set_credential_profile_at, validate_provider_config, AppConfig,
-        CredentialKind, CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile,
-        ProviderId, ProviderRuntimeConfig,
+        CredentialKind, CredentialSource, ModelRef, ModelRouteRef, ProviderAuthConfig,
+        ProviderConfigFile, ProviderId, ProviderRuntimeConfig,
     },
     model_catalog::BuiltInModelCatalog,
     web::{WebProviderAuthClass, WebProviderSupportStatus},
@@ -114,7 +114,7 @@ pub struct OnboardingWizardDraft {
     pub provider: ProviderId,
     pub credential_profile: String,
     pub credential_kind: CredentialKind,
-    pub default_model: ModelRef,
+    pub default_model: ModelRouteRef,
     pub search: OnboardingSearchSelection,
 }
 
@@ -149,7 +149,7 @@ pub struct OnboardingProviderChoice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnboardingModelChoice {
-    pub model: ModelRef,
+    pub model: ModelRouteRef,
     pub title: String,
     pub detail: String,
     pub custom: bool,
@@ -272,14 +272,17 @@ pub fn onboarding_model_choices(
     }
     if models.is_empty() {
         models.push(OnboardingModelChoice {
-            model: ModelRef::new(provider.clone(), "unknown"),
-            title: format!("{}/unknown", provider.as_str()),
+            model: ModelRouteRef::from_legacy_model_ref(&ModelRef::new(
+                provider.clone(),
+                "unknown",
+            )),
+            title: format!("{}@default/unknown", provider.as_str()),
             detail: "custom provider model placeholder".into(),
             custom: false,
         });
     }
     models.push(OnboardingModelChoice {
-        model: ModelRef::new(provider.clone(), "__custom__"),
+        model: ModelRouteRef::from_legacy_model_ref(&ModelRef::new(provider.clone(), "__custom__")),
         title: "Custom model…".into(),
         detail: format!("enter any {} model id", provider.as_str()),
         custom: true,
@@ -309,14 +312,19 @@ fn configured_model_choices(
         .collect::<Vec<_>>();
     override_models.sort_by_key(ModelRef::as_string);
     for model in override_models {
-        push_configured_model_choice(&mut models, &model, provider, "configured model override");
+        push_configured_model_choice(
+            &mut models,
+            &ModelRouteRef::from_legacy_model_ref(&model),
+            provider,
+            "configured model override",
+        );
     }
     models
 }
 
 fn push_configured_model_choice(
     models: &mut Vec<OnboardingModelChoice>,
-    model: &ModelRef,
+    model: &ModelRouteRef,
     provider: &ProviderId,
     detail: &str,
 ) {
@@ -359,8 +367,8 @@ impl RuntimeModelCatalogShim {
                 };
                 OnboardingModelChoice {
                     title: format!("{}{}", entry.display_name, preferred_suffix),
-                    detail: entry.model_ref.as_string(),
-                    model: entry.model_ref,
+                    detail: ModelRouteRef::from_legacy_model_ref(&entry.model_ref).as_string(),
+                    model: ModelRouteRef::from_legacy_model_ref(&entry.model_ref),
                     custom: false,
                 }
             })
@@ -984,8 +992,8 @@ mod tests {
         config::{
             credential_store_path, load_credential_store_at, load_persisted_config_at,
             provider_registry_for_tests, AppConfig, ControlAuthMode, CredentialKind,
-            CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile, ProviderEndpointId,
-            ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
+            CredentialSource, ModelRef, ModelRouteRef, ProviderAuthConfig, ProviderConfigFile,
+            ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
         },
         model_catalog::ModelRuntimeOverride,
         onboarding::{
@@ -1021,7 +1029,7 @@ mod tests {
             api_cors: Default::default(),
             config_file_path: home_dir.join("config.json"),
             stored_config: Default::default(),
-            default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
+            default_model: ModelRouteRef::parse_compatible("openai/gpt-5.4").unwrap(),
             fallback_models: Vec::new(),
             vision_model: None,
             image_generation_model: None,
@@ -1115,7 +1123,7 @@ mod tests {
     #[test]
     fn credential_repair_plan_preserves_provider_auth_contract() {
         let mut config = test_config(None);
-        config.default_model = ModelRef::parse("openai-codex/gpt-5.4").unwrap();
+        config.default_model = ModelRouteRef::parse_compatible("openai-codex/gpt-5.4").unwrap();
 
         let plan = credential_repair_plan(&config).expect("repair plan");
 
@@ -1129,7 +1137,7 @@ mod tests {
     #[test]
     fn credential_repair_plan_marks_unknown_default_provider_unconfigured() {
         let mut config = test_config(None);
-        config.default_model = ModelRef::parse("custom/gpt-5.4").unwrap();
+        config.default_model = ModelRouteRef::parse_compatible("custom/gpt-5.4").unwrap();
 
         let plan = credential_repair_plan(&config).expect("repair plan");
 
@@ -1212,8 +1220,9 @@ mod tests {
         config
             .providers
             .insert(deepseek.clone(), deepseek_config.clone());
-        config.default_model = ModelRef::parse("openai/custom-default").unwrap();
-        config.fallback_models = vec![ModelRef::parse("openai/custom-fallback").unwrap()];
+        config.default_model = ModelRouteRef::parse_compatible("openai/custom-default").unwrap();
+        config.fallback_models =
+            vec![ModelRouteRef::parse_compatible("openai/custom-fallback").unwrap()];
         config.validated_model_overrides.insert(
             ModelRef::parse("openai/custom-override").unwrap(),
             ModelRuntimeOverride::default(),
@@ -1243,12 +1252,18 @@ mod tests {
         assert!(providers.iter().any(|provider| provider.id == deepseek));
 
         let models = onboarding_model_choices(&config, &ProviderId::openai());
-        assert_eq!(models[0].model.as_string(), "openai/custom-default");
-        assert_eq!(models[1].model.as_string(), "openai/custom-fallback");
-        assert_eq!(models[2].model.as_string(), "openai/custom-override");
+        assert_eq!(models[0].model.as_string(), "openai@default/custom-default");
+        assert_eq!(
+            models[1].model.as_string(),
+            "openai@default/custom-fallback"
+        );
+        assert_eq!(
+            models[2].model.as_string(),
+            "openai@default/custom-override"
+        );
         assert!(models
             .iter()
-            .any(|choice| choice.model.as_string() == "openai/gpt-5.4"));
+            .any(|choice| choice.model.as_string() == "openai@default/gpt-5.4"));
         assert!(models
             .iter()
             .any(|choice| choice.custom && choice.title == "Custom model…"));
@@ -1261,7 +1276,7 @@ mod tests {
             provider: ProviderId::openai(),
             credential_profile: "openai".into(),
             credential_kind: CredentialKind::ApiKey,
-            default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
+            default_model: ModelRouteRef::parse("openai@default/gpt-5.4").unwrap(),
             search: OnboardingSearchSelection::ManagedDuckDuckGo,
         };
 
@@ -1272,12 +1287,15 @@ mod tests {
 
         assert_eq!(summary.provider, "openai");
         assert_eq!(summary.applied_via, "offline_store");
-        assert_eq!(summary.default_model, "openai/gpt-5.4");
+        assert_eq!(summary.default_model, "openai@default/gpt-5.4");
         assert_eq!(summary.search, "Managed WebSearch: DuckDuckGo");
         assert!(summary.credential_written);
         assert!(!format!("{summary:?}").contains("test-secret"));
 
-        assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(
+            persisted.model.default.as_deref(),
+            Some("openai@default/gpt-5.4")
+        );
         assert_eq!(persisted.web.search.enabled, Some(true));
         assert_eq!(persisted.web.search.builtin_provider.enabled, Some(false));
         assert_eq!(persisted.web.search.provider.as_deref(), Some("duckduckgo"));
@@ -1309,7 +1327,7 @@ mod tests {
             provider: ProviderId::openai(),
             credential_profile: "openai".into(),
             credential_kind: CredentialKind::ApiKey,
-            default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
+            default_model: ModelRouteRef::parse("openai@default/gpt-5.4").unwrap(),
             search: OnboardingSearchSelection::Auto,
         };
 

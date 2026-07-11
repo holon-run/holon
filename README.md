@@ -83,10 +83,10 @@ holon config providers set deepseek \
   --credential-kind api_key \
   --credential-profile deepseek
 
-holon config set model.default "deepseek/deepseek-v4-pro"
+holon config set model.default "deepseek@default/deepseek-v4-pro"
 
 # Or use a local Codex login session / Codex subscription
-holon config set model.default "openai-codex/gpt-5.5"
+holon config set model.default "openai-codex@default/gpt-5.5"
 ```
 
 Inspect the configured state with:

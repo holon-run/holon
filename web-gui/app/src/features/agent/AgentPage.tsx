@@ -187,7 +187,7 @@ export function AgentPage({
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
-  const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.model === activeAgent.model), [activeAgent.model, modelCatalog.options]);
+  const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
   const activeReasoningBadge = activeModelSupportsReasoning ? (activeAgent.modelReasoningEffort ?? "auto") : undefined;
   const activeModelTitle = modelButtonTitle(activeAgent.model, activeReasoningBadge, activeAgent.modelSource === "agent_override");
@@ -435,9 +435,9 @@ export function AgentPage({
       reasoningEffort = "auto";
     }
 
-    setChangingModel(option.model);
+    setChangingModel(option.routeRef);
     try {
-      await onSetModel(option.model, option.supportsReasoningEffort && reasoningEffort !== "auto" ? reasoningEffort : undefined);
+      await onSetModel(option.routeRef, option.supportsReasoningEffort && reasoningEffort !== "auto" ? reasoningEffort : undefined);
       setModelPickerOpen(false);
     } catch {
       // Store exposes the user-facing error.
@@ -727,8 +727,8 @@ export function AgentPage({
                           <div className="model-options" role="listbox" aria-label={t("agent.providerModelsAria", { provider: currentProvider })}>
                             {currentProviderModels.map((option) => (
                               <button
-                                className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
-                                key={option.model}
+                                className={`model-option ${option.routeRef === activeAgent.model ? "is-active" : ""}`}
+                                key={option.routeRef}
                                 type="button"
                                 disabled={!option.available || changingModel !== null}
                                 title={option.unavailableReason ?? option.model}
@@ -741,7 +741,7 @@ export function AgentPage({
                                 <span className="model-option-meta">
                                   {option.supportsReasoningEffort ? <small>{t("agent.reasoningMeta")}</small> : null}
                                   {!option.available ? <small>{t("agent.unavailableMeta")}</small> : null}
-                                  {changingModel === option.model ? <em>{t("common.saving")}</em> : null}
+                                  {changingModel === option.routeRef ? <em>{t("common.saving")}</em> : null}
                                 </span>
                               </button>
                             ))}
@@ -786,9 +786,12 @@ function modelButtonTitle(model: string, reasoningEffort: string | undefined, is
 function groupModelOptionsByProvider(options: RuntimeModelOption[]): Array<{ provider: string; availableCount: number; models: RuntimeModelOption[] }> {
   const groups = new Map<string, RuntimeModelOption[]>();
   for (const option of options) {
-    const models = groups.get(option.provider) ?? [];
+    const provider = option.endpoint === "default"
+      ? option.providerFamily
+      : `${option.providerFamily} / ${option.endpoint}`;
+    const models = groups.get(provider) ?? [];
     models.push(option);
-    groups.set(option.provider, models);
+    groups.set(provider, models);
   }
   return Array.from(groups.entries())
     .map(([provider, models]) => ({

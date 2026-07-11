@@ -59,7 +59,8 @@ pub(crate) use crate::{
         credential_store_path, list_credential_profiles_at, load_credential_store_at,
         load_persisted_config_at, remove_credential_profile_at, save_persisted_config_at,
         set_config_key, set_credential_profile_at, unset_config_key, ApiCorsConfigFile,
-        ControlTransportKind, CredentialKind, CredentialProfileStatus, HolonConfigFile, ModelRef,
+        ControlTransportKind, CredentialKind, CredentialProfileStatus, HolonConfigFile,
+        ModelRouteRef,
     },
     daemon::{
         graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
@@ -445,6 +446,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/control/runtime/config",
             patch(control::runtime_config_update),
+        )
+        .route(
+            "/control/runtime/config/migrate-model-routes",
+            post(control::runtime_config_migrate_model_routes),
         )
         .route("/control/runtime/shutdown", post(control::runtime_shutdown))
         .route(

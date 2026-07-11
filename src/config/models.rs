@@ -6,6 +6,16 @@ pub struct ModelRef {
     pub model: String,
 }
 
+pub(crate) fn authenticated_model_route_candidates(
+    providers: &ProviderRegistry,
+    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+) -> Vec<ModelRouteRef> {
+    authenticated_model_candidates(providers, model_overrides)
+        .iter()
+        .map(ModelRouteRef::from_legacy_model_ref)
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProviderEndpointId(String);
 
@@ -56,6 +66,103 @@ impl<'de> Deserialize<'de> for ProviderEndpointId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModelRouteRef {
+    pub provider: ProviderId,
+    pub endpoint: ProviderEndpointId,
+    pub model: String,
+}
+
+impl ModelRouteRef {
+    pub fn new(
+        provider: ProviderId,
+        endpoint: ProviderEndpointId,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider,
+            endpoint,
+            model: model.into(),
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("model route ref must not be empty"));
+        }
+        let (route, model) = trimmed.split_once('/').ok_or_else(|| {
+            anyhow!("invalid model route ref {trimmed}; expected provider@endpoint/model")
+        })?;
+        let (provider, endpoint) = route.split_once('@').ok_or_else(|| {
+            anyhow!("invalid model route ref {trimmed}; expected provider@endpoint/model")
+        })?;
+        let provider = ProviderId::parse(provider)?;
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(anyhow!(
+                "invalid model route ref {trimmed}; model part must not be empty"
+            ));
+        }
+        Ok(Self::new(provider, endpoint, model))
+    }
+
+    pub fn parse_compatible(value: &str) -> Result<Self> {
+        if value
+            .trim()
+            .split_once('/')
+            .is_some_and(|(route, _)| route.contains('@'))
+        {
+            return Self::parse(value);
+        }
+        let model_ref = ModelRef::parse(value)?;
+        Ok(Self::from_legacy_model_ref(&model_ref))
+    }
+
+    pub fn from_legacy_model_ref(model_ref: &ModelRef) -> Self {
+        let catalog = BuiltInModelCatalog::default();
+        let model_ref = catalog.canonicalize_model_ref(model_ref);
+        let endpoint = catalog
+            .get(&model_ref)
+            .and_then(|metadata| metadata.endpoint.clone())
+            .unwrap_or_else(ProviderEndpointId::default_endpoint);
+        Self::new(model_ref.provider, endpoint, model_ref.model)
+    }
+
+    pub fn model_ref(&self) -> ModelRef {
+        ModelRef::new(self.provider.clone(), self.model.clone())
+    }
+
+    pub fn as_string(&self) -> String {
+        format!(
+            "{}@{}/{}",
+            self.provider.as_str(),
+            self.endpoint.as_str(),
+            self.model
+        )
+    }
+}
+
+impl Serialize for ModelRouteRef {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.as_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelRouteRef {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        ModelRouteRef::parse_compatible(&raw).map_err(D::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelRouteCapability {
     Turn,
@@ -100,6 +207,7 @@ impl ResolvedProviderEndpointConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedModelRoute {
+    pub route_ref: ModelRouteRef,
     pub model_ref: ModelRef,
     pub endpoint: ResolvedProviderEndpointConfig,
     pub policy: ResolvedRuntimeModelPolicy,
@@ -118,7 +226,7 @@ impl ResolvedModelRoute {
 
 pub(crate) fn resolve_image_generation_model(
     stored_config: &HolonConfigFile,
-) -> Result<Option<ModelRef>> {
+) -> Result<Option<ModelRouteRef>> {
     if let Ok(value) = env::var("HOLON_IMAGE_GENERATION_MODEL") {
         return parse_image_generation_model_ref(&value);
     }
@@ -128,21 +236,21 @@ pub(crate) fn resolve_image_generation_model(
     Ok(None)
 }
 
-fn parse_image_generation_model_ref(value: &str) -> Result<Option<ModelRef>> {
+fn parse_image_generation_model_ref(value: &str) -> Result<Option<ModelRouteRef>> {
     if value.trim().eq_ignore_ascii_case("auto") {
         Ok(None)
     } else {
-        ModelRef::parse(value).map(Some)
+        ModelRouteRef::parse_compatible(value).map(Some)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeModelCatalog {
-    pub default_model: ModelRef,
-    pub fallback_models: Vec<ModelRef>,
-    pub vision_model: Option<ModelRef>,
-    pub image_generation_model: Option<ModelRef>,
-    pub vision_candidate_models: Vec<ModelRef>,
+    pub default_model: ModelRouteRef,
+    pub fallback_models: Vec<ModelRouteRef>,
+    pub vision_model: Option<ModelRouteRef>,
+    pub image_generation_model: Option<ModelRouteRef>,
+    pub vision_candidate_models: Vec<ModelRouteRef>,
     pub disable_provider_fallback: bool,
     pub provider_endpoints: HashMap<ProviderId, ResolvedProviderEndpointConfig>,
     pub built_in_catalog: BuiltInModelCatalog,
@@ -192,6 +300,11 @@ impl RuntimeModelCatalog {
         let model_ref = &canonical_ref;
 
         let endpoint = self.resolve_endpoint_for_model(model_ref)?;
+        let route_ref = ModelRouteRef::new(
+            endpoint.provider.clone(),
+            endpoint.endpoint.clone(),
+            model_ref.model.clone(),
+        );
 
         let policy = self.built_in_catalog.resolve_policy(
             model_ref,
@@ -207,7 +320,40 @@ impl RuntimeModelCatalog {
             return None;
         }
         Some(ResolvedModelRoute {
+            route_ref,
             model_ref: model_ref.clone(),
+            endpoint: endpoint.clone(),
+            policy,
+            requested_capability,
+        })
+    }
+
+    pub fn resolve_explicit_model_route(
+        &self,
+        base_context_config: &ContextConfig,
+        route_ref: &ModelRouteRef,
+        requested_capability: ModelRouteCapability,
+    ) -> Option<ResolvedModelRoute> {
+        let model_ref = route_ref.model_ref();
+        let endpoint = self.provider_endpoints.values().find(|endpoint| {
+            endpoint.provider == route_ref.provider && endpoint.endpoint == route_ref.endpoint
+        })?;
+        let policy = self.built_in_catalog.resolve_policy(
+            &model_ref,
+            &self.model_overrides,
+            &self.discovered_models,
+            self.unknown_model_fallback.as_ref(),
+            base_context_config,
+            self.configured_runtime_max_output_tokens,
+        );
+        if !requested_capability.model_supports(&policy)
+            || !requested_capability.transport_supports(endpoint.runtime_config.transport)
+        {
+            return None;
+        }
+        Some(ResolvedModelRoute {
+            route_ref: route_ref.clone(),
+            model_ref,
             endpoint: endpoint.clone(),
             policy,
             requested_capability,
@@ -236,7 +382,7 @@ impl RuntimeModelCatalog {
         }
     }
 
-    pub fn provider_chain(&self, model_override: Option<&ModelRef>) -> Vec<ModelRef> {
+    pub fn provider_chain(&self, model_override: Option<&ModelRouteRef>) -> Vec<ModelRouteRef> {
         if self.disable_provider_fallback {
             return vec![self.effective_model(model_override)];
         }
@@ -255,9 +401,9 @@ impl RuntimeModelCatalog {
 
     pub fn provider_chain_for_turn(
         &self,
-        model_override: Option<&ModelRef>,
-        pending_fallback_model: Option<&ModelRef>,
-    ) -> Vec<ModelRef> {
+        model_override: Option<&ModelRouteRef>,
+        pending_fallback_model: Option<&ModelRouteRef>,
+    ) -> Vec<ModelRouteRef> {
         let chain = self.provider_chain(model_override);
         let Some(pending_fallback_model) = pending_fallback_model else {
             return chain;
@@ -269,7 +415,7 @@ impl RuntimeModelCatalog {
             .unwrap_or_else(|| vec![pending_fallback_model.clone()])
     }
 
-    pub fn effective_model(&self, model_override: Option<&ModelRef>) -> ModelRef {
+    pub fn effective_model(&self, model_override: Option<&ModelRouteRef>) -> ModelRouteRef {
         model_override
             .cloned()
             .unwrap_or_else(|| self.default_model.clone())
@@ -278,9 +424,9 @@ impl RuntimeModelCatalog {
     pub fn resolved_model_policy(
         &self,
         base_context_config: &ContextConfig,
-        model_override: Option<&ModelRef>,
+        model_override: Option<&ModelRouteRef>,
     ) -> ResolvedRuntimeModelPolicy {
-        let model_ref = self.effective_model(model_override);
+        let model_ref = self.effective_model(model_override).model_ref();
         self.built_in_catalog.resolve_policy(
             &model_ref,
             &self.model_overrides,
@@ -294,11 +440,12 @@ impl RuntimeModelCatalog {
     pub fn resolved_context_config(
         &self,
         base_context_config: &ContextConfig,
-        model_override: Option<&ModelRef>,
+        model_override: Option<&ModelRouteRef>,
     ) -> ContextConfig {
+        let model_ref = self.effective_model(model_override).model_ref();
         self.built_in_catalog
             .apply_policy(
-                &self.effective_model(model_override),
+                &model_ref,
                 &self.model_overrides,
                 &self.discovered_models,
                 self.unknown_model_fallback.as_ref(),
@@ -378,8 +525,8 @@ impl RuntimeModelCatalog {
     pub fn select_view_image_vision_model(
         &self,
         base_context_config: &ContextConfig,
-        model_override: Option<&ModelRef>,
-        pending_fallback_model: Option<&ModelRef>,
+        model_override: Option<&ModelRouteRef>,
+        pending_fallback_model: Option<&ModelRouteRef>,
     ) -> ViewImageVisionSelection {
         let chain = self.provider_chain_for_turn(model_override, pending_fallback_model);
         let primary = chain
@@ -421,17 +568,18 @@ impl RuntimeModelCatalog {
     pub(crate) fn select_view_image_vision_model_from_candidates(
         &self,
         base_context_config: &ContextConfig,
-        primary: ModelRef,
-        model_refs: Vec<ModelRef>,
+        primary: ModelRouteRef,
+        model_refs: Vec<ModelRouteRef>,
         selected_adapter_reason: &str,
         unavailable_reason: &str,
     ) -> ViewImageVisionSelection {
         let mut candidates = Vec::new();
         let mut selected = None;
 
-        for model_ref in &model_refs {
+        for route_ref in &model_refs {
+            let model_ref = route_ref.model_ref();
             let policy = self.built_in_catalog.resolve_policy(
-                model_ref,
+                &model_ref,
                 &self.model_overrides,
                 &self.discovered_models,
                 self.unknown_model_fallback.as_ref(),
@@ -441,7 +589,11 @@ impl RuntimeModelCatalog {
             let image_input = policy.capabilities.image_input;
             let supported_transport = self
                 .provider_endpoints
-                .get(&model_ref.provider)
+                .values()
+                .find(|endpoint| {
+                    endpoint.provider == route_ref.provider
+                        && endpoint.endpoint == route_ref.endpoint
+                })
                 .is_some_and(|endpoint| {
                     ModelRouteCapability::VisionObservation
                         .transport_supports(endpoint.runtime_config.transport)
@@ -454,22 +606,22 @@ impl RuntimeModelCatalog {
                 "provider_transport_unsupported_for_view_image_observation"
             };
             candidates.push(ViewImageVisionCandidate {
-                provider: model_ref.provider.as_str().to_string(),
-                model: model_ref.model.clone(),
-                model_ref: model_ref.as_string(),
+                provider: route_ref.provider.as_str().to_string(),
+                model: route_ref.model.clone(),
+                model_ref: route_ref.as_string(),
                 image_input,
                 reason: reason.to_string(),
             });
             if self
-                .resolve_model_route(
+                .resolve_explicit_model_route(
                     base_context_config,
-                    model_ref,
+                    route_ref,
                     ModelRouteCapability::VisionObservation,
                 )
                 .is_some()
                 && selected.is_none()
             {
-                selected = Some(model_ref.clone());
+                selected = Some(route_ref.clone());
             }
         }
 
@@ -509,8 +661,8 @@ impl RuntimeModelCatalog {
     pub fn select_generate_image_route(
         &self,
         base_context_config: &ContextConfig,
-        model_override: Option<&ModelRef>,
-        pending_fallback_model: Option<&ModelRef>,
+        model_override: Option<&ModelRouteRef>,
+        pending_fallback_model: Option<&ModelRouteRef>,
     ) -> Option<ResolvedModelRoute> {
         let candidates = self
             .image_generation_model
@@ -520,7 +672,7 @@ impl RuntimeModelCatalog {
                 self.provider_chain_for_turn(model_override, pending_fallback_model)
             });
         candidates.into_iter().find_map(|model_ref| {
-            self.resolve_model_route(
+            self.resolve_explicit_model_route(
                 base_context_config,
                 &model_ref,
                 ModelRouteCapability::ImageGeneration,
@@ -531,22 +683,23 @@ impl RuntimeModelCatalog {
     pub fn select_generate_image_model(
         &self,
         base_context_config: &ContextConfig,
-        model_override: Option<&ModelRef>,
-        pending_fallback_model: Option<&ModelRef>,
-    ) -> Option<ModelRef> {
+        model_override: Option<&ModelRouteRef>,
+        pending_fallback_model: Option<&ModelRouteRef>,
+    ) -> Option<ModelRouteRef> {
         self.select_generate_image_route(
             base_context_config,
             model_override,
             pending_fallback_model,
         )
-        .map(|route| route.model_ref)
+        .map(|route| route.route_ref)
     }
 }
 
 impl Default for RuntimeModelCatalog {
     fn default() -> Self {
         Self {
-            default_model: ModelRef::parse("openai/gpt-5.4").expect("valid default model ref"),
+            default_model: ModelRouteRef::parse("openai@default/gpt-5.4")
+                .expect("valid default model route ref"),
             fallback_models: Vec::new(),
             vision_model: None,
             image_generation_model: None,
@@ -666,15 +819,20 @@ pub(crate) fn validate_optional_model_runtime_override(
 }
 
 pub(crate) fn resolve_model_selection_for_load_mode(
-    explicit_default: Option<ModelRef>,
-    explicit_fallbacks: Option<Vec<ModelRef>>,
+    explicit_default: Option<ModelRouteRef>,
+    explicit_fallbacks: Option<Vec<ModelRouteRef>>,
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
     mode: ConfigLoadMode,
-) -> Result<(ModelRef, Vec<ModelRef>)> {
+) -> Result<(ModelRouteRef, Vec<ModelRouteRef>)> {
     if mode.skip_authenticated_model_resolution() {
-        let default_model =
-            explicit_default.unwrap_or_else(|| ModelRef::new(ProviderId::openai(), "unknown"));
+        let default_model = explicit_default.unwrap_or_else(|| {
+            ModelRouteRef::new(
+                ProviderId::openai(),
+                ProviderEndpointId::default_endpoint(),
+                "unknown",
+            )
+        });
         let fallback_models = explicit_fallbacks.unwrap_or_default();
         return Ok((
             default_model.clone(),
@@ -691,13 +849,13 @@ pub(crate) fn resolve_model_selection_for_load_mode(
 }
 
 pub(crate) fn resolve_model_selection_from_explicit(
-    explicit_default: Option<ModelRef>,
-    explicit_fallbacks: Option<Vec<ModelRef>>,
+    explicit_default: Option<ModelRouteRef>,
+    explicit_fallbacks: Option<Vec<ModelRouteRef>>,
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-) -> Result<(ModelRef, Vec<ModelRef>)> {
+) -> Result<(ModelRouteRef, Vec<ModelRouteRef>)> {
     let auth_candidates = if explicit_default.is_none() || explicit_fallbacks.is_none() {
-        authenticated_model_candidates(providers, model_overrides)
+        authenticated_model_route_candidates(providers, model_overrides)
     } else {
         Vec::new()
     };
@@ -722,19 +880,21 @@ pub(crate) fn resolve_model_selection_from_explicit(
     ))
 }
 
-pub(crate) fn resolve_default_model(stored_config: &HolonConfigFile) -> Result<Option<ModelRef>> {
+pub(crate) fn resolve_default_model(
+    stored_config: &HolonConfigFile,
+) -> Result<Option<ModelRouteRef>> {
     if let Ok(value) = env::var("HOLON_MODEL") {
-        return ModelRef::parse(&value).map(Some);
+        return ModelRouteRef::parse_compatible(&value).map(Some);
     }
     if let Some(value) = &stored_config.model.default {
-        return ModelRef::parse(value).map(Some);
+        return ModelRouteRef::parse_compatible(value).map(Some);
     }
     Ok(None)
 }
 
 pub(crate) fn resolve_fallback_models(
     stored_config: &HolonConfigFile,
-) -> Result<Option<Vec<ModelRef>>> {
+) -> Result<Option<Vec<ModelRouteRef>>> {
     if let Ok(value) = env::var("HOLON_MODEL_FALLBACKS") {
         Ok(Some(parse_model_ref_list(&value)?))
     } else if !stored_config.model.fallbacks.is_empty() {
@@ -743,7 +903,7 @@ pub(crate) fn resolve_fallback_models(
                 .model
                 .fallbacks
                 .iter()
-                .map(|value| ModelRef::parse(value))
+                .map(|value| ModelRouteRef::parse_compatible(value))
                 .collect::<Result<Vec<_>>>()?,
         ))
     } else {
@@ -751,12 +911,14 @@ pub(crate) fn resolve_fallback_models(
     }
 }
 
-pub(crate) fn resolve_vision_model(stored_config: &HolonConfigFile) -> Result<Option<ModelRef>> {
+pub(crate) fn resolve_vision_model(
+    stored_config: &HolonConfigFile,
+) -> Result<Option<ModelRouteRef>> {
     if let Ok(value) = env::var("HOLON_VISION_MODEL") {
-        return ModelRef::parse(&value).map(Some);
+        return ModelRouteRef::parse_compatible(&value).map(Some);
     }
     if let Some(value) = &stored_config.vision.default {
-        return ModelRef::parse(value).map(Some);
+        return ModelRouteRef::parse_compatible(value).map(Some);
     }
     Ok(None)
 }
@@ -843,9 +1005,9 @@ pub(crate) fn preferred_override_model_for_provider(
 }
 
 pub(crate) fn dedupe_fallback_models(
-    configured: Vec<ModelRef>,
-    default_model: &ModelRef,
-) -> Vec<ModelRef> {
+    configured: Vec<ModelRouteRef>,
+    default_model: &ModelRouteRef,
+) -> Vec<ModelRouteRef> {
     configured
         .into_iter()
         .filter(|model| model != default_model)
@@ -857,16 +1019,16 @@ pub(crate) fn dedupe_fallback_models(
         })
 }
 
-pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRef>> {
+pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRouteRef>> {
     let trimmed = raw_value.trim();
     if trimmed.starts_with('[') {
         let values: Vec<String> =
             serde_json::from_str(trimmed).context("expected a JSON string array")?;
-        let parsed: Vec<ModelRef> = values
+        let parsed: Vec<ModelRouteRef> = values
             .iter()
             .map(|s| s.trim())
             .filter(|value| !value.is_empty())
-            .map(ModelRef::parse)
+            .map(ModelRouteRef::parse_compatible)
             .collect::<Result<Vec<_>>>()?;
         if parsed.is_empty() {
             return Err(anyhow!("model ref list must not be empty"));
@@ -877,7 +1039,7 @@ pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRef>> {
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ModelRef::parse)
+        .map(ModelRouteRef::parse_compatible)
         .collect::<Result<Vec<_>>>()?;
     if values.is_empty() {
         return Err(anyhow!("model ref list must not be empty"));
@@ -888,6 +1050,48 @@ pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRef>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_route_ref_round_trips_model_ids_with_slashes() {
+        let route_ref =
+            ModelRouteRef::parse("openrouter@default/anthropic/claude-3.5-sonnet").unwrap();
+        assert_eq!(route_ref.provider.as_str(), "openrouter");
+        assert_eq!(route_ref.endpoint.as_str(), "default");
+        assert_eq!(route_ref.model, "anthropic/claude-3.5-sonnet");
+        assert_eq!(
+            route_ref.as_string(),
+            "openrouter@default/anthropic/claude-3.5-sonnet"
+        );
+    }
+
+    #[test]
+    fn compatible_model_route_ref_keeps_legacy_model_remainder() {
+        let route_ref =
+            ModelRouteRef::parse_compatible("openrouter/anthropic/claude-3.5-sonnet").unwrap();
+        assert_eq!(route_ref.provider.as_str(), "openrouter");
+        assert_eq!(route_ref.endpoint.as_str(), "default");
+        assert_eq!(route_ref.model, "anthropic/claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn compatible_model_route_ref_upgrades_builtin_endpoint() {
+        let route_ref =
+            ModelRouteRef::parse_compatible("volcengine-image-openai/doubao-seedream-5.0-lite")
+                .unwrap();
+        assert_eq!(route_ref.provider.as_str(), "volcengine");
+        assert_eq!(route_ref.endpoint.as_str(), "plan");
+        assert_eq!(route_ref.model, "doubao-seedream-5.0-lite");
+    }
+
+    #[test]
+    fn model_route_ref_deserializes_legacy_and_serializes_canonical() {
+        let route_ref: ModelRouteRef =
+            serde_json::from_str(r#""anthropic/claude-sonnet-4""#).unwrap();
+        assert_eq!(
+            serde_json::to_string(&route_ref).unwrap(),
+            r#""anthropic@default/claude-sonnet-4""#
+        );
+    }
 
     #[test]
     fn parse_model_ref_list_json_array() {

@@ -22,7 +22,8 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
     let catalog = RuntimeModelCatalog::from_config(config);
     let mut providers = Vec::new();
     let mut model_availability = Vec::new();
-    for model_ref in config.provider_chain() {
+    for route_ref in config.provider_chain() {
+        let model_ref = route_ref.model_ref();
         let availability = provider_availability(config, &model_ref);
         let provider_cfg = config
             .providers
@@ -43,8 +44,9 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
             })
             .unwrap_or_else(|| json!({"error": "provider_not_configured"}));
         providers.push(json!({
-            "model": model_ref.as_string(),
-            "provider": model_ref.provider.as_str(),
+            "model": route_ref.as_string(),
+            "provider": route_ref.provider.as_str(),
+            "endpoint": route_ref.endpoint.as_str(),
             "settings": provider_cfg,
             "availability": availability,
         }));
@@ -73,7 +75,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
 
     json!({
         "default_model": config.default_model.as_string(),
-        "fallback_models": config.fallback_models.iter().map(ModelRef::as_string).collect::<Vec<_>>(),
+        "fallback_models": config.fallback_models.iter().map(|model| model.as_string()).collect::<Vec<_>>(),
         "disable_provider_fallback": config.provider_fallback_disabled(),
         "runtime_max_output_tokens": config.runtime_max_output_tokens,
         "retry_policy": provider_retry_policy_json(),
@@ -93,11 +95,12 @@ pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvail
         models.insert(entry.model_ref.as_string(), entry.model_ref);
     }
     models.insert(
-        config.default_model.as_string(),
-        config.default_model.clone(),
+        config.default_model.model_ref().as_string(),
+        config.default_model.model_ref(),
     );
     for model_ref in &config.fallback_models {
-        models.insert(model_ref.as_string(), model_ref.clone());
+        let model_ref = model_ref.model_ref();
+        models.insert(model_ref.as_string(), model_ref);
     }
     for model_ref in config.validated_model_overrides.keys() {
         models.insert(model_ref.as_string(), model_ref.clone());
@@ -316,7 +319,8 @@ fn resolved_model_availability_entry(
     availability: &Value,
 ) -> ResolvedModelAvailability {
     let base_context = base_context_config(config);
-    let policy = catalog.resolved_model_policy(&base_context, Some(model_ref));
+    let route_ref = crate::config::ModelRouteRef::from_legacy_model_ref(model_ref);
+    let policy = catalog.resolved_model_policy(&base_context, Some(&route_ref));
     let route = catalog.resolve_model_route(&base_context, model_ref, ModelRouteCapability::Turn);
     let metadata_source = if config.validated_model_overrides.contains_key(model_ref) {
         "config_override".to_string()
@@ -434,7 +438,8 @@ fn base_context_config(config: &AppConfig) -> ContextConfig {
 }
 
 fn provider_availability(config: &AppConfig, model_ref: &ModelRef) -> Value {
-    let mut availability = match build_candidate(config, model_ref) {
+    let route_ref = crate::config::ModelRouteRef::from_legacy_model_ref(model_ref);
+    let mut availability = match build_candidate(config, &route_ref) {
         Ok(candidate) => json!({
             "available": true,
             "prompt_capabilities": candidate.provider.prompt_capabilities(),
@@ -542,8 +547,12 @@ mod tests {
             api_cors: Default::default(),
             config_file_path: home_path.join("config.json"),
             stored_config: Default::default(),
-            default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
-            fallback_models: vec![ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()],
+            default_model: crate::config::ModelRouteRef::parse_compatible("openai/gpt-5.4")
+                .unwrap(),
+            fallback_models: vec![crate::config::ModelRouteRef::parse_compatible(
+                "anthropic/claude-sonnet-4-6",
+            )
+            .unwrap()],
             vision_model: None,
             image_generation_model: None,
             vision_candidate_models: Vec::new(),
@@ -735,8 +744,10 @@ mod tests {
             route_provider.clone(),
             built_ins.get(&route_provider).unwrap().clone(),
         );
-        fixture.config.image_generation_model =
-            Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
+        fixture.config.image_generation_model = Some(
+            crate::config::ModelRouteRef::parse_compatible("volcengine/doubao-seedream-5.0-lite")
+                .unwrap(),
+        );
 
         let availability = resolved_model_availability(&fixture.config);
         let seedream = availability

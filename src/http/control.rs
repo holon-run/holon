@@ -69,6 +69,13 @@ pub struct RuntimeConfigUpdateRequest {
     pub updates: Vec<RuntimeConfigUpdateEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ModelConfigMigrationRequest {
+    #[serde(default)]
+    pub write: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfigUpdateEntry {
@@ -221,6 +228,29 @@ pub async fn runtime_config_update(
         results,
         runtime_surface: RuntimeConfigSurface::new(&config),
     }))
+}
+
+pub async fn runtime_config_migrate_model_routes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ModelConfigMigrationRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let config = state.host.config();
+    let report = crate::model_config_migration::migrate_model_config_routes(
+        &config.config_file_path,
+        state.host.runtime_db(),
+        request.write,
+    )
+    .map_err(error_response)?;
+    if request.write && report.ok && report.config.changed {
+        state
+            .host
+            .reload_all_agents_config()
+            .await
+            .map_err(error_response)?;
+    }
+    Ok(Json(report))
 }
 
 fn reject_accepted_runtime_config_results(results: &mut [RuntimeConfigUpdateResult], reason: &str) {
@@ -628,7 +658,7 @@ pub async fn set_agent_model(
     if let Some(reasoning_effort) = request.reasoning_effort.as_deref() {
         validate_reasoning_effort(reasoning_effort)?;
     }
-    let model = ModelRef::parse(&request.model).map_err(error_response)?;
+    let model = ModelRouteRef::parse_compatible(&request.model).map_err(error_response)?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)

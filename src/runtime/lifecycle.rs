@@ -753,7 +753,7 @@ impl RuntimeHandle {
 
     pub async fn set_model_override(
         &self,
-        model_override: crate::config::ModelRef,
+        model_override: crate::config::ModelRouteRef,
         reasoning_effort: Option<String>,
     ) -> Result<crate::types::AgentModelState> {
         let mut next_state = self.agent_state().await?;

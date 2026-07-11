@@ -57,8 +57,9 @@ async fn attached_workspace_inheritance_preserves_execution_boundary() {
             access_mode: WorkspaceAccessMode::SharedRead,
         });
         guard.state.execution_profile.process_execution_exposed = false;
-        guard.state.model_override =
-            Some(crate::config::ModelRef::parse("anthropic/claude-haiku-4-5").unwrap());
+        guard.state.model_override = Some(
+            crate::config::ModelRouteRef::parse_compatible("anthropic/claude-haiku-4-5").unwrap(),
+        );
         parent.inner.storage.write_agent(&guard.state).unwrap();
     }
     let parent_state = parent.agent_state().await.unwrap();
@@ -295,8 +296,10 @@ async fn preview_prompt_uses_codex_apply_patch_surface_even_when_prompt_tools_ar
     .unwrap();
     {
         let mut guard = runtime.inner.agent.lock().await;
-        guard.state.model_override =
-            Some(crate::config::ModelRef::parse("openai-codex/gpt-5.3-codex-spark").unwrap());
+        guard.state.model_override = Some(
+            crate::config::ModelRouteRef::parse_compatible("openai-codex/gpt-5.3-codex-spark")
+                .unwrap(),
+        );
         runtime.inner.storage.write_agent(&guard.state).unwrap();
     }
 

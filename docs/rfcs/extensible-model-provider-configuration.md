@@ -28,6 +28,65 @@ This RFC builds on:
 - `agent-profile-model.md`
 - `agent-control-plane-model.md`
 
+## Route-Aware Model Selection Amendment
+
+Model metadata identity and executable route identity are distinct:
+
+```rust
+pub struct ModelRef {
+    pub provider: ProviderId,
+    pub model: String,
+}
+
+pub struct ModelRouteRef {
+    pub provider: ProviderId,
+    pub endpoint: ProviderEndpointId,
+    pub model: String,
+}
+```
+
+`ModelRef`, serialized as `provider/model`, remains the logical identity for
+built-in/discovered metadata, `models.catalog`, aliases, and model policy
+lookup.
+
+`ModelRouteRef`, serialized canonically as `provider@endpoint/model`, is the
+persisted executable selection. It is used by:
+
+- `model.default`
+- `model.fallbacks`
+- `vision.default`
+- explicit `image_generation.default` values
+- agent `model_override`
+- pending fallback and requested/active model state
+
+The model remainder may contain `/`, so `provider/endpoint/model` is not an
+unambiguous syntax. Canonical serialization always includes the endpoint,
+including `@default`.
+
+Readers accept legacy `provider/model` selections and upgrade them using the
+existing built-in alias/catalog endpoint rule, falling back to the provider's
+`default` endpoint. Writers always persist canonical route refs. Reading legacy
+data does not silently rewrite it.
+
+Existing data can be inspected and explicitly migrated with:
+
+```bash
+holon config migrate-model-routes
+holon config migrate-model-routes --write
+```
+
+The first form is a dry-run across `config.json` and SQLite agent state.
+`--write` persists only after complete successful preflight. Config replacement
+is atomic and creates a one-time backup; agent-state updates use one SQLite
+transaction. Because the stores cannot share one transaction, migration is
+idempotent and reports each stage separately. Invalid or ambiguous input
+prevents partial writes.
+
+All later references in this RFC to `provider/model` as a runtime selection
+format should therefore be read as legacy-compatible input. Logical catalog
+keys remain `provider/model`; executable selections and resolved runtime model
+state use `ModelRouteRef`.
+
 ## Problem
 
 Holon's current model configuration is useful but still too tightly coupled to
@@ -62,7 +121,8 @@ agent override state will become one mixed configuration surface.
 
 ## Goals
 
-- keep `provider/model` as the canonical model reference format
+- keep `provider/model` as the logical catalog/policy reference format
+- use canonical `provider@endpoint/model` for executable selections
 - allow new providers without adding a new core enum variant for every provider
 - separate provider runtime configuration from model selection
 - separate model metadata from provider endpoint/auth configuration

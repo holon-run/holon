@@ -31,16 +31,16 @@ and description.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `model.default` | model_ref | Default provider/model, e.g. `"anthropic/claude-sonnet-4-6"` |
-| `model.fallbacks` | model_ref_list | Ordered fallback models when the default is unavailable |
+| `model.default` | model_route_ref | Default executable route, e.g. `"anthropic@default/claude-sonnet-4-6"` |
+| `model.fallbacks` | model_route_ref_list | Ordered executable fallback routes |
 | `runtime.disable_provider_fallback` | boolean | Disable provider/model fallback; require deterministic single-provider execution |
 
 ```bash
 # Set the default model
-holon config set model.default "deepseek-anthropic/deepseek-v4-pro"
+holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
 
 # Add fallback models (JSON array)
-holon config set model.fallbacks '["anthropic/claude-sonnet-4-6","minimax/MiniMax-M2.7"]'
+holon config set model.fallbacks '["anthropic@default/claude-sonnet-4-6","minimax@default/MiniMax-M2.7"]'
 
 # Read current default
 holon config get model.default
@@ -55,6 +55,24 @@ holon config unset model.fallbacks
 ### Per-Model Policy
 
 The `models.catalog` key lets you override runtime metadata for specific provider/model refs. Keys under `model.unknown_fallback.*` control policy for models without built-in metadata.
+
+Model metadata and executable selection use distinct identities:
+
+- `provider/model` is a logical model ref used by `models.catalog`.
+- `provider@endpoint/model` is a model route ref used by defaults, fallbacks,
+  vision/image generation selections, and agent overrides.
+
+Legacy `provider/model` selection values remain accepted, but all new writes
+include the endpoint. Inspect or explicitly rewrite existing config and agent
+state with:
+
+```bash
+holon config migrate-model-routes          # dry-run
+holon config migrate-model-routes --write  # validated canonical rewrite
+```
+
+The write creates a one-time config backup and updates all agent state in a
+SQLite transaction. Invalid or ambiguous refs prevent partial writes.
 
 ### HTTP API CORS
 
@@ -195,9 +213,9 @@ holon config set providers.volcengine.plans.image-openai.endpoint image-openai
 ```
 
 A plan maps a stable provider alias such as `volcengine-image-openai` onto a
-named endpoint while keeping the user-facing model reference shape
-`provider/model`. Existing built-in aliases and older `provider/model`
-references continue to work.
+named endpoint. Canonical selections persist that route explicitly, for example
+`volcengine@image-openai/model-id`. Existing built-in aliases and older
+`provider/model` references continue to work as compatible inputs.
 
 ### Removing a Provider
 
@@ -257,7 +275,7 @@ This shows each model's availability, credential status, provider, transport, an
 Each agent can override the default model:
 
 ```bash
-holon agent model set "anthropic/claude-sonnet-4-6" reviewer
+holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 ```
 
 The override is stored in the agent's own configuration, not the global `model.default`.

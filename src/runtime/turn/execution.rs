@@ -7,7 +7,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 
-use crate::config::ModelRef;
+use crate::config::ModelRouteRef;
 use crate::prompt::EffectivePrompt;
 use crate::provider::{
     provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
@@ -160,7 +160,7 @@ impl RuntimeHandle {
         let Some(fallback_ref) = timeline.pending_fallback_model_ref.as_deref() else {
             return Ok(None);
         };
-        let Ok(fallback_model) = ModelRef::parse(fallback_ref) else {
+        let Ok(fallback_model) = ModelRouteRef::parse_compatible(fallback_ref) else {
             return Ok(None);
         };
         let terminal_kind = if side_effect_boundary_crossed {

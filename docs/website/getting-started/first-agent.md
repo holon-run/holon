@@ -266,7 +266,7 @@ holon config credentials set --kind api_key --stdin anthropic
 ### Set the default model
 
 ```bash
-holon config set model.default "anthropic/claude-sonnet-4-6"
+holon config set model.default "anthropic@default/claude-sonnet-4-6"
 ```
 
 ### Agent-level model override
@@ -274,7 +274,7 @@ holon config set model.default "anthropic/claude-sonnet-4-6"
 An agent can override the default model:
 
 ```bash
-holon agent model set "anthropic/claude-sonnet-4-6" reviewer
+holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 ```
 
 See [Configuration reference](/reference/configuration.md) for more details on agent model overrides.

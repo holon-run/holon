@@ -382,11 +382,11 @@ fn config_set_unset_reports_offline_application_path_on_stderr() {
 
     let (set, set_stderr) =
         run_json_with_stderr(&home, &["config", "set", "model.default", "openai/gpt-4.1"]);
-    assert_eq!(set, json!("openai/gpt-4.1"));
+    assert_eq!(set, json!("openai@default/gpt-4.1"));
     assert_eq!(set_stderr, "applied_via=offline_store\n");
 
     let get = run_json(&home, &["config", "get", "model.default"]);
-    assert_eq!(get, json!("openai/gpt-4.1"));
+    assert_eq!(get, json!("openai@default/gpt-4.1"));
 
     let (unset, unset_stderr) = run_json_with_stderr(&home, &["config", "unset", "model.default"]);
     assert_eq!(
@@ -423,7 +423,7 @@ fn config_set_prefers_running_daemon_runtime_config_api() {
             stderr,
         )
     };
-    assert_eq!(set, json!("openai/gpt-4.1"));
+    assert_eq!(set, json!("openai@default/gpt-4.1"));
     assert!(
         set_stderr.contains("applied_via=daemon_api\n"),
         "stderr should report daemon application path: {set_stderr}"
@@ -434,7 +434,7 @@ fn config_set_prefers_running_daemon_runtime_config_api() {
         &["config", "get", "model.default"],
         &[("HOLON_HTTP_ADDR", &addr)],
     );
-    assert_eq!(get, json!("openai/gpt-4.1"));
+    assert_eq!(get, json!("openai@default/gpt-4.1"));
 
     let (unset, unset_stderr) = {
         let mut command = isolated_holon_command(&home);

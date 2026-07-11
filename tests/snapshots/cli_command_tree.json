@@ -244,6 +244,23 @@
     "aliases": []
   },
   {
+    "path": "config.migrate-model-routes",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "write",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "config.models",
     "positionals": [],
     "flags": [],

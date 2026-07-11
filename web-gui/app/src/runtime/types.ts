@@ -238,6 +238,7 @@ export interface AgentSummary {
 
 export interface RuntimeModelOption {
   model: string;
+  routeRef: string;
   provider: string;
   providerFamily: string;
   endpoint: string;

@@ -1040,7 +1040,7 @@ async fn dump_prompt(
 mod tests {
     use super::*;
     use holon::{
-        config::{provider_registry_for_tests, AltScreenMode, ModelRef},
+        config::{provider_registry_for_tests, AltScreenMode, ModelRouteRef},
         runtime_db::RuntimeDb,
     };
 
@@ -1069,7 +1069,7 @@ mod tests {
             api_cors: Default::default(),
             config_file_path: home.join("config.json"),
             stored_config: Default::default(),
-            default_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            default_model: ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap(),
             fallback_models: Vec::new(),
             vision_model: None,
             image_generation_model: None,
@@ -3181,6 +3181,9 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
         ConfigCommands::Providers { command } => handle_config_providers_command(command).await,
         ConfigCommands::Credentials { command } => handle_config_credentials_command(command).await,
         ConfigCommands::Models { command } => handle_config_models_command(command).await,
+        ConfigCommands::MigrateModelRoutes { write } => {
+            config_migrate_model_routes_command(write).await
+        }
         ConfigCommands::List => config_list_command().await,
         ConfigCommands::Schema => config_schema_command().await,
         ConfigCommands::Doctor => {
@@ -3188,6 +3191,25 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
             print_json(&provider_doctor(&config))
         }
     }
+}
+
+async fn config_migrate_model_routes_command(write: bool) -> Result<()> {
+    if let Some((client, _response)) = local_runtime_config().await? {
+        let report = client.migrate_model_config_routes(write).await?;
+        return print_json(&serde_json::to_value(report)?);
+    }
+
+    let config = AppConfig::load_for_config_inspection()?;
+    let runtime_db = holon::runtime_db::RuntimeDb::open_and_migrate(
+        config.runtime_db_path(),
+        config.runtime_db_lock_path(),
+    )?;
+    let report = holon::model_config_migration::migrate_model_config_routes(
+        &config.config_file_path,
+        &runtime_db,
+        write,
+    )?;
+    print_json(&serde_json::to_value(report)?)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

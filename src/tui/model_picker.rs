@@ -227,7 +227,7 @@ mod tests {
     use super::{clamp_model_picker_selection, model_picker_rows, selected_model_picker_row};
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::{
-        config::{ModelRef, ProviderId},
+        config::{ModelRef, ModelRouteRef},
         model_catalog::{ModelCapabilityFlags, ModelMetadataSource, ResolvedRuntimeModelPolicy},
         types::{
             AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
@@ -258,6 +258,10 @@ mod tests {
             },
             source: ModelMetadataSource::BuiltInCatalog,
         }
+    }
+
+    fn route_ref(model: &str) -> ModelRouteRef {
+        ModelRouteRef::parse_compatible(model).unwrap()
     }
 
     fn availability(
@@ -320,10 +324,10 @@ mod tests {
             scheduling_posture: Default::default(),
             model: AgentModelState {
                 source: AgentModelSource::RuntimeDefault,
-                runtime_default_model: ModelRef::new(ProviderId::openai(), "gpt-5.4"),
-                effective_model: ModelRef::new(ProviderId::openai(), "gpt-5.4"),
-                requested_model: Some(ModelRef::new(ProviderId::openai(), "gpt-5.4")),
-                active_model: Some(ModelRef::new(ProviderId::openai(), "gpt-5.4")),
+                runtime_default_model: route_ref("openai/gpt-5.4"),
+                effective_model: route_ref("openai/gpt-5.4"),
+                requested_model: Some(route_ref("openai/gpt-5.4")),
+                active_model: Some(route_ref("openai/gpt-5.4")),
                 fallback_active: false,
                 effective_fallback_models: Vec::new(),
                 override_model: None,

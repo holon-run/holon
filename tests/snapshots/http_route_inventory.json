@@ -1612,6 +1612,22 @@
   },
   {
     "method": "post",
+    "path": "/api/control/runtime/config/migrate-model-routes",
+    "handler": "runtime_config_migrate_model_routes",
+    "operation_id": "migrateModelConfigRoutes",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": "ModelConfigMigrationRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/control/runtime/shutdown",
     "handler": "runtime_shutdown",
     "operation_id": "runtimeShutdown",

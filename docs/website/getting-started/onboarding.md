@@ -70,8 +70,9 @@ Choose your default model. The wizard lists the provider's commonly used
 models with a short description. You can also type a custom model ID if your
 preferred model is not in the list.
 
-The selected model becomes `model.default` in your config. You can override it
-per-agent later with `holon agent model set`.
+The selected executable route becomes `model.default` in canonical
+`provider@endpoint/model` form. You can override it per-agent later with
+`holon agent model set`; legacy `provider/model` input remains accepted.
 
 ### 4. Search configuration
 

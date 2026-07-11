@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use holon::{
-    config::{AppConfig, ModelRef, ProviderId, ProviderTransportKind},
+    config::{AppConfig, ModelRouteRef, ProviderId, ProviderTransportKind},
     prompt::PromptStability,
     provider::{
         build_provider_from_model_chain, AgentProvider, AnthropicProvider, ConversationMessage,
@@ -21,7 +21,7 @@ fn live_baseline_model_limit() -> usize {
         .unwrap_or(1)
 }
 
-fn live_baseline_models(config: &AppConfig) -> Vec<ModelRef> {
+fn live_baseline_models(config: &AppConfig) -> Vec<ModelRouteRef> {
     config
         .provider_chain()
         .into_iter()
