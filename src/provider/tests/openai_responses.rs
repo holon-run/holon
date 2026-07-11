@@ -10,7 +10,7 @@ use super::*;
 use crate::config::{ModelRef, ProviderId};
 use crate::model_catalog::ModelRuntimeOverride;
 use crate::provider::transports::set_stream_idle_timeout_override_for_tests;
-use crate::provider::ProviderNativeWebSearchKind;
+use crate::provider::{ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest};
 use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
 
@@ -36,6 +36,26 @@ fn openai_non_object_tool_call_response(response_id: &str) -> Value {
         "status": "completed",
         "usage": { "input_tokens": 256, "output_tokens": 2 },
         "output": [{
+            "type": "function_call",
+            "id": "fc_non_persisted",
+            "status": "completed",
+            "call_id": "invented-1",
+            "name": "x_semantic_search",
+            "arguments": "[\"holon\"]"
+        }]
+    })
+}
+
+fn xai_search_and_non_object_tool_call_response(response_id: &str) -> Value {
+    json!({
+        "id": response_id,
+        "status": "completed",
+        "usage": { "input_tokens": 256, "output_tokens": 2 },
+        "output": [{
+            "type": "x_search_call",
+            "id": "search_1",
+            "status": "completed"
+        }, {
             "type": "function_call",
             "id": "fc_non_persisted",
             "status": "completed",
@@ -399,15 +419,292 @@ async fn openai_responses_normalizes_non_object_tool_arguments_before_continuati
             .request_diagnostics
             .as_ref()
             .map(|diagnostics| diagnostics.request_lowering_mode.as_str()),
-        Some("provider_window_replay")
+        Some("incremental_continuation")
     );
     let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies[1]["previous_response_id"], json!("resp_1"));
+    let incremental = bodies[1]["input"].as_array().unwrap();
+    assert_eq!(incremental.len(), 1);
+    assert_eq!(incremental[0]["type"], json!("function_call_output"));
+}
+
+#[tokio::test]
+async fn openai_responses_replays_lossless_window_after_continuation_rejection() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                match attempts.fetch_add(1, Ordering::SeqCst) {
+                    0 => Json(openai_tool_call_response("resp_1")).into_response(),
+                    1 => (StatusCode::BAD_REQUEST, "continuation rejected").into_response(),
+                    _ => Json(openai_text_response("resp_2", "done")).into_response(),
+                }
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let response = provider
+        .complete_turn(provider_continuation_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let diagnostics = response.request_diagnostics.as_ref().unwrap();
+    assert_eq!(diagnostics.request_lowering_mode, "provider_window_replay");
+    let continuation = diagnostics.incremental_continuation.as_ref().unwrap();
+    assert_eq!(continuation.status, "fallback_provider_window_replay");
+    assert_eq!(
+        continuation.fallback_reason.as_deref(),
+        Some("previous_response_id_rejected")
+    );
+    assert_eq!(continuation.server_side_context_may_be_lost, None);
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 3);
+    assert_eq!(bodies[1]["previous_response_id"], json!("resp_1"));
+    assert!(bodies[2].get("previous_response_id").is_none());
+    assert_eq!(bodies[2]["input"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn xai_native_search_preserves_continuation_after_rejected_internal_tool_call() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Json(xai_search_and_non_object_tool_call_response("resp_1"))
+                } else {
+                    Json(openai_text_response("resp_2", "done"))
+                }
+            }
+        }),
+    ))
+    .await;
+    let fixture = test_config("openai/gpt-5.4", &[], Some("xai-key"), None, false);
+    let mut provider_config = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    provider_config.id = ProviderId::parse("xai").unwrap();
+    provider_config.route_provider = ProviderId::parse("xai").unwrap();
+    provider_config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &provider_config,
+        "grok-4.5",
+        fixture.config.runtime_max_output_tokens,
+        &fixture.config.home_dir,
+    )
+    .unwrap();
+
+    let mut first_request = provider_turn_request_with_prompt_frame();
+    first_request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::Xai,
+        provider_id: "xai".into(),
+        provider_model_ref: "xai/grok-4.5".into(),
+        advertised_tool_type: "web_search".into(),
+        backend_kind: "xai_web_search_x_search".into(),
+        max_results: Some(5),
+    });
+    let first = provider.complete_turn(first_request.clone()).await.unwrap();
+    assert_eq!(first.blocks.len(), 1);
+
+    let mut continuation = first_request;
+    continuation.conversation.extend([
+        ConversationMessage::AssistantBlocks(first.blocks),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "invented-1".into(),
+            content: "Failed: x_semantic_search not exposed for round".into(),
+            is_error: true,
+            error: None,
+        }]),
+    ]);
+    let response = provider.complete_turn(continuation).await.unwrap();
+
+    let diagnostics = response
+        .request_diagnostics
+        .as_ref()
+        .expect("request diagnostics");
+    assert_eq!(
+        diagnostics.request_lowering_mode,
+        "incremental_continuation_omit_instructions"
+    );
+    assert_eq!(
+        diagnostics
+            .incremental_continuation
+            .as_ref()
+            .and_then(|continuation| continuation.server_side_context_may_be_lost),
+        None
+    );
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies[1]["previous_response_id"], json!("resp_1"));
+    let incremental = bodies[1]["input"].as_array().unwrap();
+    assert_eq!(incremental.len(), 1);
+    assert_eq!(incremental[0]["type"], json!("function_call_output"));
+}
+
+#[tokio::test]
+async fn xai_native_search_refuses_lossy_replay_after_continuation_rejection() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Json(xai_search_and_non_object_tool_call_response("resp_1")).into_response()
+                } else {
+                    (StatusCode::BAD_REQUEST, "continuation rejected").into_response()
+                }
+            }
+        }),
+    ))
+    .await;
+    let fixture = test_config("openai/gpt-5.4", &[], Some("xai-key"), None, false);
+    let mut provider_config = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    provider_config.id = ProviderId::parse("xai").unwrap();
+    provider_config.route_provider = ProviderId::parse("xai").unwrap();
+    provider_config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &provider_config,
+        "grok-4.5",
+        fixture.config.runtime_max_output_tokens,
+        &fixture.config.home_dir,
+    )
+    .unwrap();
+
+    let mut first_request = provider_turn_request_with_prompt_frame();
+    first_request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::Xai,
+        provider_id: "xai".into(),
+        provider_model_ref: "xai/grok-4.5".into(),
+        advertised_tool_type: "web_search".into(),
+        backend_kind: "xai_web_search_x_search".into(),
+        max_results: Some(5),
+    });
+    let first = provider.complete_turn(first_request.clone()).await.unwrap();
+    let mut continuation = first_request;
+    continuation.conversation.extend([
+        ConversationMessage::AssistantBlocks(first.blocks),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "invented-1".into(),
+            content: "Failed: x_semantic_search not exposed for round".into(),
+            is_error: true,
+            error: None,
+        }]),
+    ]);
+
+    let error = provider.complete_turn(continuation).await.unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("refused provider-window replay"));
+    assert!(message.contains("server_side_search_context"));
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[1]["previous_response_id"], json!("resp_1"));
+}
+
+#[tokio::test]
+async fn xai_native_search_fallback_warns_when_server_context_may_be_lost() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Json(xai_search_and_non_object_tool_call_response("resp_1"))
+                } else {
+                    Json(openai_text_response("resp_2", "done"))
+                }
+            }
+        }),
+    ))
+    .await;
+    let fixture = test_config("openai/gpt-5.4", &[], Some("xai-key"), None, false);
+    let mut provider_config = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    provider_config.id = ProviderId::parse("xai").unwrap();
+    provider_config.route_provider = ProviderId::parse("xai").unwrap();
+    provider_config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &provider_config,
+        "grok-4.5",
+        fixture.config.runtime_max_output_tokens,
+        &fixture.config.home_dir,
+    )
+    .unwrap();
+
+    let mut request = provider_turn_request_with_prompt_frame();
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::Xai,
+        provider_id: "xai".into(),
+        provider_model_ref: "xai/grok-4.5".into(),
+        advertised_tool_type: "web_search".into(),
+        backend_kind: "xai_web_search_x_search".into(),
+        max_results: Some(5),
+    });
+    provider.complete_turn(request.clone()).await.unwrap();
+    request.native_web_search.as_mut().unwrap().max_results = Some(10);
+    let response = provider.complete_turn(request).await.unwrap();
+
+    let continuation = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.incremental_continuation.as_ref())
+        .expect("incremental continuation diagnostics");
+    assert_eq!(
+        continuation.fallback_reason.as_deref(),
+        Some("request_shape_changed")
+    );
+    assert_eq!(continuation.server_side_context_may_be_lost, Some(true));
+    let bodies = captured_bodies.lock().unwrap();
     assert!(bodies[1].get("previous_response_id").is_none());
-    let replay = bodies[1]["input"].as_array().unwrap();
-    assert_eq!(replay.len(), 3);
-    assert_eq!(replay[1]["type"], json!("function_call"));
-    assert_eq!(replay[1]["arguments"], json!("{\"_raw\":[\"holon\"]}"));
-    assert_eq!(replay[2]["type"], json!("function_call_output"));
 }
 
 #[tokio::test]
