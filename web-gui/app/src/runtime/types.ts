@@ -263,6 +263,7 @@ export interface RuntimeProviderSummary {
   id: string;
   transport: string;
   baseUrl: string;
+  oauthSupported: boolean;
   credentialSource: string;
   credentialKind: string;
   credentialEnv?: string;
