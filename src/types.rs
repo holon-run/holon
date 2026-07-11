@@ -4758,6 +4758,9 @@ pub struct AgentModelState {
 pub struct ResolvedModelAvailability {
     pub model: String,
     pub provider: String,
+    pub provider_family: String,
+    pub endpoint: String,
+    pub route_provider: String,
     pub display_name: String,
     pub metadata_source: String,
     pub provider_configured: bool,
@@ -4794,6 +4797,9 @@ pub enum ModelAvailability {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelProviderEntry {
     pub id: String,
+    pub provider_family: String,
+    pub endpoint: String,
+    pub route_provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub availability: ModelProviderAvailability,
@@ -4818,6 +4824,9 @@ pub struct ModelProviderEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderModelEntry {
     pub provider: String,
+    pub provider_family: String,
+    pub endpoint: String,
+    pub route_provider: String,
     pub id: String,
     pub model_ref: String,
     pub display_name: String,

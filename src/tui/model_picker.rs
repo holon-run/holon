@@ -270,6 +270,9 @@ mod tests {
         ResolvedModelAvailability {
             model: model.into(),
             provider: model_ref.provider.as_str().into(),
+            provider_family: model_ref.provider.as_str().into(),
+            endpoint: "default".into(),
+            route_provider: model_ref.provider.as_str().into(),
             display_name: display_name.into(),
             metadata_source: "built_in_catalog".into(),
             provider_configured: true,

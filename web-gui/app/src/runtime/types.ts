@@ -239,6 +239,9 @@ export interface AgentSummary {
 export interface RuntimeModelOption {
   model: string;
   provider: string;
+  providerFamily: string;
+  endpoint: string;
+  routeProvider: string;
   displayName: string;
   available: boolean;
   unavailableReason?: string;

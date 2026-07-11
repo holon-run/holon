@@ -372,6 +372,9 @@ interface RuntimeModelsDto {
 interface RuntimeAvailableModelDto {
   model?: string;
   provider?: string;
+  provider_family?: string;
+  endpoint?: string;
+  route_provider?: string;
   display_name?: string;
   capabilities?: {
     image_input?: boolean;
@@ -394,6 +397,9 @@ interface RuntimeAvailableModelDto {
 interface ModelAvailabilityDto {
   model?: string;
   provider?: string;
+  provider_family?: string;
+  endpoint?: string;
+  route_provider?: string;
   display_name?: string;
   available?: boolean;
   unavailable_reason?: string;
@@ -1968,6 +1974,9 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
       .map((entry) => ({
         model: entry.model,
         provider: entry.provider ?? entry.model.split("/")[0] ?? "unknown",
+        providerFamily: entry.provider_family ?? entry.provider ?? entry.model.split("/")[0] ?? "unknown",
+        endpoint: entry.endpoint ?? "default",
+        routeProvider: entry.route_provider ?? entry.provider ?? entry.model.split("/")[0] ?? "unknown",
         displayName: entry.display_name ?? entry.model,
         available: entry.available ?? false,
         unavailableReason: entry.unavailable_reason,
@@ -1985,6 +1994,9 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
       return {
         model,
         provider: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider ?? model.split("/")[0] ?? "unknown"),
+        providerFamily: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider_family ?? entry.provider ?? model.split("/")[0] ?? "unknown"),
+        endpoint: typeof entry === "string" ? "default" : (entry.endpoint ?? "default"),
+        routeProvider: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.route_provider ?? entry.provider ?? model.split("/")[0] ?? "unknown"),
         displayName: typeof entry === "string" ? model : (entry.display_name ?? model),
         available: true,
         supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),

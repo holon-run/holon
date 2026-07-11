@@ -140,6 +140,9 @@ mod tests {
         };
         ProviderModelEntry {
             provider: "test".to_string(),
+            provider_family: "test".to_string(),
+            endpoint: "default".to_string(),
+            route_provider: "test".to_string(),
             id: model_ref.trim_start_matches("test/").to_string(),
             model_ref: model_ref.to_string(),
             display_name: model_ref.to_string(),

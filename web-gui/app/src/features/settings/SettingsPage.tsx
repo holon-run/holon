@@ -258,7 +258,7 @@ export function SettingsPage({
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
   const imageGenModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageGeneration), [modelCatalog.options]);
   const providersWithModels = useMemo(
-    () => new Set(modelCatalog.options.map((m) => m.provider)),
+    () => new Set(modelCatalog.options.map((model) => model.routeProvider)),
     [modelCatalog.options],
   );
   const sortedProviders = useMemo(
@@ -363,8 +363,16 @@ export function SettingsPage({
   const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
   const searchProviderCount = surface?.webSearchProviders.length ?? 0;
   const configuredSearchProviderCount = surface?.webSearchProviders.filter((provider) => provider.credentialConfigured).length ?? 0;
-  const visionProviderReady = visionDefault ? surface?.providers.find((provider) => provider.id === visionDefault.split("/")[0])?.credentialConfigured : undefined;
-  const imageGenProviderReady = imageGenDefault ? surface?.providers.find((provider) => provider.id === imageGenDefault.split("/")[0])?.credentialConfigured : undefined;
+  const visionRouteProvider = modelCatalog.options.find((model) => model.model === visionDefault)?.routeProvider
+    ?? visionDefault.split("/")[0];
+  const visionProviderReady = visionDefault
+    ? surface?.providers.find((provider) => provider.id === visionRouteProvider)?.credentialConfigured
+    : undefined;
+  const imageGenRouteProvider = modelCatalog.options.find((model) => model.model === imageGenDefault)?.routeProvider
+    ?? imageGenDefault.split("/")[0];
+  const imageGenProviderReady = imageGenDefault
+    ? surface?.providers.find((provider) => provider.id === imageGenRouteProvider)?.credentialConfigured
+    : undefined;
 
   async function saveRuntimeConfig() {
     setSaveMessage(undefined);
@@ -1640,6 +1648,9 @@ export function SettingsPage({
                           <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"} iconOnly title={model.available ? t("settings.availableLabel") : t("settings.unavailableLabel")} />
                         </div>
                         <div role="cell">
+                          {model.endpoint !== "default" ? <span className="settings-pill">{model.endpoint}</span> : null}
+                          {model.supportsImageInput ? <span className="settings-pill">image input</span> : null}
+                          {model.supportsImageGeneration ? <span className="settings-pill">image generation</span> : null}
                           {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
                           {model.unavailableReason ? <small>{model.unavailableReason}</small> : null}
                         </div>
@@ -1659,9 +1670,12 @@ export function SettingsPage({
 function groupModelsByProvider(options: RuntimeModelOption[]): Array<[string, RuntimeModelOption[]]> {
   const grouped = new Map<string, RuntimeModelOption[]>();
   for (const option of options) {
-    const models = grouped.get(option.provider) ?? [];
+    const provider = option.endpoint === "default"
+      ? option.providerFamily
+      : `${option.providerFamily} / ${option.endpoint}`;
+    const models = grouped.get(provider) ?? [];
     models.push(option);
-    grouped.set(option.provider, models);
+    grouped.set(provider, models);
   }
   return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right));
 }
