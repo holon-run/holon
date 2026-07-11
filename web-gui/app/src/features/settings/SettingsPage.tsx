@@ -60,14 +60,10 @@ export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: st
 
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
-  "transport" | "baseUrl" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
+  "transport" | "baseUrl" | "oauthSupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
 >;
 
 type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "credentialProfile">;
-
-export function supportsOAuthDeviceLogin(providerId: string): boolean {
-  return providerId === "openai-codex" || providerId === "xai";
-}
 
 type StandardSearchProviderDefinition = {
   id: string;
@@ -302,6 +298,7 @@ export function SettingsPage({
           {
             transport: provider.transport,
             baseUrl: provider.baseUrl,
+            oauthSupported: provider.oauthSupported,
             credentialSource: provider.credentialSource,
             credentialKind: provider.credentialKind,
             credentialEnv: provider.credentialEnv ?? "",
@@ -506,6 +503,7 @@ export function SettingsPage({
         ...(drafts[providerId] ?? {
           transport: "openai_responses",
           baseUrl: "",
+          oauthSupported: false,
           credentialSource: "env",
           credentialKind: "api_key",
           credentialEnv: "",
@@ -1201,6 +1199,7 @@ export function SettingsPage({
                 const draft = providerDrafts[provider.id];
                 if (!draft) return null;
                 const effectiveProfile = draft.credentialProfile?.trim() || `${provider.id}:default`;
+                const authMode = draft.credentialKind === "oauth" ? "oauth" : "api_key";
                 return (
                   <form
                     className="settings-provider-editor"
@@ -1224,6 +1223,37 @@ export function SettingsPage({
                         {t("settings.noModelsForProvider")}
                       </p>
                     ) : null}
+                    <div className="settings-form-row">
+                      <label>
+                        <span>{t("settings.authMode")}</span>
+                        <select
+                          value={authMode}
+                          onChange={(event) => {
+                            const nextMode = event.target.value;
+                            if (nextMode === "oauth") {
+                              updateProviderDraft(provider.id, {
+                                credentialKind: "oauth",
+                                credentialSource: "credential_profile",
+                                credentialProfile: draft.credentialProfile?.trim() || provider.id,
+                                credentialEnv: "",
+                                credentialExternal: "",
+                              });
+                              return;
+                            }
+                            updateProviderDraft(provider.id, {
+                              credentialKind: "api_key",
+                              credentialSource: "credential_profile",
+                              credentialProfile: draft.credentialProfile?.trim() || `${provider.id}:default`,
+                              credentialEnv: "",
+                              credentialExternal: "",
+                            });
+                          }}
+                        >
+                          <option value="api_key">{t("settings.authModeApiKey")}</option>
+                          {draft.oauthSupported ? <option value="oauth">{t("settings.authModeOAuth")}</option> : null}
+                        </select>
+                      </label>
+                    </div>
                     {/* Primary: API Key management */}
                     {draft.credentialKind === "api_key" ? (
                       <div className="settings-api-key-section">
