@@ -891,7 +891,8 @@ mod tests {
 
     #[test]
     fn parse_model_ref_list_json_array() {
-        let refs = parse_model_ref_list(r#"["openai-codex/gpt-5","anthropic/claude-sonnet-4"]"#).unwrap();
+        let refs =
+            parse_model_ref_list(r#"["openai-codex/gpt-5","anthropic/claude-sonnet-4"]"#).unwrap();
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].provider.as_str(), "openai-codex");
         assert_eq!(refs[1].provider.as_str(), "anthropic");
