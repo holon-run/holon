@@ -57,7 +57,7 @@ pub(super) struct ConfigSnapshot {
 
 impl ConfigSnapshot {
     /// Build a fresh snapshot from a config, preserving the agent's current model override.
-    pub fn from_config(config: &AppConfig) -> Self {
+    pub fn from_config(config: &AppConfig) -> Result<Self> {
         let model_catalog = RuntimeModelCatalog::from_config(config);
         let model_availability = resolved_model_availability(config);
         let provider_reconfig = Some(ProviderReconfigurator {
@@ -75,7 +75,7 @@ impl ConfigSnapshot {
             max_relevant_episodes: config.max_relevant_episodes,
             ..ContextConfig::default()
         };
-        Self {
+        Ok(Self {
             model_catalog,
             model_availability,
             base_context_config,
@@ -83,12 +83,8 @@ impl ConfigSnapshot {
             default_tool_output_tokens: config.default_tool_output_tokens as u64,
             max_tool_output_tokens: config.max_tool_output_tokens as u64,
             web_config: config.web_config.clone(),
-            x_search_config: crate::config::XSearchRuntimeConfig::from_app_config(config)
-                .unwrap_or_else(|error| {
-                    tracing::warn!(error = %error, "invalid x_search configuration");
-                    None
-                }),
-        }
+            x_search_config: crate::config::XSearchRuntimeConfig::from_app_config(config)?,
+        })
     }
 }
 
@@ -237,6 +233,11 @@ impl RuntimeHandle {
         host_bridge: Option<RuntimeHostBridge>,
         event_bus: Option<EventBus>,
     ) -> Result<Self> {
+        let x_search_config = provider_reconfig
+            .as_ref()
+            .map(|reconfig| crate::config::XSearchRuntimeConfig::from_app_config(&reconfig.config))
+            .transpose()?
+            .flatten();
         let config_snapshot = Arc::new(ConfigSnapshot {
             model_catalog: model_catalog.clone(),
             model_availability: model_availability.clone(),
@@ -245,7 +246,7 @@ impl RuntimeHandle {
             default_tool_output_tokens,
             max_tool_output_tokens,
             web_config: web_config.clone(),
-            x_search_config: None,
+            x_search_config,
         });
         let mut provider = provider;
         let PreparedRuntimeStorage {
@@ -413,7 +414,7 @@ impl RuntimeHandle {
     /// the old snapshot continues unaffected; the next turn picks up the
     /// new snapshot automatically.
     pub(crate) async fn reload_config(&self, config: &AppConfig) -> Result<()> {
-        let new_snapshot = Arc::new(ConfigSnapshot::from_config(config));
+        let new_snapshot = Arc::new(ConfigSnapshot::from_config(config)?);
         // Atomically swap the snapshot.
         self.inner.config_snapshot.store(new_snapshot);
         // Rebuild provider + context_config for current state.
@@ -658,7 +659,7 @@ impl RuntimeHandle {
         config.model_discovery_cache = cache;
         self.inner
             .config_snapshot
-            .store(Arc::new(ConfigSnapshot::from_config(&config)));
+            .store(Arc::new(ConfigSnapshot::from_config(&config)?));
         Ok(())
     }
 

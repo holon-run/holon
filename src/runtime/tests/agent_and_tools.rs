@@ -361,6 +361,11 @@ async fn filtered_tool_specs_expose_x_search_only_after_xai_activation() {
         .any(|tool| tool.name == crate::tool::names::X_SEARCH));
 
     let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    config
+        .providers
+        .get_mut(&crate::config::ProviderId::openai())
+        .unwrap()
+        .credential = Some("openai-key".into());
     let mut xai = config
         .providers
         .get(&crate::config::ProviderId::openai())
