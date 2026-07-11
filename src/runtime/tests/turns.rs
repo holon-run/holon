@@ -514,6 +514,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         .filter(|(family, _)| {
             AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
         })
+        .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
         .map(|(_, tool)| tool)
         .collect::<Vec<_>>();
     let continuation_effective_budget = 1_000;
@@ -780,6 +781,7 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
         .filter(|(family, _)| {
             AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
         })
+        .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
         .map(|(_, tool)| tool)
         .collect::<Vec<_>>();
     let continuation_effective_budget = 320;

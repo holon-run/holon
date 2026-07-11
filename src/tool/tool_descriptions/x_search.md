@@ -1,0 +1,1 @@
+Search public X posts using xAI's hosted `x_search` in an isolated provider request. Use this for X-specific content, accounts, or discussions; use `WebSearch` for the general web. Results contain durable text and citations and do not depend on the main model conversation's provider state.

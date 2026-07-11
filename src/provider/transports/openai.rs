@@ -2088,7 +2088,6 @@ pub(crate) fn build_openai_responses_request(
         .collect::<Result<Vec<_>>>()?;
     if let Some(tool) = openai_native_web_search_tool(request) {
         tools.push(tool);
-        tools.extend(openai_native_web_search_extra_tools(request));
     }
 
     let mut body = json!({
@@ -2148,18 +2147,6 @@ fn openai_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value>
         ProviderNativeWebSearchKind::OpenAi => Some(json!({ "type": native.advertised_tool_type })),
         ProviderNativeWebSearchKind::Xai => Some(json!({ "type": native.advertised_tool_type })),
         _ => None,
-    }
-}
-
-fn openai_native_web_search_extra_tools(request: &ProviderTurnRequest) -> Vec<Value> {
-    if request
-        .native_web_search
-        .as_ref()
-        .is_some_and(|native| native.kind == ProviderNativeWebSearchKind::Xai)
-    {
-        vec![json!({ "type": "x_search" })]
-    } else {
-        Vec::new()
     }
 }
 
@@ -6264,7 +6251,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_responses_request_lowers_xai_native_search_tools_and_reasoning() {
+    fn openai_responses_request_does_not_add_xai_x_search_tool() {
         let mut request = ProviderTurnRequest::plain(
             "system",
             vec![ConversationMessage::UserText("search X and the web".into())],
@@ -6294,7 +6281,7 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool == &json!({ "type": "web_search" })));
-        assert!(tools
+        assert!(!tools
             .iter()
             .any(|tool| tool == &json!({ "type": "x_search" })));
         assert_eq!(body["reasoning"]["effort"], json!("medium"));

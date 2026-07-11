@@ -167,6 +167,9 @@ impl RuntimeHandle {
                     .profile_preset
                     .allows_tool_capability_family(*family)
             })
+            .filter(|(_, tool)| {
+                tool.name != crate::tool::names::X_SEARCH || self.x_search_config().is_some()
+            })
             .map(|(_, tool)| tool)
             .collect())
     }
@@ -440,7 +443,6 @@ async fn probe_builtin_web_search_capability(
     ) {
         (ProviderNativeWebSearchKind::OpenAi, "openai_responses", "web_search_preview")
         | (ProviderNativeWebSearchKind::OpenAi, "openai_codex_responses", "web_search")
-        | (ProviderNativeWebSearchKind::Xai, "openai_responses", "web_search")
         | (ProviderNativeWebSearchKind::Anthropic, "anthropic_messages", "web_search_20250305") => {
             true
         }
@@ -1082,7 +1084,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn builtin_web_search_probe_accepts_xai_responses_contract() {
+    async fn builtin_web_search_probe_rejects_xai_responses_contract() {
         let capability = crate::provider::ProviderBuiltinWebSearchCapability {
             kind: ProviderNativeWebSearchKind::Xai,
             provider_id: "xai".into(),
@@ -1100,8 +1102,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.status, BuiltinWebSearchProbeStatus::Supported);
-        assert_eq!(result.reason, None);
+        assert_eq!(result.status, BuiltinWebSearchProbeStatus::Unsupported);
+        assert!(result
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("incompatible")));
     }
 
     #[test]

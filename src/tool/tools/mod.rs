@@ -40,6 +40,7 @@ pub(crate) mod web_fetch;
 pub(crate) mod web_search;
 pub(crate) mod work_item_action;
 pub(crate) mod work_item_query;
+pub(crate) mod x_search;
 
 pub(crate) struct BuiltinToolDefinition {
     pub(crate) family: ToolCapabilityFamily,
@@ -77,6 +78,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         view_image::definition()?,
         web_fetch::definition()?,
         web_search::definition()?,
+        x_search::definition()?,
     ])
 }
 
@@ -189,6 +191,7 @@ pub(crate) async fn execute_builtin_tool(
         web_search::NAME => {
             web_search::execute(runtime, agent_id, authority_class, &call.input).await
         }
+        x_search::NAME => x_search::execute(runtime, agent_id, authority_class, &call.input).await,
         _ => Err(anyhow!("unknown builtin tool {}", call.name)),
     }
 }
@@ -272,6 +275,7 @@ mod tests {
             "WaitFor" => "src/tool/tool_descriptions/wait_for.md",
             "WebFetch" => "src/tool/tool_descriptions/web_fetch.md",
             "WebSearch" => "src/tool/tool_descriptions/web_search.md",
+            "XSearch" => "src/tool/tool_descriptions/x_search.md",
             _ => return None,
         })
     }

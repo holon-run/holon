@@ -1440,11 +1440,7 @@ pub(crate) fn insert_builtin_http_provider_with_context_management(
                 None
             },
             context_management,
-            builtin_web_search: if provider == "xai" {
-                Some(xai_builtin_web_search_config())
-            } else {
-                builtin_web_search
-            },
+            builtin_web_search,
         },
     );
     Ok(())
@@ -1501,15 +1497,6 @@ pub(crate) fn deepseek_builtin_web_search_config() -> ProviderBuiltinWebSearchCo
         kind: ProviderNativeWebSearchKind::Anthropic,
         advertised_tool_type: "web_search_20250305".to_string(),
         backend_kind: "deepseek_web_search".to_string(),
-    }
-}
-
-pub(crate) fn xai_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
-    ProviderBuiltinWebSearchConfig {
-        enabled: true,
-        kind: ProviderNativeWebSearchKind::Xai,
-        advertised_tool_type: "web_search".to_string(),
-        backend_kind: "xai_web_search_x_search".to_string(),
     }
 }
 
@@ -1633,14 +1620,10 @@ pub(crate) fn validate_provider_builtin_web_search(
             }
         }
         (ProviderTransportKind::OpenAiResponses, ProviderNativeWebSearchKind::Xai) => {
-            if search.advertised_tool_type == "web_search" {
-                Ok(())
-            } else {
-                Err(anyhow!(
-                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search for xAI Responses native search",
-                    provider_id.as_str()
-                ))
-            }
+            Err(anyhow!(
+                "providers.{}.builtin_web_search cannot enable xAI hosted search; use the isolated XSearch tool",
+                provider_id.as_str()
+            ))
         }
         (ProviderTransportKind::OpenAiCodexResponses, ProviderNativeWebSearchKind::OpenAi) => {
             if search.advertised_tool_type == "web_search" {

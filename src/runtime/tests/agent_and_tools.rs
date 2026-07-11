@@ -351,6 +351,43 @@ async fn filtered_tool_specs_keep_exec_command_visible_when_process_execution_di
 }
 
 #[tokio::test]
+async fn filtered_tool_specs_expose_x_search_only_after_xai_activation() {
+    let (home, _host, runtime) = host_backed_test_runtime().await;
+    let identity = runtime.agent_identity_view().await.unwrap();
+    assert!(!runtime
+        .filtered_tool_specs(&identity)
+        .unwrap()
+        .iter()
+        .any(|tool| tool.name == crate::tool::names::X_SEARCH));
+
+    let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    config
+        .providers
+        .get_mut(&crate::config::ProviderId::openai())
+        .unwrap()
+        .credential = Some("openai-key".into());
+    let mut xai = config
+        .providers
+        .get(&crate::config::ProviderId::openai())
+        .unwrap()
+        .clone();
+    let xai_id = crate::config::ProviderId::parse("xai").unwrap();
+    xai.id = xai_id.clone();
+    xai.route_provider = xai_id.clone();
+    xai.base_url = "https://api.x.ai/v1".into();
+    xai.credential = Some("xai-key".into());
+    xai.builtin_web_search = None;
+    config.providers.insert(xai_id, xai);
+    runtime.reload_config(&config).await.unwrap();
+
+    assert!(runtime
+        .filtered_tool_specs(&identity)
+        .unwrap()
+        .iter()
+        .any(|tool| tool.name == crate::tool::names::X_SEARCH));
+}
+
+#[tokio::test]
 async fn filtered_tool_specs_do_not_expose_worktree_discard() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

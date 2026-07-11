@@ -40,6 +40,7 @@ pub mod tool_names {
     pub const WAIT_FOR: &str = "WaitFor";
     pub const WEB_FETCH: &str = "WebFetch";
     pub const WEB_SEARCH: &str = "WebSearch";
+    pub const X_SEARCH: &str = "XSearch";
 }
 
 pub use tool_names::*;
@@ -130,4 +131,5 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     WAIT_FOR,
     WEB_FETCH,
     WEB_SEARCH,
+    X_SEARCH,
 ];
