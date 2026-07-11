@@ -3414,6 +3414,8 @@ pub struct ViewImageVisionSelection {
 pub struct UseWorkspaceResult {
     pub workspace_id: String,
     pub workspace_anchor: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_root_id: Option<String>,
     pub execution_root: PathBuf,
     pub cwd: PathBuf,
     pub mode: String,

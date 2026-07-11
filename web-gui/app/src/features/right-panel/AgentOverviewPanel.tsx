@@ -650,6 +650,7 @@ export function ToolExecutionDetailPanel({
   relatedStateObjectRef,
   onOpenWorkItem,
   onOpenTask,
+  onBrowseFiles,
 }: {
   toolExecutionId: string;
   toolName?: string;
@@ -657,6 +658,7 @@ export function ToolExecutionDetailPanel({
   relatedStateObjectRef?: import("../../runtime/types").TimelineStateObjectRef;
   onOpenWorkItem?: (workItem: WorkItemSummary) => void;
   onOpenTask?: (task: TaskSummary) => void;
+  onBrowseFiles?: (workspaceId: string, executionRootId?: string) => void;
 }) {
   const { t } = useTranslation();
   const loading = detailState?.loading && !detailState?.toolExecution;
@@ -707,7 +709,7 @@ export function ToolExecutionDetailPanel({
           </div>
         ) : null}
       </dl>
-      {record ? <ToolExecutionContent record={record} /> : null}
+      {record ? <ToolExecutionContent record={record} onBrowseFiles={onBrowseFiles} /> : null}
     </article>
   );
 }

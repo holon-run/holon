@@ -693,6 +693,11 @@ const en = {
     batchItem: "Batch item",
     current: "current",
     yes: "yes",
+    workspaceId: "Workspace ID",
+    workspacePath: "Workspace path",
+    executionRoot: "Execution root",
+    projectionKind: "Projection",
+    cwd: "Cwd",
   },
 
   agent: {
