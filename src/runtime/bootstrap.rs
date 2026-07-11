@@ -52,6 +52,7 @@ pub(super) struct ConfigSnapshot {
     pub default_tool_output_tokens: u64,
     pub max_tool_output_tokens: u64,
     pub web_config: crate::web::WebConfig,
+    pub x_search_config: Option<crate::config::XSearchRuntimeConfig>,
 }
 
 impl ConfigSnapshot {
@@ -82,6 +83,11 @@ impl ConfigSnapshot {
             default_tool_output_tokens: config.default_tool_output_tokens as u64,
             max_tool_output_tokens: config.max_tool_output_tokens as u64,
             web_config: config.web_config.clone(),
+            x_search_config: crate::config::XSearchRuntimeConfig::from_app_config(config)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(error = %error, "invalid x_search configuration");
+                    None
+                }),
         }
     }
 }
@@ -239,6 +245,7 @@ impl RuntimeHandle {
             default_tool_output_tokens,
             max_tool_output_tokens,
             web_config: web_config.clone(),
+            x_search_config: None,
         });
         let mut provider = provider;
         let PreparedRuntimeStorage {

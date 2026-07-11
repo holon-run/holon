@@ -27,7 +27,8 @@ use crate::config::{
     ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
     ProviderEndpointConfigFile, ProviderEndpointId, ProviderId, ProviderPlanConfigFile,
     ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog,
-    DEFAULT_LOCAL_AGENT_ID, OPENAI_CODEX_CREDENTIAL_PROFILE,
+    XSearchRuntimeConfig, DEFAULT_LOCAL_AGENT_ID, DEFAULT_X_SEARCH_MODEL,
+    OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 
 struct EnvVarSnapshot {
@@ -182,6 +183,44 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         _workspace_dir: workspace_dir,
         config,
     }
+}
+
+#[test]
+fn disabled_x_search_config_is_unavailable() {
+    let mut fixture = test_app_config("openai/gpt-4o-mini", &[]);
+    fixture.config.stored_config.x_search.enabled = Some(false);
+    assert!(XSearchRuntimeConfig::from_app_config(&fixture.config)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn x_search_auto_enables_with_xai_credential_and_supports_model_override() {
+    let mut fixture = test_app_config("openai/gpt-4o-mini", &[]);
+    let mut xai = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    let xai_id = ProviderId::parse("xai").unwrap();
+    xai.id = xai_id.clone();
+    xai.route_provider = xai_id.clone();
+    xai.base_url = "https://api.x.ai/v1".into();
+    xai.credential = Some("xai-key".into());
+    xai.builtin_web_search = None;
+    fixture.config.providers.insert(xai_id, xai);
+
+    let automatic = XSearchRuntimeConfig::from_app_config(&fixture.config)
+        .unwrap()
+        .unwrap();
+    assert_eq!(automatic.model, DEFAULT_X_SEARCH_MODEL);
+
+    fixture.config.stored_config.x_search.model = Some("xai/grok-4.5".into());
+    let overridden = XSearchRuntimeConfig::from_app_config(&fixture.config)
+        .unwrap()
+        .unwrap();
+    assert_eq!(overridden.model, "grok-4.5");
 }
 
 #[test]
@@ -848,10 +887,7 @@ fn built_in_provider_registry_declares_provider_specific_builtin_search() {
     let xai = registry.get(&ProviderId::parse("xai").unwrap()).unwrap();
     assert_eq!(xai.transport, ProviderTransportKind::OpenAiResponses);
     assert_eq!(xai.reasoning_effort.as_deref(), Some("medium"));
-    let xai_search = xai.builtin_web_search.as_ref().unwrap();
-    assert_eq!(xai_search.kind, ProviderNativeWebSearchKind::Xai);
-    assert_eq!(xai_search.advertised_tool_type, "web_search");
-    assert_eq!(xai_search.backend_kind, "xai_web_search_x_search");
+    assert!(xai.builtin_web_search.is_none());
 }
 
 #[test]

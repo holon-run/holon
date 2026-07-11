@@ -453,6 +453,27 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "x_search.enabled",
+            kind: "boolean",
+            description: "Enable XSearch when the xAI provider has a configured credential.",
+            default: json!(true),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "x_search.model",
+            kind: "model_ref",
+            description: "Optional xAI model route used by isolated XSearch requests.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "x_search.timeout_seconds",
+            kind: "positive_integer",
+            description: "Timeout in seconds for isolated xAI XSearch requests.",
+            default: json!(crate::config::DEFAULT_X_SEARCH_TIMEOUT_SECONDS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "web.providers.<name>.kind",
             kind: "string",
             description: "Web search provider kind: duck_duck_go, searxng, brave, tencent_cloud_wsa, bocha, tavily, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native, command.",
@@ -711,6 +732,22 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .enabled
             .map(Value::Bool)
             .unwrap_or(Value::Null)),
+        "x_search.enabled" => Ok(config
+            .x_search
+            .enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "x_search.model" => Ok(config
+            .x_search
+            .model
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null)),
+        "x_search.timeout_seconds" => Ok(config
+            .x_search
+            .timeout_seconds
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "web.search.builtin_provider.enabled" => Ok(config
             .web
             .search
@@ -968,6 +1005,21 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
+        "x_search.enabled" => {
+            config.x_search.enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "x_search.model" => {
+            let parsed = ModelRouteRef::parse_compatible(raw_value)?;
+            if parsed.provider.as_str() != ProviderId::XAI {
+                return Err(anyhow!("{key} must reference the xai provider"));
+            }
+            config.x_search.model = Some(parsed.as_string());
+        }
+        "x_search.timeout_seconds" => {
+            config.x_search.timeout_seconds = Some(parse_positive_u64_key(key, raw_value)?);
+        }
         "web.search.builtin_provider.enabled" => {
             config.web.search.builtin_provider.enabled = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -1200,6 +1252,9 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "web.search.providers" => config.web.search.providers.clear(),
         "web.search.max_results" => config.web.search.max_results = None,
         "web.search.max_provider_attempts" => config.web.search.max_provider_attempts = None,
+        "x_search.enabled" => config.x_search.enabled = None,
+        "x_search.model" => config.x_search.model = None,
+        "x_search.timeout_seconds" => config.x_search.timeout_seconds = None,
         key if key.starts_with("web.providers.") && key.ends_with(".kind") => {
             let rest = key.strip_prefix("web.providers.").unwrap();
             let name = rest.strip_suffix(".kind").unwrap();

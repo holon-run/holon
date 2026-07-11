@@ -116,6 +116,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::USE_WORKSPACE => "UseWorkspaceResult",
         tn::WEB_FETCH => "WebFetchResult",
         tn::WEB_SEARCH => "WebSearchResult",
+        tn::X_SEARCH => "XSearchResult",
         _ => "tool-specific JSON payload",
     }
 }
@@ -152,6 +153,7 @@ fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
         }
         tn::APPLY_PATCH | tn::USE_WORKSPACE => vec!["workspace/runtime file APIs"],
         tn::WEB_FETCH | tn::WEB_SEARCH => vec!["web adapter APIs"],
+        tn::X_SEARCH => vec!["xAI hosted search adapter"],
         tn::MEMORY_SEARCH | tn::MEMORY_GET => vec!["memory/runtime APIs"],
         _ => Vec::new(),
     }

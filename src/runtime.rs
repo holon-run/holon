@@ -833,6 +833,10 @@ impl RuntimeHandle {
         self.inner.config_snapshot.load().web_config.clone()
     }
 
+    pub(crate) fn x_search_config(&self) -> Option<crate::config::XSearchRuntimeConfig> {
+        self.inner.config_snapshot.load().x_search_config.clone()
+    }
+
     fn user_home(&self) -> Option<PathBuf> {
         if let Some(provider_reconfig) =
             self.inner.config_snapshot.load().provider_reconfig.as_ref()

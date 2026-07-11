@@ -20,8 +20,26 @@ pub struct HolonConfigFile {
     pub tui: TuiConfigFile,
     #[serde(default, skip_serializing_if = "WebConfigFile::is_empty")]
     pub web: WebConfigFile,
+    #[serde(default, skip_serializing_if = "XSearchConfigFile::is_empty")]
+    pub x_search: XSearchConfigFile,
     #[serde(default, skip_serializing_if = "AgentTemplatesConfigFile::is_empty")]
     pub agent_templates: AgentTemplatesConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct XSearchConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
+impl XSearchConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.model.is_none() && self.timeout_seconds.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

@@ -1374,6 +1374,60 @@
         "success_result": "WebSearchResult"
       },
       "stability": "experimental"
+    },
+    {
+      "description": "Search public X posts using xAI's hosted `x_search` in an isolated provider request. Use this for X-specific content, accounts, or discussions; use `WebSearch` for the general web. Results contain durable text and citations and do not depend on the main model conversation's provider state.\n",
+      "family": "web",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_x_handles": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "excluded_x_handles": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "from_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "to_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "XSearch",
+      "related_surfaces": [
+        "xAI hosted search adapter"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "XSearchResult"
+      },
+      "stability": "experimental"
     }
   ],
   "version": 1

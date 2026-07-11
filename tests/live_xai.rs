@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use holon::{
-    config::{AppConfig, ProviderId},
+    config::{AppConfig, ProviderId, XSearchRuntimeConfig},
     provider::{
-        AgentProvider, ConversationMessage, ModelBlock, OpenAiProvider,
-        ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
-        ProviderTurnRequest,
+        AgentProvider, ConversationMessage, ModelBlock, OpenAiProvider, ProviderPromptCache,
+        ProviderPromptFrame, ProviderTurnRequest,
     },
+    x_search::{search, XSearchRequest},
 };
 
 fn live_xai_model() -> String {
@@ -105,48 +105,25 @@ async fn live_xai_responses_uses_incremental_continuation_without_instructions()
 
 #[tokio::test]
 #[ignore = "requires configured xAI credentials, network access, and x_search support"]
-async fn live_xai_builtin_x_search_reports_native_lowering() -> Result<()> {
+async fn live_xai_x_search_returns_durable_text_and_citations() -> Result<()> {
     let config = AppConfig::load()?;
-    let provider = live_xai_provider(&config)?;
-    let capability = provider
-        .builtin_web_search()
-        .context("xai provider should declare builtin web search")?;
-    assert_eq!(capability.advertised_tool_type, "web_search");
-    assert_eq!(capability.backend_kind, "xai_web_search_x_search");
-    let native_web_search = ProviderNativeWebSearchRequest {
-        kind: capability.kind,
-        provider_id: "xai".into(),
-        provider_model_ref: capability.provider_model_ref,
-        advertised_tool_type: capability.advertised_tool_type,
-        backend_kind: capability.backend_kind,
-        max_results: Some(3),
-    };
+    let x_search_config = XSearchRuntimeConfig::from_app_config(&config)?
+        .context("xAI must be configured and XSearch enabled")?;
+    let output = search(
+        XSearchRequest {
+            query: "Recent public posts from xAI about Grok".into(),
+            allowed_x_handles: vec!["xai".into()],
+            excluded_x_handles: Vec::new(),
+            from_date: None,
+            to_date: None,
+        },
+        &x_search_config,
+    )
+    .await?;
 
-    provider
-        .probe_builtin_web_search(native_web_search.clone())
-        .await?;
-    let output = provider
-        .complete_turn(ProviderTurnRequest {
-            prompt_frame: ProviderPromptFrame::plain(
-                "Use native web search and reply with one concise sentence.",
-            ),
-            conversation: vec![ConversationMessage::UserText(
-                "Search the web for the official xAI homepage and state its site name.".into(),
-            )],
-            tools: Vec::new(),
-            native_web_search: Some(native_web_search),
-            response_format: None,
-        })
-        .await?;
-
-    let diagnostics = output
-        .request_diagnostics
-        .as_ref()
-        .and_then(|diagnostics| diagnostics.native_web_search.as_ref())
-        .context("native web search diagnostics should be recorded")?;
-    assert!(diagnostics.lowered);
-    assert_eq!(diagnostics.advertised_tool_type, "web_search");
-    assert_eq!(diagnostics.backend_kind, "xai_web_search_x_search");
-    assert!(!response_text(&output.blocks).trim().is_empty());
+    assert!(!output.text.trim().is_empty());
+    assert_eq!(output.provider, "xai");
+    assert_eq!(output.backend, "x_search");
+    assert!(!output.citations.is_empty());
     Ok(())
 }

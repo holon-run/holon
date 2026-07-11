@@ -45,6 +45,7 @@ pub(crate) fn context_config() -> ContextConfig {
             .filter(|(family, _)| {
                 AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
             })
+            .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
             .map(|(_, tool)| tool)
             .collect::<Vec<_>>();
     let prompt_budget_estimated_tokens =
@@ -71,6 +72,7 @@ pub(crate) fn continuation_ready_context_config(
         .filter(|(family, _)| {
             AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
         })
+        .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
         .map(|(_, tool)| tool)
         .collect::<Vec<_>>();
     let prompt_budget_estimated_tokens =

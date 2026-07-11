@@ -29,6 +29,7 @@ mod models;
 mod providers;
 mod schema;
 mod web;
+mod x_search;
 
 pub use builtin_providers::*;
 pub use credentials::*;
@@ -37,6 +38,7 @@ pub use models::*;
 pub use providers::*;
 pub use schema::*;
 pub use web::*;
+pub use x_search::*;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
