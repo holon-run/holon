@@ -61,6 +61,7 @@ pub struct OpenAiProvider {
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
+    continuation_contract: OpenAiResponsesContinuationContract,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
@@ -105,6 +106,12 @@ pub struct OpenAiChatCompletionsProvider {
 pub(crate) enum OpenAiResponsesTransportContract {
     StandardJson,
     CodexStreaming,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenAiResponsesContinuationContract {
+    Standard,
+    StoreResponsesAndOmitInstructionsWithPreviousResponseId,
 }
 
 const OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND: &str = "responses_compact";
@@ -325,6 +332,11 @@ impl OpenAiProvider {
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            continuation_contract: if provider_config.id.as_str() == "xai" {
+                OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
+            } else {
+                OpenAiResponsesContinuationContract::Standard
+            },
             builtin_web_search: provider_config.builtin_web_search.clone(),
             compaction_policy,
             trace_home_dir: trace_home_dir.to_path_buf(),
@@ -930,7 +942,13 @@ impl AgentProvider for OpenAiProvider {
             self.reasoning_effort.as_deref(),
             None,
         )?;
-        let mut plan = plan_openai_responses_request(body, &request, &self.continuation, true)?;
+        let mut plan = plan_openai_responses_request(
+            body,
+            &request,
+            &self.continuation,
+            true,
+            self.continuation_contract,
+        )?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
@@ -1181,7 +1199,13 @@ impl AgentProvider for OpenAiCodexProvider {
             },
             self.verbosity,
         )?;
-        let mut plan = plan_openai_responses_request(body, &request, &self.continuation, false)?;
+        let mut plan = plan_openai_responses_request(
+            body,
+            &request,
+            &self.continuation,
+            false,
+            OpenAiResponsesContinuationContract::Standard,
+        )?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
@@ -2039,11 +2063,13 @@ pub(crate) fn build_openai_responses_request(
         "model": model,
         "instructions": request.prompt_frame.system_prompt,
         "input": build_openai_input(&request.conversation)?,
-        "tools": tools,
-        "tool_choice": "auto",
-        "parallel_tool_calls": false,
         "store": false,
     });
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools);
+        body["tool_choice"] = Value::String("auto".to_string());
+        body["parallel_tool_calls"] = Value::Bool(false);
+    }
     if let Some(cache) = request.prompt_frame.cache.as_ref() {
         body["prompt_cache_key"] = Value::String(cache.prompt_cache_key.clone());
     }
@@ -2141,7 +2167,13 @@ fn plan_openai_responses_request(
     request: &ProviderTurnRequest,
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
     allow_previous_response_id: bool,
+    continuation_contract: OpenAiResponsesContinuationContract,
 ) -> Result<OpenAiRequestPlan> {
+    if continuation_contract
+        == OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
+    {
+        body["store"] = Value::Bool(true);
+    }
     let full_input = body
         .get("input")
         .and_then(Value::as_array)
@@ -2262,6 +2294,13 @@ fn plan_openai_responses_request(
     let provider_input = if let Some(response_id) = response_id {
         body["input"] = Value::Array(incremental_input.clone());
         body["previous_response_id"] = Value::String(response_id);
+        if continuation_contract
+            == OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
+        {
+            body.as_object_mut()
+                .expect("OpenAI Responses request body should be an object")
+                .remove("instructions");
+        }
         incremental_input.clone()
     } else {
         let mut provider_input = previous.items.clone();
@@ -2280,6 +2319,7 @@ fn plan_openai_responses_request(
             request_lowering_mode: openai_append_match_lowering_mode(
                 has_response_id,
                 replay_is_compacted,
+                continuation_contract,
             ),
             anthropic_cache: None,
             anthropic_context_management: None,
@@ -2308,9 +2348,19 @@ fn plan_openai_responses_request(
     })
 }
 
-fn openai_append_match_lowering_mode(has_response_id: bool, replay_is_compacted: bool) -> String {
+fn openai_append_match_lowering_mode(
+    has_response_id: bool,
+    replay_is_compacted: bool,
+    continuation_contract: OpenAiResponsesContinuationContract,
+) -> String {
     if has_response_id {
-        "incremental_continuation".into()
+        if continuation_contract
+            == OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
+        {
+            "incremental_continuation_omit_instructions".into()
+        } else {
+            "incremental_continuation".into()
+        }
     } else if replay_is_compacted {
         "provider_window_compacted".into()
     } else {
@@ -5549,8 +5599,8 @@ mod tests {
         parse_openai_codex_image_generation_response_items, plan_openai_responses_request,
         resolve_openai_codex_credential, CredentialStoreRefreshLock, OpenAiCodexProvider,
         OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProvider, OpenAiProviderWindow,
-        OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesTransportContract,
-        ToolSchemaContract,
+        OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesContinuationContract,
+        OpenAiResponsesTransportContract, ToolSchemaContract,
     };
     use crate::auth::CodexCliCredential;
     use crate::config::{
@@ -6305,6 +6355,7 @@ mod tests {
             &request,
             &Arc::new(Mutex::new(OpenAiContinuationState::default())),
             false,
+            OpenAiResponsesContinuationContract::Standard,
         )
         .expect("openai codex responses request should plan");
 

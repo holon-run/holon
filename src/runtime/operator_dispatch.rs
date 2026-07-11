@@ -440,6 +440,7 @@ async fn probe_builtin_web_search_capability(
     ) {
         (ProviderNativeWebSearchKind::OpenAi, "openai_responses", "web_search_preview")
         | (ProviderNativeWebSearchKind::OpenAi, "openai_codex_responses", "web_search")
+        | (ProviderNativeWebSearchKind::Xai, "openai_responses", "web_search")
         | (ProviderNativeWebSearchKind::Anthropic, "anthropic_messages", "web_search_20250305") => {
             true
         }
@@ -1078,6 +1079,29 @@ mod tests {
             transient.status,
             BuiltinWebSearchProbeStatus::TransientFailure
         );
+    }
+
+    #[tokio::test]
+    async fn builtin_web_search_probe_accepts_xai_responses_contract() {
+        let capability = crate::provider::ProviderBuiltinWebSearchCapability {
+            kind: ProviderNativeWebSearchKind::Xai,
+            provider_id: "xai".into(),
+            provider_model_ref: "xai/grok-test".into(),
+            provider_transport: "openai_responses".into(),
+            provider_base_url: "https://api.x.ai/v1".into(),
+            advertised_tool_type: "web_search".into(),
+            backend_kind: "xai_web_search_x_search".into(),
+        };
+
+        let result = probe_builtin_web_search_capability(
+            &ProbeProvider { result: Ok(()) },
+            &capability,
+            search_config().max_results,
+        )
+        .await;
+
+        assert_eq!(result.status, BuiltinWebSearchProbeStatus::Supported);
+        assert_eq!(result.reason, None);
     }
 
     #[test]

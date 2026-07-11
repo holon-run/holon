@@ -17,6 +17,14 @@ response ids, non-append conversation shape, or provider errors. Provider
 errors also clear the scoped local continuation snapshot before retry so retry
 attempts do not depend on an ambiguous server-side state.
 
+Provider-specific wire constraints are applied only after continuation
+eligibility is decided from the complete request shape. In particular, xAI
+Responses requests use `store=true` so returned response ids remain available
+for later continuation. An xAI continuation sends `previous_response_id`
+without `instructions`, while initial and full fallback requests keep
+`instructions`. Standard OpenAI Responses requests keep `store=false` and
+`instructions` for both full and incremental requests.
+
 Runtime events record secret-safe request-lowering diagnostics such as hit/miss
 status and fallback reason, but they do not expose response ids or make
 incremental continuation part of provider-neutral prompt assembly.

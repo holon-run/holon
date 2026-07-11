@@ -315,8 +315,145 @@ async fn openai_responses_uses_incremental_continuation_for_strict_append() {
     let bodies = captured_bodies.lock().unwrap();
     assert_eq!(bodies.len(), 2);
     assert_eq!(bodies[1]["previous_response_id"], json!("resp_1"));
+    assert_eq!(bodies[1]["instructions"], json!("rendered system"));
     assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 1);
     assert_eq!(bodies[1]["input"][0]["type"], json!("function_call_output"));
+}
+
+#[tokio::test]
+async fn xai_responses_omits_instructions_only_for_incremental_continuation() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Json(openai_tool_call_response("resp_1"))
+                } else {
+                    Json(openai_text_response("resp_2", "done"))
+                }
+            }
+        }),
+    ))
+    .await;
+    let fixture = test_config("openai/gpt-5.4", &[], Some("xai-key"), None, false);
+    let mut provider_config = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    provider_config.id = ProviderId::parse("xai").unwrap();
+    provider_config.route_provider = ProviderId::parse("xai").unwrap();
+    provider_config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &provider_config,
+        "grok-4.5",
+        fixture.config.runtime_max_output_tokens,
+        &fixture.config.home_dir,
+    )
+    .unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let response = provider
+        .complete_turn(provider_continuation_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response
+            .request_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.request_lowering_mode.as_str()),
+        Some("incremental_continuation_omit_instructions")
+    );
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["instructions"], json!("rendered system"));
+    assert_eq!(bodies[0]["store"], json!(true));
+    assert!(bodies[0].get("tools").is_none());
+    assert!(bodies[0].get("tool_choice").is_none());
+    assert!(bodies[0].get("parallel_tool_calls").is_none());
+    assert_eq!(bodies[1]["previous_response_id"], json!("resp_1"));
+    assert_eq!(bodies[1]["store"], json!(true));
+    assert!(bodies[1].get("instructions").is_none());
+    assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 1);
+    assert_eq!(bodies[1]["input"][0]["type"], json!("function_call_output"));
+}
+
+#[tokio::test]
+async fn xai_responses_prompt_change_keeps_instructions_and_uses_full_request() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Json(openai_tool_call_response("resp_1"))
+                } else {
+                    Json(openai_text_response("resp_2", "done"))
+                }
+            }
+        }),
+    ))
+    .await;
+    let fixture = test_config("openai/gpt-5.4", &[], Some("xai-key"), None, false);
+    let mut provider_config = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    provider_config.id = ProviderId::parse("xai").unwrap();
+    provider_config.route_provider = ProviderId::parse("xai").unwrap();
+    provider_config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &provider_config,
+        "grok-4.5",
+        fixture.config.runtime_max_output_tokens,
+        &fixture.config.home_dir,
+    )
+    .unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let mut changed = provider_continuation_request_with_prompt_frame();
+    changed.prompt_frame.system_prompt = "changed rendered system".into();
+    let response = provider.complete_turn(changed).await.unwrap();
+
+    assert_eq!(
+        response
+            .request_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.incremental_continuation.as_ref())
+            .and_then(|diagnostics| diagnostics.fallback_reason.as_deref()),
+        Some("request_shape_changed")
+    );
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[1].get("previous_response_id").is_none());
+    assert_eq!(bodies[1]["instructions"], json!("changed rendered system"));
+    assert_eq!(bodies[1]["store"], json!(true));
+    assert!(bodies[1]["input"].as_array().unwrap().len() > 1);
 }
 
 #[tokio::test]
