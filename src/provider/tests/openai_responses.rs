@@ -681,6 +681,8 @@ async fn xai_native_search_fallback_warns_when_server_context_may_be_lost() {
     .unwrap();
 
     let mut request = provider_turn_request_with_prompt_frame();
+    request.prompt_frame.cache.as_mut().unwrap().agent_id =
+        "xai-native-search-fallback-warning".into();
     request.native_web_search = Some(ProviderNativeWebSearchRequest {
         kind: ProviderNativeWebSearchKind::Xai,
         provider_id: "xai".into(),
@@ -689,8 +691,21 @@ async fn xai_native_search_fallback_warns_when_server_context_may_be_lost() {
         backend_kind: "xai_web_search_x_search".into(),
         max_results: Some(5),
     });
-    provider.complete_turn(request.clone()).await.unwrap();
-    request.native_web_search.as_mut().unwrap().max_results = Some(10);
+    let first = provider.complete_turn(request.clone()).await.unwrap();
+    request.conversation.extend([
+        ConversationMessage::AssistantBlocks(first.blocks),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "invented-1".into(),
+            content: "Failed: x_semantic_search not exposed for round".into(),
+            is_error: true,
+            error: None,
+        }]),
+    ]);
+    request
+        .native_web_search
+        .as_mut()
+        .unwrap()
+        .advertised_tool_type = "web_search_preview".into();
     let response = provider.complete_turn(request).await.unwrap();
 
     let continuation = response

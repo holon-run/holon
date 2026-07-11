@@ -223,11 +223,10 @@ struct OpenAiRequestShape {
 #[derive(Debug)]
 struct OpenAiRequestPlan {
     body: Value,
-    fallback_body: Option<Value>,
+    fallback_replay: Option<(Value, Vec<Value>)>,
     scope: Option<OpenAiContinuationScope>,
     append_match_input: Vec<Value>,
     provider_input: Vec<Value>,
-    fallback_provider_input: Option<Vec<Value>>,
     replay_loss_reason: Option<String>,
     request_shape: OpenAiRequestShape,
     diagnostics: ProviderRequestDiagnostics,
@@ -1808,11 +1807,10 @@ fn plan_chat_completion_request(
             full_body.clone(),
             OpenAiRequestPlan {
                 body: full_body,
-                fallback_body: None,
+                fallback_replay: None,
                 scope,
                 append_match_input: full_messages.clone(),
                 provider_input: full_messages,
-                fallback_provider_input: None,
                 replay_loss_reason: None,
                 request_shape,
                 diagnostics: incremental_diagnostics(
@@ -1840,11 +1838,10 @@ fn plan_chat_completion_request(
             full_body.clone(),
             OpenAiRequestPlan {
                 body: full_body,
-                fallback_body: None,
+                fallback_replay: None,
                 scope,
                 append_match_input: full_messages.clone(),
                 provider_input: full_messages,
-                fallback_provider_input: None,
                 replay_loss_reason: None,
                 request_shape,
                 diagnostics: incremental_diagnostics(
@@ -1869,11 +1866,10 @@ fn plan_chat_completion_request(
             full_body.clone(),
             OpenAiRequestPlan {
                 body: full_body,
-                fallback_body: None,
+                fallback_replay: None,
                 scope,
                 append_match_input: full_messages.clone(),
                 provider_input: full_messages,
-                fallback_provider_input: None,
                 replay_loss_reason: previous.replay_loss_reason,
                 request_shape,
                 diagnostics: incremental_diagnostics(
@@ -1903,11 +1899,10 @@ fn plan_chat_completion_request(
         full_body.clone(),
         OpenAiRequestPlan {
             body: full_body,
-            fallback_body: None,
+            fallback_replay: None,
             scope,
             append_match_input: full_messages.clone(),
             provider_input: full_messages,
-            fallback_provider_input: None,
             replay_loss_reason: previous.replay_loss_reason,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -2229,11 +2224,10 @@ fn plan_openai_responses_request(
     let Some(scope_ref) = scope.as_ref() else {
         return Ok(OpenAiRequestPlan {
             body,
-            fallback_body: None,
+            fallback_replay: None,
             scope,
             append_match_input,
             provider_input: full_input,
-            fallback_provider_input: None,
             replay_loss_reason: None,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -2255,11 +2249,10 @@ fn plan_openai_responses_request(
     let Some(previous) = previous else {
         return Ok(OpenAiRequestPlan {
             body,
-            fallback_body: None,
+            fallback_replay: None,
             scope,
             append_match_input,
             provider_input: full_input,
-            fallback_provider_input: None,
             replay_loss_reason: None,
             request_shape,
             diagnostics: incremental_diagnostics(
@@ -2277,7 +2270,7 @@ fn plan_openai_responses_request(
 
     if previous.request_shape != request_shape {
         let request_shape_hash = request_shape_hash(&request_shape);
-        let diagnostics = incremental_diagnostics(
+        let mut diagnostics = incremental_diagnostics(
             "full_request",
             "request_shape_changed",
             None,
@@ -2290,13 +2283,19 @@ fn plan_openai_responses_request(
             native_web_search_diagnostics(request),
             response_format_diagnostics(true, request),
         );
+        if previous.replay_loss_reason.is_some() {
+            diagnostics
+                .incremental_continuation
+                .as_mut()
+                .expect("incremental diagnostics should include continuation details")
+                .server_side_context_may_be_lost = Some(true);
+        }
         return Ok(OpenAiRequestPlan {
             body,
-            fallback_body: None,
+            fallback_replay: None,
             scope,
             append_match_input,
             provider_input: full_input,
-            fallback_provider_input: None,
             replay_loss_reason: previous.replay_loss_reason,
             request_shape,
             diagnostics,
@@ -2313,7 +2312,7 @@ fn plan_openai_responses_request(
         || append_match_input.len() <= expected_prefix.len()
         || !append_match_input.starts_with(&expected_prefix)
     {
-        let diagnostics = incremental_diagnostics(
+        let mut diagnostics = incremental_diagnostics(
             "full_request",
             "conversation_not_strict_append_only",
             None,
@@ -2323,13 +2322,19 @@ fn plan_openai_responses_request(
             native_web_search_diagnostics(request),
             response_format_diagnostics(true, request),
         );
+        if previous.replay_loss_reason.is_some() {
+            diagnostics
+                .incremental_continuation
+                .as_mut()
+                .expect("incremental diagnostics should include continuation details")
+                .server_side_context_may_be_lost = Some(true);
+        }
         return Ok(OpenAiRequestPlan {
             body,
-            fallback_body: None,
+            fallback_replay: None,
             scope,
             append_match_input,
             provider_input: full_input,
-            fallback_provider_input: None,
             replay_loss_reason: previous.replay_loss_reason,
             request_shape,
             diagnostics,
@@ -2342,8 +2347,7 @@ fn plan_openai_responses_request(
         .flatten();
     let has_response_id = response_id.is_some();
     let replay_is_compacted = previous.latest_compaction_index.is_some();
-    let mut fallback_body = None;
-    let mut fallback_provider_input = None;
+    let mut fallback_replay = None;
     let provider_input = if let Some(response_id) = response_id {
         let mut replay_input = previous.items.clone();
         replay_input.extend(incremental_input.clone());
@@ -2354,8 +2358,7 @@ fn plan_openai_responses_request(
                 .as_object_mut()
                 .expect("OpenAI Responses request body should be an object")
                 .remove("previous_response_id");
-            fallback_body = Some(replay_body);
-            fallback_provider_input = Some(replay_input);
+            fallback_replay = Some((replay_body, replay_input));
         }
         body["input"] = Value::Array(incremental_input.clone());
         body["previous_response_id"] = Value::String(response_id);
@@ -2376,11 +2379,10 @@ fn plan_openai_responses_request(
     let request_shape_hash = request_shape_hash(&request_shape);
     Ok(OpenAiRequestPlan {
         body,
-        fallback_body,
+        fallback_replay,
         scope,
         append_match_input,
         provider_input,
-        fallback_provider_input,
         replay_loss_reason: previous.replay_loss_reason.clone(),
         request_shape,
         diagnostics: ProviderRequestDiagnostics {
@@ -4780,7 +4782,7 @@ async fn retry_openai_responses_with_lossless_replay(
     {
         return Err(error);
     }
-    let Some(fallback_body) = plan.fallback_body.clone() else {
+    let Some((fallback_body, fallback_provider_input)) = plan.fallback_replay.clone() else {
         return Err(error).with_context(|| {
             format!(
                 "OpenAI Responses continuation failed and Holon refused provider-window replay because it would lose {}",
@@ -4790,10 +4792,7 @@ async fn retry_openai_responses_with_lossless_replay(
             )
         });
     };
-    *final_provider_input = plan
-        .fallback_provider_input
-        .clone()
-        .expect("lossless replay body should have matching provider input");
+    *final_provider_input = fallback_provider_input;
     *final_replay_loss_reason = None;
     diagnostics.request_lowering_mode = "provider_window_replay".into();
     if let Some(continuation) = diagnostics.incremental_continuation.as_mut() {
@@ -6650,11 +6649,10 @@ mod tests {
         };
         let plan = OpenAiRequestPlan {
             body: json!({ "model": "gpt-test", "input": [] }),
-            fallback_body: None,
+            fallback_replay: None,
             scope: None,
             append_match_input: Vec::new(),
             provider_input: vec![json!({ "type": "message", "content": "continue" })],
-            fallback_provider_input: None,
             replay_loss_reason: None,
             request_shape,
             diagnostics: incremental_diagnostics(
