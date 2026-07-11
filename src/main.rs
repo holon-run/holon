@@ -3193,7 +3193,9 @@ async fn post_control_json_value<T: serde::Serialize>(
 }
 
 async fn wait_for_job(config: &AppConfig, job_id: &str) -> Result<serde_json::Value> {
-    loop {
+    const JOB_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
+    let deadline = tokio::time::Instant::now() + JOB_WAIT_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
         let response = get_json(config, &format!("/jobs/{job_id}")).await?;
         let job = response
             .get("job")
@@ -3203,6 +3205,10 @@ async fn wait_for_job(config: &AppConfig, job_id: &str) -> Result<serde_json::Va
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    Err(anyhow!(
+        "timed out after {} seconds waiting for job {job_id}",
+        JOB_WAIT_TIMEOUT.as_secs()
+    ))
 }
 
 async fn get_json(config: &AppConfig, path: &str) -> Result<serde_json::Value> {

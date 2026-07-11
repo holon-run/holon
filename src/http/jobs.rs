@@ -310,7 +310,7 @@ pub(super) async fn create_skill_update_job(
                             job.summary = if total == 0 {
                                 "No matching skills to update".into()
                             } else {
-                                format!("Updating 0 of {total} skills")
+                                format!("Starting update of {total} skills")
                             };
                         });
                     }
