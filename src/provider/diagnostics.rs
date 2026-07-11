@@ -4,7 +4,10 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{load_codex_cli_credential, load_codex_oauth_profile_credential},
-    config::{AppConfig, CredentialSource, ModelRef, ProviderId, RuntimeModelCatalog},
+    config::{
+        AppConfig, CredentialSource, ModelRef, ModelRouteCapability, ProviderId,
+        RuntimeModelCatalog,
+    },
     context::ContextConfig,
     onboarding::{onboarding_report, search_diagnostics},
     types::{
@@ -128,14 +131,20 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
     let mut providers = BTreeMap::<String, Vec<&ResolvedModelAvailability>>::new();
     for model in models {
         providers
-            .entry(model.provider.clone())
+            .entry(provider_endpoint_group_id(
+                &model.provider_family,
+                &model.endpoint,
+            ))
             .or_default()
             .push(model);
     }
     if let Some(config) = config {
-        for provider_id in config.providers.keys() {
+        for provider in config.providers.values() {
             providers
-                .entry(provider_id.as_str().to_string())
+                .entry(provider_endpoint_group_id(
+                    provider.route_provider.as_str(),
+                    provider.route_endpoint.as_str(),
+                ))
                 .or_default();
         }
     }
@@ -143,15 +152,20 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
     providers
         .into_iter()
         .map(|(provider_id, models)| {
-            let parsed_provider_id = ProviderId::parse(&provider_id).ok();
-            let provider = config
-                .and_then(|config| {
-                    parsed_provider_id
-                        .as_ref()
-                        .map(|provider_id| (config, provider_id))
-                })
-                .and_then(|(config, provider_id)| config.providers.get(provider_id));
             let first_model = models.first().copied();
+            let configured_provider = config.and_then(|config| {
+                config.providers.values().find(|provider| {
+                    provider_endpoint_group_id(
+                        provider.route_provider.as_str(),
+                        provider.route_endpoint.as_str(),
+                    ) == provider_id
+                })
+            });
+            let route_provider_id = first_model
+                .map(|model| model.route_provider.as_str())
+                .or_else(|| configured_provider.map(|provider| provider.id.as_str()))
+                .unwrap_or(provider_id.as_str());
+            let provider = configured_provider;
             let available_count = models.iter().filter(|model| model.available).count();
             let model_count = models.len();
             let availability = if model_count == 0 || available_count == 0 {
@@ -170,9 +184,8 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
                 .or_else(|| {
                     if provider.is_some() {
                         config.and_then(|config| {
-                            parsed_provider_id
-                                .as_ref()
-                                .map(|provider_id| provider_source_for_config(config, provider_id))
+                            provider
+                                .map(|provider| provider_source_for_config(config, &provider.id))
                         })
                     } else {
                         None
@@ -185,7 +198,20 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
 
             ModelProviderEntry {
                 id: provider_id.clone(),
-                display_name: Some(provider_id.clone()),
+                provider_family: first_model
+                    .map(|model| model.provider_family.clone())
+                    .or_else(|| {
+                        provider.map(|provider| provider.route_provider.as_str().to_string())
+                    })
+                    .unwrap_or_else(|| provider_id.clone()),
+                endpoint: first_model
+                    .map(|model| model.endpoint.clone())
+                    .or_else(|| {
+                        provider.map(|provider| provider.route_endpoint.as_str().to_string())
+                    })
+                    .unwrap_or_else(|| "default".to_string()),
+                route_provider: route_provider_id.to_string(),
+                display_name: first_model.map(|model| model.provider_family.clone()),
                 availability,
                 provider_configured,
                 provider_source,
@@ -199,8 +225,10 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
                     .and_then(|model| model.credential_kind.clone())
                     .or_else(|| provider.map(|provider| provider.auth.kind.as_str().to_string())),
                 credential_configured,
-                default_model: config
-                    .and_then(|config| default_model_for_provider(config, &provider_id)),
+                default_model: config.and_then(|config| {
+                    first_model
+                        .and_then(|model| default_model_for_provider(config, &model.provider))
+                }),
                 model_count,
                 discovered_model_count: models
                     .iter()
@@ -210,6 +238,14 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
             }
         })
         .collect()
+}
+
+fn provider_endpoint_group_id(provider_family: &str, endpoint: &str) -> String {
+    if endpoint == "default" {
+        provider_family.to_string()
+    } else {
+        format!("{provider_family}:{endpoint}")
+    }
 }
 
 pub fn resolved_provider_models(config: &AppConfig, provider: &str) -> Vec<ProviderModelEntry> {
@@ -223,7 +259,12 @@ pub(crate) fn provider_models_from_availability_for_runtime(
 ) -> Vec<ProviderModelEntry> {
     models
         .iter()
-        .filter(|model| model.provider == provider)
+        .filter(|model| {
+            model.provider == provider
+                || model.provider_family == provider
+                || model.route_provider == provider
+                || provider_endpoint_group_id(&model.provider_family, &model.endpoint) == provider
+        })
         .cloned()
         .into_iter()
         .map(|model| {
@@ -231,6 +272,9 @@ pub(crate) fn provider_models_from_availability_for_runtime(
             let supported_parameters = supported_model_parameters(&model);
             ProviderModelEntry {
                 provider: model.provider,
+                provider_family: model.provider_family,
+                endpoint: model.endpoint,
+                route_provider: model.route_provider,
                 id: model_id,
                 model_ref: model.model,
                 display_name: model.display_name,
@@ -268,6 +312,7 @@ fn resolved_model_availability_entry(
 ) -> ResolvedModelAvailability {
     let base_context = base_context_config(config);
     let policy = catalog.resolved_model_policy(&base_context, Some(model_ref));
+    let route = catalog.resolve_model_route(&base_context, model_ref, ModelRouteCapability::Turn);
     let metadata_source = if config.validated_model_overrides.contains_key(model_ref) {
         "config_override".to_string()
     } else {
@@ -276,9 +321,13 @@ fn resolved_model_availability_entry(
             .and_then(|value| value.as_str().map(ToString::to_string))
             .unwrap_or_else(|| "unknown_fallback".to_string())
     };
-    let provider = config.providers.get(&model_ref.provider);
+    let route_provider = route
+        .as_ref()
+        .map(|route| route.endpoint.runtime_config.id.clone())
+        .unwrap_or_else(|| model_ref.provider.clone());
+    let provider = config.providers.get(&route_provider);
     let provider_configured = provider.is_some();
-    let provider_source = provider.map(|_| provider_source_for_config(config, &model_ref.provider));
+    let provider_source = provider.map(|_| provider_source_for_config(config, &route_provider));
     let credential_configured = provider
         .map(provider_static_credential_configured)
         .unwrap_or(false);
@@ -304,6 +353,17 @@ fn resolved_model_availability_entry(
     ResolvedModelAvailability {
         model: model_ref.as_string(),
         provider: model_ref.provider.as_str().to_string(),
+        provider_family: route
+            .as_ref()
+            .map(|route| route.endpoint.provider.as_str())
+            .unwrap_or_else(|| model_ref.provider.as_str())
+            .to_string(),
+        endpoint: route
+            .as_ref()
+            .map(|route| route.endpoint.endpoint.as_str())
+            .unwrap_or("default")
+            .to_string(),
+        route_provider: route_provider.as_str().to_string(),
         display_name: policy.display_name.clone(),
         metadata_source,
         provider_configured,
@@ -639,6 +699,52 @@ mod tests {
             .supported_parameters
             .iter()
             .any(|parameter| parameter == "max_output_tokens"));
+    }
+
+    #[test]
+    fn resolved_model_projection_preserves_canonical_provider_endpoint_and_route_provider() {
+        let mut fixture = test_config(Some("openai-key"));
+        let route_provider = ProviderId::parse("volcengine-agent").unwrap();
+        let built_ins = crate::config::built_in_provider_registry_with_settings(
+            &std::collections::HashMap::from([(
+                "VOLCENGINE_AGENT_API_KEY".to_string(),
+                "volcengine-key".to_string(),
+            )]),
+        )
+        .unwrap();
+        fixture.config.providers.insert(
+            route_provider.clone(),
+            built_ins.get(&route_provider).unwrap().clone(),
+        );
+        fixture.config.image_generation_model =
+            Some(ModelRef::parse("volcengine/doubao-seedream-5.0-lite").unwrap());
+
+        let availability = resolved_model_availability(&fixture.config);
+        let seedream = availability
+            .iter()
+            .find(|entry| entry.model == "volcengine/doubao-seedream-5.0-lite")
+            .expect("canonical Volcengine model");
+        assert_eq!(seedream.provider, "volcengine");
+        assert_eq!(seedream.provider_family, "volcengine");
+        assert_eq!(seedream.endpoint, "plan");
+        assert_eq!(seedream.route_provider, "volcengine-agent");
+        assert!(seedream.policy.capabilities.image_generation);
+
+        let providers = resolved_model_providers(&fixture.config);
+        let volcengine = providers
+            .iter()
+            .find(|entry| entry.provider_family == "volcengine" && entry.endpoint == "plan")
+            .expect("Volcengine plan provider");
+        assert_eq!(volcengine.id, "volcengine:plan");
+        assert_eq!(volcengine.route_provider, "volcengine-agent");
+
+        let models = resolved_provider_models(&fixture.config, "volcengine:plan");
+        assert!(models.iter().any(|entry| {
+            entry.model_ref == "volcengine/doubao-seedream-5.0-lite"
+                && entry.provider_family == "volcengine"
+                && entry.endpoint == "plan"
+                && entry.route_provider == "volcengine-agent"
+        }));
     }
 
     #[test]

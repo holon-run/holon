@@ -282,6 +282,9 @@ fn sample_model_availability(
     crate::types::ResolvedModelAvailability {
         model: model.into(),
         provider: model_ref.provider.as_str().into(),
+        provider_family: model_ref.provider.as_str().into(),
+        endpoint: "default".into(),
+        route_provider: model_ref.provider.as_str().into(),
         display_name: display_name.into(),
         metadata_source: "remote_discovered".into(),
         provider_configured: true,

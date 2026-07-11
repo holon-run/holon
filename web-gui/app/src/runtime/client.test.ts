@@ -24,6 +24,66 @@ describe("projectModelOptions", () => {
       }),
     ]);
   });
+
+  it("preserves route identity and independent image capabilities from availability", () => {
+    const options = projectModelOptions({
+      model_availability: [
+        {
+          model: "volcengine/doubao-seedream-5.0-lite",
+          provider: "volcengine",
+          provider_family: "volcengine",
+          endpoint: "plan",
+          route_provider: "volcengine-agent",
+          available: true,
+          policy: {
+            capabilities: {
+              image_input: false,
+              image_generation: true,
+            },
+          },
+        },
+      ],
+    });
+
+    expect(options).toEqual([
+      expect.objectContaining({
+        provider: "volcengine",
+        providerFamily: "volcengine",
+        endpoint: "plan",
+        routeProvider: "volcengine-agent",
+        supportsImageInput: false,
+        supportsImageGeneration: true,
+      }),
+    ]);
+  });
+
+  it("preserves route identity and image capabilities from available models", () => {
+    const options = projectModelOptions({
+      available_models: [
+        {
+          model: "volcengine/doubao-seed-2.0-pro",
+          provider: "volcengine",
+          provider_family: "volcengine",
+          endpoint: "plan",
+          route_provider: "volcengine-agent",
+          capabilities: {
+            image_input: true,
+            image_generation: false,
+          },
+        },
+      ],
+    });
+
+    expect(options[0]).toEqual(
+      expect.objectContaining({
+        providerFamily: "volcengine",
+        endpoint: "plan",
+        routeProvider: "volcengine-agent",
+        supportsImageInput: true,
+        supportsImageGeneration: false,
+      }),
+    );
+  });
 });
 
 describe("createRuntimeClient", () => {
