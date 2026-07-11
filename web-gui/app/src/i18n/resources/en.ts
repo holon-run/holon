@@ -411,7 +411,6 @@ const en = {
     runtimeConfigUnavailable: "Runtime config unavailable",
     defaultModel: "Default model",
     fallbackModels: "Fallback models",
-    maxOutputTokens: "Max output tokens",
     defaultToolOutputTokens: "Default tool output tokens",
     maxToolOutputTokens: "Max tool output tokens",
     disableProviderFallback: "Disable provider fallback",

@@ -221,7 +221,6 @@ export function SettingsPage({
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState("");
   const [visionDefault, setVisionDefault] = useState("");
-  const [runtimeMaxOutputTokens, setRuntimeMaxOutputTokens] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
   const [disableProviderFallback, setDisableProviderFallback] = useState(false);
@@ -267,7 +266,6 @@ export function SettingsPage({
     setModelDefault(surface.modelDefault);
     setModelFallbacks(surface.modelFallbacks.join(", "));
     setVisionDefault(surface.visionDefault ?? "");
-    setRuntimeMaxOutputTokens(String(surface.runtimeMaxOutputTokens));
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
     setDisableProviderFallback(surface.disableProviderFallback);
@@ -362,7 +360,6 @@ export function SettingsPage({
     const updates = [
       { key: "model.default", value: modelDefault.trim() },
       { key: "model.fallbacks", value: splitCsv(modelFallbacks) },
-      { key: "runtime.max_output_tokens", value: numberFromInput(runtimeMaxOutputTokens) },
       { key: "runtime.default_tool_output_tokens", value: numberFromInput(defaultToolOutputTokens) },
       { key: "runtime.max_tool_output_tokens", value: numberFromInput(maxToolOutputTokens) },
       { key: "runtime.disable_provider_fallback", value: disableProviderFallback },
@@ -762,10 +759,6 @@ export function SettingsPage({
                     <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
                   </label>
                   <div className="settings-form-row">
-                    <label>
-                      <span>{t("settings.maxOutputTokens")}</span>
-                      <input inputMode="numeric" value={runtimeMaxOutputTokens} onChange={(event) => setRuntimeMaxOutputTokens(event.target.value)} />
-                    </label>
                     <label>
                       <span>{t("settings.defaultToolOutputTokens")}</span>
                       <input inputMode="numeric" value={defaultToolOutputTokens} onChange={(event) => setDefaultToolOutputTokens(event.target.value)} />

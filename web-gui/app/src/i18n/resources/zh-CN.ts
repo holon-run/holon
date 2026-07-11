@@ -413,7 +413,6 @@ const zh: Record<string, any> = {
     runtimeConfigUnavailable: "运行时配置不可用",
     defaultModel: "默认模型",
     fallbackModels: "回退模型",
-    maxOutputTokens: "最大输出 token",
     defaultToolOutputTokens: "默认工具输出 token",
     maxToolOutputTokens: "最大工具输出 token",
     disableProviderFallback: "禁用提供商回退",

@@ -280,7 +280,6 @@ export interface RuntimeConfigSurface {
   visionDefault?: string;
   modelCatalog: string[];
   unknownModelFallbackConfigured: boolean;
-  runtimeMaxOutputTokens: number;
   defaultToolOutputTokens: number;
   maxToolOutputTokens: number;
   disableProviderFallback: boolean;

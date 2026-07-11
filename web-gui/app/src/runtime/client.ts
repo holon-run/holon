@@ -1719,7 +1719,6 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
     visionDefault: surface.vision_default ?? undefined,
     modelCatalog: surface.model_catalog ?? [],
     unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,
-    runtimeMaxOutputTokens: surface.runtime_max_output_tokens ?? 0,
     defaultToolOutputTokens: surface.default_tool_output_tokens ?? 0,
     maxToolOutputTokens: surface.max_tool_output_tokens ?? 0,
     disableProviderFallback: surface.disable_provider_fallback ?? false,
