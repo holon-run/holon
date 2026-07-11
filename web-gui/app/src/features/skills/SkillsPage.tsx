@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { ArrowLeft, PackageOpen } from "lucide-react";
+import { ArrowLeft, PackageOpen, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -18,6 +18,7 @@ interface SkillsPageProps {
   error?: string;
   installJobs: SkillInstallJob[];
   onRefresh: () => void;
+  onUpdateSkill: (name?: string) => Promise<boolean>;
   onAddSkill: (input: AddSkillInput) => Promise<boolean>;
   onRemoveSkill: (name: string) => Promise<boolean>;
   onOpenSkill: (skillId: string) => void;
@@ -31,6 +32,7 @@ export function SkillsPage({
   error,
   installJobs,
   onRefresh,
+  onUpdateSkill,
   onAddSkill,
   onRemoveSkill,
   onOpenSkill,
@@ -72,6 +74,10 @@ export function SkillsPage({
     await onRemoveSkill(name);
   }
 
+  async function updateSkill(name?: string) {
+    await onUpdateSkill(name);
+  }
+
   return (
     <div className="skills-inner scroll-surface">
       <section className="skills-hero context-card">
@@ -80,6 +86,10 @@ export function SkillsPage({
           <h1>{t("skillsPage.title")}</h1>
         </div>
         <div className="skills-actions" aria-label={t("skillsPage.skillLibrary")}>
+          <Button type="button" variant="outline" disabled={loading} onClick={() => void updateSkill()}>
+            <RefreshCw size={14} style={{ marginRight: 4 }} />
+            {loading ? t("skillsPage.updating") : t("skillsPage.updateAll")}
+          </Button>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
@@ -211,6 +221,7 @@ export function SkillsPage({
                   key={skill.skillId}
                   skill={skill}
                   loading={loading}
+                  onUpdate={updateSkill}
                   onRemove={removeSkill}
                   onOpen={onOpenSkill}
                 />
@@ -236,11 +247,13 @@ export function SkillsPage({
 function SkillRow({
   skill,
   loading,
+  onUpdate,
   onRemove,
   onOpen,
 }: {
   skill: SkillCatalogEntry;
   loading: boolean;
+  onUpdate: (name?: string) => void;
   onRemove: (name: string) => void;
   onOpen: (skillId: string) => void;
 }) {
@@ -255,6 +268,9 @@ function SkillRow({
         <p>{skill.description || t("skillsPage.noDescription")}</p>
       </button>
       <div className="skills-row-actions">
+        <Button type="button" size="sm" variant="outline" disabled={loading || normalizedSkillScope(skill.scope) !== "user"} onClick={() => onUpdate(skill.name)}>
+          {t("skillsPage.update")}
+        </Button>
         <Button type="button" size="sm" variant="outline" disabled={loading || normalizedSkillScope(skill.scope) !== "user"} onClick={() => onRemove(skill.name)}>
           {t("skillsPage.remove")}
         </Button>
