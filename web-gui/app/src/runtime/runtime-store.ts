@@ -309,7 +309,7 @@ export interface RuntimeStoreState {
   refreshCredentialStore: () => Promise<void>;
   setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
-  startCodexDeviceLogin: () => Promise<void>;
+  startCodexDeviceLogin: (providerId?: string) => Promise<void>;
   clearCodexDeviceLogin: () => void;
   runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   loadSearchResultContent: (sourceRef: string) => Promise<void>;
@@ -1628,10 +1628,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set({ credentialStoreError: message });
     }
   },
-  startCodexDeviceLogin: async () => {
+  startCodexDeviceLogin: async (providerId = "openai-codex") => {
     set({ codexDeviceLogin: { status: "starting" } });
     try {
-      const resp = await runtimeClient.startCodexDeviceLogin();
+      const resp = await runtimeClient.startCodexDeviceLogin(providerId);
       set({
         codexDeviceLogin: {
           status: "waiting",

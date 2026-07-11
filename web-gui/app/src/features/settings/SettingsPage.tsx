@@ -37,7 +37,7 @@ interface SettingsPageProps {
   onSetCredential: (profile: string, kind: string, material: string) => Promise<unknown>;
   onDeleteCredential: (profile: string) => Promise<void>;
   codexDeviceLogin: CodexDeviceLoginState;
-  onStartCodexDeviceLogin: () => Promise<void>;
+  onStartCodexDeviceLogin: (providerId?: string) => Promise<void>;
   onClearCodexDeviceLogin: () => void;
 }
 
@@ -64,6 +64,10 @@ type ProviderDraft = Pick<
 >;
 
 type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "credentialProfile">;
+
+export function supportsOAuthDeviceLogin(providerId: string): boolean {
+  return providerId === "openai-codex" || providerId === "xai";
+}
 
 type StandardSearchProviderDefinition = {
   id: string;
@@ -1280,7 +1284,7 @@ export function SettingsPage({
                           <>
                           <div className="settings-actions">
                             <Button type="button" variant="secondary" disabled={credentialStoreLoading}
-                              onClick={() => void onStartCodexDeviceLogin()}>
+                              onClick={() => void onStartCodexDeviceLogin(provider.id)}>
                               {provider.credentialConfigured ? "Re-login" : "Login with Device Flow"}
                             </Button>
                           </div>

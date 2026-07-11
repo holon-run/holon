@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSearchProviderConfigUpdates, buildVisionConfigUpdates, sortProvidersForSettings, sortSearchProvidersForSettings } from "./SettingsPage";
+import {
+  buildSearchProviderConfigUpdates,
+  buildVisionConfigUpdates,
+  sortProvidersForSettings,
+  sortSearchProvidersForSettings,
+  supportsOAuthDeviceLogin,
+} from "./SettingsPage";
 import type { RuntimeProviderSummary, RuntimeWebSearchProviderSummary } from "../../runtime/types";
 
 function provider(id: string, credentialConfigured: boolean): RuntimeProviderSummary {
@@ -90,5 +96,16 @@ describe("buildSearchProviderConfigUpdates", () => {
       { key: "web.providers.searxng.base_url", value: "https://search.example.test" },
       { key: "web.providers.searxng.credential_profile", value: "" },
     ]);
+  });
+});
+
+describe("supportsOAuthDeviceLogin", () => {
+  it("accepts openai-codex and xai", () => {
+    expect(supportsOAuthDeviceLogin("openai-codex")).toBe(true);
+    expect(supportsOAuthDeviceLogin("xai")).toBe(true);
+  });
+
+  it("rejects other providers", () => {
+    expect(supportsOAuthDeviceLogin("openai")).toBe(false);
   });
 });
