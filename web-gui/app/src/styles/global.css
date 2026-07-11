@@ -4427,6 +4427,26 @@ code {
   white-space: nowrap;
 }
 
+.settings-chip[draggable] {
+  cursor: grab;
+  user-select: none;
+}
+
+.settings-chip[draggable]:active {
+  cursor: grabbing;
+}
+
+.settings-chip.dragging {
+  opacity: 0.4;
+}
+
+.settings-chip-grip {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: grab;
+}
+
 .settings-chip-remove {
   border: none;
   background: none;

@@ -221,6 +221,7 @@ export function SettingsPage({
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState<string[]>([]);
   const [fallbackInput, setFallbackInput] = useState("");
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [visionDefault, setVisionDefault] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
@@ -758,8 +759,24 @@ export function SettingsPage({
                   <label>
                     <span>{t("settings.fallbackModels")}</span>
                    <div className="settings-chip-input">
-                     {modelFallbacks.map((model) => (
-                       <span key={model} className="settings-chip">
+                     {modelFallbacks.map((model, index) => (
+                       <span
+                         key={model}
+                         className={`settings-chip${draggedIndex === index ? " dragging" : ""}`}
+                         draggable
+                         onDragStart={() => setDraggedIndex(index)}
+                         onDragOver={(e) => {
+                           e.preventDefault();
+                           if (draggedIndex === null || draggedIndex === index) return;
+                           const next = [...modelFallbacks];
+                           const [moved] = next.splice(draggedIndex, 1);
+                           next.splice(index, 0, moved);
+                           setDraggedIndex(index);
+                           setModelFallbacks(next);
+                         }}
+                         onDragEnd={() => setDraggedIndex(null)}
+                       >
+                         <span className="settings-chip-grip" aria-hidden="true">⠿</span>
                          {model}
                          <button
                            type="button"
