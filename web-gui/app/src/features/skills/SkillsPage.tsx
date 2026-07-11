@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowLeft, PackageOpen, RefreshCw } from "lucide-react";
+import { useMemo, useState, type FormEvent } from "react";
+import { ArrowLeft, PackageOpen, RefreshCw, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -19,6 +19,7 @@ interface SkillsPageProps {
   installJobs: SkillInstallJob[];
   onRefresh: () => void;
   onUpdateSkill: (name?: string) => Promise<boolean>;
+  onDismissJob: (jobId: string) => void;
   onAddSkill: (input: AddSkillInput) => Promise<boolean>;
   onRemoveSkill: (name: string) => Promise<boolean>;
   onOpenSkill: (skillId: string) => void;
@@ -33,6 +34,7 @@ export function SkillsPage({
   installJobs,
   onRefresh,
   onUpdateSkill,
+  onDismissJob,
   onAddSkill,
   onRemoveSkill,
   onOpenSkill,
@@ -46,7 +48,6 @@ export function SkillsPage({
   const [addSkillName, setAddSkillName] = useState("");
   const [addMode, setAddMode] = useState<SkillInstallMode>("linked");
   const stats = useMemo(() => skillStats(skills), [skills]);
-  const [updateFeedback, setUpdateFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const visibleSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return skills.filter((skill) => {
@@ -71,26 +72,12 @@ export function SkillsPage({
     }
   }
 
-  useEffect(() => {
-    if (!updateFeedback) return;
-    const timer = setTimeout(() => setUpdateFeedback(null), 4000);
-    return () => clearTimeout(timer);
-  }, [updateFeedback]);
-
   async function removeSkill(name: string) {
     await onRemoveSkill(name);
   }
 
   async function updateSkill(name?: string) {
-    const ok = await onUpdateSkill(name);
-    if (ok) {
-      setUpdateFeedback({
-        ok: true,
-        message: name ? t("skillsPage.updateSingleSuccess", { name }) : t("skillsPage.updateAllSuccess"),
-      });
-    } else {
-      setUpdateFeedback({ ok: false, message: t("skillsPage.updateFailed") });
-    }
+    await onUpdateSkill(name);
   }
 
   return (
@@ -112,11 +99,6 @@ export function SkillsPage({
       </section>
 
       <section className="skills-summary" aria-label={t("skillsPage.librarySummary")}>
-        {updateFeedback ? (
-          <div className={`skills-update-feedback ${updateFeedback.ok ? "success" : "error"}`} role="status">
-            {updateFeedback.message}
-          </div>
-        ) : null}
         {stats.map((stat) => (
           <Card className="skills-stat" key={stat.label}>
             <strong>{stat.value}</strong>
@@ -140,8 +122,13 @@ export function SkillsPage({
               ) : null}
               <span className="skills-install-job-source">{job.source}</span>
               <span className={`skills-install-job-status status-${job.status}`}>
-                {job.status === "failed" ? t("skillsPage.installFailed", { error: job.error ?? t("skillsPage.unknownError") }) : job.status}
+                {job.error ?? job.summary ?? job.status}
               </span>
+              {(job.status === "completed" || job.status === "failed") ? (
+                <button type="button" onClick={() => onDismissJob(job.jobId)} aria-label={t("common.dismiss")}>
+                  <X size={14} />
+                </button>
+              ) : null}
             </div>
           ))}
         </div>

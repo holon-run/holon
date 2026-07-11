@@ -1741,6 +1741,12 @@ pub enum SkillLibraryUpdateState {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillLibraryUpdateProgress {
+    Started { total: usize },
+    Item(SkillLibraryUpdateStatus),
+}
+
 pub fn check_library_skills(
     user_home: &Path,
     name_filter: Option<&str>,
@@ -1818,7 +1824,20 @@ pub fn update_library_skills(
     user_home: &Path,
     name_filter: Option<&str>,
 ) -> Result<SkillLibraryUpdateResult> {
-    update_library_skills_with_remote_updater(user_home, name_filter, &GithubSkillRemoteUpdater)
+    update_library_skills_with_progress(user_home, name_filter, |_| {})
+}
+
+pub fn update_library_skills_with_progress(
+    user_home: &Path,
+    name_filter: Option<&str>,
+    on_progress: impl FnMut(SkillLibraryUpdateProgress),
+) -> Result<SkillLibraryUpdateResult> {
+    update_library_skills_with_remote_updater(
+        user_home,
+        name_filter,
+        &GithubSkillRemoteUpdater,
+        on_progress,
+    )
 }
 
 trait SkillRemoteUpdater {
@@ -1879,6 +1898,7 @@ fn update_library_skills_with_remote_updater(
     user_home: &Path,
     name_filter: Option<&str>,
     updater: &dyn SkillRemoteUpdater,
+    mut on_progress: impl FnMut(SkillLibraryUpdateProgress),
 ) -> Result<SkillLibraryUpdateResult> {
     if let Some(name) = name_filter {
         validate_skill_name(name)?;
@@ -1898,42 +1918,51 @@ fn update_library_skills_with_remote_updater(
         .filter(|(name, _)| name_filter.is_none_or(|filter| name.as_str() == filter))
         .map(|(name, entry)| (name.clone(), entry.clone()))
         .collect::<Vec<_>>();
+    on_progress(SkillLibraryUpdateProgress::Started {
+        total: entries.len(),
+    });
 
     let mut statuses = Vec::new();
     let mut lock_changed = false;
     for (name, entry) in entries {
         let Some(source) = LockedRemoteSkillSource::from_lock_entry(&name, &entry) else {
-            statuses.push(SkillLibraryUpdateStatus {
+            let status = SkillLibraryUpdateStatus {
                 name,
                 status: SkillLibraryUpdateState::Skipped,
                 previous_hash: None,
                 latest_hash: None,
                 reason: Some("lock entry is not a supported remote GitHub v3 skill source".into()),
-            });
+            };
+            on_progress(SkillLibraryUpdateProgress::Item(status.clone()));
+            statuses.push(status);
             continue;
         };
         let previous_hash = source.skill_folder_hash.clone();
         let latest_hash = match updater.latest_hash(&source) {
             Ok(hash) => hash,
             Err(error) => {
-                statuses.push(SkillLibraryUpdateStatus {
+                let status = SkillLibraryUpdateStatus {
                     name,
                     status: SkillLibraryUpdateState::Failed,
                     previous_hash: Some(previous_hash),
                     latest_hash: None,
                     reason: Some(error.to_string()),
-                });
+                };
+                on_progress(SkillLibraryUpdateProgress::Item(status.clone()));
+                statuses.push(status);
                 continue;
             }
         };
         if latest_hash == previous_hash {
-            statuses.push(SkillLibraryUpdateStatus {
+            let status = SkillLibraryUpdateStatus {
                 name,
                 status: SkillLibraryUpdateState::Unchanged,
                 previous_hash: Some(previous_hash),
                 latest_hash: Some(latest_hash),
                 reason: None,
-            });
+            };
+            on_progress(SkillLibraryUpdateProgress::Item(status.clone()));
+            statuses.push(status);
             continue;
         }
         let destination = skills_root.join(&source.skill_name);
@@ -1942,22 +1971,26 @@ fn update_library_skills_with_remote_updater(
             Ok(()) => {
                 refresh_updated_lock_entry(&mut lock, &source.skill_name, &latest_hash)?;
                 lock_changed = true;
-                statuses.push(SkillLibraryUpdateStatus {
+                let status = SkillLibraryUpdateStatus {
                     name,
                     status: SkillLibraryUpdateState::Updated,
                     previous_hash: Some(previous_hash),
                     latest_hash: Some(latest_hash),
                     reason: None,
-                });
+                };
+                on_progress(SkillLibraryUpdateProgress::Item(status.clone()));
+                statuses.push(status);
             }
             Err(error) => {
-                statuses.push(SkillLibraryUpdateStatus {
+                let status = SkillLibraryUpdateStatus {
                     name,
                     status: SkillLibraryUpdateState::Failed,
                     previous_hash: Some(previous_hash),
                     latest_hash: Some(latest_hash),
                     reason: Some(error.to_string()),
-                });
+                };
+                on_progress(SkillLibraryUpdateProgress::Item(status.clone()));
+                statuses.push(status);
             }
         }
     }
@@ -3418,7 +3451,8 @@ mod tests {
             contents: HashMap::new(),
         };
 
-        let result = update_library_skills_with_remote_updater(&user_home, None, &updater).unwrap();
+        let result =
+            update_library_skills_with_remote_updater(&user_home, None, &updater, |_| {}).unwrap();
 
         assert_eq!(result.statuses.len(), 1);
         assert_eq!(result.statuses[0].name, "demo");
@@ -3481,7 +3515,8 @@ mod tests {
         };
 
         let result =
-            update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater).unwrap();
+            update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater, |_| {})
+                .unwrap();
 
         assert_eq!(result.statuses.len(), 1);
         assert_eq!(result.statuses[0].status, SkillLibraryUpdateState::Updated);
@@ -3543,7 +3578,8 @@ mod tests {
             contents: HashMap::new(),
         };
 
-        let result = update_library_skills_with_remote_updater(&user_home, None, &updater).unwrap();
+        let result =
+            update_library_skills_with_remote_updater(&user_home, None, &updater, |_| {}).unwrap();
 
         assert_eq!(result.statuses.len(), 2);
         assert!(result
@@ -3584,7 +3620,8 @@ mod tests {
             latest_hashes: HashMap::from([("demo".into(), "new-hash".into())]),
             contents: HashMap::from([("demo".into(), "# updated".into())]),
         };
-        update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater).unwrap();
+        update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater, |_| {})
+            .unwrap();
         let lock = read_skill_lock(&user_home).unwrap();
         let entry = lock
             .get("skills")

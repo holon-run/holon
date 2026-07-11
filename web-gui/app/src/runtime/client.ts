@@ -951,11 +951,22 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/remove", { name }, requestHeaders);
     },
-    async updateSkillCatalog(name?: string): Promise<void> {
+    async updateSkillCatalog(name?: string): Promise<string> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, "/skills/catalog/update", { name }, requestHeaders);
+      const response = await postJson<JobResponseDto>(
+        fetchImpl,
+        baseUrl,
+        "/skills/catalog/update",
+        { name },
+        requestHeaders,
+      );
+      const jobId = response.job?.id;
+      if (!jobId) {
+        throw new Error("Skill update job response did not include a job id.");
+      }
+      return jobId;
     },
     async checkSkillCatalog(name?: string): Promise<void> {
       if (!baseUrl) {

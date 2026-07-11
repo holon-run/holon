@@ -145,7 +145,7 @@ async fn create_skill_install_job(
     state.jobs.insert(job.clone());
 
     let jobs = state.jobs.clone();
-    let skill_install_jobs = state.skill_install_jobs.clone();
+    let skill_library_write_jobs = state.skill_library_write_jobs.clone();
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -161,7 +161,7 @@ async fn create_skill_install_job(
                 error: None,
             }];
         });
-        let permit = match skill_install_jobs.acquire_owned().await {
+        let permit = match skill_library_write_jobs.acquire_owned().await {
             Ok(permit) => permit,
             Err(error) => {
                 let message = format!("skill install queue closed: {error}");
@@ -247,6 +247,165 @@ async fn create_skill_install_job(
         })),
     ))
         .into_response())
+}
+
+pub(super) async fn create_skill_update_job(
+    state: Arc<AppState>,
+    request: crate::types::UpdateSkillRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let target = request.name.clone().unwrap_or_else(|| "all skills".into());
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "skill.update".into(),
+        status: JobStatus::Queued,
+        phase: "queued".into(),
+        progress: JobProgress::default(),
+        summary: format!("Queued update for {target}"),
+        items: Vec::new(),
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job.clone());
+
+    let jobs = state.jobs.clone();
+    let skill_library_write_jobs = state.skill_library_write_jobs.clone();
+    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        let permit = match skill_library_write_jobs.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let message = format!("skill library write queue closed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Skill update queue closed".into();
+                    job.error = Some(message);
+                });
+                return;
+            }
+        };
+        jobs.update(&job_id, |job| {
+            job.status = JobStatus::Running;
+            job.phase = "updating".into();
+            job.summary = format!("Updating {target}");
+        });
+
+        let progress_jobs = jobs.clone();
+        let progress_job_id = job_id.clone();
+        let name = request.name.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            crate::skills::update_library_skills_with_progress(
+                &user_home,
+                name.as_deref(),
+                |progress| match progress {
+                    crate::skills::SkillLibraryUpdateProgress::Started { total } => {
+                        progress_jobs.update(&progress_job_id, |job| {
+                            job.progress.total = total;
+                            job.summary = if total == 0 {
+                                "No matching skills to update".into()
+                            } else {
+                                format!("Updating 0 of {total} skills")
+                            };
+                        });
+                    }
+                    crate::skills::SkillLibraryUpdateProgress::Item(status) => {
+                        progress_jobs.update(&progress_job_id, |job| {
+                            job.progress.current += 1;
+                            job.items.push(skill_update_job_item(&status));
+                            job.summary = format!(
+                                "Checked {} of {} skills",
+                                job.progress.current, job.progress.total
+                            );
+                        });
+                    }
+                },
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(update_result)) => jobs.update(&job_id, |job| {
+                let (updated, unchanged, skipped, failed) =
+                    skill_update_counts(&update_result.statuses);
+                job.status = JobStatus::Completed;
+                job.phase = "completed".into();
+                job.summary = format!(
+                    "Skill update completed: {updated} updated, {unchanged} unchanged, {skipped} skipped, {failed} failed"
+                );
+                job.result = serde_json::to_value(update_result).ok();
+            }),
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Skill update failed".into();
+                    job.error = Some(message);
+                });
+            }
+            Err(error) => {
+                let message = format!("skill update worker failed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Skill update worker failed".into();
+                    job.error = Some(message);
+                });
+            }
+        }
+    });
+
+    Ok(((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "ok": true,
+            "job": job,
+        })),
+    ))
+        .into_response())
+}
+
+fn skill_update_job_item(status: &crate::skills::SkillLibraryUpdateStatus) -> JobItem {
+    let (job_status, outcome) = match status.status {
+        crate::skills::SkillLibraryUpdateState::Updated => (JobStatus::Completed, "updated"),
+        crate::skills::SkillLibraryUpdateState::Unchanged => (JobStatus::Completed, "unchanged"),
+        crate::skills::SkillLibraryUpdateState::Skipped => (JobStatus::Completed, "skipped"),
+        crate::skills::SkillLibraryUpdateState::Failed => (JobStatus::Failed, "failed"),
+    };
+    JobItem {
+        id: status.name.clone(),
+        status: job_status,
+        summary: format!("{}: {outcome}", status.name),
+        error: status.reason.clone(),
+    }
+}
+
+fn skill_update_counts(
+    statuses: &[crate::skills::SkillLibraryUpdateStatus],
+) -> (usize, usize, usize, usize) {
+    statuses.iter().fold(
+        (0, 0, 0, 0),
+        |(updated, unchanged, skipped, failed), status| match status.status {
+            crate::skills::SkillLibraryUpdateState::Updated => {
+                (updated + 1, unchanged, skipped, failed)
+            }
+            crate::skills::SkillLibraryUpdateState::Unchanged => {
+                (updated, unchanged + 1, skipped, failed)
+            }
+            crate::skills::SkillLibraryUpdateState::Skipped => {
+                (updated, unchanged, skipped + 1, failed)
+            }
+            crate::skills::SkillLibraryUpdateState::Failed => {
+                (updated, unchanged, skipped, failed + 1)
+            }
+        },
+    )
 }
 
 pub(super) async fn create_template_remote_source_sync_job(

@@ -175,7 +175,7 @@ pub struct AppState {
     pub web_dist: Option<Arc<PathBuf>>,
     pub skills_registry: Arc<tokio::sync::RwLock<SkillsRegistry>>,
     pub jobs: JobRegistry,
-    pub skill_install_jobs: Arc<tokio::sync::Semaphore>,
+    pub skill_library_write_jobs: Arc<tokio::sync::Semaphore>,
     pub template_remote_source_sync_jobs: Arc<tokio::sync::Semaphore>,
 }
 
@@ -238,7 +238,7 @@ impl AppState {
             .control_token_required(ControlTransportKind::Tcp);
         let skills_registry = host.skills_registry();
         let jobs = JobRegistry::default();
-        let skill_install_jobs = Arc::new(tokio::sync::Semaphore::new(1));
+        let skill_library_write_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         Self {
             host,
@@ -248,7 +248,7 @@ impl AppState {
             web_dist: None,
             skills_registry,
             jobs,
-            skill_install_jobs,
+            skill_library_write_jobs,
             template_remote_source_sync_jobs,
         }
     }
@@ -264,7 +264,7 @@ impl AppState {
         // Unix control is local IPC; filesystem permissions are the access boundary.
         let skills_registry = host.skills_registry();
         let jobs = JobRegistry::default();
-        let skill_install_jobs = Arc::new(tokio::sync::Semaphore::new(1));
+        let skill_library_write_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         Self {
             host,
@@ -274,7 +274,7 @@ impl AppState {
             web_dist: None,
             skills_registry,
             jobs,
-            skill_install_jobs,
+            skill_library_write_jobs,
             template_remote_source_sync_jobs,
         }
     }

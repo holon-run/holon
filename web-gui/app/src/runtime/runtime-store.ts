@@ -302,6 +302,7 @@ export interface RuntimeStoreState {
   addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
   removeSkillFromCatalog: (name: string) => Promise<boolean>;
   updateSkillCatalog: (name?: string) => Promise<boolean>;
+  dismissSkillJob: (jobId: string) => void;
   checkSkillCatalog: (name?: string) => Promise<boolean>;
   refreshAgentSkillCatalog: (agentId: string | undefined) => Promise<void>;
   enableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
@@ -342,7 +343,9 @@ const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
 export interface SkillInstallJob {
   jobId: string;
   source: string;
+  kind?: "install" | "update";
   status: "queued" | "running" | "completed" | "failed";
+  summary?: string;
   error?: string;
 }
 
@@ -359,9 +362,8 @@ function loadSkillInstallJobs(): SkillInstallJob[] {
 
 function saveSkillInstallJobs(jobs: SkillInstallJob[]): void {
   try {
-    const active = jobs.filter((j) => j.status === "queued" || j.status === "running");
-    if (active.length) {
-      localStorage.setItem(SKILL_INSTALL_JOBS_STORAGE_KEY, JSON.stringify(active));
+    if (jobs.length) {
+      localStorage.setItem(SKILL_INSTALL_JOBS_STORAGE_KEY, JSON.stringify(jobs));
     } else {
       localStorage.removeItem(SKILL_INSTALL_JOBS_STORAGE_KEY);
     }
@@ -1413,22 +1415,33 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   updateSkillCatalog: async (name) => {
-    set({ skillCatalogLoading: true, skillCatalogError: undefined });
+    set({ skillCatalogError: undefined });
     try {
-      await runtimeClient.updateSkillCatalog(name);
-      const skillCatalog = await runtimeClient.getSkillCatalog();
-      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      const jobId = await runtimeClient.updateSkillCatalog(name);
+      const job: SkillInstallJob = {
+        jobId,
+        source: name ?? "all skills",
+        kind: "update",
+        status: "queued",
+      };
+      set((state) => {
+        const jobs = [...state.skillInstallJobs, job];
+        saveSkillInstallJobs(jobs);
+        return { skillInstallJobs: jobs };
+      });
+      void pollSkillInstallJob(set, get, jobId);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         skillCatalog: { ...state.skillCatalog, error: message },
-        skillCatalogLoading: false,
         skillCatalogError: message,
       }));
       return false;
     }
   },
+
+  dismissSkillJob: (jobId) => removeSkillInstallJob(set, get, jobId),
 
   checkSkillCatalog: async (name) => {
     set({ skillCatalogLoading: true, skillCatalogError: undefined });
@@ -2708,22 +2721,26 @@ async function pollSkillInstallJob(
       await new Promise((resolve) => globalThis.setTimeout(resolve, SKILL_JOB_POLL_INTERVAL_MS));
       const job = await runtimeClient.getJob(jobId);
       if (job.status === "completed") {
-        removeSkillInstallJob(set, get, jobId);
+        updateSkillInstallJob(set, jobId, "completed", undefined, job.summary);
         await get().refreshSkillCatalog();
         return;
       }
       if (job.status === "failed") {
-        updateSkillInstallJob(set, jobId, "failed", job.error || job.summary);
-        removeSkillInstallJobAfterDelay(set, get, jobId, 10_000);
+        updateSkillInstallJob(set, jobId, "failed", job.error || job.summary, job.summary);
         return;
       }
-      updateSkillInstallJob(set, jobId, job.status === "running" ? "running" : "queued");
+      updateSkillInstallJob(
+        set,
+        jobId,
+        job.status === "running" ? "running" : "queued",
+        undefined,
+        job.summary,
+      );
     } catch {
       // Network error — keep retrying until deadline
     }
   }
-  updateSkillInstallJob(set, jobId, "failed", "Timed out waiting for skill install.");
-  removeSkillInstallJobAfterDelay(set, get, jobId, 10_000);
+  updateSkillInstallJob(set, jobId, "failed", "Timed out waiting for skill job.");
 }
 
 const TEMPLATE_SYNC_POLL_INTERVAL_MS = 1_000;
@@ -2754,9 +2771,17 @@ async function pollTemplateSyncJob(
   throw new Error("Timed out waiting for template remote source sync.");
 }
 
-function updateSkillInstallJob(set: StoreSet, jobId: string, status: SkillInstallJob["status"], error?: string): void {
+function updateSkillInstallJob(
+  set: StoreSet,
+  jobId: string,
+  status: SkillInstallJob["status"],
+  error?: string,
+  summary?: string,
+): void {
   set((state) => {
-    const jobs = state.skillInstallJobs.map((j) => j.jobId === jobId ? { ...j, status, error } : j);
+    const jobs = state.skillInstallJobs.map((j) =>
+      j.jobId === jobId ? { ...j, status, error, summary } : j
+    );
     saveSkillInstallJobs(jobs);
     return { skillInstallJobs: jobs };
   });
@@ -2768,10 +2793,6 @@ function removeSkillInstallJob(set: StoreSet, get: () => RuntimeStoreState, jobI
     saveSkillInstallJobs(jobs);
     return { skillInstallJobs: jobs };
   });
-}
-
-function removeSkillInstallJobAfterDelay(set: StoreSet, get: () => RuntimeStoreState, jobId: string, delayMs: number): void {
-  window.setTimeout(() => removeSkillInstallJob(set, get, jobId), delayMs);
 }
 
 function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: AgentSummary): RuntimeBootstrap {
