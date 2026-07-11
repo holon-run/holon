@@ -858,6 +858,21 @@ pub(crate) fn dedupe_fallback_models(
 }
 
 pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRef>> {
+    let trimmed = raw_value.trim();
+    if trimmed.starts_with('[') {
+        let values: Vec<String> =
+            serde_json::from_str(trimmed).context("expected a JSON string array")?;
+        let parsed: Vec<ModelRef> = values
+            .iter()
+            .map(|s| s.trim())
+            .filter(|value| !value.is_empty())
+            .map(ModelRef::parse)
+            .collect::<Result<Vec<_>>>()?;
+        if parsed.is_empty() {
+            return Err(anyhow!("model ref list must not be empty"));
+        }
+        return Ok(parsed);
+    }
     let values = raw_value
         .split(',')
         .map(str::trim)
@@ -868,6 +883,39 @@ pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRef>> {
         return Err(anyhow!("model ref list must not be empty"));
     }
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_model_ref_list_json_array() {
+        let refs = parse_model_ref_list(r#"["openai-codex/gpt-5","anthropic/claude-sonnet-4"]"#).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].provider.as_str(), "openai-codex");
+        assert_eq!(refs[1].provider.as_str(), "anthropic");
+    }
+
+    #[test]
+    fn parse_model_ref_list_json_array_single() {
+        let refs = parse_model_ref_list(r#"["openai-codex/gpt-5"]"#).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].provider.as_str(), "openai-codex");
+    }
+
+    #[test]
+    fn parse_model_ref_list_comma_separated() {
+        let refs = parse_model_ref_list("openai-codex/gpt-5, anthropic/claude-sonnet-4").unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].provider.as_str(), "openai-codex");
+        assert_eq!(refs[1].provider.as_str(), "anthropic");
+    }
+
+    #[test]
+    fn parse_model_ref_list_empty_json_array_rejected() {
+        assert!(parse_model_ref_list("[]").is_err());
+    }
 }
 
 pub(crate) fn parse_model_catalog_value(
