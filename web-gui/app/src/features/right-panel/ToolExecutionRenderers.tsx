@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import type { MouseEvent } from "react";
 import { formatToolExecutionDetail } from "../inspector/ActivityInspectorPanel";
 import type { RuntimeToolExecutionRecord } from "../../runtime/types";
 
@@ -382,6 +383,78 @@ function MemoryGetRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   );
 }
 
+// UseWorkspace renderer
+
+function UseWorkspaceRenderer({
+  record,
+  onBrowseFiles,
+}: {
+  record: RuntimeToolExecutionRecord;
+  onBrowseFiles?: (workspaceId: string, executionRootId?: string) => void;
+}) {
+  const { t } = useTranslation();
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = isRecord(output) ? output : undefined;
+  const input = isRecord(record.input) ? record.input : {};
+
+  const workspaceId = nestedText(result, ["workspace_id"]) || nestedText(input, ["workspace_id"]);
+  const workspaceAnchor = nestedText(result, ["workspace_anchor"]) || nestedText(input, ["path"]);
+  const executionRoot = nestedText(result, ["execution_root"]);
+  const executionRootId = nestedText(result, ["execution_root_id"]);
+  const cwd = nestedText(result, ["cwd"]);
+  const mode = nestedText(result, ["mode"]) || nestedText(input, ["mode"]);
+  const projectionKind = nestedText(result, ["projection_kind"]);
+  const summary = textField(result?.summary_text) || record.summary;
+
+  const canBrowse = !!workspaceId && !!onBrowseFiles;
+  const browse = canBrowse
+    ? (e: MouseEvent) => {
+        e.preventDefault();
+        onBrowseFiles!(workspaceId, executionRootId || undefined);
+      }
+    : undefined;
+
+  return (
+    <>
+      {workspaceId ? <SimpleField label={t("inspector.workspaceId")} value={workspaceId} /> : null}
+      {workspaceAnchor ? (
+        <div className="tool-detail-simple">
+          <span className="tool-detail-simple-label">{t("inspector.workspacePath")}</span>
+          {browse ? (
+            <a href="#" className="workspace-path-link" onClick={browse}>
+              {workspaceAnchor}
+            </a>
+          ) : (
+            <span className="tool-detail-simple-value">{workspaceAnchor}</span>
+          )}
+        </div>
+      ) : null}
+      {executionRoot ? (
+        <div className="tool-detail-simple">
+          <span className="tool-detail-simple-label">{t("inspector.executionRoot")}</span>
+          {browse ? (
+            <a href="#" className="workspace-path-link" onClick={browse}>
+              {executionRoot}
+            </a>
+          ) : (
+            <span className="tool-detail-simple-value">{executionRoot}</span>
+          )}
+        </div>
+      ) : null}
+      {cwd ? <SimpleField label={t("inspector.cwd")} value={cwd} /> : null}
+      {mode ? <SimpleField label={t("inspector.mode")} value={mode} /> : null}
+      {projectionKind ? <SimpleField label={t("inspector.projectionKind")} value={projectionKind} /> : null}
+      {canBrowse ? (
+        <a href="#" className="workspace-path-link tool-detail-browse-link" onClick={browse}>
+          {t("fileBrowser.openInFileBrowser")}
+        </a>
+      ) : null}
+      {summary ? <OutputField label={t("inspector.result")} value={summary} /> : null}
+      {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
+    </>
+  );
+}
+
 // Generic fallback renderer
 
 function GenericToolRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
@@ -391,7 +464,13 @@ function GenericToolRenderer({ record }: { record: RuntimeToolExecutionRecord })
 
 // Public router component
 
-export function ToolExecutionContent({ record }: { record: RuntimeToolExecutionRecord }) {
+export function ToolExecutionContent({
+  record,
+  onBrowseFiles,
+}: {
+  record: RuntimeToolExecutionRecord;
+  onBrowseFiles?: (workspaceId: string, executionRootId?: string) => void;
+}) {
   switch (record.tool_name) {
     case "ExecCommand":
       return <ExecCommandRenderer record={record} />;
@@ -411,6 +490,8 @@ export function ToolExecutionContent({ record }: { record: RuntimeToolExecutionR
       return <MemorySearchRenderer record={record} />;
     case "MemoryGet":
       return <MemoryGetRenderer record={record} />;
+    case "UseWorkspace":
+      return <UseWorkspaceRenderer record={record} onBrowseFiles={onBrowseFiles} />;
     default:
       return <GenericToolRenderer record={record} />;
   }

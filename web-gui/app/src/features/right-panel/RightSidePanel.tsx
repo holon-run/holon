@@ -194,7 +194,7 @@ export function RightSidePanel({
           </div>
         ) : activeView.kind === "tool_execution_detail" ? (
           <div className="inspector-stack">
-            <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} />
+            <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} />
           </div>
         ) : activeView.kind === "file_browser" ? (
           <FileBrowserPanel key={`${activeView.workspaceId}:${activeView.initialFilePath ?? ""}`} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} onClose={onNavigateBack} />

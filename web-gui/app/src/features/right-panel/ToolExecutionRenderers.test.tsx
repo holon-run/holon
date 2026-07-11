@@ -142,4 +142,29 @@ describe("ToolExecutionContent", () => {
     expect(html).toContain("turn:abc");
     expect(html).toContain("Full memory content");
   });
+
+  it("renders UseWorkspace details with workspace path and file browser link", () => {
+    const html = renderTool({
+      tool_name: "UseWorkspace",
+      input: { path: "/home/user/project", mode: "direct" },
+      output: {
+        envelope: {
+          result: {
+            workspace_id: "ws_abc123",
+            workspace_anchor: "/home/user/project",
+            execution_root_id: "root-xyz",
+            execution_root: "/home/user/project",
+            cwd: "/home/user/project",
+            mode: "direct",
+            projection_kind: "canonical_root",
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("ws_abc123");
+    expect(html).toContain("/home/user/project");
+    expect(html).toContain("direct");
+    expect(html).toContain("canonical_root");
+  });
 });

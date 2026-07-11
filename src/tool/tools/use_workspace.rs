@@ -186,6 +186,7 @@ pub(crate) async fn execute(
                             .workspace_id
                             .unwrap_or_else(|| AGENT_HOME_WORKSPACE_ID.to_string()),
                         workspace_anchor: snapshot.workspace_anchor,
+                        execution_root_id: snapshot.execution_root_id,
                         execution_root: snapshot.execution_root,
                         cwd: snapshot.cwd,
                         mode: mode_arg_label(mode).to_string(),
@@ -217,6 +218,7 @@ pub(crate) async fn execute(
                 .workspace_id
                 .unwrap_or_else(|| AGENT_HOME_WORKSPACE_ID.to_string()),
             workspace_anchor: snapshot.workspace_anchor,
+            execution_root_id: snapshot.execution_root_id,
             execution_root: snapshot.execution_root,
             cwd: snapshot.cwd,
             mode: mode_label.to_string(),

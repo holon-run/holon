@@ -695,6 +695,11 @@ const zh: Record<string, any> = {
     batchItem: "批量项",
     current: "当前",
     yes: "是",
+    workspaceId: "工作区 ID",
+    workspacePath: "工作区路径",
+    executionRoot: "执行根目录",
+    projectionKind: "投影类型",
+    cwd: "工作目录",
   },
 
   agent: {
