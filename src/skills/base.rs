@@ -1363,12 +1363,9 @@ fn install_skill_with_user_home_and_remote_installer(
             if let Some(skill) = skill {
                 validate_skill_name(skill)?;
             }
-            let installed_skills = remote_installer.add_global(
-                user_home.context("remote skill install requires a user home")?,
-                package,
-                skill.as_deref(),
-            )?;
             let user_home = user_home.context("remote skill install requires a user home")?;
+            let installed_skills =
+                remote_installer.add_global(user_home, package, skill.as_deref())?;
             sync_remote_skill_lock_entries(user_home, &installed_skills)?;
             let skill_name = installed_skills
                 .first()
@@ -2315,7 +2312,12 @@ fn sync_remote_skill_lock_entries(
     let object = lock
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("skill lock must contain a JSON object"))?;
-    object.insert("version".into(), serde_json::Value::Number(3.into()));
+    let version = object
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default()
+        .max(3);
+    object.insert("version".into(), serde_json::Value::Number(version.into()));
 
     for installed in installed_skills {
         validate_skill_name(&installed.skill_name)?;
@@ -3631,6 +3633,46 @@ mod tests {
 
             assert_eq!(source.skill_path, expected, "skillPath={skill_path:?}");
         }
+    }
+
+    #[test]
+    fn remote_install_does_not_downgrade_future_lock_version() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        let skill_dir = user_home.join(".agents/skills/demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join(SKILL_ENTRYPOINT), "# demo").unwrap();
+        fs::write(
+            user_home.join(SKILL_LOCK_FILENAME),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 4,
+                "skills": {}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_remote_skill_lock_entries(
+            &user_home,
+            &[RemoteSkillInstall {
+                skill_name: "demo".into(),
+                owner: "vercel-labs".into(),
+                repo: "agent-skills".into(),
+                reference: String::new(),
+                skill_path: "skills/demo".into(),
+            }],
+        )
+        .unwrap();
+
+        let lock = read_skill_lock(&user_home).unwrap();
+        assert_eq!(
+            lock.get("version").and_then(serde_json::Value::as_u64),
+            Some(4)
+        );
+        assert!(lock
+            .get("skills")
+            .and_then(|skills| skills.get("demo"))
+            .is_some());
     }
 
     #[test]
