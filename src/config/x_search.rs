@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 
 use super::{AppConfig, ModelRouteRef, ProviderId, ProviderRuntimeConfig, ProviderTransportKind};
 
-pub const DEFAULT_X_SEARCH_MODEL: &str = "grok-4-1-fast";
+pub const DEFAULT_X_SEARCH_MODEL: &str = "grok-4.3";
 pub const DEFAULT_X_SEARCH_TIMEOUT_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone)]

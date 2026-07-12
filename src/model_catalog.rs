@@ -703,6 +703,8 @@ fn reasoning_effort_options(
         }
         ("openai-codex", "gpt-5.6-luna") => &["low", "medium", "high", "xhigh", "max"][..],
         ("openai", _) | ("openai-codex", _) => &["low", "medium", "high", "xhigh"][..],
+        ("xai", "grok-4.3") => &["none", "low", "medium", "high"][..],
+        ("xai", "grok-4.5") => &["low", "medium", "high"][..],
         ("volcengine", _)
             if endpoint.is_none_or(|endpoint| {
                 matches!(endpoint.as_str(), "default" | "coding" | "plan")
@@ -2690,80 +2692,46 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        catalog_model("xai", "grok-3", "Grok 3", 131_072, 8_192, false, false),
-        catalog_model(
-            "xai",
-            "grok-3-fast",
-            "Grok 3 Fast",
-            131_072,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "xai",
-            "grok-3-mini",
-            "Grok 3 Mini",
-            131_072,
-            8_192,
-            true,
-            false,
-        ),
-        catalog_model(
-            "xai",
-            "grok-3-mini-fast",
-            "Grok 3 Mini Fast",
-            131_072,
-            8_192,
-            true,
-            false,
-        ),
-        catalog_model("xai", "grok-4", "Grok 4", 256_000, 64_000, true, false),
-        catalog_model(
-            "xai",
-            "grok-4.5",
-            "Grok 4.5",
-            500_000,
-            64_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "xai",
-            "grok-4-fast",
-            "Grok 4 Fast",
-            2_000_000,
-            30_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "xai",
-            "grok-4-fast-non-reasoning",
-            "Grok 4 Fast (Non-Reasoning)",
-            2_000_000,
-            30_000,
-            false,
-            true,
-        ),
-        catalog_model(
-            "xai",
-            "grok-4-1-fast",
-            "Grok 4.1 Fast",
-            2_000_000,
-            30_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "xai",
-            "grok-code-fast-1",
-            "Grok Code Fast 1",
-            256_000,
-            10_000,
-            true,
-            false,
-        ),
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("xai"), "grok-4.3"),
+            display_name: "Grok 4.3".into(),
+            description:
+                "xAI Grok 4.3 runtime defaults aligned with the official model page.".into(),
+            context_window_tokens: Some(1_000_000),
+            effective_context_window_percent: 90,
+            auto_compact_token_limit: Some(900_000),
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("xai"), "grok-4.5"),
+            display_name: "Grok 4.5".into(),
+            description:
+                "xAI Grok 4.5 runtime defaults aligned with the official model page.".into(),
+            context_window_tokens: Some(500_000),
+            effective_context_window_percent: 90,
+            auto_compact_token_limit: Some(450_000),
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
+        },
         catalog_model("zai", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false),
         catalog_model("zai", "glm-5.1", "GLM-5.1", 202_800, 131_072, true, false),
         catalog_model("zai", "glm-5", "GLM-5", 202_800, 131_072, true, false),
@@ -3024,6 +2992,57 @@ mod tests {
             assert!(
                 catalog
                     .get(&ModelRef::new(ProviderId::anthropic(), removed_model))
+                    .is_none(),
+                "{removed_model} should not be registered"
+            );
+        }
+    }
+
+    #[test]
+    fn xai_catalog_tracks_current_recommended_models() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            (
+                "grok-4.3",
+                1_000_000,
+                &["none", "low", "medium", "high"][..],
+            ),
+            ("grok-4.5", 500_000, &["low", "medium", "high"][..]),
+        ];
+
+        for (model, context_window, reasoning_options) in expected {
+            let metadata = catalog
+                .get(&ModelRef::new(provider_id("xai"), model))
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(metadata.context_window_tokens, Some(context_window));
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert_eq!(
+                reasoning_effort_options(
+                    &metadata.model_ref,
+                    metadata.endpoint.as_ref(),
+                    &metadata.capabilities,
+                ),
+                reasoning_options
+            );
+        }
+
+        for removed_model in [
+            "grok-3",
+            "grok-3-fast",
+            "grok-3-mini",
+            "grok-3-mini-fast",
+            "grok-4",
+            "grok-4-fast",
+            "grok-4-fast-non-reasoning",
+            "grok-4-1-fast",
+            "grok-code-fast-1",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::new(provider_id("xai"), removed_model))
                     .is_none(),
                 "{removed_model} should not be registered"
             );

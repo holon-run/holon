@@ -279,10 +279,10 @@ mod tests {
                 from_date: Some("2026-07-01".into()),
                 to_date: None,
             },
-            "grok-4-1-fast",
+            "grok-4.3",
         );
 
-        assert_eq!(body["model"], "grok-4-1-fast");
+        assert_eq!(body["model"], "grok-4.3");
         assert_eq!(body["input"], "Holon updates");
         assert_eq!(body["store"], false);
         assert_eq!(body["tools"][0]["type"], "x_search");
