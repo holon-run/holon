@@ -401,6 +401,22 @@ impl BuiltInModelCatalog {
             ModelRef::new(provider_id("dashscope"), "qwen-3.7"),
             ModelRef::new(provider_id("dashscope"), "qwen3.7-max"),
         );
+        aliases.insert(
+            ModelRef::new(provider_id("mistral"), "devstral-medium-latest"),
+            ModelRef::new(provider_id("mistral"), "mistral-medium-latest"),
+        );
+        aliases.insert(
+            ModelRef::new(provider_id("mistral"), "magistral-small"),
+            ModelRef::new(provider_id("mistral"), "mistral-small-latest"),
+        );
+        aliases.insert(
+            ModelRef::new(provider_id("mistral"), "mistral-medium-2508"),
+            ModelRef::new(provider_id("mistral"), "mistral-medium-latest"),
+        );
+        aliases.insert(
+            ModelRef::new(provider_id("mistral"), "pixtral-large-latest"),
+            ModelRef::new(provider_id("mistral"), "mistral-medium-latest"),
+        );
         aliases
     }
 
@@ -3859,6 +3875,29 @@ mod tests {
             assert!(
                 catalog.get(&ModelRef::parse(model_ref).unwrap()).is_none(),
                 "{model_ref} should not be registered"
+            );
+        }
+
+        for (legacy_model, replacement) in [
+            (
+                "mistral/devstral-medium-latest",
+                "mistral/mistral-medium-latest",
+            ),
+            ("mistral/magistral-small", "mistral/mistral-small-latest"),
+            (
+                "mistral/mistral-medium-2508",
+                "mistral/mistral-medium-latest",
+            ),
+            (
+                "mistral/pixtral-large-latest",
+                "mistral/mistral-medium-latest",
+            ),
+        ] {
+            assert_eq!(
+                catalog
+                    .canonicalize_model_ref(&ModelRef::parse(legacy_model).unwrap())
+                    .as_string(),
+                replacement
             );
         }
     }
