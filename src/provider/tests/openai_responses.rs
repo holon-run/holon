@@ -230,6 +230,7 @@ fn provider_nearly_large_window_continuation_with_prompt_frame() -> ProviderTurn
             id: "exec-1".into(),
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
+            kind: crate::provider::ModelToolCallKind::Function,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-1".into(),
@@ -248,6 +249,7 @@ fn provider_large_window_continuation_with_prompt_frame() -> ProviderTurnRequest
             id: "exec-1".into(),
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
+            kind: crate::provider::ModelToolCallKind::Function,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-1".into(),
@@ -394,7 +396,9 @@ async fn openai_responses_normalizes_non_object_tool_arguments_before_continuati
         .unwrap();
     assert_eq!(first.blocks.len(), 1);
     match &first.blocks[0] {
-        ModelBlock::ToolUse { id, name, input } => {
+        ModelBlock::ToolUse {
+            id, name, input, ..
+        } => {
             assert_eq!(id, "invented-1");
             assert_eq!(name, "x_semantic_search");
             assert_eq!(input, &json!({ "_raw": ["holon"] }));
@@ -1969,6 +1973,7 @@ async fn openai_responses_does_not_reuse_without_prompt_cache_scope() {
             id: "exec-1".into(),
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
+            kind: crate::provider::ModelToolCallKind::Function,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-1".into(),

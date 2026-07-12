@@ -1110,7 +1110,9 @@ impl TurnExecution<'_> {
                             text_blocks.push(text.clone());
                         }
                     }
-                    ModelBlock::ToolUse { id, name, input } => {
+                    ModelBlock::ToolUse {
+                        id, name, input, ..
+                    } => {
                         tool_calls.push(ToolCall {
                             id: id.clone(),
                             name: name.clone(),

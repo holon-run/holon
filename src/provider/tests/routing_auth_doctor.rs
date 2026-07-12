@@ -493,7 +493,7 @@ async fn openai_codex_provider_sends_streaming_requests_and_parses_terminal_resp
     ));
     assert!(matches!(
         &response.blocks[1],
-        ModelBlock::ToolUse { id, name, input }
+        ModelBlock::ToolUse { id, name, input, .. }
         if id == "call_1" && name == "ExecCommand" && input["cmd"] == "sed -n '1,40p' src/main.rs"
     ));
 }

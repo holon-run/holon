@@ -94,6 +94,7 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                     input: json!({
                         "reason": "wait for background command result"
                     }),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 10,

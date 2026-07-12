@@ -53,6 +53,7 @@ impl AgentProvider for ToolUsingProvider {
                     id: "tool-1".into(),
                     name: "AgentGet".into(),
                     input: json!({}),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -109,6 +110,7 @@ impl AgentProvider for FileEditingProvider {
                         input: json!({
                             "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+hello from holon\n"
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                     ModelBlock::ToolUse {
                         id: "read-1".into(),
@@ -117,6 +119,7 @@ impl AgentProvider for FileEditingProvider {
                             "cmd": "cat notes/result.txt",
                             "workdir": "."
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: None,
@@ -179,6 +182,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                             input: json!({
                                 "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+hello from holon\n"
                             }),
+                            kind: holon::provider::ModelToolCallKind::Function,
                         },
                         ModelBlock::ToolUse {
                             id: "verify-1".into(),
@@ -187,6 +191,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                                 "cmd": "printf tests_passed",
                                 "login": false
                             }),
+                            kind: holon::provider::ModelToolCallKind::Function,
                         },
                     ],
                     stop_reason: None,
@@ -209,6 +214,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                         input: json!({
                             "reason": "sleep requested"
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: None,
@@ -275,6 +281,7 @@ impl AgentProvider for SleepOnlyCompletionAfterTextProvider {
                             input: json!({
                                 "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+hello from holon\n"
                             }),
+                            kind: holon::provider::ModelToolCallKind::Function,
                         },
                     ],
                     stop_reason: None,
@@ -293,6 +300,7 @@ impl AgentProvider for SleepOnlyCompletionAfterTextProvider {
                     input: json!({
                         "reason": "delivery complete"
                     }),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -334,6 +342,7 @@ impl AgentProvider for ShellProvider {
                     input: json!({
                         "cmd": "printf shell_ok"
                     }),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -406,6 +415,7 @@ impl AgentProvider for TruncatedShellReinjectionProvider {
                         "login": false,
                         "max_output_tokens": 32
                     }),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -477,6 +487,7 @@ impl AgentProvider for LongShellProvider {
                         "cmd": "printf start && sleep 1 && printf done",
                         "yield_time_ms": 50
                     }),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -704,11 +715,13 @@ impl AgentProvider for ToolErrorProvider {
                         input: json!({
                             "yield_time_ms": 10
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                     ModelBlock::ToolUse {
                         id: "bad-tool".into(),
                         name: "DefinitelyNotATool".into(),
                         input: json!({}),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                     ModelBlock::ToolUse {
                         id: "retired-read".into(),
@@ -716,6 +729,7 @@ impl AgentProvider for ToolErrorProvider {
                         input: json!({
                             "file_path": "notes/result.txt"
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: None,
@@ -829,6 +843,7 @@ impl AgentProvider for UseWorkspaceProvider {
                         "mode": "isolated",
                         "isolation_label": self.branch_name
                     }),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -913,6 +928,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                             "mode": "isolated",
                             "isolation_label": self.branch_name
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     }],
                     stop_reason: None,
                     input_tokens: 100,
@@ -944,6 +960,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                         input: json!({
                             "workspace_id": "agent_home"
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     }],
                     stop_reason: None,
                     input_tokens: 100,

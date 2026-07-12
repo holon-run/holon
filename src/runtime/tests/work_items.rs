@@ -61,6 +61,7 @@ impl AgentProvider for CompleteWorkItemReportProvider {
                 input: serde_json::json!({
                     "work_item_id": self.work_item_id.clone()
                 }),
+                kind: crate::provider::ModelToolCallKind::Function,
             });
             blocks
         } else {
@@ -102,6 +103,7 @@ impl AgentProvider for CompleteThenExecProvider {
                     input: serde_json::json!({
                         "work_item_id": self.work_item_id.clone()
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 },
                 ModelBlock::ToolUse {
                     id: "verify".into(),
@@ -110,6 +112,7 @@ impl AgentProvider for CompleteThenExecProvider {
                         "cmd": "printf 'verified'",
                         "shell": "sh"
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 },
             ]
         } else {
@@ -152,6 +155,7 @@ impl AgentProvider for StaleTextThenCompleteProvider {
                         "cmd": "printf 'inspected'",
                         "shell": "sh"
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 },
                 ModelBlock::ToolUse {
                     id: "complete-work".into(),
@@ -159,6 +163,7 @@ impl AgentProvider for StaleTextThenCompleteProvider {
                     input: serde_json::json!({
                         "work_item_id": self.work_item_id.clone()
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 },
             ]
         } else {
@@ -204,6 +209,7 @@ impl AgentProvider for MultiCompleteWorkItemReportProvider {
                     input: serde_json::json!({
                         "work_item_id": work_item_id
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 });
             }
             blocks

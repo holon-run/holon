@@ -59,10 +59,33 @@ fn openai_input_preserves_tool_results() {
             id: "call_1".into(),
             name: "ExecCommand".into(),
             input: json!({"cmd": "sed -n '1,40p' src/main.rs", "workdir": "."}),
+            kind: crate::provider::ModelToolCallKind::Function,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "call_1".into(),
             content: "file contents".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ])
+    .unwrap();
+    assert_eq!(input[1]["type"], "function_call");
+    assert_eq!(input[2]["type"], "function_call_output");
+}
+
+#[test]
+fn openai_input_preserves_apply_patch_function_tool_results() {
+    let input = build_openai_input(&[
+        ConversationMessage::UserText("inspect".into()),
+        ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+            id: "call_1".into(),
+            name: "ApplyPatch".into(),
+            input: json!("--- /dev/null\n+++ b/note.txt\n@@ -0,0 +1,1 @@\n+hi\n"),
+            kind: crate::provider::ModelToolCallKind::Function,
+        }]),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "call_1".into(),
+            content: "Success. Updated the following files:\nA note.txt".into(),
             is_error: false,
             error: None,
         }]),
@@ -80,6 +103,7 @@ fn openai_input_preserves_apply_patch_custom_tool_results() {
             id: "call_1".into(),
             name: "ApplyPatch".into(),
             input: json!("--- /dev/null\n+++ b/note.txt\n@@ -0,0 +1,1 @@\n+hi\n"),
+            kind: crate::provider::ModelToolCallKind::Custom,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "call_1".into(),
@@ -130,6 +154,55 @@ fn parse_openai_response_handles_text_and_function_calls() {
             .map(|usage| usage.read_input_tokens),
         Some(5)
     );
+    assert!(matches!(
+        &parsed.blocks[1],
+        ModelBlock::ToolUse {
+            kind: crate::provider::ModelToolCallKind::Function,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn model_tool_call_kind_defaults_to_function_for_legacy_blocks() {
+    let block: ModelBlock = serde_json::from_value(json!({
+        "type": "tool_use",
+        "id": "call_legacy",
+        "name": "ApplyPatch",
+        "input": {
+            "patch": "legacy function probe"
+        }
+    }))
+    .unwrap();
+    assert!(matches!(
+        block,
+        ModelBlock::ToolUse {
+            kind: crate::provider::ModelToolCallKind::Function,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn model_tool_call_kind_preserves_custom_across_serialization() {
+    let block = ModelBlock::ToolUse {
+        id: "call_custom".into(),
+        name: "ApplyPatch".into(),
+        input: json!("custom patch probe"),
+        kind: crate::provider::ModelToolCallKind::Custom,
+    };
+    let serialized = serde_json::to_value(&block).unwrap();
+    assert_eq!(serialized["kind"], json!("custom"));
+    let restored: ModelBlock = serde_json::from_value(serialized).unwrap();
+    assert!(matches!(
+        restored,
+        ModelBlock::ToolUse {
+            id,
+            name,
+            input,
+            kind: crate::provider::ModelToolCallKind::Custom,
+        } if id == "call_custom" && name == "ApplyPatch" && input == json!("custom patch probe")
+    ));
 }
 
 #[test]
@@ -148,9 +221,15 @@ fn parse_openai_response_handles_custom_tool_calls() {
     let parsed = parse_openai_response(response).unwrap();
     assert_eq!(parsed.blocks.len(), 1);
     match &parsed.blocks[0] {
-        ModelBlock::ToolUse { id, name, input } => {
+        ModelBlock::ToolUse {
+            id,
+            name,
+            input,
+            kind,
+        } => {
             assert_eq!(id, "call_patch");
             assert_eq!(name, "ApplyPatch");
+            assert_eq!(*kind, crate::provider::ModelToolCallKind::Custom);
             assert_eq!(
                 input.as_str(),
                 Some("--- /dev/null\n+++ b/note.txt\n@@ -0,0 +1,1 @@\n+hi\n")

@@ -153,6 +153,7 @@ async fn live_provider_accepts_tool_result_continuation_with_runtime_tools() -> 
                         input: serde_json::json!({
                             "cmd": "gh issue view 565 --json title,body,labels,state,url"
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ]),
                 ConversationMessage::UserToolResults(vec![ToolResultBlock {

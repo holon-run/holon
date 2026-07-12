@@ -91,6 +91,7 @@ impl AgentProvider for MaxOutputRecoveryProvider {
                     input: json!({
                         "reason": "Generated comprehensive technical report covering architecture patterns, data flow strategies, security considerations, performance optimization, and monitoring approaches. All requested sections have been completed."
                     }),
+                    kind: holon::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -148,6 +149,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                             "cmd": "printf 'round-1-output'",
                             "max_output_tokens": 12
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -170,6 +172,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                             "cmd": "printf 'round-2-output'",
                             "max_output_tokens": 12
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -192,6 +195,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                             "cmd": "printf 'round-3-output'",
                             "max_output_tokens": 12
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -288,6 +292,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                             "cmd": "printf 'recovery-round-2-output'",
                             "max_output_tokens": 16
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -311,6 +316,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                             "cmd": "printf 'recovery-round-3-output'",
                             "max_output_tokens": 16
                         }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -426,7 +432,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                         input: serde_json::json!({
                             "cmd": "awk 'BEGIN { for (i=0; i<900; i++) printf \"exec_round_2_marker \" }'",
                             "max_output_tokens": 24
-                        })
+                        }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -458,7 +465,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                             input: serde_json::json!({
                                 "task_id": task_id,
                                 "block": false
-                            })
+                            }),
+                            kind: holon::provider::ModelToolCallKind::Function,
                         },
                     ],
                     stop_reason: Some("tool_use".into()),
@@ -484,7 +492,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                         input: serde_json::json!({
                             "cmd": "awk 'BEGIN { for (i=0; i<840; i++) printf \"exec_round_4_marker \" }'",
                             "max_output_tokens": 24
-                        })
+                        }),
+                        kind: holon::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),

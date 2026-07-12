@@ -29,15 +29,15 @@ use crate::{
     provider::{
         builtin_web_search_probe_turn_request, emitted_tool_json_schema,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
-        AgentProvider, ConversationMessage, ModelBlock, ProviderBuiltinWebSearchCapability,
-        ProviderCacheUsage, ProviderGenerateImageRequest, ProviderGenerateImageResponse,
-        ProviderGeneratedImage, ProviderIncrementalContinuationDiagnostics,
-        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
-        ProviderNativeWebSearchRequest, ProviderOpenAiRemoteCompactionDiagnostics,
-        ProviderOpenAiRequestControlsDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
-        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
-        ProviderTransportDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
-        ToolSchemaContract,
+        AgentProvider, ConversationMessage, ModelBlock, ModelToolCallKind,
+        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderGenerateImageRequest,
+        ProviderGenerateImageResponse, ProviderGeneratedImage,
+        ProviderIncrementalContinuationDiagnostics, ProviderNativeWebSearchDiagnostics,
+        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
+        ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
+        ProviderPromptFrame, ProviderRequestDiagnostics, ProviderResponseFormatDiagnostics,
+        ProviderResponseFormatRequest, ProviderTransportDiagnostics, ProviderTurnRequest,
+        ProviderTurnResponse, ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
@@ -2042,7 +2042,9 @@ pub(crate) fn build_chat_completion_messages(
                         ModelBlock::Text { text } => {
                             text_parts.push(text.clone());
                         }
-                        ModelBlock::ToolUse { id, name, input } => {
+                        ModelBlock::ToolUse {
+                            id, name, input, ..
+                        } => {
                             tool_calls.push(json!({
                                 "id": id,
                                 "type": "function",
@@ -3873,7 +3875,7 @@ fn lock_openai_continuation(
 
 pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result<Vec<Value>> {
     let mut items = Vec::new();
-    let mut custom_tool_calls = HashMap::<String, bool>::new();
+    let mut tool_call_kinds = HashMap::<String, ModelToolCallKind>::new();
     for message in conversation {
         match message {
             ConversationMessage::UserText(text) => items.push(json!({
@@ -3909,26 +3911,29 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                 for block in blocks {
                     match block {
                         ModelBlock::Text { text } => pending_text.push(text.clone()),
-                        ModelBlock::ToolUse { id, name, input } => {
+                        ModelBlock::ToolUse {
+                            id,
+                            name,
+                            input,
+                            kind,
+                        } => {
                             flush_assistant_text(&mut items, &mut pending_text);
-                            if let Some(raw_input) = openai_custom_tool_input(name, input) {
-                                custom_tool_calls.insert(id.clone(), true);
-                                items.push(json!({
-                                    "type": "custom_tool_call",
-                                    "call_id": id,
-                                    "name": name,
-                                    "input": raw_input,
-                                }));
-                            } else {
-                                custom_tool_calls.insert(id.clone(), false);
-                                items.push(json!({
+                            tool_call_kinds.insert(id.clone(), *kind);
+                            match kind {
+                                ModelToolCallKind::Function => items.push(json!({
                                     "type": "function_call",
                                     "call_id": id,
                                     "name": name,
                                     "arguments": canonical_json(
                                         &normalize_openai_function_arguments(Some(input))
                                     ),
-                                }));
+                                })),
+                                ModelToolCallKind::Custom => items.push(json!({
+                                    "type": "custom_tool_call",
+                                    "call_id": id,
+                                    "name": name,
+                                    "input": openai_custom_tool_input(input)?,
+                                })),
                             }
                         }
                         ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
@@ -3938,14 +3943,9 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
             }
             ConversationMessage::UserToolResults(results) => {
                 for result in results {
-                    let item_type = if custom_tool_calls
-                        .get(&result.tool_use_id)
-                        .copied()
-                        .unwrap_or(false)
-                    {
-                        "custom_tool_call_output"
-                    } else {
-                        "function_call_output"
+                    let item_type = match tool_call_kinds.get(&result.tool_use_id) {
+                        Some(ModelToolCallKind::Custom) => "custom_tool_call_output",
+                        Some(ModelToolCallKind::Function) | None => "function_call_output",
                     };
                     items.push(json!({
                         "type": item_type,
@@ -3959,17 +3959,19 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
     Ok(items)
 }
 
-fn openai_custom_tool_input(name: &str, input: &Value) -> Option<String> {
-    if name != crate::tool::tools::apply_patch_tool::NAME {
-        return None;
-    }
+fn openai_custom_tool_input(input: &Value) -> Result<String> {
     match input {
-        Value::String(value) => Some(value.clone()),
+        Value::String(value) => Ok(value.clone()),
         Value::Object(map) => map
             .get("patch")
             .and_then(Value::as_str)
-            .map(ToString::to_string),
-        _ => None,
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!("custom tool call input must contain string field `patch`")
+            }),
+        _ => anyhow::bail!(
+            "custom tool call input must be a string or an object containing string field `patch`"
+        ),
     }
 }
 
@@ -4293,6 +4295,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
                 id: id.to_string(),
                 name: name.to_string(),
                 input: arguments,
+                kind: ModelToolCallKind::Function,
             });
         }
     }
@@ -5635,6 +5638,7 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
                     id: id.to_string(),
                     name: name.to_string(),
                     input,
+                    kind: ModelToolCallKind::Function,
                 });
             }
             Some("custom_tool_call") => {
@@ -5664,6 +5668,7 @@ fn parse_openai_response_with_transport_state(response: Value) -> Result<ParsedO
                     id: id.to_string(),
                     name: name.to_string(),
                     input: Value::String(input.to_string()),
+                    kind: ModelToolCallKind::Custom,
                 });
             }
             _ => {}
