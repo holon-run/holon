@@ -653,7 +653,7 @@ export function AgentPage({
                       {reasoningPopoverOpen ? (
                         <div className="thinking-popover" role="dialog" aria-label={t("agent.thinkingLevel")}>
                           <div className="reasoning-options">
-                            {["auto", "low", "medium", "high", "xhigh"].map((effort) => (
+                            {["auto", ...(activeModelOption?.reasoningEffortOptions ?? [])].map((effort) => (
                               <button
                                 className={`${(activeReasoningBadge ?? "auto") === effort ? "is-active" : ""} ${changingModel === "reasoning:" + effort ? "is-saving" : ""}`}
                                 key={effort}

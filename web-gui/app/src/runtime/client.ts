@@ -384,6 +384,7 @@ interface RuntimeAvailableModelDto {
   };
   policy?: {
     supported_parameters?: string[];
+    reasoning_effort_options?: string[];
     capabilities?: {
       image_input?: boolean;
       image_generation?: boolean;
@@ -405,6 +406,7 @@ interface ModelAvailabilityDto {
   unavailable_reason?: string;
   policy?: {
     supported_parameters?: string[];
+    reasoning_effort_options?: string[];
     capabilities?: {
       image_input?: boolean;
       image_generation?: boolean;
@@ -1999,6 +2001,7 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
           supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
           supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? false,
           supportsReasoningEffort: supportsReasoningEffort(entry),
+          reasoningEffortOptions: reasoningEffortOptions(entry),
         };
       })
       .sort(compareModelOptions);
@@ -2023,6 +2026,7 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
         supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),
         supportsImageGeneration: typeof entry === "string" ? false : (entry.capabilities?.image_generation ?? false),
         supportsReasoningEffort: typeof entry === "string" ? false : supportsReasoningEffort(entry),
+        reasoningEffortOptions: typeof entry === "string" ? [] : reasoningEffortOptions(entry),
       };
     })
     .filter((entry): entry is RuntimeModelOption => Boolean(entry))
@@ -2037,6 +2041,9 @@ function modelRouteRef(model: string, providerFamily: string, endpoint: string):
 }
 
 function supportsReasoningEffort(entry: ModelAvailabilityDto | RuntimeAvailableModelDto): boolean {
+  if (entry.policy?.reasoning_effort_options) {
+    return entry.policy.reasoning_effort_options.length > 0;
+  }
   return (
     entry.policy?.supported_parameters?.includes("reasoning_effort") ||
     ("supported_parameters" in entry && entry.supported_parameters?.includes("reasoning_effort")) ||
@@ -2046,6 +2053,13 @@ function supportsReasoningEffort(entry: ModelAvailabilityDto | RuntimeAvailableM
     ("capabilities" in entry && entry.capabilities?.reasoning_summaries) ||
     false
   );
+}
+
+function reasoningEffortOptions(entry: ModelAvailabilityDto | RuntimeAvailableModelDto): string[] {
+  if (entry.policy?.reasoning_effort_options) {
+    return entry.policy.reasoning_effort_options;
+  }
+  return supportsReasoningEffort(entry) ? ["low", "medium", "high"] : [];
 }
 
 function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption): number {

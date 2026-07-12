@@ -249,6 +249,7 @@ export interface RuntimeModelOption {
   supportsImageInput: boolean;
   supportsImageGeneration: boolean;
   supportsReasoningEffort: boolean;
+  reasoningEffortOptions: string[];
 }
 
 export interface RuntimeModelCatalog {

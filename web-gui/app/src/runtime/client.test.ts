@@ -22,6 +22,7 @@ describe("projectModelOptions", () => {
         routeRef: "openai-codex@default/gpt-5.5",
         provider: "openai-codex",
         supportsReasoningEffort: true,
+        reasoningEffortOptions: ["low", "medium", "high"],
       }),
     ]);
   });
@@ -57,6 +58,34 @@ describe("projectModelOptions", () => {
         supportsImageGeneration: true,
       }),
     ]);
+  });
+
+  it("uses the resolved reasoning effort options for a plan route", () => {
+    const options = projectModelOptions({
+      model_availability: [
+        {
+          model: "volcengine/glm-5.2",
+          provider: "volcengine",
+          provider_family: "volcengine",
+          endpoint: "plan",
+          route_provider: "volcengine-agent",
+          available: true,
+          policy: {
+            reasoning_effort_options: ["low", "medium", "high"],
+            capabilities: {
+              supports_reasoning: true,
+            },
+          },
+        },
+      ],
+    });
+
+    expect(options[0]).toEqual(
+      expect.objectContaining({
+        supportsReasoningEffort: true,
+        reasoningEffortOptions: ["low", "medium", "high"],
+      }),
+    );
   });
 
   it("preserves route identity and image capabilities from available models", () => {

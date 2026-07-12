@@ -2,9 +2,6 @@ use super::*;
 use crate::tui::composer::ComposerState;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) const MODEL_REASONING_EFFORT_OPTIONS: [&str; 5] =
-    ["inherit", "low", "medium", "high", "xhigh"];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OverlayState {
     None,
@@ -49,6 +46,7 @@ pub(super) enum OverlayState {
     },
     ModelEffortPicker {
         model: String,
+        options: Vec<String>,
         selected: usize,
         return_filter: String,
         return_selected: usize,
@@ -145,8 +143,11 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             selected,
         } => draw_model_picker_overlay(frame, app, provider.as_deref(), filter, *selected),
         OverlayState::ModelEffortPicker {
-            model, selected, ..
-        } => draw_model_effort_picker_overlay(frame, app, model, *selected),
+            model,
+            options,
+            selected,
+            ..
+        } => draw_model_effort_picker_overlay(frame, app, model, options, *selected),
         OverlayState::DebugPromptInput { composer } => draw_input_modal(
             frame,
             "Debug Prompt",
@@ -675,6 +676,7 @@ fn draw_model_effort_picker_overlay(
     frame: &mut Frame<'_>,
     app: &TuiApp,
     model: &str,
+    options: &[String],
     selected: usize,
 ) {
     let popup = centered_rect(70, 42, frame.area());
@@ -695,10 +697,10 @@ fn draw_model_effort_picker_overlay(
     );
     frame.render_widget(header, layout[0]);
 
-    let items = MODEL_REASONING_EFFORT_OPTIONS
-        .iter()
+    let items = std::iter::once("inherit")
+        .chain(options.iter().map(String::as_str))
         .map(|option| {
-            let detail = if *option == "inherit" {
+            let detail = if option == "inherit" {
                 "use provider/runtime default"
             } else {
                 "force reasoning effort"
@@ -707,9 +709,7 @@ fn draw_model_effort_picker_overlay(
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default();
-    state.select(Some(
-        selected.min(MODEL_REASONING_EFFORT_OPTIONS.len().saturating_sub(1)),
-    ));
+    state.select(Some(selected.min(options.len())));
     let list = List::new(items)
         .block(Block::default().title("Effort").borders(Borders::ALL))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))

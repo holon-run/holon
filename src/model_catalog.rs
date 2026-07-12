@@ -197,6 +197,8 @@ pub struct ResolvedRuntimeModelPolicy {
     pub max_output_tokens_upper_limit: Option<u32>,
     #[serde(default)]
     pub capabilities: ModelCapabilityFlags,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_effort_options: Vec<String>,
     pub source: ModelMetadataSource,
 }
 
@@ -226,6 +228,7 @@ impl Default for ResolvedRuntimeModelPolicy {
                 DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
             max_output_tokens_upper_limit: None,
             capabilities: ModelCapabilityFlags::default(),
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::UnknownFallback,
         }
     }
@@ -435,6 +438,7 @@ impl BuiltInModelCatalog {
         {
             override_capabilities.apply_to(&mut capabilities);
         }
+        let reasoning_effort_options = reasoning_effort_options(model_ref, &capabilities);
 
         ResolvedRuntimeModelPolicy {
             model_ref: model_ref.clone(),
@@ -450,6 +454,7 @@ impl BuiltInModelCatalog {
             tool_output_truncation_estimated_tokens,
             max_output_tokens_upper_limit,
             capabilities,
+            reasoning_effort_options,
             source,
         }
     }
@@ -510,6 +515,26 @@ fn percent_of(total: usize, percent: usize) -> usize {
 
 fn provider_id(provider: &str) -> ProviderId {
     ProviderId::parse(provider).expect("valid built-in provider id")
+}
+
+fn reasoning_effort_options(
+    model_ref: &ModelRef,
+    capabilities: &ModelCapabilityFlags,
+) -> Vec<String> {
+    if !capabilities.supports_reasoning {
+        return Vec::new();
+    }
+
+    let options = match model_ref.provider.as_str() {
+        "openai" | "openai-codex" => &["low", "medium", "high", "xhigh"][..],
+        "volcengine" | "volcengine-agent" | "volcengine-coding"
+            if !matches!(model_ref.model.as_str(), "kimi-k2.6" | "kimi-k2.7-code") =>
+        {
+            &["low", "medium", "high"][..]
+        }
+        _ => &[][..],
+    };
+    options.iter().map(|option| (*option).to_string()).collect()
 }
 
 fn catalog_model(
@@ -2168,7 +2193,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             128_000,
             4_096,
             false,
-            true,
+            false,
         ),
         catalog_model(
             "volcengine",
@@ -2176,7 +2201,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "Doubao Seed 2.0 Pro",
             256_000,
             4_096,
-            false,
+            true,
             true,
         ),
         catalog_model(
@@ -3261,6 +3286,68 @@ mod tests {
             );
             assert_eq!(policy.runtime_max_output_tokens, 128_000);
             assert_eq!(policy.max_output_tokens_upper_limit, Some(128_000));
+        }
+    }
+
+    #[test]
+    fn volcengine_reasoning_effort_options_follow_route_contract() {
+        let catalog = BuiltInModelCatalog::new();
+
+        for model_ref in [
+            "volcengine/doubao-seed-2-0-pro-260215",
+            "volcengine-coding/glm-5.2",
+            "volcengine-agent/glm-5.2",
+        ] {
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse(model_ref).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert_eq!(
+                policy.reasoning_effort_options,
+                ["low", "medium", "high"],
+                "{model_ref}"
+            );
+        }
+
+        for model_ref in [
+            "volcengine-coding/kimi-k2.6",
+            "volcengine-agent/kimi-k2.7-code",
+        ] {
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse(model_ref).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert!(policy.capabilities.supports_reasoning, "{model_ref}");
+            assert!(policy.reasoning_effort_options.is_empty(), "{model_ref}");
+        }
+    }
+
+    #[test]
+    fn volcengine_deepseek_v3_2_is_not_a_vision_model() {
+        let catalog = BuiltInModelCatalog::new();
+
+        for model_ref in [
+            "volcengine/deepseek-v3-2-251201",
+            "volcengine-coding/deepseek-v3-2-251201",
+            "volcengine-agent/deepseek-v3-2-251201",
+        ] {
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse(model_ref).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert!(!policy.capabilities.image_input, "{model_ref}");
         }
     }
 }
