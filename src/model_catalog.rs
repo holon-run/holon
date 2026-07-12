@@ -1677,19 +1677,55 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qianfan",
             "deepseek-v3.2",
             "DEEPSEEK V3.2",
-            98_304,
+            131_072,
             32_768,
+            false,
+            false,
+        ),
+        catalog_model(
+            "qianfan",
+            "deepseek-v3.2-think",
+            "DEEPSEEK V3.2 Think",
+            163_840,
+            65_536,
             true,
             false,
         ),
         catalog_model(
             "qianfan",
+            "ernie-5.0",
+            "ERNIE 5.0",
+            248_832,
+            65_536,
+            false,
+            true,
+        ),
+        catalog_model(
+            "qianfan",
             "ernie-5.0-thinking-preview",
-            "ERNIE-5.0-Thinking-Preview",
-            119_000,
-            64_000,
+            "ERNIE 5.0 Thinking Preview",
+            248_832,
+            65_536,
             true,
             true,
+        ),
+        catalog_model(
+            "qianfan",
+            "ernie-5.1",
+            "ERNIE 5.1",
+            248_832,
+            65_536,
+            false,
+            false,
+        ),
+        catalog_model(
+            "qianfan",
+            "ernie-x1.1",
+            "ERNIE X1.1",
+            121_856,
+            65_536,
+            true,
+            false,
         ),
         catalog_model(
             "dashscope",
@@ -3656,6 +3692,50 @@ mod tests {
             assert_eq!(model.max_output_tokens_upper_limit, Some(128_000));
             assert!(model.capabilities.supports_reasoning);
             assert!(!model.capabilities.image_input);
+        }
+    }
+
+    #[test]
+    fn qianfan_catalog_tracks_current_v2_models_limits_and_modalities() {
+        let catalog = BuiltInModelCatalog::new();
+        let qianfan = ProviderId::parse("qianfan").unwrap();
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|entry| entry.model_ref.provider == qianfan)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|entry| entry.model_ref.model.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "deepseek-v3.2",
+                "deepseek-v3.2-think",
+                "ernie-5.0",
+                "ernie-5.0-thinking-preview",
+                "ernie-5.1",
+                "ernie-x1.1",
+            ]
+        );
+
+        let expected = [
+            ("deepseek-v3.2", 131_072, 32_768, false, false),
+            ("deepseek-v3.2-think", 163_840, 65_536, true, false),
+            ("ernie-5.0", 248_832, 65_536, false, true),
+            ("ernie-5.0-thinking-preview", 248_832, 65_536, true, true),
+            ("ernie-5.1", 248_832, 65_536, false, false),
+            ("ernie-x1.1", 121_856, 65_536, true, false),
+        ];
+        for (model, context_window, max_output, reasoning, image_input) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("qianfan/{model}")).unwrap())
+                .unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(context_window));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(max_output));
+            assert_eq!(metadata.capabilities.supports_reasoning, reasoning);
+            assert_eq!(metadata.capabilities.image_input, image_input);
         }
     }
 

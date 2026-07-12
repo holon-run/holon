@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **207 models**.
+across **40 endpoints** and **211 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -200,8 +200,12 @@ and capabilities.
 | `openrouter` | `moonshotai/kimi-k2.6` | `openrouter/moonshotai/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `openrouter` | `openrouter/healer-alpha` | `openrouter/openrouter/healer-alpha` | 262144 | 65536 | ✅ | ✅ |
 | `openrouter` | `openrouter/hunter-alpha` | `openrouter/openrouter/hunter-alpha` | 1048576 | 65536 | ✅ | — |
-| `qianfan` | `deepseek-v3.2` | `qianfan/deepseek-v3.2` | 98304 | 32768 | ✅ | — |
-| `qianfan` | `ernie-5.0-thinking-preview` | `qianfan/ernie-5.0-thinking-preview` | 119000 | 64000 | ✅ | ✅ |
+| `qianfan` | `deepseek-v3.2` | `qianfan/deepseek-v3.2` | 131072 | 32768 | — | — |
+| `qianfan` | `deepseek-v3.2-think` | `qianfan/deepseek-v3.2-think` | 163840 | 65536 | ✅ | — |
+| `qianfan` | `ernie-5.0` | `qianfan/ernie-5.0` | 248832 | 65536 | — | ✅ |
+| `qianfan` | `ernie-5.0-thinking-preview` | `qianfan/ernie-5.0-thinking-preview` | 248832 | 65536 | ✅ | ✅ |
+| `qianfan` | `ernie-5.1` | `qianfan/ernie-5.1` | 248832 | 65536 | — | — |
+| `qianfan` | `ernie-x1.1` | `qianfan/ernie-x1.1` | 121856 | 65536 | ✅ | — |
 | `stepfun` | `step-3.5-flash` | `stepfun/step-3.5-flash` | 262144 | 65536 | ✅ | — |
 | `stepfun` | `step-3.5-flash-2603` | `stepfun/step-3.5-flash-2603` | 262144 | 65536 | ✅ | — |
 | `synthetic` | `hf:MiniMaxAI/MiniMax-M2.5` | `synthetic/hf:MiniMaxAI/MiniMax-M2.5` | 192000 | 65536 | — | — |
