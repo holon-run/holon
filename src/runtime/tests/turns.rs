@@ -734,6 +734,9 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         assert!(events
             .iter()
             .any(|event| event.kind == "turn_local_checkpoint_resume_requested"));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "checkpoint_operator_delivery_retry"));
         assert!(
             format!("{:?}", checkpoint_resume_request.conversation)
                 .contains("Continue from the checkpoint's next goal-aligned action now"),

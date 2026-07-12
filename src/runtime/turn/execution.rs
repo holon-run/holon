@@ -1511,6 +1511,13 @@ impl TurnExecution<'_> {
                                 "reason": "checkpoint_operator_delivery_pending",
                             }),
                         ))?;
+                        runtime.inner.storage.append_event(&AuditEvent::new(
+                            "checkpoint_operator_delivery_retry",
+                            serde_json::json!({
+                                "agent_id": agent_id,
+                                "round": round,
+                            }),
+                        ))?;
                         continue;
                     }
                     checkpoint_state.clear_operator_delivery_pending();
