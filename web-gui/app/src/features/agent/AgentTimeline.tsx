@@ -365,13 +365,23 @@ function trimActivityLine(value: string, maxLength: number): string {
 }
 
 function formatDisplayTime(value: string): string {
-  if (!value) return "—";
+  if (!value) return "-";
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value || "—";
-  return new Intl.DateTimeFormat(undefined, {
+  if (Number.isNaN(parsed.getTime())) return value || "-";
+  const now = new Date();
+  const sameDay =
+    parsed.getFullYear() === now.getFullYear() &&
+    parsed.getMonth() === now.getMonth() &&
+    parsed.getDate() === now.getDate();
+  const options: Intl.DateTimeFormatOptions = {
     hour: "2-digit",
     minute: "2-digit",
-  }).format(parsed);
+  };
+  if (!sameDay) {
+    options.month = "2-digit";
+    options.day = "2-digit";
+  }
+  return new Intl.DateTimeFormat(undefined, options).format(parsed);
 }
 
 function formatTimelineMeta(meta: string, displayLevel: DisplayLevel): string {
