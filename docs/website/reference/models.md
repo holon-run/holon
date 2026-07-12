@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **193 models**.
+across **40 endpoints** and **199 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -157,11 +157,17 @@ and capabilities.
 | `mistral` | `mistral-medium-2508` | `mistral/mistral-medium-2508` | 262144 | 8192 | — | ✅ |
 | `mistral` | `mistral-small-latest` | `mistral/mistral-small-latest` | 128000 | 16384 | ✅ | ✅ |
 | `mistral` | `pixtral-large-latest` | `mistral/pixtral-large-latest` | 128000 | 32768 | — | ✅ |
-| `moonshot` | `kimi-k2-thinking` | `moonshot/kimi-k2-thinking` | 262144 | 262144 | ✅ | — |
-| `moonshot` | `kimi-k2-thinking-turbo` | `moonshot/kimi-k2-thinking-turbo` | 262144 | 262144 | ✅ | — |
-| `moonshot` | `kimi-k2-turbo` | `moonshot/kimi-k2-turbo` | 256000 | 16384 | — | — |
-| `moonshot` | `kimi-k2.5` | `moonshot/kimi-k2.5` | 262144 | 262144 | — | ✅ |
-| `moonshot` | `kimi-k2.6` | `moonshot/kimi-k2.6` | 262144 | 262144 | — | ✅ |
+| `moonshot` | `kimi-k2.5` | `moonshot/kimi-k2.5` | 262144 | 262144 | ✅ | ✅ |
+| `moonshot` | `kimi-k2.6` | `moonshot/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
+| `moonshot` | `kimi-k2.7-code` | `moonshot/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
+| `moonshot` | `kimi-k2.7-code-highspeed` | `moonshot/kimi-k2.7-code-highspeed` | 262144 | 262144 | ✅ | ✅ |
+| `moonshot` | `moonshot-v1-128k` | `moonshot/moonshot-v1-128k` | 131072 | 131072 | — | — |
+| `moonshot` | `moonshot-v1-128k-vision-preview` | `moonshot/moonshot-v1-128k-vision-preview` | 131072 | 131072 | — | ✅ |
+| `moonshot` | `moonshot-v1-32k` | `moonshot/moonshot-v1-32k` | 32768 | 32768 | — | — |
+| `moonshot` | `moonshot-v1-32k-vision-preview` | `moonshot/moonshot-v1-32k-vision-preview` | 32768 | 32768 | — | ✅ |
+| `moonshot` | `moonshot-v1-8k` | `moonshot/moonshot-v1-8k` | 8192 | 8192 | — | — |
+| `moonshot` | `moonshot-v1-8k-vision-preview` | `moonshot/moonshot-v1-8k-vision-preview` | 8192 | 8192 | — | ✅ |
+| `moonshot` | `moonshot-v1-auto` | `moonshot/moonshot-v1-auto` | 131072 | 131072 | — | — |
 | `nearai` | `Qwen/Qwen3-VL-30B-A3B-Instruct` | `nearai/Qwen/Qwen3-VL-30B-A3B-Instruct` | 256000 | 65536 | ✅ | ✅ |
 | `nearai` | `Qwen/Qwen3.5-122B-A10B` | `nearai/Qwen/Qwen3.5-122B-A10B` | 131072 | 65536 | ✅ | — |
 | `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262144 | 65536 | ✅ | — |

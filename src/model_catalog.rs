@@ -1480,11 +1480,29 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "moonshot",
+            "kimi-k2.7-code",
+            "Kimi K2.7 Code",
+            262_144,
+            262_144,
+            true,
+            true,
+        ),
+        catalog_model(
+            "moonshot",
+            "kimi-k2.7-code-highspeed",
+            "Kimi K2.7 Code HighSpeed",
+            262_144,
+            262_144,
+            true,
+            true,
+        ),
+        catalog_model(
+            "moonshot",
             "kimi-k2.6",
             "Kimi K2.6",
             262_144,
             262_144,
-            false,
+            true,
             true,
         ),
         catalog_model(
@@ -1493,35 +1511,71 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "Kimi K2.5",
             262_144,
             262_144,
+            true,
+            true,
+        ),
+        catalog_model(
+            "moonshot",
+            "moonshot-v1-8k",
+            "Moonshot V1 8K",
+            8_192,
+            8_192,
+            false,
+            false,
+        ),
+        catalog_model(
+            "moonshot",
+            "moonshot-v1-32k",
+            "Moonshot V1 32K",
+            32_768,
+            32_768,
+            false,
+            false,
+        ),
+        catalog_model(
+            "moonshot",
+            "moonshot-v1-128k",
+            "Moonshot V1 128K",
+            131_072,
+            131_072,
+            false,
+            false,
+        ),
+        catalog_model(
+            "moonshot",
+            "moonshot-v1-auto",
+            "Moonshot V1 Auto",
+            131_072,
+            131_072,
+            false,
+            false,
+        ),
+        catalog_model(
+            "moonshot",
+            "moonshot-v1-8k-vision-preview",
+            "Moonshot V1 8K Vision Preview",
+            8_192,
+            8_192,
             false,
             true,
         ),
         catalog_model(
             "moonshot",
-            "kimi-k2-thinking",
-            "Kimi K2 Thinking",
-            262_144,
-            262_144,
-            true,
+            "moonshot-v1-32k-vision-preview",
+            "Moonshot V1 32K Vision Preview",
+            32_768,
+            32_768,
             false,
+            true,
         ),
         catalog_model(
             "moonshot",
-            "kimi-k2-thinking-turbo",
-            "Kimi K2 Thinking Turbo",
-            262_144,
-            262_144,
+            "moonshot-v1-128k-vision-preview",
+            "Moonshot V1 128K Vision Preview",
+            131_072,
+            131_072,
+            false,
             true,
-            false,
-        ),
-        catalog_model(
-            "moonshot",
-            "kimi-k2-turbo",
-            "Kimi K2 Turbo",
-            256_000,
-            16_384,
-            false,
-            false,
         ),
         catalog_model(
             "nearai",
@@ -3713,6 +3767,65 @@ mod tests {
                 8192,
             );
             assert!(!policy.capabilities.image_input, "{model_ref}");
+        }
+    }
+
+    #[test]
+    fn moonshot_catalog_tracks_current_models_and_retirements() {
+        let catalog = BuiltInModelCatalog::new();
+        let moonshot = ProviderId::parse("moonshot").unwrap();
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|model| model.model_ref.provider == moonshot)
+            .map(|model| model.model_ref.model.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            models,
+            [
+                "kimi-k2.5",
+                "kimi-k2.6",
+                "kimi-k2.7-code",
+                "kimi-k2.7-code-highspeed",
+                "moonshot-v1-128k",
+                "moonshot-v1-128k-vision-preview",
+                "moonshot-v1-32k",
+                "moonshot-v1-32k-vision-preview",
+                "moonshot-v1-8k",
+                "moonshot-v1-8k-vision-preview",
+                "moonshot-v1-auto",
+            ]
+        );
+
+        for model_ref in [
+            "moonshot/kimi-k2.5",
+            "moonshot/kimi-k2.6",
+            "moonshot/kimi-k2.7-code",
+            "moonshot/kimi-k2.7-code-highspeed",
+        ] {
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse(model_ref).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert!(policy.capabilities.supports_reasoning, "{model_ref}");
+            assert!(policy.capabilities.image_input, "{model_ref}");
+            assert!(policy.reasoning_effort_options.is_empty(), "{model_ref}");
+        }
+
+        for model_ref in [
+            "moonshot/kimi-k2-thinking",
+            "moonshot/kimi-k2-thinking-turbo",
+            "moonshot/kimi-k2-turbo",
+        ] {
+            assert!(
+                catalog.get(&ModelRef::parse(model_ref).unwrap()).is_none(),
+                "{model_ref} should not be registered"
+            );
         }
     }
 }
