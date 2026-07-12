@@ -697,9 +697,13 @@ fn reasoning_effort_options(
         return Vec::new();
     }
 
-    let options = match model_ref.provider.as_str() {
-        "openai" | "openai-codex" => &["low", "medium", "high", "xhigh"][..],
-        "volcengine"
+    let options = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
+        ("openai-codex", "gpt-5.6-sol" | "gpt-5.6-terra") => {
+            &["low", "medium", "high", "xhigh", "max", "ultra"][..]
+        }
+        ("openai-codex", "gpt-5.6-luna") => &["low", "medium", "high", "xhigh", "max"][..],
+        ("openai", _) | ("openai-codex", _) => &["low", "medium", "high", "xhigh"][..],
+        ("volcengine", _)
             if endpoint.is_none_or(|endpoint| {
                 matches!(endpoint.as_str(), "default" | "coding" | "plan")
             }) && !matches!(model_ref.model.as_str(), "kimi-k2.6" | "kimi-k2.7-code") =>
@@ -837,6 +841,69 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             endpoint: None,
         },
         BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.6-sol"),
+            display_name: "GPT-5.6-Sol (Codex)".into(),
+            description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
+            context_window_tokens: Some(372_000),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: Some(ModelVerbosity::Low),
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                image_generation: true,
+                interactive_exec: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.6-terra"),
+            display_name: "GPT-5.6-Terra (Codex)".into(),
+            description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
+            context_window_tokens: Some(372_000),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: Some(ModelVerbosity::Low),
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                image_generation: true,
+                interactive_exec: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.6-luna"),
+            display_name: "GPT-5.6-Luna (Codex)".into(),
+            description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
+            context_window_tokens: Some(372_000),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: Some(ModelVerbosity::Low),
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                image_generation: true,
+                interactive_exec: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
+        },
+        BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.4"),
             display_name: "GPT-5.4 (Codex)".into(),
             description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
@@ -858,15 +925,15 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             endpoint: None,
         },
         BuiltInModelMetadata {
-            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex"),
-            display_name: "GPT-5.3 Codex (Codex)".into(),
+            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.4-mini"),
+            display_name: "GPT-5.4-Mini (Codex)".into(),
             description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
             context_window_tokens: Some(272_000),
             effective_context_window_percent: 95,
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
             max_output_tokens_upper_limit: None,
-            default_verbosity: Some(ModelVerbosity::Low),
+            default_verbosity: Some(ModelVerbosity::Medium),
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -890,7 +957,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             default_verbosity: Some(ModelVerbosity::Low),
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
-                image_input: true,
                 image_generation: true,
                 interactive_exec: true,
                 supports_reasoning: true,
@@ -1022,64 +1088,10 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "openai-codex",
-            "gpt-5.5",
-            "GPT-5.5 (Codex)",
-            272_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "openai-codex",
-            "gpt-5.6-sol",
-            "GPT-5.6 Sol (Codex)",
-            272_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "openai-codex",
-            "gpt-5.6-terra",
-            "GPT-5.6 Terra (Codex)",
-            272_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "openai-codex",
-            "gpt-5.6-luna",
-            "GPT-5.6 Luna (Codex)",
-            272_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "openai-codex",
-            "gpt-5.4-mini",
-            "GPT-5.4 Mini (Codex)",
-            272_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "openai-codex",
-            "gpt-5.2",
-            "GPT-5.2 (Codex)",
-            272_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
             "openai",
             "gpt-5.6-sol",
             "GPT-5.6 Sol",
-            272_000,
+            372_000,
             128_000,
             true,
             true,
@@ -1088,7 +1100,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "openai",
             "gpt-5.6-terra",
             "GPT-5.6 Terra",
-            272_000,
+            372_000,
             128_000,
             true,
             true,
@@ -1097,17 +1109,11 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "openai",
             "gpt-5.6-luna",
             "GPT-5.6 Luna",
-            272_000,
+            372_000,
             128_000,
             true,
             true,
         ),
-        // Standard OpenAI transport (OpenAiProvider) never sends reasoning params
-        // (its complete_turn hardcodes reasoning_effort: None). supports_reasoning
-        // is true but unused by this transport; catalog.rs only passes it to
-        // Anthropic and Codex transports.
-        catalog_model("openai", "gpt-5.5", "GPT-5.5", 272_000, 128_000, true, true),
-        catalog_model("openai", "gpt-5.2", "GPT-5.2", 272_000, 128_000, true, true),
         catalog_model(
             "gemini",
             "gemini-3-pro",
@@ -2980,24 +2986,6 @@ mod tests {
     }
 
     #[test]
-    fn resolves_built_in_policy_for_codex_53_model() {
-        let catalog = BuiltInModelCatalog::new();
-        let policy = catalog.resolve_policy(
-            &ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex"),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &base_context(),
-            8192,
-        );
-        assert_eq!(policy.context_window_tokens, Some(272_000));
-        assert_eq!(policy.prompt_budget_estimated_tokens, 258_400);
-        assert_eq!(policy.compaction_trigger_estimated_tokens, 232_560);
-        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 88_372);
-        assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
-    }
-
-    #[test]
     fn resolves_compatible_provider_model_policy() {
         let catalog = BuiltInModelCatalog::new();
         let policy = catalog.resolve_policy(
@@ -3016,7 +3004,7 @@ mod tests {
         assert!(policy.capabilities.supports_reasoning);
         assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
 
-        // GPT-5.6 family (Sol/Terra/Luna) added from the OpenAI limited preview.
+        // GPT-5.6 family is available through both the OpenAI API and Codex.
         let sol = catalog.resolve_policy(
             &ModelRef::parse("openai/gpt-5.6-sol").unwrap(),
             &HashMap::new(),
@@ -3026,7 +3014,7 @@ mod tests {
             8192,
         );
         assert_eq!(sol.display_name, "GPT-5.6 Sol");
-        assert_eq!(sol.context_window_tokens, Some(272_000));
+        assert_eq!(sol.context_window_tokens, Some(372_000));
         assert_eq!(sol.runtime_max_output_tokens, 128_000);
         assert!(sol.capabilities.image_input);
         assert!(sol.capabilities.supports_reasoning);
@@ -3038,9 +3026,40 @@ mod tests {
         assert!(catalog
             .get(&ModelRef::parse("openai/gpt-5.6-luna").unwrap())
             .is_some());
-        assert!(catalog
+        let codex_sol = catalog
             .get(&ModelRef::parse("openai-codex/gpt-5.6-sol").unwrap())
-            .is_some());
+            .unwrap();
+        assert_eq!(codex_sol.context_window_tokens, Some(372_000));
+        assert_eq!(
+            reasoning_effort_options(
+                &codex_sol.model_ref,
+                codex_sol.endpoint.as_ref(),
+                &codex_sol.capabilities,
+            ),
+            ["low", "medium", "high", "xhigh", "max", "ultra"]
+        );
+        assert!(catalog
+            .get(&ModelRef::parse("openai/gpt-5.5").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("openai/gpt-5.2").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("openai-codex/gpt-5.2").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("openai-codex/gpt-5.3-codex").unwrap())
+            .is_none());
+        let codex_mini = catalog
+            .get(&ModelRef::parse("openai-codex/gpt-5.4-mini").unwrap())
+            .unwrap();
+        assert_eq!(codex_mini.context_window_tokens, Some(272_000));
+        assert_eq!(codex_mini.default_verbosity, Some(ModelVerbosity::Medium));
+        let codex_spark = catalog
+            .get(&ModelRef::parse("openai-codex/gpt-5.3-codex-spark").unwrap())
+            .unwrap();
+        assert_eq!(codex_spark.context_window_tokens, Some(128_000));
+        assert!(!codex_spark.capabilities.image_input);
 
         let nearai = catalog.resolve_policy(
             &ModelRef::parse("nearai/zai-org/GLM-5.1-FP8").unwrap(),
