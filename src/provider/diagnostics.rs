@@ -294,6 +294,11 @@ pub(crate) fn provider_models_from_availability_for_runtime(
                 selectable: model.available,
                 unavailable_reason: model.unavailable_reason,
                 metadata_source: model.metadata_source,
+                parameter_contracts: model
+                    .resolved_capabilities
+                    .as_ref()
+                    .map(|capabilities| capabilities.endpoint.accepted_parameters.clone())
+                    .unwrap_or_default(),
                 supported_parameters,
                 policy: model.policy,
                 policy_notes: Vec::new(),
@@ -362,6 +367,7 @@ fn resolved_model_availability_entry(
         availability_failure_reason
     };
 
+    let resolved_capabilities = route.as_ref().map(|route| route.capabilities.clone());
     ResolvedModelAvailability {
         model: model_ref.as_string(),
         provider: model_ref.provider.as_str().to_string(),
@@ -387,6 +393,7 @@ fn resolved_model_availability_entry(
         available,
         unavailable_reason,
         policy,
+        resolved_capabilities,
     }
 }
 
@@ -730,6 +737,15 @@ mod tests {
             .supported_parameters
             .iter()
             .any(|parameter| parameter == "max_output_tokens"));
+        let reasoning_effort = openai
+            .parameter_contracts
+            .iter()
+            .find(|parameter| parameter.name == "reasoning_effort")
+            .expect("resolved reasoning effort contract");
+        assert_eq!(
+            reasoning_effort.allowed_values,
+            vec!["low", "medium", "high", "xhigh"]
+        );
     }
 
     #[test]

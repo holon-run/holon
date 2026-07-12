@@ -54,6 +54,7 @@ implementation and tests.
 - [Execution Policy and Virtual Execution Boundary](./execution-policy-and-virtual-execution-boundary.md)
 - [Runtime Configuration Surface](./runtime-configuration-surface.md)
 - [Extensible Model And Provider Configuration](./extensible-model-provider-configuration.md)
+- [Model Capability Resolution](./model-capability-resolution.md)
 
 ## Workspace And Instruction Surface
 

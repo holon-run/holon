@@ -204,6 +204,59 @@ impl ModelRouteCapability {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedModelCapabilities {
+    pub intrinsic: crate::model_catalog::ModelIntrinsicCapabilities,
+    pub endpoint: crate::model_catalog::EndpointModelPolicy,
+    pub transport: TransportCapabilities,
+    pub image_input: bool,
+    pub image_output: bool,
+}
+
+impl ResolvedModelCapabilities {
+    fn resolve(policy: &ResolvedRuntimeModelPolicy, transport: ProviderTransportKind) -> Self {
+        let intrinsic = policy.capabilities.intrinsic();
+        let endpoint = crate::model_catalog::EndpointModelPolicy {
+            accepted_parameters: resolved_parameter_contracts(policy),
+        };
+        let transport = transport.capabilities();
+        Self {
+            image_input: policy.capabilities.image_input && transport.image_input,
+            image_output: policy.capabilities.image_generation && transport.image_output,
+            intrinsic,
+            endpoint,
+            transport,
+        }
+    }
+
+    pub fn supports(&self, capability: ModelRouteCapability) -> bool {
+        match capability {
+            ModelRouteCapability::Turn => true,
+            ModelRouteCapability::VisionObservation => self.image_input,
+            ModelRouteCapability::ImageGeneration => self.image_output,
+        }
+    }
+}
+
+fn resolved_parameter_contracts(
+    policy: &ResolvedRuntimeModelPolicy,
+) -> Vec<crate::model_catalog::ModelParameterSupport> {
+    let mut parameters = Vec::new();
+    if !policy.reasoning_effort_options.is_empty() {
+        parameters.push(crate::model_catalog::ModelParameterSupport {
+            name: "reasoning_effort".to_string(),
+            allowed_values: policy.reasoning_effort_options.clone(),
+        });
+    }
+    if policy.max_output_tokens_upper_limit.is_some() || policy.runtime_max_output_tokens > 0 {
+        parameters.push(crate::model_catalog::ModelParameterSupport {
+            name: "max_output_tokens".to_string(),
+            allowed_values: Vec::new(),
+        });
+    }
+    parameters
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedProviderEndpointConfig {
     pub provider: ProviderId,
@@ -227,6 +280,7 @@ pub struct ResolvedModelRoute {
     pub model_ref: ModelRef,
     pub endpoint: ResolvedProviderEndpointConfig,
     pub policy: ResolvedRuntimeModelPolicy,
+    pub capabilities: ResolvedModelCapabilities,
     pub requested_capability: ModelRouteCapability,
 }
 
@@ -330,9 +384,9 @@ impl RuntimeModelCatalog {
             base_context_config,
             self.configured_runtime_max_output_tokens,
         );
-        if !requested_capability.model_supports(&policy)
-            || !requested_capability.transport_supports(endpoint.runtime_config.transport)
-        {
+        let capabilities =
+            ResolvedModelCapabilities::resolve(&policy, endpoint.runtime_config.transport);
+        if !capabilities.supports(requested_capability) {
             return None;
         }
         Some(ResolvedModelRoute {
@@ -340,6 +394,7 @@ impl RuntimeModelCatalog {
             model_ref: model_ref.clone(),
             endpoint: endpoint.clone(),
             policy,
+            capabilities,
             requested_capability,
         })
     }
@@ -362,9 +417,9 @@ impl RuntimeModelCatalog {
             base_context_config,
             self.configured_runtime_max_output_tokens,
         );
-        if !requested_capability.model_supports(&policy)
-            || !requested_capability.transport_supports(endpoint.runtime_config.transport)
-        {
+        let capabilities =
+            ResolvedModelCapabilities::resolve(&policy, endpoint.runtime_config.transport);
+        if !capabilities.supports(requested_capability) {
             return None;
         }
         Some(ResolvedModelRoute {
@@ -372,6 +427,7 @@ impl RuntimeModelCatalog {
             model_ref,
             endpoint: endpoint.clone(),
             policy,
+            capabilities,
             requested_capability,
         })
     }
@@ -1066,6 +1122,53 @@ pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRouteRef>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolved_capabilities_intersect_model_and_transport_image_output() {
+        let policy = ResolvedRuntimeModelPolicy {
+            capabilities: crate::model_catalog::ModelCapabilityFlags {
+                image_generation: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let capabilities =
+            ResolvedModelCapabilities::resolve(&policy, ProviderTransportKind::AnthropicMessages);
+
+        assert!(capabilities
+            .intrinsic
+            .output_modalities
+            .contains(&crate::model_catalog::ModelModality::Image));
+        assert!(!capabilities.transport.image_output);
+        assert!(!capabilities.image_output);
+        assert!(!capabilities.supports(ModelRouteCapability::ImageGeneration));
+    }
+
+    #[test]
+    fn resolved_capabilities_preserve_reasoning_effort_allowed_values() {
+        let policy = ResolvedRuntimeModelPolicy {
+            reasoning_effort_options: vec!["low".into(), "high".into()],
+            ..Default::default()
+        };
+
+        let capabilities =
+            ResolvedModelCapabilities::resolve(&policy, ProviderTransportKind::OpenAiResponses);
+
+        assert_eq!(
+            capabilities.endpoint.accepted_parameters,
+            vec![
+                crate::model_catalog::ModelParameterSupport {
+                    name: "reasoning_effort".into(),
+                    allowed_values: vec!["low".into(), "high".into()],
+                },
+                crate::model_catalog::ModelParameterSupport {
+                    name: "max_output_tokens".into(),
+                    allowed_values: Vec::new(),
+                },
+            ]
+        );
+    }
 
     #[test]
     fn model_route_ref_round_trips_model_ids_with_slashes() {

@@ -151,6 +151,7 @@ mod tests {
             unavailable_reason: None,
             metadata_source: "test".to_string(),
             policy,
+            parameter_contracts: Vec::new(),
             supported_parameters: Vec::new(),
             policy_notes: Vec::new(),
         }
