@@ -9,7 +9,7 @@ use holon::{
 };
 
 fn live_xai_model() -> String {
-    std::env::var("HOLON_LIVE_XAI_MODEL").unwrap_or_else(|_| "grok-4-1-fast".into())
+    std::env::var("HOLON_LIVE_XAI_MODEL").unwrap_or_else(|_| "grok-4.3".into())
 }
 
 fn live_xai_provider(config: &AppConfig) -> Result<OpenAiProvider> {
