@@ -321,7 +321,7 @@ Model references: `together/mixtral-8x7b-instruct-v0-1`
 }
 ```
 
-Model references: `deepseek/deepseek-chat`
+Model references: `deepseek/deepseek-v4-flash`
 
 ## Troubleshooting
 

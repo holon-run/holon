@@ -252,7 +252,7 @@ mod tests {
                     }),
                 },
                 ProviderCandidate {
-                    model_ref: "deepseek/deepseek-chat".into(),
+                    model_ref: "deepseek/deepseek-v4-flash".into(),
                     provider_name: "deepseek".into(),
                     provider: Arc::new(SearchProvider { capability: None }),
                 },

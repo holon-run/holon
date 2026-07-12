@@ -402,11 +402,11 @@ async fn live_configured_model_chain_builtin_web_search_support() -> Result<()> 
 }
 
 #[tokio::test]
-#[ignore = "requires DEEPSEEK_API_KEY and network access"]
+#[ignore = "requires a configured DeepSeek credential and network access"]
 async fn live_deepseek_anthropic_accepts_context_management() -> Result<()> {
     provider_accepts_context_management(
-        "deepseek-anthropic",
-        &provider_model_env("deepseek-anthropic", "deepseek-chat"),
+        "deepseek",
+        &provider_model_env("deepseek", "deepseek-v4-flash"),
     )
     .await
 }

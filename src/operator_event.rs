@@ -2546,7 +2546,7 @@ mod tests {
             "provider_round_completed",
             &json!({
                 "round": 2,
-                "active_model": "deepseek-chat",
+                "active_model": "deepseek-v4-flash",
                 "stop_reason": "tool_use",
                 "input_tokens": 12,
                 "output_tokens": 7,
@@ -2559,7 +2559,7 @@ mod tests {
         assert_eq!(provider.category, OperatorEventCategory::AssistantProgress);
         assert_eq!(
             provider.summary,
-            "Provider round 2: model=deepseek-chat; stop=tool_use; 12/7 tokens; tools=1"
+            "Provider round 2: model=deepseek-v4-flash; stop=tool_use; 12/7 tokens; tools=1"
         );
         assert_eq!(provider.title, "Provider round completed");
     }
