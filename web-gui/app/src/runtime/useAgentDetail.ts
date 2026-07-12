@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { useRuntimeStore } from "./runtime-store";
 import type { AgentDetail, DisplayLevel } from "./types";
@@ -21,10 +21,21 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   useEffect(() => {
     if (!agentId) return;
     registerAgentForEvents(agentId);
+  }, [agentId, registerAgentForEvents]);
+
+  const prevDisplayLevelRef = useRef<DisplayLevel | undefined>(undefined);
+  useEffect(() => {
+    if (!agentId) return;
+    const prevLevel = prevDisplayLevelRef.current;
+    const levelRank: Record<DisplayLevel, number> = { info: 0, verbose: 1, debug: 2 };
+    const levelIncreased = prevLevel != null && levelRank[displayLevel] > levelRank[prevLevel];
     if (!detail || detail.error) {
       void refreshAgentDetail(agentId, displayLevel);
+    } else if (levelIncreased) {
+      void refreshAgentDetail(agentId, displayLevel);
     }
-  }, [agentId, detail, displayLevel, refreshAgentDetail, registerAgentForEvents]);
+    prevDisplayLevelRef.current = displayLevel;
+  }, [agentId, displayLevel, refreshAgentDetail, detail]);
 
   return { detail, loading, refresh };
 }

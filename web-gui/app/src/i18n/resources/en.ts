@@ -693,6 +693,7 @@ const en = {
     unknownSource: "Unknown source",
     filter: "Filter",
     workItems: "Work items",
+    title: "Title",
     workItem: "Work item",
     total: "Total",
     objective: "Objective",
@@ -708,6 +709,7 @@ const en = {
     executionRoot: "Execution root",
     projectionKind: "Projection",
     cwd: "Cwd",
+    model: "Model",
   },
 
   agent: {

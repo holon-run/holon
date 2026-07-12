@@ -461,6 +461,7 @@ export function AgentPage({
 
   async function handleReasoningChange(effort: string) {
     setSelectedReasoningEffort(effort);
+    setReasoningPopoverOpen(false);
     if (changingModel || !activeModelSupportsReasoning) return;
     setChangingModel("reasoning:" + effort);
     try {

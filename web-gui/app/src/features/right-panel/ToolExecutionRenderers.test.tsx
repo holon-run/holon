@@ -13,21 +13,33 @@ describe("ToolExecutionContent", () => {
   it("renders ViewImage details with path, dimensions, and visual observation", () => {
     const html = renderTool({
       tool_name: "ViewImage",
-      input: { path: "/tmp/screenshot.png" },
+      input: { path: "media/generated/tool-timeline-smoke.png" },
       output: {
         envelope: {
           result: {
-            dimensions: { width: 1024, height: 768 },
-            visual_observation: "A timeline screenshot.",
+            visual_reference: {
+              id: "img_test123",
+              path: "media/generated/tool-timeline-smoke.png",
+              mime: "image/png",
+              byte_count: 2048,
+              sha256: "abc123",
+              size: { width: 1024, height: 768 },
+            },
+            observation: {
+              summary: "A timeline screenshot.",
+              generated_by: { provider: "openai", model: "gpt-4o" },
+            },
           },
         },
       },
     });
 
     expect(html).toContain("Path");
-    expect(html).toContain("/tmp/screenshot.png");
+    expect(html).toContain("media/generated/tool-timeline-smoke.png");
     expect(html).toContain("1024×768");
     expect(html).toContain("A timeline screenshot.");
+    expect(html).toContain("image/png");
+    expect(html).toContain("openai/gpt-4o");
   });
 
   it("renders GenerateImage details with prompt and generated image URI", () => {
@@ -70,7 +82,7 @@ describe("ToolExecutionContent", () => {
     expect(html).toContain("rust runtime");
     expect(html).toContain("brave");
     expect(html).toContain("1 found");
-    expect(html).toContain("1. Tokio");
+    expect(html).toContain("tool-detail-result-index");
     expect(html).toContain("https://tokio.rs");
     expect(html).toContain("Async runtime");
   });
