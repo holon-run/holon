@@ -287,6 +287,7 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "model.default"
             | "model.fallbacks"
             | "vision.default"
+            | "image_generation.default"
             | "models.catalog"
             | "model.unknown_fallback"
             | "model.unknown_fallback.context_window_tokens"
@@ -988,6 +989,12 @@ fn percent_encode_path_segment(segment: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_mutable_config_keys_include_visual_model_defaults() {
+        assert!(is_runtime_mutable_config_key("vision.default"));
+        assert!(is_runtime_mutable_config_key("image_generation.default"));
+    }
 
     fn encoded(bytes: &[u8]) -> String {
         BASE64_STANDARD.encode(bytes)
