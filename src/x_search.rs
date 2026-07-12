@@ -398,7 +398,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = vec![0; 8192];
-            stream.read(&mut request).await.unwrap();
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(read > 0);
 
             let body = json!({"error": {"message": "insufficient scope"}}).to_string();
             let response = format!(
