@@ -695,6 +695,7 @@ const zh: Record<string, any> = {
     unknownSource: "未知来源",
     filter: "筛选",
     workItems: "工作项",
+    title: "标题",
     workItem: "工作项",
     total: "总计",
     objective: "目标",

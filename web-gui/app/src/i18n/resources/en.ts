@@ -693,6 +693,7 @@ const en = {
     unknownSource: "Unknown source",
     filter: "Filter",
     workItems: "Work items",
+    title: "Title",
     workItem: "Work item",
     total: "Total",
     objective: "Objective",

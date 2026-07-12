@@ -454,13 +454,18 @@ function MemoryGetRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const { t } = useTranslation();
   const input = isRecord(record.input) ? record.input : {};
   const output = unwrapToolOutput(record.output ?? record.result);
-  const sourceRef = nestedValue(output, ["source_ref"]) ?? nestedValue(input, ["source_ref"]);
-  const content = nestedText(output, ["content"]);
-  const truncated = nestedValue(output, ["truncated"]) === true;
+  const result = asResultRecord(output, "memory");
+  const sourceRef = nestedText(result, ["source_ref"]) ?? nestedText(input, ["source_ref"]);
+  const title = nestedText(result, ["title"]);
+  const kind = nestedText(result, ["kind"]);
+  const content = nestedText(result, ["content"]);
+  const truncated = nestedValue(result, ["truncated"]) === true;
 
   return (
     <>
       <SimpleField label={t("inspector.sourceRef")} value={sourceRef} />
+      {title ? <SimpleField label={t("inspector.title")} value={title} /> : null}
+      {kind ? <SimpleField label={t("inspector.kind")} value={kind} /> : null}
       {truncated ? <SimpleField label={t("inspector.truncated")} value={t("inspector.yes")} /> : null}
       {content ? <OutputField label={t("inspector.content")} value={truncatedText(content, 2000)} /> : null}
       {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}

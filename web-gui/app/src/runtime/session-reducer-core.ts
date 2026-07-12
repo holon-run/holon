@@ -1106,8 +1106,9 @@ function projectMemorySearchTool(payload: Record<string, unknown> | undefined): 
 
 function projectMemoryGetTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   const output = unwrapToolResult(payload);
-  const sourceRef = stringField(output, "source_ref") ?? firstStringField(asRecord(payload?.input), ["source_ref"]);
-  const content = stringField(output, "content");
+  const memory = asRecord(output.memory) ?? output;
+  const sourceRef = stringField(memory, "source_ref") ?? firstStringField(asRecord(payload?.input), ["source_ref"]);
+  const content = stringField(memory, "content");
   const body = compactJoin([
     "Memory get",
     sourceRef ? truncateText(sourceRef, 80) : undefined,
