@@ -711,6 +711,7 @@ const zh: Record<string, any> = {
     executionRoot: "执行根目录",
     projectionKind: "投影类型",
     cwd: "工作目录",
+    model: "模型",
   },
 
   agent: {

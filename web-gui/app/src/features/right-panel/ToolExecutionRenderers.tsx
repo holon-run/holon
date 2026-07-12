@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { MouseEvent, ReactNode } from "react";
 import { formatToolExecutionDetail } from "../inspector/ActivityInspectorPanel";
+import { useRuntimeStore } from "../../runtime/runtime-store";
 import { parseWorkspaceImageRef, WorkspaceImage } from "../../components/MarkdownContent";
 import type { RuntimeToolExecutionRecord } from "../../runtime/types";
 
@@ -309,27 +310,76 @@ function ApplyPatchRenderer({ record }: { record: RuntimeToolExecutionRecord }) 
 
 function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const { t } = useTranslation();
+  const agentId = typeof record.agent_id === "string" ? record.agent_id : undefined;
+  const workspaceId = useRuntimeStore((s) =>
+    agentId ? s.sessionsByAgentId[agentId]?.detail?.agent?.workspaceSummary?.id : undefined,
+  );
+
   const output = unwrapToolOutput(record.output ?? record.result);
   const result = asResultRecord(output, "view_image_result");
-  const dimensions = isRecord(result?.dimensions) ? result.dimensions : undefined;
-  const width = nestedValue(result, ["width"]) ?? nestedValue(dimensions, ["width"]);
-  const height = nestedValue(result, ["height"]) ?? nestedValue(dimensions, ["height"]);
-  const path = nestedValue(record.input, ["path", "image_path"]) ?? nestedValue(result, ["path", "image_path"]);
-  const observationObj = nestedValue(result, ["observation", "visual_observation"]);
-  const observation = nestedText(result, ["text_preview"])
-    || nestedText(result, ["visual_observation"])
-    || nestedText(result, ["observation"])
-    || (isRecord(observationObj) ? nestedText(observationObj, ["summary"]) : "")
-    || (isRecord(observationObj) ? textField(observationObj) : "");
+  const visualRef = isRecord(result?.visual_reference) ? result.visual_reference : undefined;
+  const sizeInfo = isRecord(visualRef?.size) ? visualRef.size : undefined;
+  const width = nestedValue(sizeInfo, ["width"]);
+  const height = nestedValue(sizeInfo, ["height"]);
+  const inputPath = nestedText(record.input, ["path", "image_path"]);
+  const resultPath = nestedText(visualRef, ["path"]);
+  const displayPath = inputPath || resultPath;
+  const mime = nestedText(visualRef, ["mime"]);
+  const byteCount = nestedValue(visualRef, ["byte_count"]);
+  const sha256 = nestedText(visualRef, ["sha256"]);
+  const refId = nestedText(visualRef, ["id"]);
+
+  const observationObj = isRecord(result?.observation) ? result.observation : undefined;
+  const observationSummary = nestedText(observationObj, ["summary"]);
+  const generatedBy = isRecord(observationObj?.generated_by) ? observationObj.generated_by : undefined;
+  const genProvider = nestedText(generatedBy, ["provider"]);
+  const genModel = nestedText(generatedBy, ["model"]);
+  const genMode = nestedText(generatedBy, ["mode"]);
+  const ocrItems = arrayRecords(nestedValue(observationObj, ["ocr"]));
+  const elementItems = arrayRecords(nestedValue(observationObj, ["elements"]));
+  const uncertaintiesRaw = nestedValue(observationObj, ["uncertainties"]);
+  const uncertainties = Array.isArray(uncertaintiesRaw)
+    ? uncertaintiesRaw
+        .map((u) =>
+          typeof u === "string" ? u : nestedText(u, ["text", "description", "summary", "message"]),
+        )
+        .filter(Boolean)
+    : [];
   const summary = textField(result?.summary_text) || record.summary;
+
+  // Construct workspace URI for relative/absolute paths that aren't already workspace://
+  const imageUri = displayPath?.startsWith("workspace://")
+    ? displayPath
+    : displayPath && workspaceId
+      ? `workspace://${workspaceId}/${displayPath.replace(/^\/+/, "")}`
+      : displayPath;
 
   return (
     <>
-      <SimpleField label={t("inspector.path")} value={path} />
+      <SimpleField label={t("inspector.path")} value={displayPath} />
+      {refId ? <SimpleField label="ID" value={refId} /> : null}
+      {mime ? <SimpleField label={t("inspector.contentType")} value={mime} /> : null}
+      {byteCount != null ? (
+        <SimpleField label={t("inspector.bytesRead")} value={String(byteCount)} />
+      ) : null}
       {width != null && height != null ? <SimpleField label={t("inspector.dimensions")} value={`${width}×${height}`} /> : null}
-      {observation ? <OutputField label={t("inspector.observation")} value={observation} /> : null}
+      {sha256 ? <SimpleField label="SHA-256" value={sha256} /> : null}
+      {genProvider || genModel ? (
+        <SimpleField label={t("inspector.model")} value={[genProvider, genModel].filter(Boolean).join("/")} />
+      ) : null}
+      {genMode ? <SimpleField label={t("inspector.mode")} value={genMode} /> : null}
+      {observationSummary ? <OutputField label={t("inspector.observation")} value={observationSummary} /> : null}
+      {ocrItems.length > 0 ? (
+        <OutputField label="OCR" value={JSON.stringify(ocrItems, null, 2)} />
+      ) : null}
+      {elementItems.length > 0 ? (
+        <OutputField label="Elements" value={JSON.stringify(elementItems, null, 2)} />
+      ) : null}
+      {uncertainties.length > 0 ? (
+        <OutputField label="Uncertainties" value={uncertainties.join("; ")} />
+      ) : null}
       {summary ? <OutputField label={t("inspector.result")} value={summary} /> : null}
-      {path ? <ImagePreview uri={String(path)} alt={observation ?? String(path)} /> : null}
+      {imageUri ? <ImagePreview uri={imageUri} alt={observationSummary ?? displayPath} /> : null}
       {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
     </>
   );

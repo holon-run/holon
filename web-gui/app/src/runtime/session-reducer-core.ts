@@ -992,14 +992,16 @@ function projectWorkItemMutationTool(payload: Record<string, unknown> | undefine
 function projectViewImageTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   const input = asRecord(payload?.input);
   const result = asRecord(payload?.view_image_result) ?? asRecord(payload?.result);
-  const dimensions = asRecord(result?.dimensions);
-  const width = numberField(result, "width") ?? numberField(dimensions, "width");
-  const height = numberField(result, "height") ?? numberField(dimensions, "height");
+  const visualRef = asRecord(result?.visual_reference);
+  const sizeInfo = asRecord(visualRef?.size);
+  const width = numberField(sizeInfo, "width");
+  const height = numberField(sizeInfo, "height");
   const imagePath =
     firstStringField(input, ["path", "image_path"]) ??
     firstStringField(payload, ["path", "image_path"]) ??
-    firstStringField(result, ["path", "image_path"]);
-  const observation = firstStringField(result, ["visual_observation", "observation", "text_preview"]);
+    firstStringField(visualRef, ["path", "image_path"]);
+  const observationObj = asRecord(result?.observation);
+  const observation = firstStringField(observationObj, ["summary"]) ?? firstStringField(result, ["visual_observation", "observation", "text_preview"]);
   const body = compactJoin([
     "Viewed image",
     imagePath ? basename(imagePath) : undefined,

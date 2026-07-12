@@ -709,6 +709,7 @@ const en = {
     executionRoot: "Execution root",
     projectionKind: "Projection",
     cwd: "Cwd",
+    model: "Model",
   },
 
   agent: {
