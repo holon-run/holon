@@ -1419,62 +1419,35 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "mistral",
             "codestral-latest",
             "Codestral (latest)",
-            256_000,
+            128_000,
             4_096,
             false,
             false,
         ),
         catalog_model(
             "mistral",
-            "devstral-medium-latest",
-            "Devstral 2 (latest)",
-            262_144,
-            32_768,
-            false,
-            false,
-        ),
-        catalog_model(
-            "mistral",
-            "magistral-small",
-            "Magistral Small",
-            128_000,
-            40_000,
-            true,
-            false,
-        ),
-        catalog_model(
-            "mistral",
             "mistral-large-latest",
-            "Mistral Large (latest)",
-            262_144,
+            "Mistral Large 3 (latest)",
+            256_000,
             16_384,
             false,
             true,
         ),
         catalog_model(
             "mistral",
-            "mistral-medium-2508",
-            "Mistral Medium 3.1",
-            262_144,
+            "mistral-medium-latest",
+            "Mistral Medium 3.5 (latest)",
+            256_000,
             8_192,
-            false,
+            true,
             true,
         ),
         catalog_model(
             "mistral",
             "mistral-small-latest",
-            "Mistral Small (latest)",
-            128_000,
+            "Mistral Small 4 (latest)",
+            256_000,
             16_384,
-            true,
-            true,
-        ),
-        catalog_model(
-            "mistral",
-            "pixtral-large-latest",
-            "Pixtral Large (latest)",
-            128_000,
-            32_768,
             false,
             true,
         ),
@@ -3821,6 +3794,67 @@ mod tests {
             "moonshot/kimi-k2-thinking",
             "moonshot/kimi-k2-thinking-turbo",
             "moonshot/kimi-k2-turbo",
+        ] {
+            assert!(
+                catalog.get(&ModelRef::parse(model_ref).unwrap()).is_none(),
+                "{model_ref} should not be registered"
+            );
+        }
+    }
+
+    #[test]
+    fn mistral_catalog_tracks_current_models_and_retirements() {
+        let catalog = BuiltInModelCatalog::new();
+        let mistral = ProviderId::parse("mistral").unwrap();
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|model| model.model_ref.provider == mistral)
+            .map(|model| model.model_ref.model.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            models,
+            [
+                "codestral-latest",
+                "mistral-large-latest",
+                "mistral-medium-latest",
+                "mistral-small-latest",
+            ]
+        );
+
+        for model_ref in [
+            "mistral/mistral-large-latest",
+            "mistral/mistral-medium-latest",
+            "mistral/mistral-small-latest",
+        ] {
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse(model_ref).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert!(policy.capabilities.image_input, "{model_ref}");
+        }
+
+        let medium = catalog.resolve_policy(
+            &ModelRef::parse("mistral/mistral-medium-latest").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert!(medium.capabilities.supports_reasoning);
+        assert!(medium.reasoning_effort_options.is_empty());
+
+        for model_ref in [
+            "mistral/devstral-medium-latest",
+            "mistral/magistral-small",
+            "mistral/mistral-medium-2508",
+            "mistral/pixtral-large-latest",
         ] {
             assert!(
                 catalog.get(&ModelRef::parse(model_ref).unwrap()).is_none(),

@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **199 models**.
+across **40 endpoints** and **196 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -150,13 +150,10 @@ and capabilities.
 | `minimax` | `MiniMax-M2.7` | `minimax/MiniMax-M2.7` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M2.7-highspeed` | `minimax/MiniMax-M2.7-highspeed` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M3` | `minimax/MiniMax-M3` | 1000000 | 32768 | ✅ | ✅ |
-| `mistral` | `codestral-latest` | `mistral/codestral-latest` | 256000 | 4096 | — | — |
-| `mistral` | `devstral-medium-latest` | `mistral/devstral-medium-latest` | 262144 | 32768 | — | — |
-| `mistral` | `magistral-small` | `mistral/magistral-small` | 128000 | 40000 | ✅ | — |
-| `mistral` | `mistral-large-latest` | `mistral/mistral-large-latest` | 262144 | 16384 | — | ✅ |
-| `mistral` | `mistral-medium-2508` | `mistral/mistral-medium-2508` | 262144 | 8192 | — | ✅ |
-| `mistral` | `mistral-small-latest` | `mistral/mistral-small-latest` | 128000 | 16384 | ✅ | ✅ |
-| `mistral` | `pixtral-large-latest` | `mistral/pixtral-large-latest` | 128000 | 32768 | — | ✅ |
+| `mistral` | `codestral-latest` | `mistral/codestral-latest` | 128000 | 4096 | — | — |
+| `mistral` | `mistral-large-latest` | `mistral/mistral-large-latest` | 256000 | 16384 | — | ✅ |
+| `mistral` | `mistral-medium-latest` | `mistral/mistral-medium-latest` | 256000 | 8192 | ✅ | ✅ |
+| `mistral` | `mistral-small-latest` | `mistral/mistral-small-latest` | 256000 | 16384 | — | ✅ |
 | `moonshot` | `kimi-k2.5` | `moonshot/kimi-k2.5` | 262144 | 262144 | ✅ | ✅ |
 | `moonshot` | `kimi-k2.6` | `moonshot/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `moonshot` | `kimi-k2.7-code` | `moonshot/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
