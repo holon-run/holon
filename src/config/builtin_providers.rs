@@ -1124,14 +1124,14 @@ pub(crate) fn populate_built_in_provider_catalog(
     insert_openai_compatible_provider(
         catalog,
         "stepfun",
-        "https://api.stepfun.ai/v1",
+        "https://api.stepfun.com/v1",
         &["STEPFUN_API_KEY"],
         settings_env,
     )?;
     insert_openai_compatible_provider(
         catalog,
         "stepfun-plan",
-        "https://api.stepfun.ai/step_plan/v1",
+        "https://api.stepfun.com/step_plan/v1",
         &["STEPFUN_PLAN_API_KEY", "STEPFUN_API_KEY"],
         settings_env,
     )?;

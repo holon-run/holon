@@ -1479,8 +1479,19 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
         .get(&ProviderId::parse("stepfun-plan").unwrap())
         .unwrap();
     assert_eq!(
+        stepfun_plan.base_url,
+        "https://api.stepfun.com/step_plan/v1"
+    );
+    assert_eq!(
         stepfun_plan.auth.env.as_deref(),
         Some("STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY")
+    );
+    assert_eq!(
+        providers
+            .get(&ProviderId::parse("stepfun").unwrap())
+            .unwrap()
+            .base_url,
+        "https://api.stepfun.com/v1"
     );
 
     let deepseek = providers

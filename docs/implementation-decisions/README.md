@@ -88,3 +88,4 @@ Current decision notes:
 - [074 Qianfan Model Catalog](./074-qianfan-model-catalog.md)
 - [075 BytePlus Model Catalog](./075-byteplus-model-catalog.md)
 - [076 DashScope Model Catalog](./076-dashscope-model-catalog.md)
+- [077 StepFun Model Catalog](./077-stepfun-model-catalog.md)
