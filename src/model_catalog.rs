@@ -1350,7 +1350,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             1_000_000,
             32_768,
             true,
-            false,
+            true,
         ),
         catalog_model(
             "minimax",
@@ -3380,6 +3380,52 @@ mod tests {
         assert!(catalog
             .get(&ModelRef::parse("dashscope-openai/MiniMax-M2.5").unwrap())
             .is_none());
+    }
+
+    #[test]
+    fn minimax_catalog_tracks_current_anthropic_models_and_modalities() {
+        let catalog = BuiltInModelCatalog::new();
+        let minimax = ProviderId::parse("minimax").unwrap();
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|entry| entry.model_ref.provider == minimax)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|entry| entry.model_ref.model.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "MiniMax-M2",
+                "MiniMax-M2.1",
+                "MiniMax-M2.1-highspeed",
+                "MiniMax-M2.5",
+                "MiniMax-M2.5-highspeed",
+                "MiniMax-M2.7",
+                "MiniMax-M2.7-highspeed",
+                "MiniMax-M3",
+            ]
+        );
+
+        let m3 = catalog
+            .get(&ModelRef::parse("minimax/MiniMax-M3").unwrap())
+            .unwrap();
+        assert_eq!(m3.context_window_tokens, Some(1_000_000));
+        assert_eq!(m3.max_output_tokens_upper_limit, Some(32_768));
+        assert!(m3.capabilities.supports_reasoning);
+        assert!(m3.capabilities.image_input);
+
+        for model in models
+            .into_iter()
+            .filter(|entry| entry.model_ref.model != "MiniMax-M3")
+        {
+            assert_eq!(model.context_window_tokens, Some(204_800));
+            assert_eq!(model.max_output_tokens_upper_limit, Some(128_000));
+            assert!(model.capabilities.supports_reasoning);
+            assert!(!model.capabilities.image_input);
+        }
     }
 
     #[test]
