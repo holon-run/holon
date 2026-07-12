@@ -69,7 +69,7 @@ pub async fn search(
         config.provider.base_url.trim_end_matches('/')
     );
     let mut response = send_request(&client, &endpoint, &authorization, &body).await?;
-    if matches!(response.status().as_u16(), 401 | 403) {
+    if response.status().as_u16() == 401 {
         if let Some(refreshed) = auth.refresh_authorization_header().await? {
             authorization = refreshed;
             response = send_request(&client, &endpoint, &authorization, &body).await?;
@@ -389,5 +389,50 @@ mod tests {
 
         server.await.unwrap();
         assert_eq!(response.text, "OAuth search result");
+    }
+
+    #[tokio::test]
+    async fn search_does_not_refresh_oauth_profile_on_forbidden() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            stream.read(&mut request).await.unwrap();
+
+            let body = json!({"error": {"message": "insufficient scope"}}).to_string();
+            let response = format!(
+                "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let credential = json!({
+            "tokens": {
+                "access_token": "oauth-access-token",
+                "refresh_token": "refresh-token"
+            }
+        })
+        .to_string();
+        let config = xai_oauth_config(format!("http://{address}"), credential);
+
+        let error = search(
+            XSearchRequest {
+                query: "Holon OAuth".into(),
+                allowed_x_handles: Vec::new(),
+                excluded_x_handles: Vec::new(),
+                from_date: None,
+                to_date: None,
+            },
+            &config,
+        )
+        .await
+        .unwrap_err();
+
+        server.await.unwrap();
+        assert_eq!(
+            error.to_string(),
+            "x_search provider returned HTTP 403: insufficient scope"
+        );
     }
 }
