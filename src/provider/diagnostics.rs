@@ -303,7 +303,10 @@ pub(crate) fn provider_models_from_availability_for_runtime(
 }
 
 fn supported_model_parameters(model: &ResolvedModelAvailability) -> Vec<String> {
-    let mut parameters = vec!["reasoning_effort".to_string()];
+    let mut parameters = Vec::new();
+    if !model.policy.reasoning_effort_options.is_empty() {
+        parameters.push("reasoning_effort".to_string());
+    }
     if model.policy.max_output_tokens_upper_limit.is_some()
         || model.policy.runtime_max_output_tokens > 0
     {

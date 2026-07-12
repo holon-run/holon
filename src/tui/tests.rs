@@ -242,6 +242,7 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
                     image_input: true,
                     ..crate::model_catalog::ModelCapabilityFlags::default()
                 },
+                reasoning_effort_options: Vec::new(),
                 source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
             },
         },
@@ -326,6 +327,9 @@ fn sample_model_availability(
                 supports_reasoning: reasoning,
                 ..crate::model_catalog::ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: reasoning
+                .then(|| vec!["low".into(), "medium".into(), "high".into()])
+                .unwrap_or_default(),
             source: crate::model_catalog::ModelMetadataSource::RemoteDiscovered,
         },
     }
@@ -1862,6 +1866,7 @@ async fn model_picker_opens_effort_for_models_with_reasoning_support() {
         app.overlay,
         OverlayState::ModelEffortPicker {
             model: "openai_codex/gpt-5.4".into(),
+            options: vec!["low".into(), "medium".into(), "high".into()],
             selected: 0,
             return_filter: String::new(),
             return_selected: 1
@@ -1894,6 +1899,7 @@ async fn model_effort_picker_esc_returns_to_provider_model_page() {
     );
     app.overlay = OverlayState::ModelEffortPicker {
         model: "openai_codex/gpt-5.4".into(),
+        options: vec!["low".into(), "medium".into(), "high".into()],
         selected: 0,
         return_filter: "gpt".into(),
         return_selected: 1,

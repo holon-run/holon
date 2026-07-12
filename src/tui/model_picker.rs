@@ -8,7 +8,7 @@ pub(super) enum ModelPickerChoice {
     },
     Model {
         model: String,
-        supports_reasoning_effort: bool,
+        reasoning_effort_options: Vec<String>,
     },
 }
 
@@ -196,7 +196,7 @@ fn model_availability_row(entry: &ResolvedModelAvailability) -> ModelPickerRow {
     ModelPickerRow {
         choice: ModelPickerChoice::Model {
             model: entry.model.clone(),
-            supports_reasoning_effort: supports_reasoning_effort(entry),
+            reasoning_effort_options: entry.policy.reasoning_effort_options.clone(),
         },
         title: format!("{}  {}", entry.model, entry.display_name),
         detail: format!(
@@ -218,8 +218,7 @@ fn model_availability_row(entry: &ResolvedModelAvailability) -> ModelPickerRow {
 }
 
 fn supports_reasoning_effort(entry: &ResolvedModelAvailability) -> bool {
-    entry.policy.capabilities.supports_reasoning
-        && entry.transport.as_deref() == Some("openai_codex_responses")
+    !entry.policy.reasoning_effort_options.is_empty()
 }
 
 #[cfg(test)]
@@ -256,6 +255,9 @@ mod tests {
                 supports_reasoning: reasoning,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: reasoning
+                .then(|| vec!["low".into(), "medium".into(), "high".into()])
+                .unwrap_or_default(),
             source: ModelMetadataSource::BuiltInCatalog,
         }
     }
