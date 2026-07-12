@@ -84,3 +84,4 @@ Current decision notes:
 - [070 MiniMax Model Catalog](./070-minimax-model-catalog.md)
 - [071 Moonshot Model Catalog](./071-moonshot-model-catalog.md)
 - [072 Mistral Model Catalog](./072-mistral-model-catalog.md)
+- [073 Z.AI and BigModel Model Catalog](./073-zai-bigmodel-model-catalog.md)

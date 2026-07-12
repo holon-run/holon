@@ -721,6 +721,7 @@ fn reasoning_effort_options(
         ("openai", _) | ("openai-codex", _) => &["low", "medium", "high", "xhigh"][..],
         ("xai", "grok-4.3") => &["none", "low", "medium", "high"][..],
         ("xai", "grok-4.5") => &["low", "medium", "high"][..],
+        ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
         ("volcengine", _)
             if endpoint.is_none_or(|endpoint| {
                 matches!(endpoint.as_str(), "default" | "coding" | "plan")
@@ -774,27 +775,6 @@ fn is_turn_default_candidate(entry: &BuiltInModelMetadata) -> bool {
         || entry.capabilities.image_input
         || entry.capabilities.supports_reasoning
         || entry.capabilities.interactive_exec
-}
-
-fn mirror_catalog_models(
-    entries: &[BuiltInModelMetadata],
-    source_provider: &str,
-    target_provider: &str,
-) -> Vec<BuiltInModelMetadata> {
-    let source_provider = provider_id(source_provider);
-    let target_provider = provider_id(target_provider);
-    entries
-        .iter()
-        .filter(|entry| entry.model_ref.provider == source_provider)
-        .map(|entry| {
-            let mut mirrored = entry.clone();
-            mirrored.model_ref = ModelRef::new(target_provider.clone(), &entry.model_ref.model);
-            mirrored.description = mirrored
-                .description
-                .replace(source_provider.as_str(), target_provider.as_str());
-            mirrored
-        })
-        .collect()
 }
 
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {
@@ -2829,6 +2809,24 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "zai",
+            "glm-4.5-x",
+            "GLM-4.5 X",
+            131_072,
+            98_304,
+            true,
+            false,
+        ),
+        catalog_model(
+            "zai",
+            "glm-4.5-airx",
+            "GLM-4.5 AirX",
+            131_072,
+            98_304,
+            true,
+            false,
+        ),
+        catalog_model(
+            "zai",
             "glm-4.5-flash",
             "GLM-4.5 Flash",
             131_072,
@@ -2837,9 +2835,177 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model("zai", "glm-4.5v", "GLM-4.5V", 64_000, 16_384, true, true),
+        catalog_model(
+            "zai",
+            "glm-4.6v-flashx",
+            "GLM-4.6V FlashX",
+            128_000,
+            32_768,
+            true,
+            true,
+        ),
+        catalog_model(
+            "zai",
+            "glm-4.6v-flash",
+            "GLM-4.6V Flash",
+            128_000,
+            32_768,
+            true,
+            true,
+        ),
+        catalog_model(
+            "zai",
+            "glm-4-32b-0414-128k",
+            "GLM-4 32B 0414 128K",
+            131_072,
+            16_384,
+            false,
+            false,
+        ),
     ];
-    entries.extend(mirror_catalog_models(&entries, "zai", "bigmodel"));
     entries.extend([
+        catalog_model(
+            "bigmodel", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false,
+        ),
+        catalog_model(
+            "bigmodel", "glm-5.1", "GLM-5.1", 204_800, 131_072, true, false,
+        ),
+        catalog_model("bigmodel", "glm-5", "GLM-5", 204_800, 131_072, true, false),
+        catalog_model(
+            "bigmodel",
+            "glm-5-turbo",
+            "GLM-5 Turbo",
+            204_800,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-5v-turbo",
+            "GLM-5V Turbo",
+            204_800,
+            131_072,
+            true,
+            true,
+        ),
+        catalog_model(
+            "bigmodel", "glm-4.7", "GLM-4.7", 204_800, 131_072, true, false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.7-flashx",
+            "GLM-4.7 FlashX",
+            204_800,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.7-flash",
+            "GLM-4.7 Flash",
+            204_800,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "bigmodel", "glm-4.6", "GLM-4.6", 204_800, 131_072, true, false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.5-air",
+            "GLM-4.5 Air",
+            131_072,
+            98_304,
+            true,
+            false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.5-airx",
+            "GLM-4.5 AirX",
+            131_072,
+            98_304,
+            true,
+            false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.5-flash",
+            "GLM-4.5 Flash",
+            131_072,
+            98_304,
+            true,
+            false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4-long",
+            "GLM-4 Long",
+            1_000_000,
+            4_096,
+            false,
+            false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4-flashx-250414",
+            "GLM-4 FlashX 250414",
+            131_072,
+            16_384,
+            false,
+            false,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4-flash-250414",
+            "GLM-4 Flash 250414",
+            131_072,
+            16_384,
+            false,
+            false,
+        ),
+        catalog_model(
+            "bigmodel", "glm-4.6v", "GLM-4.6V", 131_072, 32_768, true, true,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.6v-flash",
+            "GLM-4.6V Flash",
+            131_072,
+            32_768,
+            true,
+            true,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.1v-thinking-flashx",
+            "GLM-4.1V Thinking FlashX",
+            65_536,
+            16_384,
+            true,
+            true,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4.1v-thinking-flash",
+            "GLM-4.1V Thinking Flash",
+            65_536,
+            16_384,
+            true,
+            true,
+        ),
+        catalog_model(
+            "bigmodel",
+            "glm-4v-flash",
+            "GLM-4V Flash",
+            16_384,
+            1_024,
+            false,
+            true,
+        ),
         catalog_model(
             "dashscope",
             "deepseek-v4-pro",
@@ -3325,6 +3491,7 @@ mod tests {
         assert_eq!(zai.display_name, "GLM-5.2");
         assert_eq!(zai.context_window_tokens, Some(1_000_000));
         assert_eq!(zai.runtime_max_output_tokens, 131_072);
+        assert_eq!(zai.reasoning_effort_options, ["high", "max"]);
         assert_eq!(zai.source, ModelMetadataSource::BuiltInCatalog);
 
         let bigmodel = catalog.resolve_policy(
@@ -3338,6 +3505,7 @@ mod tests {
         assert_eq!(bigmodel.display_name, "GLM-5.2");
         assert_eq!(bigmodel.context_window_tokens, Some(1_000_000));
         assert_eq!(bigmodel.runtime_max_output_tokens, 131_072);
+        assert_eq!(bigmodel.reasoning_effort_options, ["high", "max"]);
         assert_eq!(bigmodel.source, ModelMetadataSource::BuiltInCatalog);
 
         assert_eq!(
@@ -3355,23 +3523,43 @@ mod tests {
             "bigmodel/glm-5.2"
         );
 
-        let zai_provider = ProviderId::parse("zai").unwrap();
-        let bigmodel_provider = ProviderId::parse("bigmodel").unwrap();
-        let zai_models = catalog
-            .list()
-            .into_iter()
-            .filter(|model| model.model_ref.provider == zai_provider)
-            .collect::<Vec<_>>();
-        assert!(zai_models.len() >= 10);
-        for zai_model in zai_models {
-            let bigmodel_ref = ModelRef::new(bigmodel_provider.clone(), &zai_model.model_ref.model);
-            assert!(
-                catalog.get(&bigmodel_ref).is_some(),
-                "{} should mirror {}",
-                bigmodel_ref.as_string(),
-                zai_model.model_ref.as_string()
-            );
+        for model in ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6"] {
+            assert!(catalog
+                .get(&ModelRef::new(ProviderId::parse("zai").unwrap(), model))
+                .is_some());
+            assert!(catalog
+                .get(&ModelRef::new(
+                    ProviderId::parse("bigmodel").unwrap(),
+                    model
+                ))
+                .is_some());
         }
+
+        assert!(catalog
+            .get(&ModelRef::parse("zai/glm-4.5-x").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("zai/glm-4.5v").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("bigmodel/glm-4.5-x").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("bigmodel/glm-4.5v").unwrap())
+            .is_none());
+
+        assert!(catalog
+            .get(&ModelRef::parse("bigmodel/glm-4-long").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("bigmodel/glm-4.1v-thinking-flashx").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("zai/glm-4-long").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("zai/glm-4.1v-thinking-flashx").unwrap())
+            .is_none());
     }
 
     #[test]

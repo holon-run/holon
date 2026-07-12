@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **196 models**.
+across **40 endpoints** and **207 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -79,20 +79,26 @@ and capabilities.
 | `arcee` | `trinity-large-preview` | `arcee/trinity-large-preview` | 131072 | 16384 | — | — |
 | `arcee` | `trinity-large-thinking` | `arcee/trinity-large-thinking` | 262144 | 80000 | ✅ | — |
 | `arcee` | `trinity-mini` | `arcee/trinity-mini` | 131072 | 80000 | — | — |
-| `bigmodel` | `glm-4.5` | `bigmodel/glm-4.5` | 131072 | 98304 | ✅ | — |
+| `bigmodel` | `glm-4-flash-250414` | `bigmodel/glm-4-flash-250414` | 131072 | 16384 | — | — |
+| `bigmodel` | `glm-4-flashx-250414` | `bigmodel/glm-4-flashx-250414` | 131072 | 16384 | — | — |
+| `bigmodel` | `glm-4-long` | `bigmodel/glm-4-long` | 1000000 | 4096 | — | — |
+| `bigmodel` | `glm-4.1v-thinking-flash` | `bigmodel/glm-4.1v-thinking-flash` | 65536 | 16384 | ✅ | ✅ |
+| `bigmodel` | `glm-4.1v-thinking-flashx` | `bigmodel/glm-4.1v-thinking-flashx` | 65536 | 16384 | ✅ | ✅ |
 | `bigmodel` | `glm-4.5-air` | `bigmodel/glm-4.5-air` | 131072 | 98304 | ✅ | — |
+| `bigmodel` | `glm-4.5-airx` | `bigmodel/glm-4.5-airx` | 131072 | 98304 | ✅ | — |
 | `bigmodel` | `glm-4.5-flash` | `bigmodel/glm-4.5-flash` | 131072 | 98304 | ✅ | — |
-| `bigmodel` | `glm-4.5v` | `bigmodel/glm-4.5v` | 64000 | 16384 | ✅ | ✅ |
 | `bigmodel` | `glm-4.6` | `bigmodel/glm-4.6` | 204800 | 131072 | ✅ | — |
-| `bigmodel` | `glm-4.6v` | `bigmodel/glm-4.6v` | 128000 | 32768 | ✅ | ✅ |
+| `bigmodel` | `glm-4.6v` | `bigmodel/glm-4.6v` | 131072 | 32768 | ✅ | ✅ |
+| `bigmodel` | `glm-4.6v-flash` | `bigmodel/glm-4.6v-flash` | 131072 | 32768 | ✅ | ✅ |
 | `bigmodel` | `glm-4.7` | `bigmodel/glm-4.7` | 204800 | 131072 | ✅ | — |
-| `bigmodel` | `glm-4.7-flash` | `bigmodel/glm-4.7-flash` | 200000 | 131072 | ✅ | — |
-| `bigmodel` | `glm-4.7-flashx` | `bigmodel/glm-4.7-flashx` | 200000 | 128000 | ✅ | — |
-| `bigmodel` | `glm-5` | `bigmodel/glm-5` | 202800 | 131072 | ✅ | — |
-| `bigmodel` | `glm-5-turbo` | `bigmodel/glm-5-turbo` | 202800 | 131072 | ✅ | — |
-| `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 202800 | 131072 | ✅ | — |
+| `bigmodel` | `glm-4.7-flash` | `bigmodel/glm-4.7-flash` | 204800 | 131072 | ✅ | — |
+| `bigmodel` | `glm-4.7-flashx` | `bigmodel/glm-4.7-flashx` | 204800 | 131072 | ✅ | — |
+| `bigmodel` | `glm-4v-flash` | `bigmodel/glm-4v-flash` | 16384 | 1024 | — | ✅ |
+| `bigmodel` | `glm-5` | `bigmodel/glm-5` | 204800 | 131072 | ✅ | — |
+| `bigmodel` | `glm-5-turbo` | `bigmodel/glm-5-turbo` | 204800 | 131072 | ✅ | — |
+| `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 204800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
-| `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
+| `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 204800 | 131072 | ✅ | ✅ |
 | `byteplus` | `ark-code-latest` | `byteplus/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `byteplus` | `moonshotai/kimi-k2.5` | `byteplus/moonshotai/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
 | `byteplus` | `seed-1-8-251228` | `byteplus/seed-1-8-251228` | 256000 | 4096 | — | ✅ |
@@ -254,12 +260,17 @@ and capabilities.
 | `xiaomi` | `mimo-v2-pro` | `xiaomi/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
 | `xiaomi` | `mimo-v2.5-pro` | `xiaomi/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
 | `xiaomi` | `mimo-v2.5-pro-ultraspeed` | `xiaomi/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
+| `zai` | `glm-4-32b-0414-128k` | `zai/glm-4-32b-0414-128k` | 131072 | 16384 | — | — |
 | `zai` | `glm-4.5` | `zai/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `zai` | `glm-4.5-air` | `zai/glm-4.5-air` | 131072 | 98304 | ✅ | — |
+| `zai` | `glm-4.5-airx` | `zai/glm-4.5-airx` | 131072 | 98304 | ✅ | — |
 | `zai` | `glm-4.5-flash` | `zai/glm-4.5-flash` | 131072 | 98304 | ✅ | — |
+| `zai` | `glm-4.5-x` | `zai/glm-4.5-x` | 131072 | 98304 | ✅ | — |
 | `zai` | `glm-4.5v` | `zai/glm-4.5v` | 64000 | 16384 | ✅ | ✅ |
 | `zai` | `glm-4.6` | `zai/glm-4.6` | 204800 | 131072 | ✅ | — |
 | `zai` | `glm-4.6v` | `zai/glm-4.6v` | 128000 | 32768 | ✅ | ✅ |
+| `zai` | `glm-4.6v-flash` | `zai/glm-4.6v-flash` | 128000 | 32768 | ✅ | ✅ |
+| `zai` | `glm-4.6v-flashx` | `zai/glm-4.6v-flashx` | 128000 | 32768 | ✅ | ✅ |
 | `zai` | `glm-4.7` | `zai/glm-4.7` | 204800 | 131072 | ✅ | — |
 | `zai` | `glm-4.7-flash` | `zai/glm-4.7-flash` | 200000 | 131072 | ✅ | — |
 | `zai` | `glm-4.7-flashx` | `zai/glm-4.7-flashx` | 200000 | 128000 | ✅ | — |
