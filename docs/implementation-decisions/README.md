@@ -87,3 +87,4 @@ Current decision notes:
 - [073 Z.AI and BigModel Model Catalog](./073-zai-bigmodel-model-catalog.md)
 - [074 Qianfan Model Catalog](./074-qianfan-model-catalog.md)
 - [075 BytePlus Model Catalog](./075-byteplus-model-catalog.md)
+- [076 DashScope Model Catalog](./076-dashscope-model-catalog.md)

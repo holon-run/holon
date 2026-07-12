@@ -1733,7 +1733,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3.5-plus",
             1_000_000,
             65_536,
-            false,
+            true,
             true,
         ),
         catalog_model(
@@ -1778,7 +1778,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3-coder-next",
             262_144,
             65_536,
-            false,
+            true,
             false,
         ),
         catalog_model(
@@ -1787,7 +1787,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3-coder-plus",
             1_000_000,
             65_536,
-            false,
+            true,
             false,
         ),
         catalog_model(
@@ -1949,7 +1949,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3.5-plus",
             1_000_000,
             65_536,
-            false,
+            true,
             true,
         ),
         catalog_model(
@@ -1967,7 +1967,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3-coder-next",
             262_144,
             65_536,
-            false,
+            true,
             false,
         ),
         catalog_model(
@@ -1976,7 +1976,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "qwen3-coder-plus",
             1_000_000,
             65_536,
-            false,
+            true,
             false,
         ),
         catalog_model(
@@ -2003,7 +2003,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "glm-4.7",
             202_752,
             16_384,
-            false,
+            true,
             false,
         ),
         catalog_model(
@@ -3049,16 +3049,16 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             262_144,
             98_304,
             true,
-            false,
+            true,
         ),
         catalog_model(
             "dashscope",
             "MiniMax/MiniMax-M3",
             "MiniMax/MiniMax-M3",
-            1_000_000,
+            196_608,
             32_768,
             true,
-            true,
+            false,
         ),
         catalog_model(
             "dashscope",
@@ -3078,14 +3078,14 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        catalog_model("dashscope", "glm-5", "glm-5", 202_752, 16_384, false, false),
+        catalog_model("dashscope", "glm-5", "glm-5", 202_752, 16_384, true, false),
         catalog_model(
             "dashscope",
             "glm-4.7",
             "glm-4.7",
             202_752,
             16_384,
-            false,
+            true,
             false,
         ),
         catalog_model(
@@ -3094,7 +3094,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "kimi-k2.5",
             262_144,
             32_768,
-            false,
+            true,
             true,
         ),
     ]);
@@ -3602,6 +3602,40 @@ mod tests {
         assert!(catalog
             .get(&ModelRef::parse("dashscope-openai/MiniMax-M2.5").unwrap())
             .is_none());
+    }
+
+    #[test]
+    fn dashscope_catalog_tracks_current_modalities_and_reasoning() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("qwen3.5-plus", 1_000_000, true, true),
+            ("qwen3-coder-next", 262_144, true, false),
+            ("qwen3-coder-plus", 1_000_000, true, false),
+            ("glm-5", 202_752, true, false),
+            ("glm-4.7", 202_752, true, false),
+            ("kimi-k2.5", 262_144, true, true),
+            ("kimi-k2.6", 262_144, true, true),
+            ("MiniMax/MiniMax-M3", 196_608, true, false),
+        ];
+
+        for (model, context_window, reasoning, image_input) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("dashscope/{model}")).unwrap())
+                .unwrap();
+            assert_eq!(
+                metadata.context_window_tokens,
+                Some(context_window),
+                "{model} context window"
+            );
+            assert_eq!(
+                metadata.capabilities.supports_reasoning, reasoning,
+                "{model} reasoning"
+            );
+            assert_eq!(
+                metadata.capabilities.image_input, image_input,
+                "{model} image input"
+            );
+        }
     }
 
     #[test]
