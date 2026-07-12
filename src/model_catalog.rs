@@ -1120,18 +1120,27 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "gemini",
-            "gemini-3-pro",
-            "Gemini 3 Pro",
-            1_000_000,
+            "gemini-3.5-flash",
+            "Gemini 3.5 Flash",
+            1_048_576,
             65_536,
             true,
             true,
         ),
         catalog_model(
             "gemini",
-            "gemini-3-flash",
-            "Gemini 3 Flash",
-            1_000_000,
+            "gemini-3.1-pro-preview",
+            "Gemini 3.1 Pro Preview",
+            1_048_576,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "gemini",
+            "gemini-3.1-flash-lite",
+            "Gemini 3.1 Flash-Lite",
+            1_048_576,
             65_536,
             true,
             true,
@@ -1140,7 +1149,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "gemini",
             "gemini-2.5-pro",
             "Gemini 2.5 Pro",
-            1_000_000,
+            1_048_576,
             65_536,
             true,
             true,
@@ -1149,7 +1158,16 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "gemini",
             "gemini-2.5-flash",
             "Gemini 2.5 Flash",
-            1_000_000,
+            1_048_576,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "gemini",
+            "gemini-2.5-flash-lite",
+            "Gemini 2.5 Flash-Lite",
+            1_048_576,
             65_536,
             true,
             true,
@@ -2992,6 +3010,45 @@ mod tests {
             assert!(
                 catalog
                     .get(&ModelRef::new(ProviderId::anthropic(), removed_model))
+                    .is_none(),
+                "{removed_model} should not be registered"
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_catalog_tracks_current_generate_content_models() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+        ];
+
+        for model in expected {
+            let metadata = catalog
+                .get(&ModelRef::new(ProviderId::gemini(), model))
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+            assert_eq!(metadata.default_max_output_tokens, Some(65_536));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(65_536));
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert!(reasoning_effort_options(
+                &metadata.model_ref,
+                metadata.endpoint.as_ref(),
+                &metadata.capabilities,
+            )
+            .is_empty());
+        }
+
+        for removed_model in ["gemini-3-pro", "gemini-3-flash"] {
+            assert!(
+                catalog
+                    .get(&ModelRef::new(ProviderId::gemini(), removed_model))
                     .is_none(),
                 "{removed_model} should not be registered"
             );
