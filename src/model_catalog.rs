@@ -782,13 +782,51 @@ fn mirror_catalog_models(
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
         BuiltInModelMetadata {
-            model_ref: ModelRef::new(ProviderId::anthropic(), "claude-sonnet-4-6"),
-            display_name: "Claude Sonnet 4.6".into(),
-            description: "Anthropic Sonnet 4.6 runtime defaults mirrored from local Claude Code rules.".into(),
-            context_window_tokens: Some(200_000),
+            model_ref: ModelRef::new(ProviderId::anthropic(), "claude-fable-5"),
+            display_name: "Claude Fable 5".into(),
+            description: "Anthropic Claude Fable 5 runtime defaults aligned with the official model overview.".into(),
+            context_window_tokens: Some(1_000_000),
             effective_context_window_percent: 90,
-            auto_compact_token_limit: Some(180_000),
-            default_max_output_tokens: Some(32_000),
+            auto_compact_token_limit: Some(900_000),
+            default_max_output_tokens: Some(128_000),
+            max_output_tokens_upper_limit: Some(128_000),
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::anthropic(), "claude-opus-4-8"),
+            display_name: "Claude Opus 4.8".into(),
+            description: "Anthropic Claude Opus 4.8 runtime defaults aligned with the official model overview.".into(),
+            context_window_tokens: Some(1_000_000),
+            effective_context_window_percent: 90,
+            auto_compact_token_limit: Some(900_000),
+            default_max_output_tokens: Some(128_000),
+            max_output_tokens_upper_limit: Some(128_000),
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: None,
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::anthropic(), "claude-sonnet-5"),
+            display_name: "Claude Sonnet 5".into(),
+            description: "Anthropic Claude Sonnet 5 runtime defaults aligned with the official model overview.".into(),
+            context_window_tokens: Some(1_000_000),
+            effective_context_window_percent: 90,
+            auto_compact_token_limit: Some(900_000),
+            default_max_output_tokens: Some(128_000),
             max_output_tokens_upper_limit: Some(128_000),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
@@ -803,11 +841,11 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::anthropic(), "claude-haiku-4-5"),
             display_name: "Claude Haiku 4.5".into(),
-            description: "Anthropic Haiku 4.5 runtime defaults mirrored from local Claude Code rules.".into(),
+            description: "Anthropic Claude Haiku 4.5 runtime defaults aligned with the official model overview.".into(),
             context_window_tokens: Some(200_000),
             effective_context_window_percent: 90,
             auto_compact_token_limit: Some(180_000),
-            default_max_output_tokens: Some(32_000),
+            default_max_output_tokens: Some(64_000),
             max_output_tokens_upper_limit: Some(64_000),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
@@ -1051,42 +1089,6 @@ fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
 
 fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
-        catalog_model(
-            "anthropic",
-            "claude-opus-4-7",
-            "Claude Opus 4.7",
-            1_000_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "anthropic",
-            "claude-opus-4-6",
-            "Claude Opus 4.6",
-            1_000_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "anthropic",
-            "claude-opus-4-5",
-            "Claude Opus 4.5",
-            200_000,
-            64_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "anthropic",
-            "claude-sonnet-4-5",
-            "Claude Sonnet 4.5",
-            200_000,
-            64_000,
-            true,
-            true,
-        ),
         catalog_model(
             "openai",
             "gpt-5.6-sol",
@@ -2986,6 +2988,49 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_catalog_tracks_current_generally_available_models() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("claude-fable-5", 1_000_000, 128_000),
+            ("claude-opus-4-8", 1_000_000, 128_000),
+            ("claude-sonnet-5", 1_000_000, 128_000),
+            ("claude-haiku-4-5", 200_000, 64_000),
+        ];
+
+        for (model, context_window, max_output) in expected {
+            let metadata = catalog
+                .get(&ModelRef::new(ProviderId::anthropic(), model))
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(metadata.context_window_tokens, Some(context_window));
+            assert_eq!(metadata.default_max_output_tokens, Some(max_output));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(max_output));
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert!(reasoning_effort_options(
+                &metadata.model_ref,
+                metadata.endpoint.as_ref(),
+                &metadata.capabilities,
+            )
+            .is_empty());
+        }
+
+        for removed_model in [
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4-6",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::new(ProviderId::anthropic(), removed_model))
+                    .is_none(),
+                "{removed_model} should not be registered"
+            );
+        }
+    }
+
+    #[test]
     fn resolves_compatible_provider_model_policy() {
         let catalog = BuiltInModelCatalog::new();
         let policy = catalog.resolve_policy(
@@ -3380,7 +3425,7 @@ mod tests {
         let catalog = BuiltInModelCatalog::new();
         let mut overrides = HashMap::new();
         overrides.insert(
-            ModelRef::new(ProviderId::anthropic(), "claude-sonnet-4-6"),
+            ModelRef::new(ProviderId::anthropic(), "claude-haiku-4-5"),
             ModelRuntimeOverride {
                 prompt_budget_estimated_tokens: Some(32_000),
                 runtime_max_output_tokens: Some(4_096),
@@ -3388,7 +3433,7 @@ mod tests {
             },
         );
         let policy = catalog.resolve_policy(
-            &ModelRef::new(ProviderId::anthropic(), "claude-sonnet-4-6"),
+            &ModelRef::new(ProviderId::anthropic(), "claude-haiku-4-5"),
             &overrides,
             &HashMap::new(),
             None,
