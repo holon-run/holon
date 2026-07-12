@@ -77,3 +77,4 @@ Current decision notes:
 - [057 OpenAI Codex OAuth Refresh Boundary](./057-openai-codex-oauth-refresh-boundary.md)
 - [059 Bounded Performance Diagnostics](./059-bounded-performance-diagnostics.md)
 - [065 xAI Grok API and X Login Boundary](./065-xai-grok-api-and-login-boundary.md)
+- [066 Anthropic Model Catalog](./066-anthropic-model-catalog.md)
