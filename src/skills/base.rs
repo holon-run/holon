@@ -529,7 +529,7 @@ trait RemoteSkillInstaller {
         user_home: &Path,
         package: &str,
         skill: Option<&str>,
-    ) -> Result<Vec<String>>;
+    ) -> Result<Vec<RemoteSkillInstall>>;
 }
 
 struct RustRemoteSkillInstaller;
@@ -540,14 +540,38 @@ impl RemoteSkillInstaller for RustRemoteSkillInstaller {
         user_home: &Path,
         package: &str,
         skill: Option<&str>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<RemoteSkillInstall>> {
         if skill.is_none() && remote_package_ref_installs_all_skills(package) {
             let source = RemoteSkillSetSource::parse(package)?;
             return install_github_remote_skill_set(user_home, package, &source);
         }
         let source = RemoteSkillSource::parse(package, skill)?;
-        install_github_remote_skill(user_home, package, &source)?;
-        Ok(vec![source.skill_name])
+        let installed_path = install_github_remote_skill(user_home, package, &source)?;
+        Ok(vec![RemoteSkillInstall::from_source(
+            &source,
+            installed_path,
+        )])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteSkillInstall {
+    skill_name: String,
+    owner: String,
+    repo: String,
+    reference: String,
+    skill_path: String,
+}
+
+impl RemoteSkillInstall {
+    fn from_source(source: &RemoteSkillSource, skill_path: String) -> Self {
+        Self {
+            skill_name: source.skill_name.clone(),
+            owner: source.owner.clone(),
+            repo: source.repo.clone(),
+            reference: source.reference.clone(),
+            skill_path,
+        }
     }
 }
 
@@ -752,7 +776,7 @@ fn install_github_remote_skill(
     user_home: &Path,
     package: &str,
     source: &RemoteSkillSource,
-) -> Result<()> {
+) -> Result<String> {
     const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
         Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
 
@@ -767,7 +791,7 @@ fn install_github_remote_skill(
                 destination = %skills_root.join(&source.skill_name).display(),
                 "skill already installed globally; skipping re-install"
             );
-            return Ok(());
+            return Ok(source.path.clone());
         }
         Err(err) => return Err(err),
     };
@@ -807,7 +831,8 @@ fn install_github_remote_skill(
         &tmp,
         &destination,
         package,
-    );
+    )
+    .map(|()| source.path.clone());
 
     // Fallback: if the candidate path failed, search the full tree for the
     // actual skill directory. This handles non-flat catalog layouts where
@@ -815,7 +840,7 @@ fn install_github_remote_skill(
     // Only fall back for 404 (path not found); transient failures (timeout,
     // auth, rate limit) should propagate without an avoidable extra API call.
     let result = match result {
-        Ok(()) => Ok(()),
+        Ok(installed_path) => Ok(installed_path),
         Err(original_error) => {
             if !original_error
                 .downcast_ref::<RemoteSkillInstallFailed>()
@@ -847,7 +872,8 @@ fn install_github_remote_skill(
                         &tmp,
                         &destination,
                         package,
-                    ),
+                    )
+                    .map(|()| found_path),
                     None => Err(original_error),
                 },
                 Err(_) => Err(original_error),
@@ -864,7 +890,7 @@ fn install_github_remote_skill_set(
     user_home: &Path,
     package: &str,
     source: &RemoteSkillSetSource,
-) -> Result<Vec<String>> {
+) -> Result<Vec<RemoteSkillInstall>> {
     const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
         Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
 
@@ -925,8 +951,14 @@ fn install_github_remote_skill_set(
             path: skill_path,
             skill_name,
         };
-        install_github_remote_skill(user_home, package, &source)?;
-        installed.push(source.skill_name);
+        let installed_path = install_github_remote_skill(user_home, package, &source)?;
+        installed.push(RemoteSkillInstall {
+            skill_name: source.skill_name,
+            owner: source.owner,
+            repo: source.repo,
+            reference: source.reference,
+            skill_path: installed_path,
+        });
     }
     Ok(installed)
 }
@@ -1228,14 +1260,18 @@ impl RemoteSkillInstaller for RecordingRemoteSkillInstaller {
         user_home: &Path,
         package: &str,
         skill: Option<&str>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<RemoteSkillInstall>> {
         let skill_name = skill.unwrap_or(remote_package_default_skill_name(package)?);
         self.calls.lock().unwrap().push(RecordedRemoteSkillInstall {
             user_home: user_home.into(),
             package: package.into(),
             skill: skill.map(str::to_string),
         });
-        Ok(vec![skill_name.to_string()])
+        let source = RemoteSkillSource::parse(package, Some(skill_name))?;
+        Ok(vec![RemoteSkillInstall::from_source(
+            &source,
+            source.path.clone(),
+        )])
     }
 }
 
@@ -1249,7 +1285,7 @@ impl RemoteSkillInstaller for UnavailableRemoteSkillInstaller {
         _user_home: &Path,
         _package: &str,
         _skill: Option<&str>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<RemoteSkillInstall>> {
         bail!("remote installer unavailable")
     }
 }
@@ -1327,15 +1363,17 @@ fn install_skill_with_user_home_and_remote_installer(
             if let Some(skill) = skill {
                 validate_skill_name(skill)?;
             }
-            let skill_names = remote_installer.add_global(
+            let installed_skills = remote_installer.add_global(
                 user_home.context("remote skill install requires a user home")?,
                 package,
                 skill.as_deref(),
             )?;
-            let skill_name = skill_names
+            let user_home = user_home.context("remote skill install requires a user home")?;
+            sync_remote_skill_lock_entries(user_home, &installed_skills)?;
+            let skill_name = installed_skills
                 .first()
                 .context("remote skill install did not install any skills")?;
-            let path = resolve_user_skill_by_name(user_home, &skill_name)?;
+            let path = resolve_user_skill_by_name(Some(user_home), &skill_name.skill_name)?;
             materialize_local_skill(&skills_root, &path, mode)?
         }
     };
@@ -1375,14 +1413,14 @@ fn add_library_skill_with_remote_installer(
             if let Some(skill) = skill {
                 validate_skill_name(skill)?;
             }
-            let skill_names = remote_installer.add_global(user_home, package, skill.as_deref())?;
-            let first_skill_name = skill_names
+            let installed_skills =
+                remote_installer.add_global(user_home, package, skill.as_deref())?;
+            let first_skill_name = installed_skills
                 .first()
                 .context("remote skill install did not install any skills")?
+                .skill_name
                 .clone();
-            for skill_name in &skill_names {
-                sync_skill_lock_entry(user_home, skill_name)?;
-            }
+            sync_remote_skill_lock_entries(user_home, &installed_skills)?;
             first_skill_name
         }
     };
@@ -1969,7 +2007,12 @@ fn update_library_skills_with_remote_updater(
         let install_result = update_skill_destination(updater, &source, &destination);
         match install_result {
             Ok(()) => {
-                refresh_updated_lock_entry(&mut lock, &source.skill_name, &latest_hash)?;
+                refresh_updated_lock_entry(
+                    &mut lock,
+                    &source.skill_name,
+                    &source.skill_path,
+                    &latest_hash,
+                )?;
                 lock_changed = true;
                 let status = SkillLibraryUpdateStatus {
                     name,
@@ -2024,11 +2067,12 @@ impl LockedRemoteSkillSource {
         if !source_type.eq_ignore_ascii_case("github") {
             return None;
         }
-        let skill_path = object
-            .get("skillPath")
-            .and_then(|value| value.as_str())
-            .filter(|path| !path.is_empty())?
-            .to_string();
+        let skill_path = normalize_locked_skill_directory(
+            object
+                .get("skillPath")
+                .and_then(|value| value.as_str())
+                .filter(|path| !path.is_empty())?,
+        );
         let skill_folder_hash = object
             .get("skillFolderHash")
             .and_then(|value| value.as_str())
@@ -2058,6 +2102,28 @@ impl LockedRemoteSkillSource {
             skill_path,
             skill_folder_hash,
         })
+    }
+}
+
+fn normalize_locked_skill_directory(skill_path: &str) -> String {
+    let normalized = skill_path.replace('\\', "/");
+    let mut components = normalized.split('/').collect::<Vec<_>>();
+    if components
+        .last()
+        .is_some_and(|component| component.eq_ignore_ascii_case(SKILL_ENTRYPOINT))
+    {
+        components.pop();
+    }
+    components.join("/")
+}
+
+fn locked_skill_file_path(skill_directory: &str) -> String {
+    let normalized = skill_directory.replace('\\', "/");
+    let directory = normalized.trim_end_matches('/');
+    if directory.is_empty() {
+        SKILL_ENTRYPOINT.to_string()
+    } else {
+        format!("{directory}/{SKILL_ENTRYPOINT}")
     }
 }
 
@@ -2166,6 +2232,7 @@ fn temp_skill_update_dir(label: &str) -> PathBuf {
 fn refresh_updated_lock_entry(
     lock: &mut serde_json::Value,
     name: &str,
+    skill_directory: &str,
     latest_hash: &str,
 ) -> Result<()> {
     let skills = lock_skills_mut(lock)?;
@@ -2175,6 +2242,10 @@ fn refresh_updated_lock_entry(
     entry.insert(
         "skillFolderHash".into(),
         serde_json::Value::String(latest_hash.into()),
+    );
+    entry.insert(
+        "skillPath".into(),
+        serde_json::Value::String(locked_skill_file_path(skill_directory)),
     );
     entry.insert(
         "updatedAt".into(),
@@ -2233,6 +2304,66 @@ fn sync_skill_lock_entry(user_home: &Path, name: &str) -> Result<()> {
     let mut lock = read_skill_lock(user_home)?;
     upsert_skill_lock_entry(&mut lock, name, &destination)?;
     write_skill_lock(user_home, &lock)
+}
+
+fn sync_remote_skill_lock_entries(
+    user_home: &Path,
+    installed_skills: &[RemoteSkillInstall],
+) -> Result<()> {
+    let skills_root = user_library_skills_root(user_home);
+    let mut lock = read_skill_lock(user_home)?;
+    let object = lock
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("skill lock must contain a JSON object"))?;
+    object.insert("version".into(), serde_json::Value::Number(3.into()));
+
+    for installed in installed_skills {
+        validate_skill_name(&installed.skill_name)?;
+        let destination = skills_root.join(&installed.skill_name);
+        let folder_hash = hash_skill_folder(&destination)?;
+        upsert_remote_skill_lock_entry(&mut lock, installed, &folder_hash)?;
+    }
+    write_skill_lock(user_home, &lock)
+}
+
+fn upsert_remote_skill_lock_entry(
+    lock: &mut serde_json::Value,
+    installed: &RemoteSkillInstall,
+    folder_hash: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let skills = lock_skills_mut(lock)?;
+    let mut entry = skills
+        .remove(&installed.skill_name)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let installed_at = entry
+        .get("installedAt")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&now)
+        .to_string();
+    let source = format!("{}/{}", installed.owner, installed.repo);
+
+    entry.insert("name".into(), installed.skill_name.clone().into());
+    entry.insert("source".into(), source.clone().into());
+    entry.insert("sourceType".into(), "github".into());
+    entry.insert(
+        "sourceUrl".into(),
+        format!("https://github.com/{source}").into(),
+    );
+    entry.insert("ref".into(), installed.reference.clone().into());
+    entry.insert(
+        "skillPath".into(),
+        locked_skill_file_path(&installed.skill_path).into(),
+    );
+    entry.insert("skillFolderHash".into(), folder_hash.into());
+    entry.insert("installedAt".into(), installed_at.into());
+    entry.insert("updatedAt".into(), now.into());
+    skills.insert(
+        installed.skill_name.clone(),
+        serde_json::Value::Object(entry),
+    );
+    Ok(())
 }
 
 fn remove_skill_lock_entry(user_home: &Path, name: &str) -> Result<()> {
@@ -2595,6 +2726,26 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    fn parse_npx_v3_github_lock_entry(
+        lock: &serde_json::Value,
+        name: &str,
+    ) -> Option<(String, String, String, String)> {
+        let entry = lock.get("skills")?.get(name)?;
+        if !entry
+            .get("sourceType")?
+            .as_str()?
+            .eq_ignore_ascii_case("github")
+        {
+            return None;
+        }
+        Some((
+            entry.get("source")?.as_str()?.to_string(),
+            entry.get("sourceUrl")?.as_str()?.to_string(),
+            entry.get("ref")?.as_str()?.to_string(),
+            normalize_locked_skill_directory(entry.get("skillPath")?.as_str()?),
+        ))
     }
 
     #[test]
@@ -3428,6 +3579,58 @@ mod tests {
             fs::read_link(agent_home.join("skills/demo")).unwrap(),
             user_home.join(".agents/skills/demo")
         );
+        let lock = read_skill_lock(&user_home).unwrap();
+        assert_eq!(
+            lock.get("version").and_then(|value| value.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            parse_npx_v3_github_lock_entry(&lock, "demo"),
+            Some((
+                "vercel-labs/agent-skills".into(),
+                "https://github.com/vercel-labs/agent-skills".into(),
+                String::new(),
+                "skills/demo".into(),
+            ))
+        );
+        let entry = lock
+            .get("skills")
+            .and_then(|skills| skills.get("demo"))
+            .unwrap();
+        assert_eq!(
+            entry.get("skillPath").and_then(|value| value.as_str()),
+            Some("skills/demo/SKILL.md")
+        );
+        assert!(entry
+            .get("skillFolderHash")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty()));
+    }
+
+    #[test]
+    fn npx_v3_skill_file_paths_parse_as_holon_remote_directories() {
+        for (skill_path, expected) in [
+            ("skills/demo/SKILL.md", "skills/demo"),
+            ("skills/demo/skill.MD", "skills/demo"),
+            (r"skills\demo\SKILL.md", "skills/demo"),
+            ("SKILL.md", ""),
+            ("skills/demo", "skills/demo"),
+            ("skills/my-SKILL.md-assets", "skills/my-SKILL.md-assets"),
+        ] {
+            let entry = serde_json::json!({
+                "name": "demo",
+                "source": "vercel-labs/agent-skills",
+                "sourceType": "github",
+                "sourceUrl": "https://github.com/vercel-labs/agent-skills",
+                "skillPath": skill_path,
+                "skillFolderHash": "hash",
+                "ref": ""
+            });
+
+            let source = LockedRemoteSkillSource::from_lock_entry("demo", &entry).unwrap();
+
+            assert_eq!(source.skill_path, expected, "skillPath={skill_path:?}");
+        }
     }
 
     #[test]
@@ -3546,6 +3749,10 @@ mod tests {
         assert_eq!(
             entry.get("sourceType").and_then(|value| value.as_str()),
             Some("github")
+        );
+        assert_eq!(
+            entry.get("skillPath").and_then(|value| value.as_str()),
+            Some("skills/demo/SKILL.md")
         );
     }
 
