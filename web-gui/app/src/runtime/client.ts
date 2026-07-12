@@ -2059,7 +2059,7 @@ function reasoningEffortOptions(entry: ModelAvailabilityDto | RuntimeAvailableMo
   if (entry.policy?.reasoning_effort_options) {
     return entry.policy.reasoning_effort_options;
   }
-  return supportsReasoningEffort(entry) ? ["low", "medium", "high", "xhigh"] : [];
+  return supportsReasoningEffort(entry) ? ["low", "medium", "high"] : [];
 }
 
 function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption): number {

@@ -22,6 +22,7 @@ describe("projectModelOptions", () => {
         routeRef: "openai-codex@default/gpt-5.5",
         provider: "openai-codex",
         supportsReasoningEffort: true,
+        reasoningEffortOptions: ["low", "medium", "high"],
       }),
     ]);
   });
