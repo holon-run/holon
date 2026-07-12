@@ -82,3 +82,4 @@ Current decision notes:
 - [068 Gemini Model Catalog](./068-gemini-model-catalog.md)
 - [069 DeepSeek Model Catalog](./069-deepseek-model-catalog.md)
 - [070 MiniMax Model Catalog](./070-minimax-model-catalog.md)
+- [071 Moonshot Model Catalog](./071-moonshot-model-catalog.md)
