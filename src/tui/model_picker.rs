@@ -290,6 +290,7 @@ mod tests {
             available,
             unavailable_reason: (!available).then_some("credential_missing".into()),
             policy: policy(model, display_name, reasoning),
+            resolved_capabilities: None,
         }
     }
 

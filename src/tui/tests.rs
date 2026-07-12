@@ -332,6 +332,7 @@ fn sample_model_availability(
                 .unwrap_or_default(),
             source: crate::model_catalog::ModelMetadataSource::RemoteDiscovered,
         },
+        resolved_capabilities: None,
     }
 }
 

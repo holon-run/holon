@@ -41,6 +41,68 @@ pub struct ModelCapabilityFlags {
     pub interactive_exec: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelModality {
+    Text,
+    Image,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelReasoningCapability {
+    None,
+    Fixed,
+    Effort,
+    Budget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelIntrinsicCapabilities {
+    pub input_modalities: Vec<ModelModality>,
+    pub output_modalities: Vec<ModelModality>,
+    pub reasoning: ModelReasoningCapability,
+    pub parallel_tool_calls: bool,
+    pub interactive_exec: bool,
+}
+
+impl ModelCapabilityFlags {
+    pub fn intrinsic(&self) -> ModelIntrinsicCapabilities {
+        let mut input_modalities = vec![ModelModality::Text];
+        if self.image_input {
+            input_modalities.push(ModelModality::Image);
+        }
+        let mut output_modalities = vec![ModelModality::Text];
+        if self.image_generation {
+            output_modalities.push(ModelModality::Image);
+        }
+        ModelIntrinsicCapabilities {
+            input_modalities,
+            output_modalities,
+            reasoning: if self.supports_reasoning {
+                ModelReasoningCapability::Fixed
+            } else {
+                ModelReasoningCapability::None
+            },
+            parallel_tool_calls: self.parallel_tool_calls,
+            interactive_exec: self.interactive_exec,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelParameterSupport {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct EndpointModelPolicy {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted_parameters: Vec<ModelParameterSupport>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ModelCapabilityOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]

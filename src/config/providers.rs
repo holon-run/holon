@@ -49,6 +49,12 @@ pub enum ProviderTransportKind {
     GeminiGenerateContent,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransportCapabilities {
+    pub image_input: bool,
+    pub image_output: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProviderId(String);
 
@@ -286,6 +292,13 @@ impl ProviderTransportKind {
             self,
             Self::OpenAiCodexResponses | Self::OpenAiResponses | Self::OpenAiChatCompletions
         )
+    }
+
+    pub fn capabilities(self) -> TransportCapabilities {
+        TransportCapabilities {
+            image_input: self.supports_view_image_observation_generation(),
+            image_output: self.supports_image_generation(),
+        }
     }
 }
 
