@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **211 models**.
+across **40 endpoints** and **206 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -99,11 +99,6 @@ and capabilities.
 | `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 204800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 204800 | 131072 | ✅ | ✅ |
-| `byteplus` | `ark-code-latest` | `byteplus/ark-code-latest` | 256000 | 65536 | ✅ | — |
-| `byteplus` | `moonshotai/kimi-k2.5` | `byteplus/moonshotai/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
-| `byteplus` | `seed-1-8-251228` | `byteplus/seed-1-8-251228` | 256000 | 4096 | — | ✅ |
-| `byteplus` | `seed-2-0-pro-260215` | `byteplus/seed-2-0-pro-260215` | 256000 | 4096 | — | ✅ |
-| `byteplus` | `zai-org/glm-4.7` | `byteplus/zai-org/glm-4.7` | 204800 | 131072 | ✅ | — |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | `chutes/deepseek-ai/DeepSeek-V3.2-TEE` | 131072 | 65536 | ✅ | — |
 | `chutes` | `moonshotai/Kimi-K2.5-TEE` | `chutes/moonshotai/Kimi-K2.5-TEE` | 262144 | 65535 | ✅ | ✅ |
 | `chutes` | `openai/gpt-oss-120b-TEE` | `chutes/openai/gpt-oss-120b-TEE` | 131072 | 65536 | ✅ | — |

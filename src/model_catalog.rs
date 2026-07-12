@@ -1196,51 +1196,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "byteplus",
-            "seed-1-8-251228",
-            "Seed 1.8",
-            256_000,
-            4_096,
-            false,
-            true,
-        ),
-        catalog_model(
-            "byteplus",
-            "seed-2-0-pro-260215",
-            "Seed 2.0 Pro",
-            256_000,
-            4_096,
-            false,
-            true,
-        ),
-        catalog_model(
-            "byteplus",
-            "moonshotai/kimi-k2.5",
-            "Kimi K2.5",
-            262_144,
-            32_768,
-            true,
-            true,
-        ),
-        catalog_model(
-            "byteplus",
-            "zai-org/glm-4.7",
-            "GLM-4.7",
-            204_800,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "byteplus-coding",
-            "ark-code-latest",
-            "Ark Code Latest",
-            256_000,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
             "chutes",
             "zai-org/GLM-4.7-TEE",
             "zai-org/GLM-4.7-TEE",
@@ -3737,6 +3692,20 @@ mod tests {
             assert_eq!(metadata.capabilities.supports_reasoning, reasoning);
             assert_eq!(metadata.capabilities.image_input, image_input);
         }
+    }
+
+    #[test]
+    fn byteplus_catalog_does_not_infer_models_from_volcengine() {
+        let catalog = BuiltInModelCatalog::new();
+        let byteplus = ProviderId::parse("byteplus").unwrap();
+
+        assert!(
+            catalog
+                .list()
+                .into_iter()
+                .all(|entry| entry.model_ref.provider != byteplus),
+            "BytePlus model IDs and metadata require independent BytePlus documentation"
+        );
     }
 
     #[test]
