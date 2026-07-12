@@ -1200,16 +1200,18 @@ pub(crate) fn populate_built_in_provider_catalog(
         ],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_builtin_http_provider(
         catalog,
         "xiaomi",
+        ProviderTransportKind::OpenAiResponses,
         "https://api.xiaomimimo.com/v1",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
-    insert_openai_compatible_provider(
+    insert_builtin_http_provider(
         catalog,
         "xiaomi-token-plan",
+        ProviderTransportKind::OpenAiResponses,
         "https://token-plan-cn.xiaomimimo.com/v1",
         &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,

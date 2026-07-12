@@ -1504,10 +1504,7 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
     let xiaomi = providers
         .get(&ProviderId::parse("xiaomi").unwrap())
         .unwrap();
-    assert_eq!(
-        xiaomi.transport,
-        ProviderTransportKind::OpenAiChatCompletions
-    );
+    assert_eq!(xiaomi.transport, ProviderTransportKind::OpenAiResponses);
     assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
     assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
 
@@ -1516,7 +1513,7 @@ fn built_in_provider_registry_includes_compatible_provider_defaults() {
         .unwrap();
     assert_eq!(
         xiaomi_token_plan.transport,
-        ProviderTransportKind::OpenAiChatCompletions
+        ProviderTransportKind::OpenAiResponses
     );
     assert_eq!(
         xiaomi_token_plan.base_url,

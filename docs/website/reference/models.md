@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **207 models**.
+across **40 endpoints** and **204 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -61,8 +61,8 @@ used in existing `provider/model` refs and config shortcuts.
 | `volcengine` | `plan` | `volcengine-agent` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/plan/v3` | `VOLCENGINE_AGENT_API_KEY or VOLCENGINE_IMAGE_OPENAI_API_KEY` |
 | `volcengine` | `coding` | `volcengine-coding` | OpenAI Responses | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY` |
 | `xai` | `default` | `xai` | OpenAI Responses | `https://api.x.ai/v1` | `XAI_API_KEY` |
-| `xiaomi` | `default` | `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
-| `xiaomi` | `token-plan` | `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
+| `xiaomi` | `default` | `xiaomi` | OpenAI Responses | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
+| `xiaomi` | `token-plan` | `xiaomi-token-plan` | OpenAI Responses | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
 | `zai` | `default` | `zai` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
 
 ## Model Catalog
@@ -255,11 +255,8 @@ and capabilities.
 | `volcengine` | `kimi-k2.7-code` | `volcengine/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
 | `xai` | `grok-4.3` | `xai/grok-4.3` | 1000000 | — | ✅ | ✅ |
 | `xai` | `grok-4.5` | `xai/grok-4.5` | 500000 | — | ✅ | ✅ |
-| `xiaomi` | `mimo-v2-flash` | `xiaomi/mimo-v2-flash` | 262144 | 8192 | — | — |
-| `xiaomi` | `mimo-v2-omni` | `xiaomi/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
-| `xiaomi` | `mimo-v2-pro` | `xiaomi/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
-| `xiaomi` | `mimo-v2.5-pro` | `xiaomi/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
-| `xiaomi` | `mimo-v2.5-pro-ultraspeed` | `xiaomi/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
+| `xiaomi` | `mimo-v2.5` | `xiaomi/mimo-v2.5` | 1048576 | 131072 | ✅ | ✅ |
+| `xiaomi` | `mimo-v2.5-pro` | `xiaomi/mimo-v2.5-pro` | 1048576 | 131072 | ✅ | — |
 | `zai` | `glm-4-32b-0414-128k` | `zai/glm-4-32b-0414-128k` | 131072 | 16384 | — | — |
 | `zai` | `glm-4.5` | `zai/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `zai` | `glm-4.5-air` | `zai/glm-4.5-air` | 131072 | 98304 | ✅ | — |

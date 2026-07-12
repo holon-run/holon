@@ -89,3 +89,4 @@ Current decision notes:
 - [075 BytePlus Model Catalog](./075-byteplus-model-catalog.md)
 - [076 DashScope Model Catalog](./076-dashscope-model-catalog.md)
 - [077 StepFun Model Catalog](./077-stepfun-model-catalog.md)
+- [078 Xiaomi Model Catalog](./078-xiaomi-model-catalog.md)
