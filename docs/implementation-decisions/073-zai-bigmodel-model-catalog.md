@@ -14,6 +14,16 @@ service's current official overview rather than cloning one provider's list
 onto the other. Shared model names remain separate entries so later endpoint
 changes do not silently alter the other provider.
 
+Context limits also follow each service's own documentation. Z.AI publishes
+the affected shared models with decimal `200K` or `128K` limits, while
+BigModel documents the corresponding limits as `204,800` or `131,072`.
+Holon preserves that provider-specific distinction instead of normalizing the
+values merely because the model names match.
+
+This calibration removes the no-longer-listed `bigmodel/glm-4.5` and
+`bigmodel/glm-4.5v` model refs. Configurations using those refs must select a
+model that remains in BigModel's current official overview.
+
 Sources:
 
 - Z.AI model overview: `https://docs.z.ai/guides/overview/overview`
