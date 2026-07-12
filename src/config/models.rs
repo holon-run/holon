@@ -10,9 +10,15 @@ pub(crate) fn authenticated_model_route_candidates(
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
 ) -> Vec<ModelRouteRef> {
-    authenticated_model_candidates(providers, model_overrides)
-        .iter()
-        .map(ModelRouteRef::from_legacy_model_ref)
+    let catalog = BuiltInModelCatalog::default();
+    authenticated_provider_ids(providers)
+        .into_iter()
+        .filter_map(|provider| {
+            catalog.preferred_route_for_provider(&provider).or_else(|| {
+                preferred_override_model_for_provider(&provider, model_overrides)
+                    .map(|model_ref| ModelRouteRef::from_legacy_model_ref(&model_ref))
+            })
+        })
         .collect()
 }
 
@@ -139,8 +145,8 @@ impl ModelRouteRef {
             route_endpoint
         } else {
             catalog
-                .get(&model_ref)
-                .and_then(|metadata| metadata.endpoint.clone())
+                .preferred_route_for_model(&model_ref)
+                .map(|route| route.endpoint)
                 .unwrap_or(route_endpoint)
         };
         Self::new(route_provider, endpoint, model_ref.model)
@@ -376,8 +382,8 @@ impl RuntimeModelCatalog {
             model_ref.model.clone(),
         );
 
-        let policy = self.built_in_catalog.resolve_policy(
-            model_ref,
+        let policy = self.built_in_catalog.resolve_route_policy(
+            &route_ref,
             &self.model_overrides,
             &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
@@ -405,12 +411,20 @@ impl RuntimeModelCatalog {
         route_ref: &ModelRouteRef,
         requested_capability: ModelRouteCapability,
     ) -> Option<ResolvedModelRoute> {
-        let model_ref = route_ref.model_ref();
+        let canonical_model_ref = self
+            .built_in_catalog
+            .canonicalize_model_ref(&route_ref.model_ref());
+        let canonical_route_ref = ModelRouteRef::new(
+            route_ref.provider.clone(),
+            route_ref.endpoint.clone(),
+            canonical_model_ref.model.clone(),
+        );
         let endpoint = self.provider_endpoints.values().find(|endpoint| {
-            endpoint.provider == route_ref.provider && endpoint.endpoint == route_ref.endpoint
+            endpoint.provider == canonical_route_ref.provider
+                && endpoint.endpoint == canonical_route_ref.endpoint
         })?;
-        let policy = self.built_in_catalog.resolve_policy(
-            &model_ref,
+        let policy = self.built_in_catalog.resolve_route_policy(
+            &canonical_route_ref,
             &self.model_overrides,
             &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
@@ -423,8 +437,8 @@ impl RuntimeModelCatalog {
             return None;
         }
         Some(ResolvedModelRoute {
-            route_ref: route_ref.clone(),
-            model_ref,
+            route_ref: canonical_route_ref,
+            model_ref: canonical_model_ref,
             endpoint: endpoint.clone(),
             policy,
             capabilities,
@@ -433,22 +447,22 @@ impl RuntimeModelCatalog {
     }
 
     /// Resolve the provider endpoint config for a (possibly canonical) model ref.
-    /// Uses the model metadata's endpoint field when available to find the
-    /// correct endpoint among multiple endpoints under the same canonical provider.
+    /// Uses the canonical model's preferred route when available to find the
+    /// correct endpoint among multiple endpoints under the same provider.
     fn resolve_endpoint_for_model(
         &self,
         model_ref: &ModelRef,
     ) -> Option<&ResolvedProviderEndpointConfig> {
         let model_endpoint = self
             .built_in_catalog
-            .get(model_ref)
-            .and_then(|metadata| metadata.endpoint.as_ref());
+            .preferred_route_for_model(model_ref)
+            .map(|route| route.endpoint);
         match model_endpoint {
             // Model declares a specific non-default endpoint: find by (provider, endpoint)
             Some(endpoint) => self
                 .provider_endpoints
                 .values()
-                .find(|e| e.provider == model_ref.provider && &e.endpoint == endpoint),
+                .find(|e| e.provider == model_ref.provider && e.endpoint == endpoint),
             // Default endpoint or no catalog metadata: direct key lookup
             None => self.provider_endpoints.get(&model_ref.provider),
         }
@@ -498,9 +512,9 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         model_override: Option<&ModelRouteRef>,
     ) -> ResolvedRuntimeModelPolicy {
-        let model_ref = self.effective_model(model_override).model_ref();
-        self.built_in_catalog.resolve_policy(
-            &model_ref,
+        let route_ref = self.effective_model(model_override);
+        self.built_in_catalog.resolve_route_policy(
+            &route_ref,
             &self.model_overrides,
             &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
@@ -995,11 +1009,7 @@ pub(crate) fn resolve_vision_model(
     Ok(None)
 }
 
-pub(crate) fn authenticated_model_candidates(
-    providers: &ProviderRegistry,
-    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-) -> Vec<ModelRef> {
-    let catalog = BuiltInModelCatalog::default();
+fn authenticated_provider_ids(providers: &ProviderRegistry) -> Vec<ProviderId> {
     let mut provider_ids = providers
         .values()
         .filter(|provider| provider_has_usable_auth(provider))
@@ -1011,16 +1021,7 @@ pub(crate) fn authenticated_model_candidates(
             .then_with(|| left.as_str().cmp(right.as_str()))
     });
 
-    let mut candidates = provider_ids
-        .into_iter()
-        .filter_map(|provider| {
-            catalog
-                .preferred_model_for_provider(&provider)
-                .or_else(|| preferred_override_model_for_provider(&provider, model_overrides))
-        })
-        .collect::<Vec<_>>();
-    candidates.dedup();
-    candidates
+    provider_ids
 }
 
 pub(crate) fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {

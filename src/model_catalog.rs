@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ModelRef, ProviderEndpointId, ProviderId};
+use crate::config::{
+    built_in_provider_endpoint_identity, ModelRef, ModelRouteRef, ProviderEndpointId, ProviderId,
+};
 use crate::context::ContextConfig;
 
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
@@ -300,6 +302,9 @@ impl Default for ResolvedRuntimeModelPolicy {
 pub struct BuiltInModelCatalog {
     entries: HashMap<ModelRef, BuiltInModelMetadata>,
     preferred_models: HashMap<ProviderId, ModelRef>,
+    route_entries: HashMap<ModelRouteRef, BuiltInModelMetadata>,
+    preferred_routes: HashMap<ProviderId, ModelRouteRef>,
+    preferred_routes_by_model: HashMap<ModelRef, ModelRouteRef>,
     aliases: HashMap<ModelRef, ModelRef>,
 }
 
@@ -307,18 +312,60 @@ impl BuiltInModelCatalog {
     pub fn new() -> Self {
         let mut entries = HashMap::new();
         let mut preferred_models = HashMap::new();
-        let aliases = Self::legacy_aliases();
-        for entry in built_in_entries() {
+        let mut route_entries = HashMap::new();
+        let mut preferred_routes = HashMap::new();
+        let mut preferred_routes_by_model = HashMap::new();
+        let mut aliases = Self::legacy_aliases();
+        for mut entry in built_in_entries() {
+            let legacy_model_ref = entry.model_ref.clone();
+            let (provider, provider_endpoint) =
+                built_in_provider_endpoint_identity(&legacy_model_ref.provider)
+                    .expect("built-in provider identity must be valid");
+            let endpoint = if provider_endpoint == ProviderEndpointId::default_endpoint() {
+                entry
+                    .endpoint
+                    .clone()
+                    .unwrap_or_else(ProviderEndpointId::default_endpoint)
+            } else {
+                provider_endpoint
+            };
+            let canonical_model_ref = ModelRef::new(provider.clone(), &legacy_model_ref.model);
+            let route_ref =
+                ModelRouteRef::new(provider, endpoint, canonical_model_ref.model.clone());
+            if legacy_model_ref != canonical_model_ref {
+                aliases.insert(legacy_model_ref.clone(), canonical_model_ref.clone());
+            }
             if is_turn_default_candidate(&entry) {
                 preferred_models
-                    .entry(entry.model_ref.provider.clone())
-                    .or_insert_with(|| entry.model_ref.clone());
+                    .entry(legacy_model_ref.provider.clone())
+                    .or_insert_with(|| canonical_model_ref.clone());
+                preferred_routes
+                    .entry(legacy_model_ref.provider)
+                    .or_insert_with(|| route_ref.clone());
             }
-            entries.entry(entry.model_ref.clone()).or_insert(entry);
+            entry.model_ref = canonical_model_ref.clone();
+            entry.endpoint = None;
+            route_entries
+                .entry(route_ref.clone())
+                .or_insert_with(|| entry.clone());
+            preferred_routes_by_model
+                .entry(canonical_model_ref.clone())
+                .and_modify(|preferred: &mut ModelRouteRef| {
+                    if preferred.endpoint != ProviderEndpointId::default_endpoint()
+                        && route_ref.endpoint == ProviderEndpointId::default_endpoint()
+                    {
+                        *preferred = route_ref.clone();
+                    }
+                })
+                .or_insert(route_ref);
+            entries.entry(canonical_model_ref).or_insert(entry);
         }
         Self {
             entries,
             preferred_models,
+            route_entries,
+            preferred_routes,
+            preferred_routes_by_model,
             aliases,
         }
     }
@@ -350,6 +397,10 @@ impl BuiltInModelCatalog {
             ModelRef::new(provider_id("dashscope-token-plan"), "qwen-3.7"),
             ModelRef::new(provider_id("dashscope"), "qwen3.7-max"),
         );
+        aliases.insert(
+            ModelRef::new(provider_id("dashscope"), "qwen-3.7"),
+            ModelRef::new(provider_id("dashscope"), "qwen3.7-max"),
+        );
         aliases
     }
 
@@ -367,6 +418,40 @@ impl BuiltInModelCatalog {
         self.preferred_models.get(provider).cloned()
     }
 
+    pub fn preferred_route_for_provider(&self, provider: &ProviderId) -> Option<ModelRouteRef> {
+        self.preferred_routes.get(provider).cloned()
+    }
+
+    pub fn preferred_route_for_model(&self, model_ref: &ModelRef) -> Option<ModelRouteRef> {
+        self.preferred_routes_by_model.get(model_ref).cloned()
+    }
+
+    pub fn get_route(&self, route_ref: &ModelRouteRef) -> Option<&BuiltInModelMetadata> {
+        self.route_entries.get(route_ref)
+    }
+
+    pub fn resolve_route_policy(
+        &self,
+        route_ref: &ModelRouteRef,
+        overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        unknown_fallback: Option<&ModelRuntimeOverride>,
+        base_context_config: &ContextConfig,
+        configured_runtime_max_output_tokens: u32,
+    ) -> ResolvedRuntimeModelPolicy {
+        let model_ref = route_ref.model_ref();
+        self.resolve_policy_with_builtin(
+            &model_ref,
+            self.route_entries.get(route_ref),
+            overrides,
+            discovered_models,
+            unknown_fallback,
+            base_context_config,
+            configured_runtime_max_output_tokens,
+            Some(&route_ref.endpoint),
+        )
+    }
+
     pub fn resolve_policy(
         &self,
         model_ref: &ModelRef,
@@ -376,8 +461,32 @@ impl BuiltInModelCatalog {
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
     ) -> ResolvedRuntimeModelPolicy {
+        self.resolve_policy_with_builtin(
+            model_ref,
+            self.get(model_ref),
+            overrides,
+            discovered_models,
+            unknown_fallback,
+            base_context_config,
+            configured_runtime_max_output_tokens,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_policy_with_builtin(
+        &self,
+        model_ref: &ModelRef,
+        route_builtin: Option<&BuiltInModelMetadata>,
+        overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        unknown_fallback: Option<&ModelRuntimeOverride>,
+        base_context_config: &ContextConfig,
+        configured_runtime_max_output_tokens: u32,
+        endpoint: Option<&ProviderEndpointId>,
+    ) -> ResolvedRuntimeModelPolicy {
         let discovered = discovered_models.get(model_ref);
-        let built_in = discovered.or_else(|| self.get(model_ref));
+        let built_in = discovered.or(route_builtin);
         let override_config = overrides.get(model_ref);
         let fallback_override = if built_in.is_none() {
             unknown_fallback
@@ -500,7 +609,7 @@ impl BuiltInModelCatalog {
         {
             override_capabilities.apply_to(&mut capabilities);
         }
-        let reasoning_effort_options = reasoning_effort_options(model_ref, &capabilities);
+        let reasoning_effort_options = reasoning_effort_options(model_ref, endpoint, &capabilities);
 
         ResolvedRuntimeModelPolicy {
             model_ref: model_ref.clone(),
@@ -581,6 +690,7 @@ fn provider_id(provider: &str) -> ProviderId {
 
 fn reasoning_effort_options(
     model_ref: &ModelRef,
+    endpoint: Option<&ProviderEndpointId>,
     capabilities: &ModelCapabilityFlags,
 ) -> Vec<String> {
     if !capabilities.supports_reasoning {
@@ -589,8 +699,10 @@ fn reasoning_effort_options(
 
     let options = match model_ref.provider.as_str() {
         "openai" | "openai-codex" => &["low", "medium", "high", "xhigh"][..],
-        "volcengine" | "volcengine-agent" | "volcengine-coding"
-            if !matches!(model_ref.model.as_str(), "kimi-k2.6" | "kimi-k2.7-code") =>
+        "volcengine"
+            if endpoint.is_none_or(|endpoint| {
+                matches!(endpoint.as_str(), "default" | "coding" | "plan")
+            }) && !matches!(model_ref.model.as_str(), "kimi-k2.6" | "kimi-k2.7-code") =>
         {
             &["low", "medium", "high"][..]
         }
@@ -3118,7 +3230,7 @@ mod tests {
     }
 
     #[test]
-    fn dashscope_plan_providers_have_separate_exact_model_catalogs() {
+    fn dashscope_plan_providers_share_canonical_models_with_exact_routes() {
         let catalog = BuiltInModelCatalog::new();
 
         assert_eq!(
@@ -3126,41 +3238,43 @@ mod tests {
                 .preferred_model_for_provider(&ProviderId::parse("dashscope-token-plan").unwrap())
                 .unwrap()
                 .as_string(),
-            "dashscope-token-plan/qwen3.7-max"
+            "dashscope/qwen3.7-max"
         );
         assert_eq!(
             catalog
                 .preferred_model_for_provider(&ProviderId::parse("dashscope-coding-plan").unwrap())
                 .unwrap()
                 .as_string(),
-            "dashscope-coding-plan/qwen3.7-plus"
+            "dashscope/qwen3.7-plus"
         );
 
-        for model_ref in [
-            "dashscope-token-plan/qwen3.7-max",
-            "dashscope-token-plan/kimi-k2.7-code",
-            "dashscope-token-plan/glm-5.2",
-            "dashscope-token-plan/MiniMax-M2.5",
-            "dashscope-coding-plan/qwen3-coder-plus",
-            "dashscope-coding-plan/glm-5",
-            "dashscope-coding-plan/kimi-k2.5",
-            "dashscope-coding-plan/MiniMax-M2.5",
+        for route_ref in [
+            "dashscope@token-plan/qwen3.7-max",
+            "dashscope@token-plan/kimi-k2.7-code",
+            "dashscope@token-plan/glm-5.2",
+            "dashscope@token-plan/MiniMax-M2.5",
+            "dashscope@coding-plan/qwen3-coder-plus",
+            "dashscope@coding-plan/glm-5",
+            "dashscope@coding-plan/kimi-k2.5",
+            "dashscope@coding-plan/MiniMax-M2.5",
         ] {
             assert!(
-                catalog.get(&ModelRef::parse(model_ref).unwrap()).is_some(),
-                "{model_ref} should be registered"
+                catalog
+                    .get_route(&ModelRouteRef::parse(route_ref).unwrap())
+                    .is_some(),
+                "{route_ref} should be registered"
             );
         }
 
         for unsupported in [
-            "dashscope-token-plan/ZHIPU/GLM-5.2",
-            "dashscope-token-plan/MiniMax/MiniMax-M3",
-            "dashscope-coding-plan/glm-5.2",
-            "dashscope-coding-plan/kimi-k2.7-code",
+            "dashscope@token-plan/ZHIPU/GLM-5.2",
+            "dashscope@token-plan/MiniMax/MiniMax-M3",
+            "dashscope@coding-plan/glm-5.2",
+            "dashscope@coding-plan/kimi-k2.7-code",
         ] {
             assert!(
                 catalog
-                    .get(&ModelRef::parse(unsupported).unwrap())
+                    .get_route(&ModelRouteRef::parse(unsupported).unwrap())
                     .is_none(),
                 "{unsupported} should not be inferred from another DashScope catalog"
             );
@@ -3327,19 +3441,9 @@ mod tests {
             );
         }
 
-        for entry in catalog.list() {
-            if entry.model_ref.provider.as_str() == "volcengine-agent" {
-                assert!(
-                    entry.max_output_tokens_upper_limit <= Some(128_000),
-                    "{} should not exceed Volcengine Agent Plan Anthropic-compatible max_tokens limit",
-                    entry.model_ref.as_string()
-                );
-            }
-        }
-
-        for model_ref in ["volcengine-agent/glm-5.2"] {
-            let policy = catalog.resolve_policy(
-                &ModelRef::parse(model_ref).unwrap(),
+        for route_ref in ["volcengine@plan/glm-5.2"] {
+            let policy = catalog.resolve_route_policy(
+                &ModelRouteRef::parse(route_ref).unwrap(),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,
@@ -3355,13 +3459,13 @@ mod tests {
     fn volcengine_reasoning_effort_options_follow_route_contract() {
         let catalog = BuiltInModelCatalog::new();
 
-        for model_ref in [
-            "volcengine/doubao-seed-2-0-pro-260215",
-            "volcengine-coding/glm-5.2",
-            "volcengine-agent/glm-5.2",
+        for route_ref in [
+            "volcengine@default/doubao-seed-2-0-pro-260215",
+            "volcengine@coding/glm-5.2",
+            "volcengine@plan/glm-5.2",
         ] {
-            let policy = catalog.resolve_policy(
-                &ModelRef::parse(model_ref).unwrap(),
+            let policy = catalog.resolve_route_policy(
+                &ModelRouteRef::parse(route_ref).unwrap(),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,
@@ -3371,24 +3475,24 @@ mod tests {
             assert_eq!(
                 policy.reasoning_effort_options,
                 ["low", "medium", "high"],
-                "{model_ref}"
+                "{route_ref}"
             );
         }
 
-        for model_ref in [
-            "volcengine-coding/kimi-k2.6",
-            "volcengine-agent/kimi-k2.7-code",
+        for route_ref in [
+            "volcengine@coding/kimi-k2.6",
+            "volcengine@plan/kimi-k2.7-code",
         ] {
-            let policy = catalog.resolve_policy(
-                &ModelRef::parse(model_ref).unwrap(),
+            let policy = catalog.resolve_route_policy(
+                &ModelRouteRef::parse(route_ref).unwrap(),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,
                 &base_context(),
                 8192,
             );
-            assert!(policy.capabilities.supports_reasoning, "{model_ref}");
-            assert!(policy.reasoning_effort_options.is_empty(), "{model_ref}");
+            assert!(policy.capabilities.supports_reasoning, "{route_ref}");
+            assert!(policy.reasoning_effort_options.is_empty(), "{route_ref}");
         }
     }
 

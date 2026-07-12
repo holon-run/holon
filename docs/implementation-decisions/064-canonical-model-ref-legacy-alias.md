@@ -1,28 +1,34 @@
-# Canonical Model Ref with Legacy Alias
+# Canonical Model Catalog with Route Metadata
 
 ## Choice
 
-Built-in image generation models that belong to a multi-endpoint provider
-(e.g. Volcengine Seedream under the `image-openai` endpoint) are now cataloged
-under their **canonical provider id** (`volcengine`) with an explicit `endpoint`
-field, instead of under the legacy flattened provider id
-(`volcengine-image-openai`).
+Built-in models are cataloged once under their **canonical provider id**.
+Endpoint- and plan-specific availability, limits, capabilities, and preferred
+selection are indexed separately by `ModelRouteRef` (`provider@endpoint/model`).
+This applies both to image routes such as Volcengine `image-openai` and to
+flattened plan providers such as `volcengine-agent`,
+`dashscope-token-plan`, and `xiaomi-token-plan`.
 
 A legacy alias map (`BuiltInModelCatalog::legacy_aliases`) transparently
 resolves old model refs like `volcengine-image-openai/doubao-seedream-5.0-lite`
-to the canonical form `volcengine/doubao-seedream-5.0-lite` inside
-`resolve_model_route`, so existing user configs continue to work without
-manual migration.
+to the canonical form `volcengine/doubao-seedream-5.0-lite`. Catalog
+construction also derives aliases for flattened built-in provider ids, while
+preserving their exact endpoint as a route. Existing user configs therefore
+continue to resolve without manual migration.
 
 ## Reason
 
-The catalog, docgen, and settings UI should all present one canonical
-provider identity. Keeping the legacy id as a separate catalog entry created
-provider sprawl and made the three-column (provider / endpoint / legacy)
-identity visible only in docs, not in the runtime model ref itself.
+The catalog, diagnostics, and settings surfaces should present one canonical
+model identity. Keeping plan or endpoint ids as separate catalog providers
+duplicates intrinsic model metadata and can silently mix route-specific limits
+when the same model is available through multiple endpoints. Separate route
+metadata keeps model identity stable while retaining exact transport and plan
+contracts.
 
 ## Preserved boundary
 
 Legacy provider ids remain valid as configuration keys and as model ref input;
-they are normalized to canonical form at route resolution time. No user-facing
-breaking change; old configs work unchanged.
+they are normalized to canonical form at route resolution time. Explicit route
+selection continues to use `provider@endpoint/model`, and legacy implicit
+selection uses the catalog's preferred route for that provider or model. No
+user-facing breaking change; old configs and selectable routes work unchanged.
