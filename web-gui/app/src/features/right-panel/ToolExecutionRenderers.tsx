@@ -315,7 +315,12 @@ function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const width = nestedValue(result, ["width"]) ?? nestedValue(dimensions, ["width"]);
   const height = nestedValue(result, ["height"]) ?? nestedValue(dimensions, ["height"]);
   const path = nestedValue(record.input, ["path", "image_path"]) ?? nestedValue(result, ["path", "image_path"]);
-  const observation = nestedText(result, ["visual_observation", "observation", "text_preview"]);
+  const observationObj = nestedValue(result, ["observation", "visual_observation"]);
+  const observation = nestedText(result, ["text_preview"])
+    || nestedText(result, ["visual_observation"])
+    || nestedText(result, ["observation"])
+    || (isRecord(observationObj) ? nestedText(observationObj, ["summary"]) : "")
+    || (isRecord(observationObj) ? textField(observationObj) : "");
   const summary = textField(result?.summary_text) || record.summary;
 
   return (
@@ -339,7 +344,9 @@ function GenerateImageRenderer({ record }: { record: RuntimeToolExecutionRecord 
   const size = nestedValue(record.input, ["size"]) ?? nestedValue(result, ["size"]);
   const background = nestedValue(record.input, ["background"]) ?? nestedValue(result, ["background"]);
   const outputFormat = nestedValue(record.input, ["output_format"]) ?? nestedValue(result, ["output_format"]);
-  const imageUri = nestedValue(result, ["image_uri", "uri", "path"]);
+  const images = arrayRecords(nestedValue(result, ["images"]));
+  const firstImageUri = images.length > 0 ? nestedText(images[0], ["uri", "path"]) : "";
+  const imageUri = nestedValue(result, ["image_uri", "uri", "path"]) ?? firstImageUri;
   const summary = textField(result?.summary_text) || record.summary;
 
   return (
@@ -361,9 +368,9 @@ function WebSearchRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const { t } = useTranslation();
   const input = isRecord(record.input) ? record.input : {};
   const output = unwrapToolOutput(record.output ?? record.result);
-  const results = arrayRecords(nestedValue(output, ["results"]));
+  const results = arrayRecords(nestedValue(output, ["results"]) ?? nestedValue(output, ["citations"]));
   const query = nestedValue(output, ["query"]) ?? nestedValue(input, ["query", "search_query", "q"]);
-  const provider = nestedValue(output, ["provider"]);
+  const provider = nestedValue(output, ["provider"]) ?? nestedValue(output, ["backend"]);
   const mode = nestedValue(output, ["mode"]);
   const truncated = nestedValue(output, ["truncated"]) === true;
 
@@ -433,8 +440,9 @@ function MemorySearchRenderer({ record }: { record: RuntimeToolExecutionRecord }
       {results.slice(0, 15).map((item, index) => {
         const sourceRef = nestedText(item, ["source_ref"]) || t("inspector.unknownSource");
         const score = nestedText(item, ["score"]);
-        const preview = nestedText(item, ["preview"]);
-        const text = [score ? `score: ${score}` : "", preview ? truncatedText(preview, 300) : ""].filter(Boolean).join("\n");
+        const title = nestedText(item, ["title"]);
+        const preview = nestedText(item, ["preview"]) || nestedText(item, ["snippet"]);
+        const text = [title, score ? `score: ${score}` : "", preview ? truncatedText(preview, 300) : ""].filter(Boolean).join("\n");
         return <OutputField key={index} label={`${index + 1}. ${sourceRef}`} value={text} />;
       })}
       {record.error ? <OutputField label={t("inspector.error")} value={textField(record.error)} variant="error" /> : null}
@@ -578,15 +586,18 @@ function XSearchRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
 function ListModelProvidersRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const { t } = useTranslation();
   const output = unwrapToolOutput(record.output ?? record.result);
-  const providers = arrayRecords(nestedValue(output, ["providers"]) ?? nestedValue(output, ["model_providers"]));
+  const providers = arrayRecords(
+    nestedValue(output, ["providers"]) ?? nestedValue(output, ["model_providers"]) ?? nestedValue(output, ["model_discovery_cache"]),
+  );
 
   return (
     <>
       <SimpleField label={t("inspector.results")} value={t("inspector.resultsCount", { count: providers.length })} />
       {providers.map((provider, index) => {
         const id = nestedText(provider, ["id"]);
+        const providerName = nestedText(provider, ["provider"]);
         const displayName = nestedText(provider, ["display_name"]);
-        const availability = nestedText(provider, ["availability"]);
+        const availability = nestedText(provider, ["availability"]) ?? nestedText(provider, ["state"]);
         const family = nestedText(provider, ["provider_family"]);
         const providerConfigured = nestedValue(provider, ["provider_configured"]);
         const credentialConfigured = nestedValue(provider, ["credential_configured"]);
@@ -597,7 +608,7 @@ function ListModelProvidersRenderer({ record }: { record: RuntimeToolExecutionRe
         return (
           <section key={index} className="tool-detail-result-card">
             <div className="tool-detail-result-title">
-              <span>{displayName || id || "—"}</span>
+              <span>{displayName || id || providerName || "—"}</span>
               {availability ? <span className={`tool-detail-badge tool-detail-badge--${availability === "available" ? "ok" : "warn"}`}>{availability}</span> : null}
             </div>
             {id ? <p className="tool-detail-result-snippet">{id}</p> : null}
