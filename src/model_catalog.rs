@@ -3697,13 +3697,16 @@ mod tests {
     #[test]
     fn byteplus_catalog_does_not_infer_models_from_volcengine() {
         let catalog = BuiltInModelCatalog::new();
-        let byteplus = ProviderId::parse("byteplus").unwrap();
+        let byteplus_providers = [
+            ProviderId::parse("byteplus").unwrap(),
+            ProviderId::parse("byteplus-coding").unwrap(),
+        ];
 
         assert!(
             catalog
                 .list()
                 .into_iter()
-                .all(|entry| entry.model_ref.provider != byteplus),
+                .all(|entry| !byteplus_providers.contains(&entry.model_ref.provider)),
             "BytePlus model IDs and metadata require independent BytePlus documentation"
         );
     }
