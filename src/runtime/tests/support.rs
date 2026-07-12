@@ -316,6 +316,7 @@ impl AgentProvider for OneToolThenTextProvider {
                     "cmd": "printf 'ok'",
                     "shell": "sh"
                 }),
+                kind: crate::provider::ModelToolCallKind::Function,
             }]
         } else {
             vec![ModelBlock::Text {
@@ -579,6 +580,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "cmd": "printf 'first-round-output-should-not-stay-exact'",
                             "yield_time_ms": 30000
                         }),
+                        kind: crate::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -601,6 +603,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "cmd": "printf 'second-round-output-should-remain-exact'",
                             "yield_time_ms": 30000
                         }),
+                        kind: crate::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -623,6 +626,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "cmd": "printf 'third-round-output-should-remain-exact'",
                             "yield_time_ms": 30000
                         }),
+                        kind: crate::provider::ModelToolCallKind::Function,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -673,6 +677,7 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
                     input: serde_json::json!({
                         "cmd": "printf 'baseline-over-budget'"
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: Some("tool_use".into()),
                 input_tokens: 0,
@@ -708,6 +713,7 @@ impl AgentProvider for SleepOnlyToolProvider {
                     "reason": "waiting for review",
                     "duration_ms": 250
                 }),
+                kind: crate::provider::ModelToolCallKind::Function,
             }],
             stop_reason: None,
             input_tokens: 10,
@@ -743,6 +749,7 @@ impl AgentProvider for WaitForOnlyToolProvider {
                     "resource": "github:holon-run/holon#1939",
                     "recheck_after_ms": 1800000
                 }),
+                kind: crate::provider::ModelToolCallKind::Function,
             }],
             stop_reason: None,
             input_tokens: 10,
@@ -768,6 +775,7 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                     input: serde_json::json!({
                         "prompt": "removed public task surface"
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 10,
@@ -824,6 +832,7 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                     input: serde_json::json!({
                         "patch": "--- /dev/null\n+++ b/app.txt\n@@ -0,0 +1 @@\n+should-not-be-written\n"
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: Some("max_tokens".into()),
                 input_tokens: 20,
@@ -1121,6 +1130,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                     input: serde_json::json!({
                         "patch": "--- a/app.txt\n+++ b/app.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n"
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 },
                 ModelBlock::ToolUse {
                     id: "verify".into(),
@@ -1129,6 +1139,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                         "cmd": "printf 'tests passed'",
                         "shell": "sh"
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 },
             ],
             2 => vec![ModelBlock::ToolUse {
@@ -1138,11 +1149,13 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                     "cmd": "cat app.txt",
                     "workdir": "."
                 }),
+                kind: crate::provider::ModelToolCallKind::Function,
             }],
             _ => vec![ModelBlock::ToolUse {
                 id: "agent".into(),
                 name: "AgentGet".into(),
                 input: serde_json::json!({}),
+                kind: crate::provider::ModelToolCallKind::Function,
             }],
         };
 
@@ -1173,6 +1186,7 @@ impl AgentProvider for SkillReadProvider {
                     "cmd": "cat .agents/skills/demo/SKILL.md",
                     "workdir": "."
                 }),
+                kind: crate::provider::ModelToolCallKind::Function,
             }],
             _ => vec![ModelBlock::Text {
                 text: "Skill loaded and applied.".into(),
@@ -1203,6 +1217,7 @@ impl AgentProvider for SkillActivationCommandProvider {
                 id: "activate-skill".into(),
                 name: self.tool_name.into(),
                 input: self.input.clone(),
+                kind: crate::provider::ModelToolCallKind::Function,
             }],
             _ => vec![ModelBlock::Text {
                 text: "Skill activation observed.".into(),

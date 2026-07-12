@@ -20,8 +20,8 @@ use crate::{
         builtin_web_search_probe_turn_request,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
         AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage,
-        ModelBlock, PromptContentBlock, ProviderBuiltinWebSearchCapability, ProviderCacheUsage,
-        ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
+        ModelBlock, ModelToolCallKind, PromptContentBlock, ProviderBuiltinWebSearchCapability,
+        ProviderCacheUsage, ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
         ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest, ProviderTurnRequest,
         ProviderTurnResponse,
@@ -1409,7 +1409,9 @@ fn conversation_message_to_api(
                                     "type": "text",
                                     "text": text,
                                 }),
-                                ModelBlock::ToolUse { id, name, input } => json!({
+                                ModelBlock::ToolUse {
+                                    id, name, input, ..
+                                } => json!({
                                     "type": "tool_use",
                                     "id": id,
                                     "name": name,
@@ -1603,6 +1605,7 @@ fn api_response_block_to_model(
                 id: block.id?,
                 name,
                 input,
+                kind: ModelToolCallKind::Function,
             })
         }
         "thinking" => Some(ModelBlock::Thinking {
@@ -2115,7 +2118,9 @@ fn hash_model_block(block: &ModelBlock) -> String {
             let value = json!({ "type": "redacted_thinking", "data": data });
             sha256_hex(canonical_json(&value).as_bytes())
         }
-        ModelBlock::ToolUse { id, name, input } => {
+        ModelBlock::ToolUse {
+            id, name, input, ..
+        } => {
             let value = json!({
                 "type": "tool_use",
                 "id": id,
@@ -2241,6 +2246,7 @@ mod tests {
                 id: "toolu_1".to_string(),
                 name: "ExecCommand".to_string(),
                 input: json!({ "cmd": "printf ok" }),
+                kind: crate::provider::ModelToolCallKind::Function,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {
                 tool_use_id: "toolu_1".to_string(),
@@ -2487,6 +2493,7 @@ mod tests {
                 id: "toolu_1".to_string(),
                 name: "ExecCommand".to_string(),
                 input: json!({ "cmd": "printf ok" }),
+                kind: crate::provider::ModelToolCallKind::Function,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {
                 tool_use_id: "toolu_1".to_string(),

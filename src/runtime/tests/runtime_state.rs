@@ -198,6 +198,7 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
                         "reason": "wait for operator interjection",
                         "duration_ms": 1,
                     }),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 }],
                 stop_reason: None,
                 input_tokens: 10,

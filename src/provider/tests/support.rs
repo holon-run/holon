@@ -185,6 +185,7 @@ pub fn provider_continuation_request_with_prompt_frame() -> ProviderTurnRequest 
             id: "exec-1".into(),
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
+            kind: crate::provider::ModelToolCallKind::Function,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-1".into(),

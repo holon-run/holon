@@ -15,7 +15,9 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse};
+use super::{
+    AgentProvider, ModelBlock, ModelToolCallKind, ProviderTurnRequest, ProviderTurnResponse,
+};
 
 #[derive(Debug, Clone)]
 pub enum ScriptedProviderStep {
@@ -50,6 +52,7 @@ impl ScriptedProviderStep {
             id: id.into(),
             name: name.into(),
             input,
+            kind: ModelToolCallKind::Function,
         }])
     }
 

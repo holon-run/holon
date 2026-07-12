@@ -10,8 +10,8 @@ use crate::{
     config::ProviderRuntimeConfig,
     provider::{
         http_trace::ProviderHttpTrace, AgentProvider, ConversationMessage, ModelBlock,
-        ProviderCacheUsage, ProviderPromptCapability, ProviderRequestDiagnostics,
-        ProviderTurnRequest, ProviderTurnResponse,
+        ModelToolCallKind, ProviderCacheUsage, ProviderPromptCapability,
+        ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
     },
 };
 
@@ -459,6 +459,7 @@ fn gemini_parts_to_model_blocks(parts: Vec<GeminiPart>) -> Vec<ModelBlock> {
                 id: gemini_tool_use_id(&call.name, index),
                 name: call.name,
                 input: call.args,
+                kind: ModelToolCallKind::Function,
             })
         })
         .collect()

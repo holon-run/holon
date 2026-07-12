@@ -245,6 +245,7 @@ fn fixture_round_with_tool(
             id: call.id.clone(),
             name: call.name.clone(),
             input,
+            kind: crate::provider::ModelToolCallKind::Function,
         },
     ];
     let text_blocks = vec![text.to_string()];
@@ -271,6 +272,7 @@ fn fixture_tool_only_round_with_result(round: usize, follow_up: &str) -> TurnRou
         id: call.id.clone(),
         name: call.name.clone(),
         input: call.input.clone(),
+        kind: crate::provider::ModelToolCallKind::Function,
     }];
     let tool_results = vec![ToolResultBlock {
         tool_use_id: call.id.clone(),
@@ -1238,6 +1240,7 @@ fn context_management_eligibility_keeps_recent_and_excludes_risky_results() {
                     id: format!("call_{index}"),
                     name: (*name).to_string(),
                     input: serde_json::json!({}),
+                    kind: crate::provider::ModelToolCallKind::Function,
                 })
                 .collect(),
         ),
@@ -1347,6 +1350,7 @@ fn fixture_round_with_large_tool_result(
             id: call.id.clone(),
             name: call.name.clone(),
             input: call.input.clone(),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
     ];
     let tool_results = vec![ToolResultBlock {
@@ -2020,6 +2024,7 @@ fn degraded_round_messages_no_trimmable_returns_exact() {
             id: call.id.clone(),
             name: call.name.clone(),
             input: call.input.clone(),
+            kind: crate::provider::ModelToolCallKind::Function,
         }],
         text_blocks: Vec::new(),
         tool_calls: vec![call],
@@ -2180,6 +2185,7 @@ fn completion_report_texts_captures_text_before_complete_work_item() {
             id: "call_cw1".to_string(),
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_123"}),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
     ];
 
@@ -2203,6 +2209,7 @@ fn completion_report_texts_skips_thinking_blocks() {
             id: "call_cw2".to_string(),
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_456"}),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
     ];
 
@@ -2222,6 +2229,7 @@ fn completion_report_texts_clears_pending_on_non_complete_tool() {
             id: "call_exec".to_string(),
             name: "ExecCommand".to_string(),
             input: serde_json::json!({"cmd": "echo hi"}),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
         ModelBlock::Text {
             text: "Completion report.".to_string(),
@@ -2230,6 +2238,7 @@ fn completion_report_texts_clears_pending_on_non_complete_tool() {
             id: "call_cw3".to_string(),
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_789"}),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
     ];
 
@@ -2249,6 +2258,7 @@ fn completion_report_texts_multiple_complete_work_items() {
             id: "call_cw_a".to_string(),
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_a"}),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
         ModelBlock::Text {
             text: "Second report.".to_string(),
@@ -2257,6 +2267,7 @@ fn completion_report_texts_multiple_complete_work_items() {
             id: "call_cw_b".to_string(),
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_b"}),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
     ];
 
@@ -2274,6 +2285,7 @@ fn completion_report_texts_empty_when_no_text_precedes() {
         id: "call_cw_empty".to_string(),
         name: "CompleteWorkItem".to_string(),
         input: serde_json::json!({"work_item_id": "work_x"}),
+        kind: crate::provider::ModelToolCallKind::Function,
     }];
 
     let reports = completion_report_texts_by_tool_id(&blocks);

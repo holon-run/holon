@@ -153,6 +153,7 @@ fn chat_completion_message_conversion_handles_tool_calls_in_assistant_message() 
                 id: "call_123".to_string(),
                 name: "get_current_time".to_string(),
                 input: json!({}),
+                kind: crate::provider::ModelToolCallKind::Function,
             },
         ]),
     ];
@@ -185,11 +186,13 @@ fn chat_completion_message_conversion_handles_multiple_tool_calls() {
                 id: "call_1".to_string(),
                 name: "search_news".to_string(),
                 input: json!({"query": "recent"}),
+                kind: crate::provider::ModelToolCallKind::Function,
             },
             ModelBlock::ToolUse {
                 id: "call_2".to_string(),
                 name: "get_weather".to_string(),
                 input: json!({"location": "Paris"}),
+                kind: crate::provider::ModelToolCallKind::Function,
             },
         ]),
     ];
@@ -225,6 +228,7 @@ fn chat_completion_message_conversion_handles_assistant_text_with_tool_calls() {
                 id: "call_calc".to_string(),
                 name: "calculator".to_string(),
                 input: json!({"expression": "2+2"}),
+                kind: crate::provider::ModelToolCallKind::Function,
             },
         ]),
     ];
@@ -292,7 +296,9 @@ fn parse_chat_completion_response_extracts_text_and_tool_calls() {
 
     // Second block should be tool call
     match &parsed.response.blocks[1] {
-        ModelBlock::ToolUse { id, name, input } => {
+        ModelBlock::ToolUse {
+            id, name, input, ..
+        } => {
             assert_eq!(id, "call_1");
             assert_eq!(name, "search");
             assert_eq!(input.to_string(), r#"{"query":"test"}"#);
@@ -338,7 +344,9 @@ fn parse_chat_completion_response_handles_empty_arguments() {
         .expect("should parse response with empty arguments");
 
     match &parsed.response.blocks[0] {
-        ModelBlock::ToolUse { id, name, input } => {
+        ModelBlock::ToolUse {
+            id, name, input, ..
+        } => {
             assert_eq!(id, "call_noargs");
             assert_eq!(name, "get_status");
             assert_eq!(input.to_string(), "{}"); // Empty arguments should become empty object
@@ -356,6 +364,7 @@ fn chat_completion_message_conversion_handles_tool_results() {
             id: "call_time".to_string(),
             name: "get_current_time".to_string(),
             input: json!({}),
+            kind: crate::provider::ModelToolCallKind::Function,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "call_time".to_string(),
@@ -388,11 +397,13 @@ fn chat_completion_message_conversion_handles_multiple_tool_results() {
                 id: "call_1".to_string(),
                 name: "search_news".to_string(),
                 input: json!({"query": "test"}),
+                kind: crate::provider::ModelToolCallKind::Function,
             },
             ModelBlock::ToolUse {
                 id: "call_2".to_string(),
                 name: "get_weather".to_string(),
                 input: json!({"location": "Paris"}),
+                kind: crate::provider::ModelToolCallKind::Function,
             },
         ]),
         ConversationMessage::UserToolResults(vec![
@@ -440,6 +451,7 @@ fn chat_completion_handles_multi_turn_conversation_with_tools() {
             id: "call_calc".to_string(),
             name: "calculator".to_string(),
             input: json!({"expression": "2+2"}),
+            kind: crate::provider::ModelToolCallKind::Function,
         }]),
         // Turn 2: Tool returns result
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
@@ -896,6 +908,7 @@ fn chat_completion_handles_mixed_tool_and_text_messages() {
                 id: "call_123".to_string(),
                 name: "test_tool".to_string(),
                 input: json!({"param": "value"}),
+                kind: crate::provider::ModelToolCallKind::Function,
             },
         ]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
@@ -974,6 +987,7 @@ fn chat_completion_handles_tool_call_with_complex_arguments() {
             id: "call_complex".to_string(),
             name: "complex_tool".to_string(),
             input: complex_input.clone(),
+            kind: crate::provider::ModelToolCallKind::Function,
         },
     ])];
 

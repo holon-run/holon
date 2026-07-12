@@ -398,6 +398,8 @@ pub enum ModelBlock {
         id: String,
         name: String,
         input: Value,
+        #[serde(default)]
+        kind: ModelToolCallKind,
     },
     Thinking {
         text: String,
@@ -410,6 +412,14 @@ pub enum ModelBlock {
         /// Must be passed back verbatim in subsequent requests.
         data: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelToolCallKind {
+    #[default]
+    Function,
+    Custom,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

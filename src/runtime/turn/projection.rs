@@ -72,9 +72,9 @@ pub(super) fn estimate_json_tokens(value: &Value) -> usize {
 pub(super) fn estimate_model_block_tokens(block: &ModelBlock) -> usize {
     match block {
         ModelBlock::Text { text } => estimate_text_tokens(text),
-        ModelBlock::ToolUse { id, name, input } => {
-            estimate_text_tokens(id) + estimate_text_tokens(name) + estimate_json_tokens(input)
-        }
+        ModelBlock::ToolUse {
+            id, name, input, ..
+        } => estimate_text_tokens(id) + estimate_text_tokens(name) + estimate_json_tokens(input),
         ModelBlock::Thinking { text, .. } => estimate_text_tokens(text),
         ModelBlock::RedactedThinking { data } => estimate_text_tokens(data),
     }
