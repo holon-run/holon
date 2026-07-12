@@ -151,6 +151,23 @@ fn inspect_optional_route(
     allow_auto: bool,
     report: &mut ModelConfigMigrationStoreReport,
 ) {
+    if allow_auto
+        && value
+            .as_deref()
+            .is_some_and(|current| current.trim().eq_ignore_ascii_case("auto"))
+    {
+        let current = value.take().unwrap_or_default();
+        report.changed = true;
+        report.fields.push(ModelConfigMigrationField {
+            location: location.to_string(),
+            status: ModelConfigMigrationStatus::Legacy,
+            current,
+            proposed: Some("<unset>".into()),
+            error: None,
+        });
+        return;
+    }
+
     if let Some(value) = value {
         inspect_route_value(location.to_string(), value, allow_auto, report);
     }
@@ -485,7 +502,7 @@ mod tests {
                 canonical("volcengine/doubao-seedream-5.0-lite"),
             ]
         );
-        assert_eq!(migrated.image_generation.default.as_deref(), Some("auto"));
+        assert!(migrated.image_generation.default.is_none());
         let agent: Value = serde_json::from_str(&fixture.agent_payload("agent-a")?)?;
         let expected_agent = canonical("volcengine/doubao-seedream-5.0-lite");
         for field in AGENT_MODEL_ROUTE_FIELDS {

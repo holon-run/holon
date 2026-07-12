@@ -463,7 +463,7 @@ const zh: Record<string, any> = {
     apiKeyRemoved: "API 密钥已从凭证存储中删除。",
     apiKeySaved: "API 密钥已保存到凭证存储。",
     visionAutoDiscoverHint: "留空则让 ViewImage 自动发现已认证的图像模型。",
-    imageGenAutoDiscoverHint: "使用 \"auto\" 让 GenerateImage 自动选择第一个支持图像生成的已配置模型。",
+    imageGenAutoDiscoverHint: "留空则让 GenerateImage 自动选择第一个支持图像生成的已配置模型；仍兼容旧的 \"auto\" 别名。",
     modelCatalogDesc: "上方的可编辑提供商账户是主要配置入口。此目录仅用于查看运行时模型可用性。",
     confirmRemoveSearchProvider: "从 config.json 的 web.providers 中移除 {{provider}}？此操作不会删除凭证。",
     confirmRemoveProvider: "从 config.json 中移除 {{provider}}？此操作仅移除持久化的提供商配置；不会删除凭证或禁用内置提供商默认值。",

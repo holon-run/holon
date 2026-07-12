@@ -461,7 +461,7 @@ const en = {
     apiKeyRemoved: "API key removed from credential store.",
     apiKeySaved: "API key saved to credential store.",
     visionAutoDiscoverHint: "Leave empty to let ViewImage auto-discover an authenticated image-capable model.",
-    imageGenAutoDiscoverHint: "Use \"auto\" to let GenerateImage select the first configured model that supports image generation.",
+    imageGenAutoDiscoverHint: "Leave empty to let GenerateImage select the first configured model that supports image generation. The legacy \"auto\" alias is still accepted.",
     modelCatalogDesc: "The editable provider accounts above are the primary configuration surface. Use this catalog only to inspect runtime model availability.",
     confirmRemoveSearchProvider: "Remove {{provider}} from web.providers in config.json? This does not delete credentials.",
     confirmRemoveProvider: "Remove {{provider}} from config.json? This only removes persisted provider config; it does not delete credentials or disable built-in provider defaults.",

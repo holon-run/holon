@@ -283,7 +283,7 @@ export interface RuntimeConfigSurface {
   modelDefault: string;
   modelFallbacks: string[];
   visionDefault?: string;
-  imageGenerationDefault: string;
+  imageGenerationDefault?: string;
   modelCatalog: string[];
   unknownModelFallbackConfigured: boolean;
   defaultToolOutputTokens: number;

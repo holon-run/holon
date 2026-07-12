@@ -3062,7 +3062,7 @@ mod tests {
             model_default: "anthropic/claude-sonnet-4-6".into(),
             model_fallbacks: Vec::new(),
             vision_default: None,
-            image_generation_default: "auto".into(),
+            image_generation_default: None,
             model_catalog: Vec::new(),
             unknown_model_fallback_configured: false,
             runtime_max_output_tokens: 8192,

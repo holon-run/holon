@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildImageGenerationConfigUpdates,
   buildSearchProviderConfigUpdates,
   buildVisionConfigUpdates,
   sortProvidersForSettings,
@@ -67,6 +68,18 @@ describe("buildVisionConfigUpdates", () => {
 
   it("unsets Vision default when left empty for auto-discovery", () => {
     expect(buildVisionConfigUpdates("   ")).toEqual([{ key: "vision.default", unset: true }]);
+  });
+});
+
+describe("buildImageGenerationConfigUpdates", () => {
+  it("persists a trimmed image generation default model", () => {
+    expect(buildImageGenerationConfigUpdates(" openai/gpt-image-1 ")).toEqual([
+      { key: "image_generation.default", value: "openai/gpt-image-1" },
+    ]);
+  });
+
+  it("unsets image generation default when left empty for auto-selection", () => {
+    expect(buildImageGenerationConfigUpdates("   ")).toEqual([{ key: "image_generation.default", unset: true }]);
   });
 });
 
