@@ -1740,7 +1740,7 @@ fn model_selection_derives_from_authenticated_providers() {
             .into_iter()
             .map(|model| model.as_string())
             .collect::<Vec<_>>(),
-        vec!["anthropic@default/claude-sonnet-4-6"]
+        vec!["anthropic@default/claude-fable-5"]
     );
 }
 
@@ -2560,8 +2560,8 @@ fn view_image_vision_selection_uses_configured_custom_auto_discovery_capabilitie
 
 #[test]
 fn view_image_vision_selection_uses_anthropic_messages_when_image_capable() {
-    let mut fixture = test_app_config("anthropic/claude-sonnet-4-6", &[]);
-    fixture.config.vision_candidate_models = vec![route_ref("anthropic/claude-sonnet-4-6")];
+    let mut fixture = test_app_config("anthropic/claude-sonnet-5", &[]);
+    fixture.config.vision_candidate_models = vec![route_ref("anthropic/claude-sonnet-5")];
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
@@ -2571,12 +2571,9 @@ fn view_image_vision_selection_uses_anthropic_messages_when_image_capable() {
         crate::types::ViewImageSelectedMode::NativeImageWithObservation
     );
     assert_eq!(selection.primary_provider.as_deref(), Some("anthropic"));
-    assert_eq!(
-        selection.primary_model.as_deref(),
-        Some("claude-sonnet-4-6")
-    );
+    assert_eq!(selection.primary_model.as_deref(), Some("claude-sonnet-5"));
     assert_eq!(selection.vision_provider.as_deref(), Some("anthropic"));
-    assert_eq!(selection.vision_model.as_deref(), Some("claude-sonnet-4-6"));
+    assert_eq!(selection.vision_model.as_deref(), Some("claude-sonnet-5"));
     assert_eq!(
         selection.selection_reason,
         "current_primary_model_supports_image_input"

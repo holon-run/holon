@@ -27,6 +27,19 @@ than pinning Holon's default catalog to the dated
 `claude-haiku-4-5-20251001` snapshot. Invitation-only Mythos models are not
 included.
 
+Compatible providers retain independently published legacy Claude routes where
+their own catalogs still expose them. A model's removal from the native
+`anthropic` catalog does not imply that a LiteLLM, Venice, or Vercel AI Gateway
+route with a similar name is unavailable.
+
+## Migration
+
+Users whose native Anthropic configuration pins a removed model should update
+it to one of `claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`, or
+`claude-haiku-4-5`. Otherwise the unknown model remains addressable but uses
+fallback metadata rather than the calibrated context, output, capability, and
+compaction limits.
+
 ## Preserved boundary
 
 `supports_reasoning` records intrinsic model capability. The Anthropic

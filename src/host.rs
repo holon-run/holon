@@ -2374,7 +2374,7 @@ mod tests {
             api_cors: Default::default(),
             config_file_path: home_path.join("config.json"),
             stored_config: Default::default(),
-            default_model: ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap(),
+            default_model: ModelRouteRef::parse_compatible("anthropic/claude-sonnet-5").unwrap(),
             fallback_models: Vec::new(),
             vision_model: None,
             image_generation_model: None,
@@ -3062,7 +3062,7 @@ mod tests {
         );
         assert_eq!(
             inherited.model.effective_model.as_string(),
-            "anthropic@default/claude-sonnet-4-6"
+            "anthropic@default/claude-sonnet-5"
         );
         assert!(inherited.model.override_model.is_none());
         assert_eq!(
@@ -3070,7 +3070,7 @@ mod tests {
                 .model
                 .resolved_policy
                 .prompt_budget_estimated_tokens,
-            180_000
+            900_000
         );
 
         let updated = runtime
@@ -3090,7 +3090,7 @@ mod tests {
         );
         assert_eq!(
             updated.runtime_default_model.as_string(),
-            "anthropic@default/claude-sonnet-4-6"
+            "anthropic@default/claude-sonnet-5"
         );
         assert_eq!(
             updated
@@ -3098,7 +3098,7 @@ mod tests {
                 .iter()
                 .map(|model| model.as_string())
                 .collect::<Vec<_>>(),
-            vec!["anthropic@default/claude-sonnet-4-6"]
+            vec!["anthropic@default/claude-sonnet-5"]
         );
         assert_eq!(
             updated.resolved_policy.prompt_budget_estimated_tokens,
@@ -3121,11 +3121,11 @@ mod tests {
         assert!(cleared.override_model.is_none());
         assert_eq!(
             cleared.effective_model.as_string(),
-            "anthropic@default/claude-sonnet-4-6"
+            "anthropic@default/claude-sonnet-5"
         );
         assert_eq!(
             cleared.resolved_policy.prompt_budget_estimated_tokens,
-            180_000
+            900_000
         );
     }
 
@@ -3165,7 +3165,7 @@ mod tests {
             runtime.current_provider().await.configured_model_refs(),
             vec![
                 "anthropic@default/claude-haiku-4-5".to_string(),
-                "anthropic@default/claude-sonnet-4-6".to_string(),
+                "anthropic@default/claude-sonnet-5".to_string(),
             ]
         );
     }
@@ -3216,7 +3216,7 @@ mod tests {
             child.current_provider().await.configured_model_refs(),
             vec![
                 "anthropic@default/claude-haiku-4-5".to_string(),
-                "anthropic@default/claude-sonnet-4-6".to_string(),
+                "anthropic@default/claude-sonnet-5".to_string(),
             ]
         );
     }
@@ -4337,7 +4337,7 @@ mod tests {
             .contains("no available providers for configured model chain"));
         assert!(err
             .to_string()
-            .contains("anthropic@default/claude-sonnet-4-6"));
+            .contains("anthropic@default/claude-sonnet-5"));
     }
 
     #[tokio::test]
