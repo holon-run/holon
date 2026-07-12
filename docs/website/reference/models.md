@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **201 models**.
+across **40 endpoints** and **193 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -244,16 +244,8 @@ and capabilities.
 | `volcengine` | `glm-5.2` | `volcengine/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `volcengine` | `kimi-k2.6` | `volcengine/kimi-k2.6` | 262144 | 32768 | ✅ | — |
 | `volcengine` | `kimi-k2.7-code` | `volcengine/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
-| `xai` | `grok-3` | `xai/grok-3` | 131072 | 8192 | — | — |
-| `xai` | `grok-3-fast` | `xai/grok-3-fast` | 131072 | 8192 | — | — |
-| `xai` | `grok-3-mini` | `xai/grok-3-mini` | 131072 | 8192 | ✅ | — |
-| `xai` | `grok-3-mini-fast` | `xai/grok-3-mini-fast` | 131072 | 8192 | ✅ | — |
-| `xai` | `grok-4` | `xai/grok-4` | 256000 | 64000 | ✅ | — |
-| `xai` | `grok-4-1-fast` | `xai/grok-4-1-fast` | 2000000 | 30000 | ✅ | ✅ |
-| `xai` | `grok-4-fast` | `xai/grok-4-fast` | 2000000 | 30000 | ✅ | ✅ |
-| `xai` | `grok-4-fast-non-reasoning` | `xai/grok-4-fast-non-reasoning` | 2000000 | 30000 | — | ✅ |
-| `xai` | `grok-4.5` | `xai/grok-4.5` | 500000 | 64000 | ✅ | ✅ |
-| `xai` | `grok-code-fast-1` | `xai/grok-code-fast-1` | 256000 | 10000 | ✅ | — |
+| `xai` | `grok-4.3` | `xai/grok-4.3` | 1000000 | — | ✅ | ✅ |
+| `xai` | `grok-4.5` | `xai/grok-4.5` | 500000 | — | ✅ | ✅ |
 | `xiaomi` | `mimo-v2-flash` | `xiaomi/mimo-v2-flash` | 262144 | 8192 | — | — |
 | `xiaomi` | `mimo-v2-omni` | `xiaomi/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
 | `xiaomi` | `mimo-v2-pro` | `xiaomi/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
