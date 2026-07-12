@@ -54,10 +54,7 @@ pub struct OpenAiProvider {
     client: Client,
     provider_id: String,
     base_url: String,
-    api_key: Option<String>,
-    credential_profile: Option<String>,
-    credential_material: Option<String>,
-    credential_store_path: Option<PathBuf>,
+    auth: OpenAiBearerAuth,
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
@@ -66,6 +63,16 @@ pub struct OpenAiProvider {
     compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct OpenAiBearerAuth {
+    client: Client,
+    provider_id: String,
+    api_key: Option<String>,
+    credential_profile: Option<String>,
+    credential_material: Option<String>,
+    credential_store_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -292,6 +299,47 @@ impl OpenAiProvider {
         compaction_policy: OpenAiCompactionPolicy,
     ) -> Result<Self> {
         let client = build_http_client()?;
+        let auth = OpenAiBearerAuth::from_runtime_config(provider_config, client.clone())?;
+        Ok(Self {
+            client,
+            provider_id: provider_config.id.as_str().to_string(),
+            base_url: provider_config.base_url.trim_end_matches('/').to_string(),
+            auth,
+            model: model.to_string(),
+            max_output_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
+            continuation_contract: if provider_config.id.as_str() == "xai" {
+                OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
+            } else {
+                OpenAiResponsesContinuationContract::Standard
+            },
+            builtin_web_search: provider_config.builtin_web_search.clone(),
+            compaction_policy,
+            trace_home_dir: trace_home_dir.to_path_buf(),
+            continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
+        })
+    }
+
+    async fn resolve_auth_headers(&self) -> Result<Vec<(&'static str, String)>> {
+        self.auth.resolve_auth_headers().await
+    }
+
+    async fn refresh_auth_headers_after_failure(
+        &self,
+        error: &anyhow::Error,
+    ) -> Result<Option<Vec<(&'static str, String)>>> {
+        if !is_openai_codex_auth_status_error(error) {
+            return Ok(None);
+        }
+        self.auth.refresh_auth_headers().await
+    }
+}
+
+impl OpenAiBearerAuth {
+    pub(crate) fn from_runtime_config(
+        provider_config: &ProviderRuntimeConfig,
+        client: Client,
+    ) -> Result<Self> {
         let oauth_profile = matches!(
             (provider_config.auth.source, provider_config.auth.kind),
             (CredentialSource::AuthProfile, CredentialKind::OAuth)
@@ -319,7 +367,6 @@ impl OpenAiProvider {
         Ok(Self {
             client,
             provider_id: provider_config.id.as_str().to_string(),
-            base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
             credential_profile: oauth_profile.then(|| {
                 provider_config
@@ -332,18 +379,6 @@ impl OpenAiProvider {
                 .then(|| provider_config.credential.clone())
                 .flatten(),
             credential_store_path: provider_config.credential_store_path.clone(),
-            model: model.to_string(),
-            max_output_tokens,
-            reasoning_effort: provider_config.reasoning_effort.clone(),
-            continuation_contract: if provider_config.id.as_str() == "xai" {
-                OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
-            } else {
-                OpenAiResponsesContinuationContract::Standard
-            },
-            builtin_web_search: provider_config.builtin_web_search.clone(),
-            compaction_policy,
-            trace_home_dir: trace_home_dir.to_path_buf(),
-            continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
     }
 
@@ -359,12 +394,12 @@ impl OpenAiProvider {
         load_oauth_profile_credential(material, profile).map(Some)
     }
 
-    async fn resolve_auth_headers(&self) -> Result<Vec<(&'static str, String)>> {
+    pub(crate) async fn resolve_authorization_header(&self) -> Result<Option<String>> {
         if let Some(api_key) = self.api_key.as_ref() {
-            return Ok(vec![("authorization", format!("Bearer {api_key}"))]);
+            return Ok(Some(format!("Bearer {api_key}")));
         }
         let Some(credential) = self.resolve_oauth_credential()? else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         let credential = if credential
             .expires_at
@@ -374,10 +409,16 @@ impl OpenAiProvider {
         } else {
             credential
         };
-        Ok(vec![(
-            "authorization",
-            format!("Bearer {}", credential.access_token),
-        )])
+        Ok(Some(format!("Bearer {}", credential.access_token)))
+    }
+
+    async fn resolve_auth_headers(&self) -> Result<Vec<(&'static str, String)>> {
+        Ok(self
+            .resolve_authorization_header()
+            .await?
+            .into_iter()
+            .map(|value| ("authorization", value))
+            .collect())
     }
 
     async fn refresh_oauth_profile(&self, force: bool) -> Result<OAuthCredential> {
@@ -428,18 +469,19 @@ impl OpenAiProvider {
         Ok(refreshed.credential)
     }
 
-    async fn refresh_auth_headers_after_failure(
-        &self,
-        error: &anyhow::Error,
-    ) -> Result<Option<Vec<(&'static str, String)>>> {
-        if self.credential_profile.is_none() || !is_openai_codex_auth_status_error(error) {
+    pub(crate) async fn refresh_authorization_header(&self) -> Result<Option<String>> {
+        if self.credential_profile.is_none() {
             return Ok(None);
         }
         let credential = self.refresh_oauth_profile(true).await?;
-        Ok(Some(vec![(
-            "authorization",
-            format!("Bearer {}", credential.access_token),
-        )]))
+        Ok(Some(format!("Bearer {}", credential.access_token)))
+    }
+
+    async fn refresh_auth_headers(&self) -> Result<Option<Vec<(&'static str, String)>>> {
+        Ok(self
+            .refresh_authorization_header()
+            .await?
+            .map(|value| vec![("authorization", value)]))
     }
 }
 

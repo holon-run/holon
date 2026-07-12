@@ -10,6 +10,7 @@ use std::{env, time::Duration};
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
+pub(crate) use openai::OpenAiBearerAuth;
 pub(crate) use openai::OpenAiCompactionPolicy;
 #[cfg(test)]
 pub(crate) use openai::OpenAiResponsesTransportContract;
