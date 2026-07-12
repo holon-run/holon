@@ -439,7 +439,7 @@ interface RuntimeConfigSurfaceDto {
   model_default?: string;
   model_fallbacks?: string[];
   vision_default?: string | null;
-  image_generation_default?: string;
+  image_generation_default?: string | null;
   model_catalog?: string[];
   unknown_model_fallback_configured?: boolean;
   runtime_max_output_tokens?: number;
@@ -1740,7 +1740,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
     modelDefault: surface.model_default ?? "",
     modelFallbacks: surface.model_fallbacks ?? [],
     visionDefault: surface.vision_default ?? undefined,
-    imageGenerationDefault: surface.image_generation_default ?? "auto",
+    imageGenerationDefault: surface.image_generation_default ?? undefined,
     modelCatalog: surface.model_catalog ?? [],
     unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,
     defaultToolOutputTokens: surface.default_tool_output_tokens ?? 0,

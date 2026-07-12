@@ -2761,13 +2761,21 @@ fn runtime_model_catalog_resolves_legacy_multi_endpoint_provider_identity() {
 }
 
 #[test]
-fn image_generation_config_defaults_to_auto() {
+fn visual_model_defaults_use_null_for_auto() {
     let mut config = HolonConfigFile::default();
 
     assert_eq!(
-        get_config_key(&config, "image_generation.default").unwrap(),
-        json!("auto")
+        get_config_key(&config, "vision.default").unwrap(),
+        Value::Null
     );
+    assert_eq!(
+        get_config_key(&config, "image_generation.default").unwrap(),
+        Value::Null
+    );
+
+    set_config_key(&mut config, "vision.default", "auto").unwrap();
+    assert!(config.vision.default.is_none());
+    assert!(config.vision.is_empty());
 
     set_config_key(&mut config, "image_generation.default", "auto").unwrap();
     assert!(config.image_generation.default.is_none());
@@ -2797,7 +2805,7 @@ fn image_generation_config_accepts_explicit_model_ref() {
     unset_config_key(&mut config, "image_generation.default").unwrap();
     assert_eq!(
         get_config_key(&config, "image_generation.default").unwrap(),
-        json!("auto")
+        Value::Null
     );
 }
 

@@ -83,7 +83,7 @@ pub struct RuntimeConfigSurface {
     pub model_default: String,
     pub model_fallbacks: Vec<String>,
     pub vision_default: Option<String>,
-    pub image_generation_default: String,
+    pub image_generation_default: Option<String>,
     pub model_catalog: Vec<String>,
     pub unknown_model_fallback_configured: bool,
     pub runtime_max_output_tokens: u32,
@@ -150,8 +150,7 @@ impl RuntimeConfigSurface {
             image_generation_default: config
                 .image_generation_model
                 .as_ref()
-                .map(|value| value.as_string())
-                .unwrap_or_else(|| "auto".to_string()),
+                .map(|value| value.as_string()),
             model_catalog,
             unknown_model_fallback_configured: config.validated_unknown_model_fallback.is_some(),
             runtime_max_output_tokens: config.runtime_max_output_tokens,

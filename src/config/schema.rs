@@ -71,18 +71,18 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         },
         ConfigSchemaEntry {
             key: "vision.default",
-            kind: "model_route_ref",
+            kind: "model_route_ref_or_auto",
             description:
-                "Explicit provider@endpoint/model route ref for ViewImage visual observation generation. Legacy provider/model input remains accepted. When unset, ViewImage auto-discovers an authenticated image-capable provider and keeps model.fallbacks only as a compatibility candidate source.",
+                "Explicit provider@endpoint/model route ref for ViewImage visual observation generation. Legacy provider/model input remains accepted. Null, unset, or the legacy auto alias lets ViewImage auto-discover an authenticated image-capable provider and keeps model.fallbacks only as a compatibility candidate source.",
             default: Value::Null,
-            allowed_values: vec![],
+            allowed_values: vec!["auto"],
         },
         ConfigSchemaEntry {
             key: "image_generation.default",
             kind: "model_route_ref_or_auto",
             description:
-                "Provider@endpoint/model route ref for GenerateImage. Legacy provider/model input remains accepted. The default auto mode selects the first configured turn model that supports image_generation.",
-            default: json!("auto"),
+                "Provider@endpoint/model route ref for GenerateImage. Legacy provider/model input and the legacy auto alias remain accepted. Null or unset selects the first configured turn model that supports image_generation.",
+            default: Value::Null,
             allowed_values: vec!["auto"],
         },
         ConfigSchemaEntry {
@@ -616,7 +616,7 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .default
             .as_ref()
             .map(|value| Value::String(value.clone()))
-            .unwrap_or_else(|| json!("auto"))),
+            .unwrap_or(Value::Null)),
         "models.catalog" => Ok(serde_json::to_value(&config.models.catalog)?),
         "model.unknown_fallback" => Ok(config
             .model
@@ -911,8 +911,12 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 .collect();
         }
         "vision.default" => {
-            let parsed = ModelRouteRef::parse_compatible(raw_value)?;
-            config.vision.default = Some(parsed.as_string());
+            if raw_value.trim().eq_ignore_ascii_case("auto") {
+                config.vision.default = None;
+            } else {
+                let parsed = ModelRouteRef::parse_compatible(raw_value)?;
+                config.vision.default = Some(parsed.as_string());
+            }
         }
         "image_generation.default" => {
             if raw_value.trim().eq_ignore_ascii_case("auto") {
