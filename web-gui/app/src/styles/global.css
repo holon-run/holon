@@ -5515,6 +5515,108 @@ code {
   overflow-wrap: anywhere;
 }
 
+/* Shared tool detail components: link field, image preview, result cards */
+
+.tool-detail-link {
+  color: var(--accent, var(--blue, #4f9cf9));
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.tool-detail-link:hover {
+  text-decoration: underline;
+}
+
+.tool-detail-image-preview {
+  margin-top: 8px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.tool-detail-image-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.tool-detail-result-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 80%, var(--page));
+}
+
+.tool-detail-result-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  font-size: 0.88rem;
+  flex-wrap: wrap;
+}
+
+.tool-detail-result-index {
+  color: var(--muted);
+  font-weight: 400;
+  min-width: 1.5em;
+}
+
+.tool-detail-result-source {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.tool-detail-result-snippet {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.tool-detail-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px 12px;
+  margin-top: 6px;
+  font-size: 0.78rem;
+}
+
+.tool-detail-meta-grid dt {
+  color: var(--muted);
+}
+
+.tool-detail-meta-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-detail-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.tool-detail-badge--ok {
+  background: color-mix(in srgb, var(--green, #2ea043) 20%, transparent);
+  color: var(--green, #2ea043);
+}
+
+.tool-detail-badge--warn {
+  background: color-mix(in srgb, var(--yellow, #d29922) 20%, transparent);
+  color: var(--yellow, #d29922);
+}
+
+.tool-detail-badge--mute {
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+  color: var(--muted);
+}
+
 /* Batch item card */
 
 .tool-detail-batch-item {

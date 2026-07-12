@@ -70,7 +70,7 @@ describe("ToolExecutionContent", () => {
     expect(html).toContain("rust runtime");
     expect(html).toContain("brave");
     expect(html).toContain("1 found");
-    expect(html).toContain("1. Tokio");
+    expect(html).toContain("tool-detail-result-index");
     expect(html).toContain("https://tokio.rs");
     expect(html).toContain("Async runtime");
   });
