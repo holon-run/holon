@@ -1802,7 +1802,10 @@
                 "type": "boolean"
               },
               "image_generation_default": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "max_tool_output_tokens": {
                 "format": "uint32",
@@ -1982,7 +1985,6 @@
             "required": [
               "model_default",
               "model_fallbacks",
-              "image_generation_default",
               "model_catalog",
               "unknown_model_fallback_configured",
               "runtime_max_output_tokens",
@@ -2083,7 +2085,10 @@
                 "type": "boolean"
               },
               "image_generation_default": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "max_tool_output_tokens": {
                 "format": "uint32",
@@ -2263,7 +2268,6 @@
             "required": [
               "model_default",
               "model_fallbacks",
-              "image_generation_default",
               "model_catalog",
               "unknown_model_fallback_configured",
               "runtime_max_output_tokens",
