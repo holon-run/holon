@@ -721,6 +721,8 @@ fn reasoning_effort_options(
         ("openai", _) | ("openai-codex", _) => &["low", "medium", "high", "xhigh"][..],
         ("xai", "grok-4.3") => &["none", "low", "medium", "high"][..],
         ("xai", "grok-4.5") => &["low", "medium", "high"][..],
+        ("stepfun", "step-3.7-flash") => &["low", "medium", "high"][..],
+        ("stepfun", "step-3.5-flash-2603") => &["low", "high"][..],
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
         ("volcengine", _)
             if endpoint.is_none_or(|endpoint| {
@@ -762,6 +764,36 @@ fn catalog_model(
         capabilities: ModelCapabilityFlags {
             image_input,
             supports_reasoning,
+            ..ModelCapabilityFlags::default()
+        },
+        source: ModelMetadataSource::BuiltInCatalog,
+        endpoint: None,
+    }
+}
+
+fn stepfun_model(
+    provider: &str,
+    model: &str,
+    display_name: &str,
+    image_input: bool,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id(provider), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: display_name.into(),
+        description: format!("Holon built-in runtime metadata for the StepFun {model} model."),
+        context_window_tokens: Some(262_144),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input,
+            supports_reasoning: true,
             ..ModelCapabilityFlags::default()
         },
         source: ModelMetadataSource::BuiltInCatalog,
@@ -2015,31 +2047,30 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        catalog_model(
+        stepfun_model("stepfun", "step-3.7-flash", "Step 3.7 Flash", true),
+        stepfun_model(
             "stepfun",
-            "step-3.5-flash",
-            "Step 3.5 Flash",
-            262_144,
-            65_536,
-            true,
+            "step-3.5-flash-2603",
+            "Step 3.5 Flash 2603",
             false,
         ),
-        catalog_model(
+        stepfun_model("stepfun", "step-3.5-flash", "Step 3.5 Flash", false),
+        stepfun_model(
             "stepfun-plan",
-            "step-3.5-flash",
-            "Step 3.5 Flash",
-            262_144,
-            65_536,
+            "step-3.7-flash",
+            "Step 3.7 Flash",
             true,
-            false,
         ),
-        catalog_model(
+        stepfun_model(
             "stepfun-plan",
             "step-3.5-flash-2603",
             "Step 3.5 Flash 2603",
-            262_144,
-            65_536,
-            true,
+            false,
+        ),
+        stepfun_model(
+            "stepfun-plan",
+            "step-3.5-flash",
+            "Step 3.5 Flash",
             false,
         ),
         catalog_model(
@@ -3636,6 +3667,92 @@ mod tests {
                 "{model} image input"
             );
         }
+    }
+
+    #[test]
+    fn stepfun_catalog_tracks_current_chat_models_and_reasoning_controls() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("step-3.7-flash", true, &["low", "medium", "high"][..]),
+            ("step-3.5-flash-2603", false, &["low", "high"][..]),
+            ("step-3.5-flash", false, &[][..]),
+        ];
+
+        for (model, image_input, reasoning_options) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("stepfun/{model}")).unwrap())
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(
+                metadata.context_window_tokens,
+                Some(262_144),
+                "{model} context window"
+            );
+            assert_eq!(
+                metadata.capabilities.image_input, image_input,
+                "{model} image input"
+            );
+            assert!(
+                metadata.capabilities.supports_reasoning,
+                "{model} reasoning"
+            );
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert_eq!(
+                reasoning_effort_options(
+                    &metadata.model_ref,
+                    metadata.endpoint.as_ref(),
+                    &metadata.capabilities,
+                ),
+                reasoning_options,
+                "{model} reasoning controls"
+            );
+        }
+    }
+
+    #[test]
+    fn stepfun_plan_shares_canonical_models_with_exact_routes() {
+        let catalog = BuiltInModelCatalog::new();
+
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("stepfun").unwrap())
+                .unwrap()
+                .as_string(),
+            "stepfun/step-3.7-flash"
+        );
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("stepfun-plan").unwrap())
+                .unwrap()
+                .as_string(),
+            "stepfun/step-3.7-flash"
+        );
+
+        for route_ref in [
+            "stepfun@default/step-3.7-flash",
+            "stepfun@default/step-3.5-flash-2603",
+            "stepfun@default/step-3.5-flash",
+            "stepfun@plan/step-3.7-flash",
+            "stepfun@plan/step-3.5-flash-2603",
+            "stepfun@plan/step-3.5-flash",
+        ] {
+            assert!(
+                catalog
+                    .get_route(&ModelRouteRef::parse(route_ref).unwrap())
+                    .is_some(),
+                "{route_ref} should be registered"
+            );
+        }
+
+        assert!(catalog
+            .get(&ModelRef::parse("stepfun-plan/step-3.7-flash").unwrap())
+            .is_none());
+        assert_eq!(
+            catalog
+                .canonicalize_model_ref(&ModelRef::parse("stepfun-plan/step-3.7-flash").unwrap())
+                .as_string(),
+            "stepfun/step-3.7-flash"
+        );
     }
 
     #[test]

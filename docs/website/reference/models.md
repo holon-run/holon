@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **206 models**.
+across **40 endpoints** and **207 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -49,8 +49,8 @@ used in existing `provider/model` refs and config shortcuts.
 | `opencode-go` | `default` | `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
 | `openrouter` | `default` | `openrouter` | OpenAI Chat Completions | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `qianfan` | `default` | `qianfan` | OpenAI Chat Completions | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
-| `stepfun` | `default` | `stepfun` | OpenAI Chat Completions | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` |
-| `stepfun` | `plan` | `stepfun-plan` | OpenAI Chat Completions | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY` |
+| `stepfun` | `default` | `stepfun` | OpenAI Chat Completions | `https://api.stepfun.com/v1` | `STEPFUN_API_KEY` |
+| `stepfun` | `plan` | `stepfun-plan` | OpenAI Chat Completions | `https://api.stepfun.com/step_plan/v1` | `STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY` |
 | `synthetic` | `default` | `synthetic` | Anthropic Messages | `https://api.synthetic.new/anthropic` | `SYNTHETIC_API_KEY` |
 | `tencent-tokenhub` | `default` | `tencent-tokenhub` | OpenAI Chat Completions | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
 | `together` | `default` | `together` | OpenAI Chat Completions | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
@@ -201,8 +201,9 @@ and capabilities.
 | `qianfan` | `ernie-5.0-thinking-preview` | `qianfan/ernie-5.0-thinking-preview` | 248832 | 65536 | ✅ | ✅ |
 | `qianfan` | `ernie-5.1` | `qianfan/ernie-5.1` | 248832 | 65536 | — | — |
 | `qianfan` | `ernie-x1.1` | `qianfan/ernie-x1.1` | 121856 | 65536 | ✅ | — |
-| `stepfun` | `step-3.5-flash` | `stepfun/step-3.5-flash` | 262144 | 65536 | ✅ | — |
-| `stepfun` | `step-3.5-flash-2603` | `stepfun/step-3.5-flash-2603` | 262144 | 65536 | ✅ | — |
+| `stepfun` | `step-3.5-flash` | `stepfun/step-3.5-flash` | 262144 | — | ✅ | — |
+| `stepfun` | `step-3.5-flash-2603` | `stepfun/step-3.5-flash-2603` | 262144 | — | ✅ | — |
+| `stepfun` | `step-3.7-flash` | `stepfun/step-3.7-flash` | 262144 | — | ✅ | ✅ |
 | `synthetic` | `hf:MiniMaxAI/MiniMax-M2.5` | `synthetic/hf:MiniMaxAI/MiniMax-M2.5` | 192000 | 65536 | — | — |
 | `synthetic` | `hf:Qwen/Qwen3-235B-A22B-Instruct-2507` | `synthetic/hf:Qwen/Qwen3-235B-A22B-Instruct-2507` | 256000 | 8192 | — | — |
 | `synthetic` | `hf:Qwen/Qwen3-235B-A22B-Thinking-2507` | `synthetic/hf:Qwen/Qwen3-235B-A22B-Thinking-2507` | 256000 | 8192 | ✅ | — |
