@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **193 models**.
+across **40 endpoints** and **195 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -135,10 +135,12 @@ and capabilities.
 | `deepseek` | `deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/kimi-k2p6` | `fireworks/accounts/fireworks/models/kimi-k2p6` | 262144 | 262144 | — | ✅ |
 | `fireworks` | `accounts/fireworks/routers/kimi-k2p5-turbo` | `fireworks/accounts/fireworks/routers/kimi-k2p5-turbo` | 256000 | 256000 | — | ✅ |
-| `gemini` | `gemini-2.5-flash` | `gemini/gemini-2.5-flash` | 1000000 | 65536 | ✅ | ✅ |
-| `gemini` | `gemini-2.5-pro` | `gemini/gemini-2.5-pro` | 1000000 | 65536 | ✅ | ✅ |
-| `gemini` | `gemini-3-flash` | `gemini/gemini-3-flash` | 1000000 | 65536 | ✅ | ✅ |
-| `gemini` | `gemini-3-pro` | `gemini/gemini-3-pro` | 1000000 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-2.5-flash` | `gemini/gemini-2.5-flash` | 1048576 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-2.5-flash-lite` | `gemini/gemini-2.5-flash-lite` | 1048576 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-2.5-pro` | `gemini/gemini-2.5-pro` | 1048576 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-3.1-flash-lite` | `gemini/gemini-3.1-flash-lite` | 1048576 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-3.1-pro-preview` | `gemini/gemini-3.1-pro-preview` | 1048576 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-3.5-flash` | `gemini/gemini-3.5-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `huggingface` | `moonshotai/Kimi-K2-Instruct` | `huggingface/moonshotai/Kimi-K2-Instruct` | 262144 | 32768 | — | — |
 | `kilocode` | `kilo/auto` | `kilocode/kilo/auto` | 1000000 | 128000 | ✅ | ✅ |
 | `litellm` | `claude-opus-4-6` | `litellm/claude-opus-4-6` | 200000 | 128000 | ✅ | ✅ |

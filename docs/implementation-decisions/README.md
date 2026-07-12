@@ -79,3 +79,4 @@ Current decision notes:
 - [065 xAI Grok API and X Login Boundary](./065-xai-grok-api-and-login-boundary.md)
 - [066 Anthropic Model Catalog](./066-anthropic-model-catalog.md)
 - [067 xAI Model Catalog](./067-xai-model-catalog.md)
+- [068 Gemini Model Catalog](./068-gemini-model-catalog.md)

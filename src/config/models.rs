@@ -1147,6 +1147,36 @@ mod tests {
     }
 
     #[test]
+    fn gemini_transport_does_not_advertise_unimplemented_vision_or_reasoning_controls() {
+        let catalog = crate::model_catalog::BuiltInModelCatalog::new();
+        let policy = catalog.resolve_policy(
+            &ModelRef::parse("gemini/gemini-3.5-flash").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &crate::config::ContextConfig::default(),
+            8192,
+        );
+
+        assert!(policy.capabilities.image_input);
+        assert!(policy.capabilities.supports_reasoning);
+        assert!(policy.reasoning_effort_options.is_empty());
+
+        let capabilities = ResolvedModelCapabilities::resolve(
+            &policy,
+            ProviderTransportKind::GeminiGenerateContent,
+        );
+        assert!(!capabilities.transport.image_input);
+        assert!(!capabilities.image_input);
+        assert!(!capabilities.supports(ModelRouteCapability::VisionObservation));
+        assert!(capabilities
+            .endpoint
+            .accepted_parameters
+            .iter()
+            .all(|parameter| parameter.name != "reasoning_effort"));
+    }
+
+    #[test]
     fn resolved_capabilities_preserve_reasoning_effort_allowed_values() {
         let policy = ResolvedRuntimeModelPolicy {
             reasoning_effort_options: vec!["low".into(), "high".into()],
