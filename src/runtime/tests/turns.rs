@@ -581,11 +581,12 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
     assert_eq!(outcome.final_text, "Finished after compacted continuation.");
     assert!(outcome.final_text_source_assistant_round_id.is_some());
-    assert_eq!(*provider.calls.lock().await, 5);
+    assert_eq!(*provider.calls.lock().await, 6);
 
     let requests = provider.requests.lock().await;
     let continuation_request = requests.get(3).expect("missing round 4 request");
     let checkpoint_resume_request = requests.get(4).expect("missing round 5 request");
+    let pending_delivery_retry_request = requests.get(5).expect("missing round 6 request");
     let cache = continuation_request
         .prompt_frame
         .cache
@@ -733,10 +734,23 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         assert!(events
             .iter()
             .any(|event| event.kind == "turn_local_checkpoint_resume_requested"));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "checkpoint_operator_delivery_retry"));
         assert!(
             format!("{:?}", checkpoint_resume_request.conversation)
                 .contains("Continue from the checkpoint's next goal-aligned action now"),
             "checkpoint-only compaction response should continue inside the same turn"
+        );
+        assert!(
+            format!("{:?}", checkpoint_resume_request.conversation)
+                .contains("has not been delivered to the operator"),
+            "checkpoint continuation must state that private checkpoint content is undelivered"
+        );
+        assert!(
+            format!("{:?}", pending_delivery_retry_request.conversation)
+                .contains("has not been delivered to the operator"),
+            "an empty visible response must not complete pending checkpoint delivery"
         );
     } else {
         assert!(serialized_conversation.contains("first-round-output-should-not-stay-exact"));

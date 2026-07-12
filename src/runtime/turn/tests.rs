@@ -484,19 +484,18 @@ fn checkpoint_state_with_latest(
     response_round: usize,
     anchor_generation: u64,
 ) -> TurnLocalCheckpointState {
-    TurnLocalCheckpointState {
-        latest: Some(TurnLocalCheckpointRecord {
-            request_id: format!("req-{response_round}"),
-            requested_at_round: response_round,
-            response_round: Some(response_round),
-            source_turn_index: None,
-            mode: TurnLocalCheckpointMode::Full,
-            text: text.to_string(),
-            anchor_generation,
-        }),
-        pending: None,
+    let mut state = TurnLocalCheckpointState::default();
+    state.latest = Some(TurnLocalCheckpointRecord {
+        request_id: format!("req-{response_round}"),
+        requested_at_round: response_round,
+        response_round: Some(response_round),
+        source_turn_index: None,
+        mode: TurnLocalCheckpointMode::Full,
+        text: text.to_string(),
         anchor_generation,
-    }
+    });
+    state.anchor_generation = anchor_generation;
+    state
 }
 
 fn fixture_prompt_frame() -> ProviderPromptFrame {
@@ -1753,6 +1752,7 @@ fn checkpoint_state_can_resume_from_structured_terminal_checkpoint() {
 
     let state = checkpoint_state_from_last_terminal(Some(&terminal));
 
+    assert!(!state.operator_delivery_pending());
     let latest = state.latest.expect("checkpoint should seed latest state");
     assert_eq!(latest.request_id, "checkpoint-7");
     assert_eq!(latest.requested_at_round, 3);
@@ -1761,6 +1761,17 @@ fn checkpoint_state_can_resume_from_structured_terminal_checkpoint() {
     assert_eq!(latest.anchor_generation, 2);
     assert_eq!(state.anchor_generation, 5);
     assert!(latest.text.contains("结构化 checkpoint"));
+}
+
+#[test]
+fn checkpoint_operator_delivery_pending_is_turn_local() {
+    let mut state = TurnLocalCheckpointState::default();
+
+    assert!(!state.operator_delivery_pending());
+    state.mark_operator_delivery_pending();
+    assert!(state.operator_delivery_pending());
+    state.clear_operator_delivery_pending();
+    assert!(!state.operator_delivery_pending());
 }
 
 #[test]
@@ -1828,6 +1839,9 @@ fn checkpoint_resume_round_carries_runtime_follow_up_prompt() {
     assert_eq!(round.follow_up_user_texts.len(), 1);
     assert!(round.follow_up_user_texts[0]
         .contains("Continue from the checkpoint's next goal-aligned action now"));
+    assert!(round.follow_up_user_texts[0].contains("has not been delivered to the operator"));
+    assert!(round.follow_up_user_texts[0].contains("synthesize them"));
+    assert!(round.follow_up_user_texts[0].contains("Do not claim"));
     assert!(round.estimated_tokens > 0);
 }
 
