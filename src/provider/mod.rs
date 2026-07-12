@@ -27,6 +27,7 @@ pub(crate) use diagnostics::{
 };
 pub use http_trace::ProviderHttpTraceDiagnostics;
 pub(crate) use retry::sanitize_transport_url;
+pub(crate) use transports::OpenAiBearerAuth;
 pub use transports::{
     AnthropicProvider, GeminiProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider,
     OpenAiProvider,

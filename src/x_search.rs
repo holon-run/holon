@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::config::XSearchRuntimeConfig;
+use crate::{config::XSearchRuntimeConfig, provider::OpenAiBearerAuth};
 
 #[derive(Debug, Clone)]
 pub struct XSearchRequest {
@@ -53,29 +53,28 @@ pub async fn search(
     request: XSearchRequest,
     config: &XSearchRuntimeConfig,
 ) -> Result<XSearchResponse> {
-    let credential = config
-        .provider
-        .credential
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("x_search_unavailable: xAI credential is not available"))?;
     let body = build_request_body(&request, &config.model);
     let client = Client::builder()
         .timeout(config.timeout)
         .build()
         .context("failed to build x_search HTTP client")?;
+    let auth = OpenAiBearerAuth::from_runtime_config(&config.provider, client.clone())?;
+    let mut authorization = auth
+        .resolve_authorization_header()
+        .await?
+        .ok_or_else(|| anyhow!("x_search_unavailable: xAI credential is not available"))?;
     let started = Instant::now();
-    let response = client
-        .post(format!(
-            "{}/responses",
-            config.provider.base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(credential)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .context("x_search request failed")?;
+    let endpoint = format!(
+        "{}/responses",
+        config.provider.base_url.trim_end_matches('/')
+    );
+    let mut response = send_request(&client, &endpoint, &authorization, &body).await?;
+    if matches!(response.status().as_u16(), 401 | 403) {
+        if let Some(refreshed) = auth.refresh_authorization_header().await? {
+            authorization = refreshed;
+            response = send_request(&client, &endpoint, &authorization, &body).await?;
+        }
+    }
     let provider_request_id = response
         .headers()
         .get("x-request-id")
@@ -112,6 +111,22 @@ pub async fn search(
             hosted_item_types,
         },
     })
+}
+
+async fn send_request(
+    client: &Client,
+    endpoint: &str,
+    authorization: &str,
+    body: &Value,
+) -> Result<reqwest::Response> {
+    client
+        .post(endpoint)
+        .header("authorization", authorization)
+        .header("content-type", "application/json")
+        .json(body)
+        .send()
+        .await
+        .context("x_search request failed")
 }
 
 pub(crate) fn build_request_body(request: &XSearchRequest, model: &str) -> Value {
@@ -219,6 +234,40 @@ fn duration_millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        AnthropicContextManagementConfig, CredentialKind, CredentialSource, ProviderAuthConfig,
+        ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
+    };
+    use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
+
+    fn xai_oauth_config(base_url: String, credential: String) -> XSearchRuntimeConfig {
+        let xai = ProviderId::parse("xai").unwrap();
+        XSearchRuntimeConfig {
+            provider: ProviderRuntimeConfig {
+                id: xai.clone(),
+                route_provider: xai,
+                route_endpoint: ProviderEndpointId::default_endpoint(),
+                transport: ProviderTransportKind::OpenAiResponses,
+                base_url,
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::AuthProfile,
+                    kind: CredentialKind::OAuth,
+                    env: None,
+                    profile: Some("xai".into()),
+                    external: None,
+                },
+                credential: Some(credential),
+                credential_store_path: None,
+                codex_home: None,
+                originator: None,
+                reasoning_effort: Some("medium".into()),
+                context_management: AnthropicContextManagementConfig::default(),
+                builtin_web_search: None,
+            },
+            model: "grok-test".into(),
+            timeout: Duration::from_secs(5),
+        }
+    }
 
     #[test]
     fn request_uses_only_x_search_and_disables_storage() {
@@ -280,5 +329,65 @@ mod tests {
         assert!(error
             .to_string()
             .contains("did not contain final output text"));
+    }
+
+    #[tokio::test]
+    async fn search_lowers_xai_oauth_profile_to_access_token() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let size = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer oauth-access-token\r\n"),
+                "request did not contain the OAuth access token: {request}"
+            );
+            assert!(!request.contains("\"access_token\""));
+
+            let body = json!({
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "OAuth search result",
+                        "annotations": []
+                    }]
+                }]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let credential = json!({
+            "tokens": {
+                "access_token": "oauth-access-token",
+                "refresh_token": "refresh-token"
+            }
+        })
+        .to_string();
+        let config = xai_oauth_config(format!("http://{address}"), credential);
+
+        let response = search(
+            XSearchRequest {
+                query: "Holon OAuth".into(),
+                allowed_x_handles: Vec::new(),
+                excluded_x_handles: Vec::new(),
+                from_date: None,
+                to_date: None,
+            },
+            &config,
+        )
+        .await
+        .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(response.text, "OAuth search result");
     }
 }
