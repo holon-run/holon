@@ -37,6 +37,21 @@ pub(super) struct TurnLocalCheckpointState {
     pub(super) latest: Option<TurnLocalCheckpointRecord>,
     pub(super) pending: Option<PendingCheckpointRequest>,
     pub(super) anchor_generation: u64,
+    operator_delivery_pending: bool,
+}
+
+impl TurnLocalCheckpointState {
+    pub(super) fn mark_operator_delivery_pending(&mut self) {
+        self.operator_delivery_pending = true;
+    }
+
+    pub(super) fn clear_operator_delivery_pending(&mut self) {
+        self.operator_delivery_pending = false;
+    }
+
+    pub(super) fn operator_delivery_pending(&self) -> bool {
+        self.operator_delivery_pending
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +100,7 @@ pub(super) fn checkpoint_state_from_last_terminal(
         }),
         pending: None,
         anchor_generation: checkpoint.current_anchor_generation,
+        operator_delivery_pending: false,
     }
 }
 

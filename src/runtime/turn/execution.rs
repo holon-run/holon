@@ -1263,6 +1263,7 @@ impl TurnExecution<'_> {
                         text: checkpoint_text.clone(),
                         anchor_generation: pending_checkpoint.anchor_generation,
                     });
+                    checkpoint_state.mark_operator_delivery_pending();
                 }
                 runtime.inner.storage.append_event(&AuditEvent::new(
                     "turn_local_checkpoint_recorded",
@@ -1493,6 +1494,27 @@ impl TurnExecution<'_> {
             }
 
             if tool_calls.is_empty() {
+                if checkpoint_state.operator_delivery_pending() {
+                    if combined_text.is_empty() {
+                        completed_rounds.push(build_checkpoint_resume_round(
+                            round,
+                            completed_round_assistant_blocks,
+                            text_blocks,
+                        ));
+                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                            agent_id.to_string(),
+                            TranscriptEntryKind::ContinuationPrompt,
+                            Some(round),
+                            None,
+                            serde_json::json!({
+                                "text": CHECKPOINT_RESUME_PROMPT,
+                                "reason": "checkpoint_operator_delivery_pending",
+                            }),
+                        ))?;
+                        continue;
+                    }
+                    checkpoint_state.clear_operator_delivery_pending();
+                }
                 let final_text = last_assistant_message.clone().unwrap_or_default();
                 let terminal = runtime
                     .persist_turn_terminal_record(
@@ -1950,7 +1972,10 @@ impl TurnExecution<'_> {
             }
             completed_rounds.push(round_record);
 
-            if all_tool_results_should_sleep && !has_operator_interjections {
+            if all_tool_results_should_sleep
+                && !has_operator_interjections
+                && !checkpoint_state.operator_delivery_pending()
+            {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
                 let terminal = runtime
                     .persist_turn_terminal_record(
