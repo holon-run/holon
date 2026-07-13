@@ -285,8 +285,11 @@ and capabilities.
 | `together` | `nvidia/nemotron-3-ultra-550b-a55b` | `together/nvidia/nemotron-3-ultra-550b-a55b` | 512300 | — | ✅ | — |
 | `together` | `openai/gpt-oss-120b` | `together/openai/gpt-oss-120b` | 128000 | — | ✅ | — |
 | `together` | `zai-org/GLM-5.2` | `together/zai-org/GLM-5.2` | 262144 | — | — | — |
-| `venice` | `claude-opus-4-6` | `venice/claude-opus-4-6` | 1000000 | 128000 | ✅ | ✅ |
-| `venice` | `claude-sonnet-4-6` | `venice/claude-sonnet-4-6` | 1000000 | 128000 | ✅ | ✅ |
+| `venice` | `qwen3-235b-a22b-thinking-2507` | `venice/qwen3-235b-a22b-thinking-2507` | 128000 | 16384 | ✅ | — |
+| `venice` | `qwen3-coder-480b-a35b-instruct-turbo` | `venice/qwen3-coder-480b-a35b-instruct-turbo` | 256000 | 65536 | — | — |
+| `venice` | `qwen3-vl-235b-a22b` | `venice/qwen3-vl-235b-a22b` | 128000 | 16384 | — | ✅ |
+| `venice` | `venice-uncensored-1-2` | `venice/venice-uncensored-1-2` | 128000 | 8192 | — | ✅ |
+| `venice` | `zai-org-glm-4.7` | `venice/zai-org-glm-4.7` | 198000 | 16384 | ✅ | — |
 | `vercel-ai-gateway` | `anthropic/claude-opus-4.6` | `vercel-ai-gateway/anthropic/claude-opus-4.6` | 1000000 | 128000 | ✅ | ✅ |
 | `vercel-ai-gateway` | `moonshotai/kimi-k2.6` | `vercel-ai-gateway/moonshotai/kimi-k2.6` | 262000 | 262000 | ✅ | ✅ |
 | `vercel-ai-gateway` | `openai/gpt-5.4` | `vercel-ai-gateway/openai/gpt-5.4` | 1050000 | 128000 | ✅ | ✅ |
