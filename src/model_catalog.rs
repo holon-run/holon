@@ -812,6 +812,30 @@ fn chutes_model_without_published_capabilities(
     }
 }
 
+fn arcee_model(model: &str, display_name: &str) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("arcee"), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: display_name.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the Arcee hosted {model} model."
+        ),
+        context_window_tokens: Some(131_072),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags::default(),
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
 fn fireworks_model(
     model: &str,
     display_name: &str,
@@ -1359,33 +1383,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        catalog_model(
-            "arcee",
-            "trinity-mini",
-            "Trinity Mini 26B",
-            131_072,
-            80_000,
-            false,
-            false,
-        ),
-        catalog_model(
-            "arcee",
-            "trinity-large-preview",
-            "Trinity Large Preview",
-            131_072,
-            16_384,
-            false,
-            false,
-        ),
-        catalog_model(
-            "arcee",
-            "trinity-large-thinking",
-            "Trinity Large Thinking",
-            262_144,
-            80_000,
-            true,
-            false,
-        ),
+        arcee_model("trinity-mini", "Trinity Mini 26B"),
+        arcee_model("trinity-large-preview", "Trinity Large Preview"),
         catalog_model(
             "chutes",
             "moonshotai/Kimi-K2.6-TEE",
@@ -3156,6 +3155,34 @@ mod tests {
         assert_eq!(policy.compaction_trigger_estimated_tokens, 109_440);
         assert_eq!(policy.compaction_keep_recent_estimated_tokens, 41_587);
         assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
+    }
+
+    #[test]
+    fn arcee_catalog_tracks_current_hosted_models_conservatively() {
+        let catalog = BuiltInModelCatalog::new();
+        let arcee = ProviderId::parse("arcee").unwrap();
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|entry| entry.model_ref.provider == arcee)
+            .collect::<Vec<_>>();
+
+        assert_eq!(models.len(), 2);
+        for model in models {
+            assert!(matches!(
+                model.model_ref.model.as_str(),
+                "trinity-mini" | "trinity-large-preview"
+            ));
+            assert_eq!(model.context_window_tokens, Some(131_072));
+            assert!(model.default_max_output_tokens.is_none());
+            assert!(model.max_output_tokens_upper_limit.is_none());
+            assert_eq!(model.capabilities, ModelCapabilityFlags::default());
+            assert!(model.reasoning_effort_options.is_empty());
+            assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
+        }
+        assert!(catalog
+            .get(&ModelRef::new(arcee, "trinity-large-thinking"))
+            .is_none());
     }
 
     #[test]

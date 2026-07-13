@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **213 models**.
+across **40 endpoints** and **212 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -25,7 +25,7 @@ used in existing `provider/model` refs and config shortcuts.
 | Provider Account | Endpoint | Legacy Provider Ref | Transport | Base URL | Auth Env Variable(s) |
 |------------------|----------|---------------------|-----------|----------|----------------------|
 | `anthropic` | `default` | `anthropic` | Anthropic Messages | `https://api.anthropic.com` | `ANTHROPIC_AUTH_TOKEN` |
-| `arcee` | `default` | `arcee` | OpenAI Chat Completions | `https://api.arcee.ai/api/v1` | `ARCEE_API_KEY` |
+| `arcee` | `default` | `arcee` | OpenAI Chat Completions | `https://api.arcee.ai/v1` | `ARCEE_API_KEY` |
 | `bigmodel` | `default` | `bigmodel` | Anthropic Messages | `https://open.bigmodel.cn/api/anthropic` | `BIGMODEL_API_KEY` |
 | `byteplus` | `default` | `byteplus` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/v3` | `BYTEPLUS_API_KEY` |
 | `byteplus` | `coding` | `byteplus-coding` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` | `BYTEPLUS_CODING_API_KEY or BYTEPLUS_API_KEY` |
@@ -76,9 +76,8 @@ and capabilities.
 | `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200000 | 64000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-8` | `anthropic/claude-opus-4-8` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-sonnet-5` | `anthropic/claude-sonnet-5` | 1000000 | 128000 | ✅ | ✅ |
-| `arcee` | `trinity-large-preview` | `arcee/trinity-large-preview` | 131072 | 16384 | — | — |
-| `arcee` | `trinity-large-thinking` | `arcee/trinity-large-thinking` | 262144 | 80000 | ✅ | — |
-| `arcee` | `trinity-mini` | `arcee/trinity-mini` | 131072 | 80000 | — | — |
+| `arcee` | `trinity-large-preview` | `arcee/trinity-large-preview` | 131072 | — | — | — |
+| `arcee` | `trinity-mini` | `arcee/trinity-mini` | 131072 | — | — | — |
 | `bigmodel` | `glm-4-flash-250414` | `bigmodel/glm-4-flash-250414` | 131072 | 16384 | — | — |
 | `bigmodel` | `glm-4-flashx-250414` | `bigmodel/glm-4-flashx-250414` | 131072 | 16384 | — | — |
 | `bigmodel` | `glm-4-long` | `bigmodel/glm-4-long` | 1000000 | 4096 | — | — |
