@@ -751,10 +751,10 @@ mod tests {
     #[test]
     fn resolved_model_projection_preserves_canonical_provider_endpoint_and_route_provider() {
         let mut fixture = test_config(Some("openai-key"));
-        let route_provider = ProviderId::parse("volcengine-agent").unwrap();
+        let route_provider = ProviderId::parse("volcengine").unwrap();
         let built_ins = crate::config::built_in_provider_registry_with_settings(
             &std::collections::HashMap::from([(
-                "VOLCENGINE_AGENT_API_KEY".to_string(),
+                "VOLCENGINE_API_KEY".to_string(),
                 "volcengine-key".to_string(),
             )]),
         )
@@ -775,24 +775,24 @@ mod tests {
             .expect("canonical Volcengine model");
         assert_eq!(seedream.provider, "volcengine");
         assert_eq!(seedream.provider_family, "volcengine");
-        assert_eq!(seedream.endpoint, "plan");
-        assert_eq!(seedream.route_provider, "volcengine-agent");
+        assert_eq!(seedream.endpoint, "default");
+        assert_eq!(seedream.route_provider, "volcengine");
         assert!(seedream.policy.capabilities.image_generation);
 
         let providers = resolved_model_providers(&fixture.config);
         let volcengine = providers
             .iter()
-            .find(|entry| entry.provider_family == "volcengine" && entry.endpoint == "plan")
-            .expect("Volcengine plan provider");
-        assert_eq!(volcengine.id, "volcengine:plan");
-        assert_eq!(volcengine.route_provider, "volcengine-agent");
+            .find(|entry| entry.provider_family == "volcengine" && entry.endpoint == "default")
+            .expect("Volcengine default provider");
+        assert_eq!(volcengine.id, "volcengine");
+        assert_eq!(volcengine.route_provider, "volcengine");
 
-        let models = resolved_provider_models(&fixture.config, "volcengine:plan");
+        let models = resolved_provider_models(&fixture.config, "volcengine");
         assert!(models.iter().any(|entry| {
             entry.model_ref == "volcengine/doubao-seedream-5.0-lite"
                 && entry.provider_family == "volcengine"
-                && entry.endpoint == "plan"
-                && entry.route_provider == "volcengine-agent"
+                && entry.endpoint == "default"
+                && entry.route_provider == "volcengine"
         }));
     }
 

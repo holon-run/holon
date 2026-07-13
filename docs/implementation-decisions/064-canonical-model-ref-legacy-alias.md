@@ -5,7 +5,7 @@
 Built-in models are cataloged once under their **canonical provider id**.
 Endpoint- and plan-specific availability, limits, capabilities, and preferred
 selection are indexed separately by `ModelRouteRef` (`provider@endpoint/model`).
-This applies both to image routes such as Volcengine `image-openai` and to
+This applies both to legacy image aliases such as Volcengine `image-openai` and to
 flattened plan providers such as `volcengine-agent`,
 `dashscope-token-plan`, and `xiaomi-token-plan`.
 
@@ -15,6 +15,11 @@ to the canonical form `volcengine/doubao-seedream-5.0-lite`. Catalog
 construction also derives aliases for flattened built-in provider ids, while
 preserving their exact endpoint as a route. Existing user configs therefore
 continue to resolve without manual migration.
+
+The legacy Volcengine image alias resolves to the standard `default` endpoint:
+Seedream uses Ark's `/api/v3/images/generations` API, not the Agent Plan
+`/api/plan/v3` endpoint. `VOLCENGINE_IMAGE_OPENAI_API_KEY` remains accepted as a
+backward-compatible credential fallback for the standard endpoint.
 
 ## Reason
 

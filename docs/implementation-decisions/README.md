@@ -104,3 +104,4 @@ Current decision notes:
 - [090 OpenCode Go Model Catalog](./090-opencode-go-model-catalog.md)
 - [091 Tencent TokenHub Model Catalog](./091-tencent-tokenhub-model-catalog.md)
 - [092 Venice Model Catalog](./092-venice-model-catalog.md)
+- [093 Image Generation Route Calibration](./093-image-generation-route-calibration.md)

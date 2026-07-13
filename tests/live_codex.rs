@@ -20,8 +20,7 @@ fn live_openai_codex_model() -> String {
 }
 
 fn live_openai_codex_image_model() -> String {
-    std::env::var("HOLON_LIVE_OPENAI_CODEX_IMAGE_MODEL")
-        .unwrap_or_else(|_| live_openai_codex_model())
+    std::env::var("HOLON_LIVE_OPENAI_CODEX_IMAGE_MODEL").unwrap_or_else(|_| "gpt-5.5".into())
 }
 
 fn probe_tool_spec() -> ToolSpec {

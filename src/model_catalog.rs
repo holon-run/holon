@@ -1574,7 +1574,6 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             default_verbosity: Some(ModelVerbosity::Low),
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
-                image_generation: true,
                 interactive_exec: true,
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
@@ -3153,7 +3152,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             },
             reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
-            endpoint: Some(ProviderEndpointId::parse("plan").expect("valid built-in endpoint id")),
+            endpoint: Some(ProviderEndpointId::default_endpoint()),
         },
         catalog_model(
             "xiaomi",
@@ -3926,6 +3925,7 @@ mod tests {
             .unwrap();
         assert_eq!(codex_spark.context_window_tokens, Some(128_000));
         assert!(!codex_spark.capabilities.image_input);
+        assert!(!codex_spark.capabilities.image_generation);
 
         let nearai = catalog.resolve_policy(
             &ModelRef::parse("nearai/zai-org/GLM-5.1-FP8").unwrap(),
