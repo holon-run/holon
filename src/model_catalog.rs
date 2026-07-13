@@ -735,6 +735,7 @@ fn reasoning_effort_options(
         ("fireworks", "accounts/fireworks/models/glm-5p2") => &["none", "high", "max"][..],
         ("fireworks", "accounts/fireworks/models/gpt-oss-120b")
         | ("fireworks", "accounts/fireworks/models/minimax-m2p7") => &["low", "medium", "high"][..],
+        ("huggingface", "openai/gpt-oss-120b") => &["low", "medium", "high"][..],
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
         ("xiaomi" | "xiaomi-token-plan", "mimo-v2.5-pro" | "mimo-v2.5") => &["none", "high"][..],
         ("volcengine", _)
@@ -831,6 +832,33 @@ fn arcee_model(model: &str, display_name: &str) -> BuiltInModelMetadata {
         ),
         capabilities: ModelCapabilityFlags::default(),
         reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
+fn huggingface_gpt_oss_model() -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("huggingface"), "openai/gpt-oss-120b");
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: "OpenAI GPT OSS 120B".into(),
+        description:
+            "Holon conservative built-in metadata for the Hugging Face Inference Providers quick-start chat model."
+                .into(),
+        context_window_tokens: Some(131_072),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
+        reasoning_effort_options: vec!["low".into(), "medium".into(), "high".into()],
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     }
@@ -1511,15 +1539,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        catalog_model(
-            "huggingface",
-            "moonshotai/Kimi-K2-Instruct",
-            "MoonshotAI Kimi K2 Instruct",
-            262_144,
-            32_768,
-            false,
-            false,
-        ),
+        huggingface_gpt_oss_model(),
         catalog_model(
             "kilocode",
             "kilo/auto",
@@ -3948,6 +3968,25 @@ mod tests {
                 "{dynamic_or_removed} should come from discovery or explicit configuration"
             );
         }
+    }
+
+    #[test]
+    fn huggingface_catalog_keeps_the_current_official_quick_start_default() {
+        let catalog = BuiltInModelCatalog::new();
+        let model = catalog
+            .get(&ModelRef::parse("huggingface/openai/gpt-oss-120b").unwrap())
+            .expect("Hugging Face quick-start model should be registered");
+
+        assert_eq!(model.context_window_tokens, Some(131_072));
+        assert!(model.default_max_output_tokens.is_none());
+        assert!(model.max_output_tokens_upper_limit.is_none());
+        assert!(model.capabilities.supports_reasoning);
+        assert!(!model.capabilities.image_input);
+        assert_eq!(model.reasoning_effort_options, ["low", "medium", "high"]);
+        assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
+        assert!(catalog
+            .get(&ModelRef::parse("huggingface/moonshotai/Kimi-K2-Instruct").unwrap())
+            .is_none());
     }
 
     #[test]

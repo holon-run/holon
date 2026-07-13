@@ -86,14 +86,14 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
 pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
     matches!(
         provider.id.as_str(),
-        "arcee" | "nearai" | "openrouter" | "synthetic" | "vercel-ai-gateway"
+        "arcee" | "huggingface" | "nearai" | "openrouter" | "synthetic" | "vercel-ai-gateway"
     )
 }
 
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
     !matches!(
         provider.id.as_str(),
-        "nearai" | "synthetic" | "vercel-ai-gateway"
+        "huggingface" | "nearai" | "synthetic" | "vercel-ai-gateway"
     )
 }
 
@@ -219,6 +219,9 @@ pub async fn refresh_provider_models(
         "arcee" => serde_json::from_slice::<ArceeModelsResponse>(&raw)
             .context("failed to parse Arcee model discovery response")?
             .into_model_metadata(&provider.id),
+        "huggingface" => serde_json::from_slice::<HuggingFaceModelsResponse>(&raw)
+            .context("failed to parse Hugging Face model discovery response")?
+            .into_model_metadata(&provider.id),
         "nearai" => serde_json::from_slice::<NearAiModelsResponse>(&raw)
             .context("failed to parse NEAR AI model discovery response")?
             .into_model_metadata(&provider.id),
@@ -259,6 +262,7 @@ pub async fn refresh_provider_models(
 fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
     match provider.id.as_str() {
         "arcee" => Ok("https://api.arcee.ai/api/v1/models".to_string()),
+        "huggingface" => openai_compatible_models_url(&provider.base_url),
         "nearai" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
         "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
@@ -342,6 +346,103 @@ impl ArceeModel {
             tool_output_truncation_estimated_tokens: None,
             capabilities: ModelCapabilityFlags::default(),
             reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HuggingFaceModelsResponse {
+    #[serde(default)]
+    data: Vec<HuggingFaceModel>,
+}
+
+impl HuggingFaceModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HuggingFaceModel {
+    id: String,
+    #[serde(default)]
+    architecture: Option<HuggingFaceArchitecture>,
+    #[serde(default)]
+    providers: Vec<HuggingFaceProvider>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HuggingFaceArchitecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HuggingFaceProvider {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    context_length: Option<usize>,
+}
+
+impl HuggingFaceModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        let live_providers = self
+            .providers
+            .iter()
+            .filter(|route| route.status.as_deref() == Some("live"))
+            .collect::<Vec<_>>();
+        if live_providers.is_empty() {
+            return None;
+        }
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let image_input = self.architecture.as_ref().is_some_and(|architecture| {
+            architecture
+                .input_modalities
+                .iter()
+                .any(|modality| modality.eq_ignore_ascii_case("image"))
+        });
+        let gpt_oss = matches!(id, "openai/gpt-oss-120b" | "openai/gpt-oss-20b");
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name: id.to_string(),
+            description: "Remote discovered Hugging Face Inference Providers chat model metadata."
+                .to_string(),
+            context_window_tokens: live_providers
+                .into_iter()
+                .filter_map(|route| route.context_length)
+                .max(),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags {
+                image_input,
+                supports_reasoning: gpt_oss,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: if gpt_oss {
+                vec!["low".into(), "medium".into(), "high".into()]
+            } else {
+                Vec::new()
+            },
             source: ModelMetadataSource::RemoteDiscovered,
             endpoint: None,
         })
@@ -822,6 +923,30 @@ mod tests {
         }
     }
 
+    fn huggingface_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("huggingface").unwrap(),
+            route_provider: ProviderId::parse("huggingface").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://router.huggingface.co/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     fn vercel_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
             id: ProviderId::parse("vercel-ai-gateway").unwrap(),
@@ -945,6 +1070,80 @@ mod tests {
         assert_eq!(
             provider_models_url(&provider).unwrap(),
             "https://api.arcee.ai/api/v1/models"
+        );
+    }
+
+    #[test]
+    fn maps_only_live_huggingface_routes_conservatively() {
+        let payload: HuggingFaceModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {
+                    "id":"openai/gpt-oss-120b",
+                    "architecture":{"input_modalities":["text"]},
+                    "providers":[
+                        {"provider":"groq","status":"live","context_length":131072,"supports_tools":true},
+                        {"provider":"example","status":"error","context_length":262144}
+                    ]
+                },
+                {
+                    "id":"Qwen/Qwen-VL",
+                    "architecture":{"input_modalities":["text","image"]},
+                    "providers":[
+                        {"provider":"example","status":"live","context_length":65536}
+                    ]
+                },
+                {
+                    "id":"offline/model",
+                    "providers":[
+                        {"provider":"example","status":"error","context_length":32768}
+                    ]
+                }
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("huggingface").unwrap());
+
+        assert_eq!(models.len(), 2);
+        let gpt_oss = models
+            .iter()
+            .find(|model| model.model_ref.model == "openai/gpt-oss-120b")
+            .unwrap();
+        assert_eq!(gpt_oss.context_window_tokens, Some(131_072));
+        assert!(gpt_oss.capabilities.supports_reasoning);
+        assert!(!gpt_oss.capabilities.parallel_tool_calls);
+        assert_eq!(gpt_oss.reasoning_effort_options, ["low", "medium", "high"]);
+        assert!(gpt_oss.max_output_tokens_upper_limit.is_none());
+
+        let vision = models
+            .iter()
+            .find(|model| model.model_ref.model == "Qwen/Qwen-VL")
+            .unwrap();
+        assert!(vision.capabilities.image_input);
+        assert!(!vision.capabilities.supports_reasoning);
+        assert!(!models
+            .iter()
+            .any(|model| model.model_ref.model == "offline/model"));
+    }
+
+    #[test]
+    fn huggingface_discovery_is_public_but_inference_still_requires_authentication() {
+        let provider = huggingface_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://router.huggingface.co/v1/models"
         );
     }
 
