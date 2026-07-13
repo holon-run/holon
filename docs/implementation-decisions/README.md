@@ -96,3 +96,5 @@ Current decision notes:
 - [082 Together AI Model Catalog](./082-together-model-catalog.md)
 - [083 OpenRouter Model Catalog](./083-openrouter-model-catalog.md)
 - [084 Vercel AI Gateway Model Catalog](./084-vercel-ai-gateway-model-catalog.md)
+- [085 NEAR AI Cloud Model Catalog](./085-nearai-model-catalog.md)
+- [086 Synthetic Model Catalog](./086-synthetic-model-catalog.md)

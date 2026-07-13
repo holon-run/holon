@@ -2273,195 +2273,17 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "Step 3.5 Flash",
             false,
         ),
-        catalog_model(
-            "synthetic",
-            "hf:MiniMaxAI/MiniMax-M2.5",
-            "MiniMax M2.5",
-            192_000,
-            65_536,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:moonshotai/Kimi-K2-Thinking",
-            "Kimi K2 Thinking",
-            256_000,
-            8_192,
-            true,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:zai-org/GLM-4.7",
-            "GLM-4.7",
-            198_000,
-            128_000,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:deepseek-ai/DeepSeek-R1-0528",
-            "DeepSeek R1 0528",
-            128_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:deepseek-ai/DeepSeek-V3-0324",
-            "DeepSeek V3 0324",
-            128_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:deepseek-ai/DeepSeek-V3.1",
-            "DeepSeek V3.1",
-            128_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:deepseek-ai/DeepSeek-V3.1-Terminus",
-            "DeepSeek V3.1 Terminus",
-            128_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:deepseek-ai/DeepSeek-V3.2",
-            "DeepSeek V3.2",
-            159_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:meta-llama/Llama-3.3-70B-Instruct",
-            "Llama 3.3 70B Instruct",
-            128_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-            "Llama 4 Maverick 17B 128E Instruct FP8",
-            524_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:moonshotai/Kimi-K2-Instruct-0905",
-            "Kimi K2 Instruct 0905",
-            256_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:moonshotai/Kimi-K2.5",
-            "Kimi K2.5",
-            256_000,
-            8_192,
-            true,
-            true,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:openai/gpt-oss-120b",
-            "GPT OSS 120B",
-            128_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:Qwen/Qwen3-235B-A22B-Instruct-2507",
-            "Qwen3 235B A22B Instruct 2507",
-            256_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:Qwen/Qwen3-Coder-480B-A35B-Instruct",
-            "Qwen3 Coder 480B A35B Instruct",
-            256_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:Qwen/Qwen3-VL-235B-A22B-Instruct",
-            "Qwen3 VL 235B A22B Instruct",
-            250_000,
-            8_192,
-            false,
-            true,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:zai-org/GLM-4.5",
-            "GLM-4.5",
-            128_000,
-            128_000,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:zai-org/GLM-4.6",
-            "GLM-4.6",
-            198_000,
-            128_000,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:zai-org/GLM-5",
-            "GLM-5",
-            256_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:deepseek-ai/DeepSeek-V3",
-            "DeepSeek V3",
-            128_000,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "synthetic",
-            "hf:Qwen/Qwen3-235B-A22B-Thinking-2507",
-            "Qwen3 235B A22B Thinking 2507",
-            256_000,
-            8_192,
-            true,
-            false,
-        ),
+        catalog_model("synthetic", "syn:large:text", "Synthetic Large Text", 524_288, 65_536, true, false),
+        catalog_model("synthetic", "syn:small:text", "Synthetic Small Text", 196_608, 65_536, true, false),
+        catalog_model("synthetic", "syn:large:vision", "Synthetic Large Vision", 262_144, 65_536, true, true),
+        catalog_model("synthetic", "syn:small:vision", "Synthetic Small Vision", 262_144, 65_536, true, true),
+        catalog_model("synthetic", "hf:openai/gpt-oss-120b", "OpenAI GPT OSS 120B", 131_072, 65_536, true, false),
+        catalog_model("synthetic", "hf:zai-org/GLM-5.2", "Z.ai GLM-5.2", 524_288, 65_536, true, false),
+        catalog_model("synthetic", "hf:moonshotai/Kimi-K2.7-Code", "Moonshot AI Kimi K2.7 Code", 262_144, 65_536, true, true),
+        catalog_model("synthetic", "hf:Qwen/Qwen3.6-27B", "Qwen3.6 27B", 262_144, 65_536, true, true),
+        catalog_model("synthetic", "hf:MiniMaxAI/MiniMax-M3", "MiniMax M3", 262_144, 65_536, true, true),
+        catalog_model("synthetic", "hf:zai-org/GLM-4.7-Flash", "Z.ai GLM-4.7 Flash", 196_608, 65_536, true, false),
+        catalog_model("synthetic", "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "NVIDIA Nemotron 3 Super 120B A12B NVFP4", 262_144, 65_536, true, false),
         catalog_model(
             "tencent-tokenhub",
             "hy3-preview",
@@ -4099,6 +3921,59 @@ mod tests {
                 "{dynamic_or_removed} should come from discovery or explicit configuration"
             );
         }
+    }
+
+    #[test]
+    fn synthetic_catalog_tracks_current_always_on_models() {
+        let catalog = BuiltInModelCatalog::new();
+        let synthetic = ProviderId::parse("synthetic").unwrap();
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|entry| entry.model_ref.provider == synthetic)
+            .collect::<Vec<_>>();
+
+        assert_eq!(models.len(), 11);
+        for model in &models {
+            assert!(model.capabilities.supports_reasoning);
+            assert_eq!(
+                model.max_output_tokens_upper_limit,
+                Some(65_536),
+                "{:?}",
+                model.model_ref
+            );
+            assert!(
+                model.reasoning_effort_options.is_empty(),
+                "{:?} should not expose undocumented effort controls",
+                model.model_ref
+            );
+        }
+        for vision in [
+            "syn:large:vision",
+            "syn:small:vision",
+            "hf:moonshotai/Kimi-K2.7-Code",
+            "hf:Qwen/Qwen3.6-27B",
+            "hf:MiniMaxAI/MiniMax-M3",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::parse(&format!("synthetic/{vision}")).unwrap())
+                    .unwrap()
+                    .capabilities
+                    .image_input,
+                "{vision}"
+            );
+        }
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&synthetic)
+                .unwrap()
+                .as_string(),
+            "synthetic/syn:large:text"
+        );
+        assert!(catalog
+            .get(&ModelRef::parse("synthetic/hf:moonshotai/Kimi-K2.5").unwrap())
+            .is_none());
     }
 
     #[test]
