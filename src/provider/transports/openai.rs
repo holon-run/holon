@@ -564,7 +564,9 @@ impl OpenAiCodexProvider {
         })
     }
 
-    fn resolve_credential(&self) -> Result<CodexCliCredential> {
+    fn resolve_credentials(
+        &self,
+    ) -> Result<(Option<CodexCliCredential>, Option<CodexCliCredential>)> {
         let profile = self
             .credential_material
             .as_deref()
@@ -581,22 +583,36 @@ impl OpenAiCodexProvider {
         } else {
             None
         };
-        choose_openai_codex_credential(profile, cli).ok_or_else(|| {
-            anyhow::anyhow!(
-                "no Holon openai-codex credential profile or usable Codex CLI credentials are available"
-            )
-        })
+        Ok((profile, cli))
     }
 
     async fn resolve_fresh_credential(&self) -> Result<CodexCliCredential> {
-        let credential = self.resolve_credential()?;
-        if !credential.source.starts_with("credential_profile:") {
-            return Ok(credential);
+        let (profile, cli) = self.resolve_credentials()?;
+        let Some(profile) = profile else {
+            return cli.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no Holon openai-codex credential profile or usable Codex CLI credentials are available"
+                )
+            });
+        };
+        if !credential_needs_refresh(&profile) {
+            return Ok(profile);
         }
-        if !credential_needs_refresh(&credential) {
-            return Ok(credential);
+        match self.refresh_holon_oauth_profile(false).await {
+            Ok(refreshed) => Ok(refreshed),
+            Err(error) if cli.is_some() => {
+                tracing::warn!(
+                    %error,
+                    credential_profile = self
+                        .credential_profile
+                        .as_deref()
+                        .unwrap_or("openai-codex"),
+                    "OpenAI Codex profile refresh failed; falling back to Codex CLI credential"
+                );
+                Ok(cli.expect("CLI fallback was checked above"))
+            }
+            Err(error) => Err(error),
         }
-        self.refresh_holon_oauth_profile(false).await
     }
 
     async fn refresh_holon_oauth_profile(&self, force: bool) -> Result<CodexCliCredential> {
@@ -745,36 +761,7 @@ fn choose_openai_codex_credential(
     profile: Option<CodexCliCredential>,
     cli: Option<CodexCliCredential>,
 ) -> Option<CodexCliCredential> {
-    match (profile, cli) {
-        (Some(profile), Some(cli)) => Some(
-            [profile, cli]
-                .into_iter()
-                .max_by_key(openai_codex_credential_freshness_key)
-                .expect("credential candidate array is non-empty"),
-        ),
-        (Some(profile), None) => Some(profile),
-        (None, Some(cli)) => Some(cli),
-        (None, None) => None,
-    }
-}
-
-fn openai_codex_credential_freshness_key(
-    credential: &CodexCliCredential,
-) -> (
-    Option<chrono::DateTime<Utc>>,
-    Option<chrono::DateTime<Utc>>,
-    u8,
-) {
-    let source_rank = if credential.source == "keychain" {
-        3
-    } else if credential.source == "file" {
-        2
-    } else if credential.source.starts_with("credential_profile:") {
-        1
-    } else {
-        0
-    };
-    (credential.expires_at, credential.refreshed_at, source_rank)
+    profile.or(cli)
 }
 
 fn openai_codex_headers(
@@ -5954,7 +5941,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_codex_prefers_fresher_cli_credential_over_stale_profile() {
+    fn openai_codex_prefers_profile_over_fresher_cli_credential() {
         let profile = CodexCliCredential {
             access_token: "profile-access".into(),
             account_id: "acct_profile".into(),
@@ -5973,8 +5960,11 @@ mod tests {
         let credential = choose_openai_codex_credential(Some(profile), Some(cli))
             .expect("credential should resolve");
 
-        assert_eq!(credential.access_token, "cli-access");
-        assert_eq!(credential.source, "keychain");
+        assert_eq!(credential.access_token, "profile-access");
+        assert_eq!(
+            credential.source,
+            format!("credential_profile:{OPENAI_CODEX_CREDENTIAL_PROFILE}")
+        );
     }
 
     #[tokio::test]
@@ -6044,6 +6034,93 @@ mod tests {
         let material = &store.profiles[OPENAI_CODEX_CREDENTIAL_PROFILE].material;
         assert!(material.contains("rotated-refresh"));
         assert!(!material.contains("old-refresh"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn openai_codex_falls_back_to_cli_credential_when_profile_refresh_fails() {
+        let server = axum::Router::new().route(
+            "/oauth/token",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(json!({
+                        "error": "invalid_grant",
+                        "error_description": "refresh token expired"
+                    })),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, server).await.unwrap();
+        });
+        let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::set(
+            "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+            format!("http://{addr}/oauth/token"),
+        );
+
+        let home = tempfile::tempdir().unwrap();
+        let codex_home = home.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(
+            codex_home.join("auth.json"),
+            json!({
+                "tokens": {
+                    "access_token": make_token(json!({
+                        "exp": Utc::now().timestamp() + 3600,
+                        "chatgpt_account_id": "acct_cli"
+                    })),
+                    "refresh_token": "cli-refresh",
+                    "account_id": "acct_cli"
+                },
+                "last_refresh": Utc::now()
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let credential_store_path = home.path().join("credentials.json");
+        let expiring_material = json!({
+            "tokens": {
+                "access_token": make_token(json!({
+                    "exp": Utc::now().timestamp() + 30,
+                    "chatgpt_account_id": "acct_profile"
+                })),
+                "refresh_token": "expired-refresh",
+                "account_id": "acct_profile"
+            }
+        })
+        .to_string();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            OPENAI_CODEX_CREDENTIAL_PROFILE.to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: expiring_material.clone(),
+            },
+        );
+        save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles })
+            .unwrap();
+
+        let mut provider_config = test_openai_codex_config(Some(expiring_material));
+        provider_config.credential_store_path = Some(credential_store_path);
+        provider_config.codex_home = Some(codex_home);
+        let provider = OpenAiCodexProvider::from_runtime_config(
+            &provider_config,
+            "gpt-codex-test",
+            1024,
+            home.path(),
+            true,
+        )
+        .unwrap();
+
+        let credential = provider.resolve_fresh_credential().await.unwrap();
+
+        assert_eq!(credential.account_id, "acct_cli");
+        assert_eq!(credential.source, "file");
         handle.abort();
     }
 
