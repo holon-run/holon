@@ -724,6 +724,7 @@ fn reasoning_effort_options(
         ("stepfun", "step-3.7-flash") => &["low", "medium", "high"][..],
         ("stepfun", "step-3.5-flash-2603") => &["low", "high"][..],
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
+        ("xiaomi" | "xiaomi-token-plan", "mimo-v2.5-pro" | "mimo-v2.5") => &["none", "high"][..],
         ("volcengine", _)
             if endpoint.is_none_or(|endpoint| {
                 matches!(endpoint.as_str(), "default" | "coding" | "plan")
@@ -2660,44 +2661,17 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "xiaomi",
             "mimo-v2.5-pro",
             "Xiaomi MiMo V2.5 Pro",
-            1_000_000,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "xiaomi",
-            "mimo-v2.5-pro-ultraspeed",
-            "Xiaomi MiMo V2.5 Pro UltraSpeed",
-            1_000_000,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "xiaomi",
-            "mimo-v2-flash",
-            "Xiaomi MiMo V2 Flash",
-            262_144,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "xiaomi",
-            "mimo-v2-pro",
-            "Xiaomi MiMo V2 Pro",
             1_048_576,
-            32_000,
+            131_072,
             true,
             false,
         ),
         catalog_model(
             "xiaomi",
-            "mimo-v2-omni",
-            "Xiaomi MiMo V2 Omni",
-            262_144,
-            32_000,
+            "mimo-v2.5",
+            "Xiaomi MiMo V2.5",
+            1_048_576,
+            131_072,
             true,
             true,
         ),
@@ -2705,35 +2679,17 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "xiaomi-token-plan",
             "mimo-v2.5-pro",
             "Xiaomi MiMo V2.5 Pro",
-            1_000_000,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "xiaomi-token-plan",
-            "mimo-v2.5-pro-ultraspeed",
-            "Xiaomi MiMo V2.5 Pro UltraSpeed",
-            1_000_000,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "xiaomi-token-plan",
-            "mimo-v2-pro",
-            "Xiaomi MiMo V2 Pro",
             1_048_576,
-            32_000,
+            131_072,
             true,
             false,
         ),
         catalog_model(
             "xiaomi-token-plan",
-            "mimo-v2-omni",
-            "Xiaomi MiMo V2 Omni",
-            262_144,
-            32_000,
+            "mimo-v2.5",
+            "Xiaomi MiMo V2.5",
+            1_048_576,
+            131_072,
             true,
             true,
         ),
@@ -3467,34 +3423,49 @@ mod tests {
             8192,
         );
         assert_eq!(xiaomi.display_name, "Xiaomi MiMo V2.5 Pro");
-        assert_eq!(xiaomi.context_window_tokens, Some(1_000_000));
+        assert_eq!(xiaomi.context_window_tokens, Some(1_048_576));
         assert_eq!(xiaomi.runtime_max_output_tokens, 131_072);
         assert!(xiaomi.capabilities.supports_reasoning);
+        assert!(!xiaomi.capabilities.image_input);
+        assert_eq!(xiaomi.reasoning_effort_options, ["none", "high"]);
         assert_eq!(xiaomi.source, ModelMetadataSource::BuiltInCatalog);
 
-        let xiaomi_ultraspeed = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi/mimo-v2.5-pro-ultraspeed").unwrap(),
+        let xiaomi_omni = catalog.resolve_policy(
+            &ModelRef::parse("xiaomi/mimo-v2.5").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
             8192,
         );
-        assert_eq!(
-            xiaomi_ultraspeed.display_name,
-            "Xiaomi MiMo V2.5 Pro UltraSpeed"
-        );
-        assert_eq!(xiaomi_ultraspeed.context_window_tokens, Some(1_000_000));
-        assert_eq!(xiaomi_ultraspeed.runtime_max_output_tokens, 131_072);
-        assert!(xiaomi_ultraspeed.capabilities.supports_reasoning);
-        assert_eq!(
-            xiaomi_ultraspeed.source,
-            ModelMetadataSource::BuiltInCatalog
-        );
+        assert_eq!(xiaomi_omni.display_name, "Xiaomi MiMo V2.5");
+        assert_eq!(xiaomi_omni.context_window_tokens, Some(1_048_576));
+        assert_eq!(xiaomi_omni.runtime_max_output_tokens, 131_072);
+        assert!(xiaomi_omni.capabilities.supports_reasoning);
+        assert!(xiaomi_omni.capabilities.image_input);
+        assert_eq!(xiaomi_omni.reasoning_effort_options, ["none", "high"]);
 
         assert!(catalog
             .get(&ModelRef::parse("xiaomi/mimo-v2-pro").unwrap())
-            .is_some());
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("xiaomi/mimo-v2.5-pro-ultraspeed").unwrap())
+            .is_none());
+        assert_eq!(
+            catalog
+                .canonicalize_model_ref(&ModelRef::parse("xiaomi-token-plan/mimo-v2.5").unwrap()),
+            ModelRef::parse("xiaomi/mimo-v2.5").unwrap()
+        );
+        let token_plan = catalog.resolve_route_policy(
+            &ModelRouteRef::parse("xiaomi@token-plan/mimo-v2.5").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert!(token_plan.capabilities.image_input);
+        assert_eq!(token_plan.reasoning_effort_options, ["none", "high"]);
         assert!(catalog
             .get(&ModelRef::parse("xiaomi-token-plan/mimo-v2-flash").unwrap())
             .is_none());
