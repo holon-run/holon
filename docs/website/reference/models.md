@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **213 models**.
+across **40 endpoints** and **223 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -141,8 +141,18 @@ and capabilities.
 | `dashscope` | `qwen3.7-plus-2026-05-26` | `dashscope/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `deepseek` | `deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
-| `fireworks` | `accounts/fireworks/models/kimi-k2p6` | `fireworks/accounts/fireworks/models/kimi-k2p6` | 262144 | 262144 | — | ✅ |
-| `fireworks` | `accounts/fireworks/routers/kimi-k2p5-turbo` | `fireworks/accounts/fireworks/routers/kimi-k2p5-turbo` | 256000 | 256000 | — | ✅ |
+| `fireworks` | `accounts/fireworks/models/deepseek-v4-flash` | `fireworks/accounts/fireworks/models/deepseek-v4-flash` | 1048576 | — | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/deepseek-v4-pro` | `fireworks/accounts/fireworks/models/deepseek-v4-pro` | 1048576 | — | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/glm-5p1` | `fireworks/accounts/fireworks/models/glm-5p1` | 202752 | — | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/glm-5p2` | `fireworks/accounts/fireworks/models/glm-5p2` | 1048576 | — | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/gpt-oss-120b` | `fireworks/accounts/fireworks/models/gpt-oss-120b` | 131072 | — | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/kimi-k2p6` | `fireworks/accounts/fireworks/models/kimi-k2p6` | 262144 | — | ✅ | ✅ |
+| `fireworks` | `accounts/fireworks/models/kimi-k2p7-code` | `fireworks/accounts/fireworks/models/kimi-k2p7-code` | 262144 | — | ✅ | ✅ |
+| `fireworks` | `accounts/fireworks/models/minimax-m2p7` | `fireworks/accounts/fireworks/models/minimax-m2p7` | 196608 | — | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/minimax-m3` | `fireworks/accounts/fireworks/models/minimax-m3` | 524288 | — | ✅ | ✅ |
+| `fireworks` | `accounts/fireworks/models/nemotron-3-ultra-nvfp4` | `fireworks/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | 262144 | — | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/qwen3p6-plus` | `fireworks/accounts/fireworks/models/qwen3p6-plus` | — | — | ✅ | ✅ |
+| `fireworks` | `accounts/fireworks/models/qwen3p7-plus` | `fireworks/accounts/fireworks/models/qwen3p7-plus` | 262144 | — | ✅ | ✅ |
 | `gemini` | `gemini-2.5-flash` | `gemini/gemini-2.5-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-2.5-flash-lite` | `gemini/gemini-2.5-flash-lite` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-2.5-pro` | `gemini/gemini-2.5-pro` | 1048576 | 65536 | ✅ | ✅ |
