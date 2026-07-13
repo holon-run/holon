@@ -92,3 +92,4 @@ Current decision notes:
 - [078 Xiaomi Model Catalog](./078-xiaomi-model-catalog.md)
 - [079 Chutes Model Catalog](./079-chutes-model-catalog.md)
 - [080 Fireworks Model Catalog](./080-fireworks-model-catalog.md)
+- [081 NVIDIA Model Catalog](./081-nvidia-model-catalog.md)

@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **223 models**.
+across **40 endpoints** and **224 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -190,10 +190,11 @@ and capabilities.
 | `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262144 | 65536 | ✅ | — |
 | `nearai` | `google/gemma-4-31B-it` | `nearai/google/gemma-4-31B-it` | 262144 | 32768 | — | — |
 | `nearai` | `zai-org/GLM-5.1-FP8` | `nearai/zai-org/GLM-5.1-FP8` | 202752 | 131072 | ✅ | — |
-| `nvidia` | `minimaxai/minimax-m2.5` | `nvidia/minimaxai/minimax-m2.5` | 196608 | 8192 | — | — |
-| `nvidia` | `moonshotai/kimi-k2.5` | `nvidia/moonshotai/kimi-k2.5` | 262144 | 8192 | — | — |
-| `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | `nvidia/nvidia/nemotron-3-super-120b-a12b` | 262144 | 8192 | — | — |
-| `nvidia` | `z-ai/glm5` | `nvidia/z-ai/glm5` | 202752 | 8192 | — | — |
+| `nvidia` | `minimaxai/minimax-m2.7` | `nvidia/minimaxai/minimax-m2.7` | 204800 | — | ✅ | — |
+| `nvidia` | `minimaxai/minimax-m3` | `nvidia/minimaxai/minimax-m3` | 1000000 | — | ✅ | ✅ |
+| `nvidia` | `moonshotai/kimi-k2.6` | `nvidia/moonshotai/kimi-k2.6` | 262144 | — | ✅ | ✅ |
+| `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | `nvidia/nvidia/nemotron-3-super-120b-a12b` | 1000000 | — | ✅ | — |
+| `nvidia` | `z-ai/glm-5.2` | `nvidia/z-ai/glm-5.2` | 1000000 | — | ✅ | — |
 | `openai` | `gpt-5.3` | `openai/gpt-5.3` | 128000 | — | ✅ | ✅ |
 | `openai` | `gpt-5.4` | `openai/gpt-5.4` | 272000 | — | ✅ | ✅ |
 | `openai` | `gpt-5.4-mini` | `openai/gpt-5.4-mini` | 128000 | — | ✅ | ✅ |

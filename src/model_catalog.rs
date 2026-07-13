@@ -838,6 +838,39 @@ fn fireworks_model(
     }
 }
 
+fn nvidia_model(
+    model: &str,
+    display_name: &str,
+    context_window_tokens: usize,
+    supports_reasoning: bool,
+    image_input: bool,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("nvidia"), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: display_name.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the NVIDIA-hosted {model} model."
+        ),
+        context_window_tokens: Some(context_window_tokens),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input,
+            supports_reasoning,
+            ..ModelCapabilityFlags::default()
+        },
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
 fn stepfun_model(
     provider: &str,
     model: &str,
@@ -1699,34 +1732,35 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
             false,
         ),
-        catalog_model(
-            "nvidia",
+        nvidia_model(
             "nvidia/nemotron-3-super-120b-a12b",
             "NVIDIA Nemotron 3 Super 120B",
+            1_000_000,
+            true,
+            false,
+        ),
+        nvidia_model(
+            "moonshotai/kimi-k2.6",
+            "Kimi K2.6",
             262_144,
-            8_192,
-            false,
+            true,
+            true,
+        ),
+        nvidia_model(
+            "minimaxai/minimax-m2.7",
+            "MiniMax M2.7",
+            204_800,
+            true,
             false,
         ),
-        catalog_model(
-            "nvidia",
-            "moonshotai/kimi-k2.5",
-            "Kimi K2.5",
-            262_144,
-            8_192,
-            false,
-            false,
+        nvidia_model(
+            "minimaxai/minimax-m3",
+            "MiniMax M3",
+            1_000_000,
+            true,
+            true,
         ),
-        catalog_model(
-            "nvidia",
-            "minimaxai/minimax-m2.5",
-            "MiniMax M2.5",
-            196_608,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model("nvidia", "z-ai/glm5", "GLM-5", 202_752, 8_192, false, false),
+        nvidia_model("z-ai/glm-5.2", "GLM-5.2", 1_000_000, true, false),
         catalog_model(
             "opencode-go",
             "deepseek-v4-pro",
@@ -3889,6 +3923,46 @@ mod tests {
             deepseek.reasoning_effort_options,
             ["none", "low", "medium", "high", "xhigh", "max"]
         );
+    }
+
+    #[test]
+    fn nvidia_catalog_tracks_the_public_hosted_model_directory() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("nvidia/nemotron-3-super-120b-a12b", 1_000_000, false),
+            ("moonshotai/kimi-k2.6", 262_144, true),
+            ("minimaxai/minimax-m2.7", 204_800, false),
+            ("minimaxai/minimax-m3", 1_000_000, true),
+            ("z-ai/glm-5.2", 1_000_000, false),
+        ];
+
+        for (model, context_window, image_input) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("nvidia/{model}")).unwrap())
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(
+                metadata.context_window_tokens,
+                Some(context_window),
+                "{model}"
+            );
+            assert_eq!(metadata.capabilities.image_input, image_input, "{model}");
+            assert!(metadata.capabilities.supports_reasoning, "{model}");
+            assert!(metadata.max_output_tokens_upper_limit.is_none(), "{model}");
+            assert_eq!(metadata.source, ModelMetadataSource::ConservativeBuiltin);
+        }
+
+        for retired in [
+            "moonshotai/kimi-k2.5",
+            "minimaxai/minimax-m2.5",
+            "z-ai/glm5",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::parse(&format!("nvidia/{retired}")).unwrap())
+                    .is_none(),
+                "{retired} should not remain in the built-in catalog"
+            );
+        }
     }
 
     #[test]
