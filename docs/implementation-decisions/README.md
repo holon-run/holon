@@ -95,3 +95,4 @@ Current decision notes:
 - [081 NVIDIA Model Catalog](./081-nvidia-model-catalog.md)
 - [082 Together AI Model Catalog](./082-together-model-catalog.md)
 - [083 OpenRouter Model Catalog](./083-openrouter-model-catalog.md)
+- [084 Vercel AI Gateway Model Catalog](./084-vercel-ai-gateway-model-catalog.md)

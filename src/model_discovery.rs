@@ -83,7 +83,11 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
 }
 
 pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
-    provider.id.as_str() == "openrouter"
+    matches!(provider.id.as_str(), "openrouter" | "vercel-ai-gateway")
+}
+
+fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
+    provider.id.as_str() != "vercel-ai-gateway"
 }
 
 pub fn discovery_cache_status_for_provider(
@@ -103,7 +107,7 @@ pub fn discovery_cache_status_for_provider(
     });
     let state = if !supports_auto_refresh {
         ModelDiscoveryCacheState::Unsupported
-    } else if !credential_configured {
+    } else if provider_model_discovery_requires_credential(provider) && !credential_configured {
         ModelDiscoveryCacheState::Unauthenticated
     } else if let Some(age) = age {
         if age <= ttl {
@@ -168,14 +172,14 @@ pub async fn refresh_provider_models(
     provider: &ProviderRuntimeConfig,
     cache_path: &Path,
 ) -> Result<ModelDiscoveryRefreshReport> {
-    if provider.id.as_str() != "openrouter" {
+    if !provider_supports_model_discovery(provider) {
         return Err(anyhow!(
             "provider {} does not support model discovery yet",
             provider.id.as_str()
         ));
     }
 
-    let source_url = openrouter_models_url(&provider.base_url)?;
+    let source_url = provider_models_url(provider)?;
     let request = reqwest::Client::builder()
         .user_agent("holon-model-discovery")
         .build()
@@ -189,18 +193,31 @@ pub async fn refresh_provider_models(
     let response = request
         .send()
         .await
-        .context("OpenRouter model discovery request failed")?
+        .with_context(|| format!("{} model discovery request failed", provider.id.as_str()))?
         .error_for_status()
-        .context("OpenRouter model discovery returned an error status")?;
-    let raw = response
-        .bytes()
-        .await
-        .context("failed to read OpenRouter model discovery response")?;
+        .with_context(|| {
+            format!(
+                "{} model discovery returned an error status",
+                provider.id.as_str()
+            )
+        })?;
+    let raw = response.bytes().await.with_context(|| {
+        format!(
+            "failed to read {} model discovery response",
+            provider.id.as_str()
+        )
+    })?;
     let response_hash = format!("sha256:{}", sha256_hex(&raw));
-    let payload: OpenRouterModelsResponse = serde_json::from_slice(&raw)
-        .context("failed to parse OpenRouter model discovery response")?;
+    let models = match provider.id.as_str() {
+        "openrouter" => serde_json::from_slice::<OpenRouterModelsResponse>(&raw)
+            .context("failed to parse OpenRouter model discovery response")?
+            .into_model_metadata(&provider.id),
+        "vercel-ai-gateway" => serde_json::from_slice::<VercelModelsResponse>(&raw)
+            .context("failed to parse Vercel AI Gateway model discovery response")?
+            .into_model_metadata(&provider.id),
+        _ => unreachable!("unsupported providers returned above"),
+    };
     let fetched_at = Utc::now();
-    let models = payload.into_model_metadata(&provider.id);
 
     let mut cache = load_discovery_cache_at(cache_path)?;
     cache.providers.insert(
@@ -223,11 +240,30 @@ pub async fn refresh_provider_models(
     })
 }
 
+fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
+    match provider.id.as_str() {
+        "openrouter" => openrouter_models_url(&provider.base_url),
+        "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
+        _ => Err(anyhow!(
+            "provider {} does not support model discovery yet",
+            provider.id.as_str()
+        )),
+    }
+}
+
 fn openrouter_models_url(base_url: &str) -> Result<String> {
     let mut url = reqwest::Url::parse(base_url)
         .with_context(|| format!("invalid OpenRouter base_url {base_url:?}"))?;
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}{OPENROUTER_MODELS_PATH}"));
+    Ok(url.to_string())
+}
+
+fn vercel_models_url(base_url: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url)
+        .with_context(|| format!("invalid Vercel AI Gateway base_url {base_url:?}"))?;
+    let path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{path}/v1/models"));
     Ok(url.to_string())
 }
 
@@ -370,6 +406,96 @@ struct OpenRouterTopProvider {
     max_completion_tokens: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct VercelModelsResponse {
+    #[serde(default)]
+    data: Vec<VercelModel>,
+}
+
+impl VercelModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct VercelModel {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    context_window: Option<usize>,
+    #[serde(default)]
+    max_tokens: Option<u32>,
+    #[serde(rename = "type", default)]
+    model_type: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+impl VercelModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        if self.model_type.as_deref() != Some("language") {
+            return None;
+        }
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let display_name = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        let description = self
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Remote discovered Vercel AI Gateway model metadata.")
+            .to_string();
+        let has_tag = |expected: &str| {
+            self.tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case(expected))
+        };
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name,
+            description,
+            context_window_tokens: self.context_window,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: self.max_tokens,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags {
+                image_input: has_tag("vision"),
+                supports_reasoning: has_tag("reasoning"),
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
@@ -396,6 +522,30 @@ mod tests {
                 external: None,
             },
             credential: Some("test-key".into()),
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
+    fn vercel_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("vercel-ai-gateway").unwrap(),
+            route_provider: ProviderId::parse("vercel-ai-gateway").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::AnthropicMessages,
+            base_url: "https://ai-gateway.vercel.sh".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::BearerToken,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
             credential_store_path: None,
             codex_home: None,
             originator: None,
@@ -467,6 +617,88 @@ mod tests {
         assert!(auto.capabilities.image_input);
         assert!(auto.capabilities.supports_reasoning);
         assert!(auto.reasoning_effort_options.is_empty());
+    }
+
+    #[test]
+    fn maps_vercel_language_models_conservatively() {
+        let payload: VercelModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {
+                    "id":"anthropic/claude-opus-4.6",
+                    "name":"Claude Opus 4.6",
+                    "description":"test",
+                    "context_window":1000000,
+                    "max_tokens":128000,
+                    "type":"language",
+                    "tags":["vision","reasoning","tool-use"]
+                },
+                {
+                    "id":"openai/dall-e-3",
+                    "name":"DALL-E 3",
+                    "type":"image",
+                    "tags":["image-generation"]
+                },
+                {
+                    "id":"alibaba/qwen-3-14b",
+                    "name":"Qwen3-14B",
+                    "context_window":40960,
+                    "max_tokens":16384,
+                    "type":"language",
+                    "tags":["reasoning","tool-use"]
+                }
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("vercel-ai-gateway").unwrap());
+
+        assert_eq!(models.len(), 2);
+        let claude = models
+            .iter()
+            .find(|model| model.model_ref.model == "anthropic/claude-opus-4.6")
+            .unwrap();
+        assert_eq!(
+            claude.model_ref.as_string(),
+            "vercel-ai-gateway/anthropic/claude-opus-4.6"
+        );
+        assert_eq!(claude.context_window_tokens, Some(1_000_000));
+        assert_eq!(claude.max_output_tokens_upper_limit, Some(128_000));
+        assert!(claude.capabilities.image_input);
+        assert!(claude.capabilities.supports_reasoning);
+        assert!(!claude.capabilities.parallel_tool_calls);
+        assert!(claude.reasoning_effort_options.is_empty());
+        assert_eq!(claude.source, ModelMetadataSource::RemoteDiscovered);
+
+        let qwen = models
+            .iter()
+            .find(|model| model.model_ref.model == "alibaba/qwen-3-14b")
+            .unwrap();
+        assert!(!qwen.capabilities.image_input);
+        assert!(qwen.capabilities.supports_reasoning);
+        assert!(!models
+            .iter()
+            .any(|model| model.model_ref.model == "openai/dall-e-3"));
+    }
+
+    #[test]
+    fn vercel_discovery_is_public_but_inference_remains_unauthenticated() {
+        let provider = vercel_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            vercel_models_url(&provider.base_url).unwrap(),
+            "https://ai-gateway.vercel.sh/v1/models"
+        );
     }
 
     #[test]
