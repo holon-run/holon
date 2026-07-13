@@ -842,6 +842,7 @@ pub(crate) fn built_in_provider_endpoint_identity(
         "byteplus-coding" => ("byteplus", "coding"),
         "dashscope-token-plan" => ("dashscope", "token-plan"),
         "dashscope-coding-plan" => ("dashscope", "coding-plan"),
+        "opencode-go-messages" => ("opencode-go", "messages"),
         "stepfun-plan" => ("stepfun", "plan"),
         "volcengine-coding" => ("volcengine", "coding"),
         "volcengine-agent" => ("volcengine", "plan"),
@@ -1103,6 +1104,13 @@ pub(crate) fn populate_built_in_provider_catalog(
     insert_openai_compatible_provider(
         catalog,
         "opencode-go",
+        "https://opencode.ai/zen/go/v1",
+        &["OPENCODE_GO_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        catalog,
+        "opencode-go-messages",
         "https://opencode.ai/zen/go/v1",
         &["OPENCODE_GO_API_KEY"],
         settings_env,

@@ -786,6 +786,44 @@ fn catalog_model(
     }
 }
 
+fn opencode_go_model(
+    model: &str,
+    display_name: &str,
+    context_window_tokens: usize,
+    max_output_tokens: Option<u32>,
+    supports_reasoning: bool,
+    image_input: bool,
+    endpoint: Option<&str>,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("opencode-go"), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: display_name.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the OpenCode Go {model} route."
+        ),
+        context_window_tokens: Some(context_window_tokens),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: max_output_tokens,
+        max_output_tokens_upper_limit: max_output_tokens,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input,
+            supports_reasoning,
+            ..ModelCapabilityFlags::default()
+        },
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: endpoint.map(|endpoint| {
+            ProviderEndpointId::parse(endpoint).expect("valid OpenCode Go endpoint id")
+        }),
+    }
+}
+
 fn chutes_model_without_published_capabilities(
     model: &str,
     context_window_tokens: usize,
@@ -1892,23 +1930,131 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         nvidia_model("z-ai/glm-5.2", "GLM-5.2", 1_000_000, true, false),
-        catalog_model(
-            "opencode-go",
+        opencode_go_model(
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             1_000_000,
-            384_000,
+            Some(384_000),
             true,
             false,
+            None,
         ),
-        catalog_model(
-            "opencode-go",
+        opencode_go_model(
             "deepseek-v4-flash",
             "DeepSeek V4 Flash",
             1_000_000,
-            384_000,
+            Some(384_000),
             true,
             false,
+            None,
+        ),
+        opencode_go_model(
+            "glm-5.2",
+            "GLM-5.2",
+            1_000_000,
+            Some(131_072),
+            true,
+            false,
+            None,
+        ),
+        opencode_go_model(
+            "glm-5.1",
+            "GLM-5.1",
+            202_800,
+            Some(131_072),
+            true,
+            false,
+            None,
+        ),
+        opencode_go_model(
+            "kimi-k2.7-code",
+            "Kimi K2.7 Code",
+            262_144,
+            Some(262_144),
+            true,
+            true,
+            None,
+        ),
+        opencode_go_model(
+            "kimi-k2.6",
+            "Kimi K2.6",
+            262_144,
+            Some(262_144),
+            true,
+            true,
+            None,
+        ),
+        opencode_go_model(
+            "mimo-v2.5-pro",
+            "MiMo V2.5 Pro",
+            1_048_576,
+            Some(131_072),
+            true,
+            false,
+            None,
+        ),
+        opencode_go_model(
+            "mimo-v2.5",
+            "MiMo V2.5",
+            1_048_576,
+            Some(131_072),
+            true,
+            true,
+            None,
+        ),
+        opencode_go_model(
+            "minimax-m3",
+            "MiniMax M3",
+            1_000_000,
+            None,
+            true,
+            true,
+            Some("messages"),
+        ),
+        opencode_go_model(
+            "minimax-m2.7",
+            "MiniMax M2.7",
+            204_800,
+            None,
+            true,
+            false,
+            Some("messages"),
+        ),
+        opencode_go_model(
+            "minimax-m2.5",
+            "MiniMax M2.5",
+            196_608,
+            Some(32_768),
+            true,
+            false,
+            Some("messages"),
+        ),
+        opencode_go_model(
+            "qwen3.7-max",
+            "Qwen3.7 Max",
+            1_000_000,
+            Some(65_536),
+            true,
+            false,
+            Some("messages"),
+        ),
+        opencode_go_model(
+            "qwen3.7-plus",
+            "Qwen3.7 Plus",
+            1_000_000,
+            Some(65_536),
+            true,
+            true,
+            Some("messages"),
+        ),
+        opencode_go_model(
+            "qwen3.6-plus",
+            "Qwen3.6 Plus",
+            1_000_000,
+            Some(65_536),
+            true,
+            true,
+            Some("messages"),
         ),
         BuiltInModelMetadata {
             model_ref: ModelRef::new(provider_id("openrouter"), "auto"),
@@ -4784,6 +4930,62 @@ mod tests {
                     .canonicalize_model_ref(&ModelRef::parse(legacy_model).unwrap())
                     .as_string(),
                 replacement
+            );
+        }
+    }
+
+    #[test]
+    fn opencode_go_catalog_tracks_the_current_dual_transport_model_table() {
+        let catalog = BuiltInModelCatalog::new();
+        let provider = provider_id("opencode-go");
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|model| model.model_ref.provider == provider)
+            .collect::<Vec<_>>();
+
+        assert_eq!(models.len(), 14);
+        for model in &models {
+            assert!(model.capabilities.supports_reasoning);
+            assert!(model.reasoning_effort_options.is_empty());
+            assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
+        }
+
+        for model in [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "glm-5.2",
+            "glm-5.1",
+            "kimi-k2.7-code",
+            "kimi-k2.6",
+            "mimo-v2.5-pro",
+            "mimo-v2.5",
+        ] {
+            assert_eq!(
+                catalog
+                    .preferred_route_for_model(&ModelRef::new(provider.clone(), model))
+                    .unwrap()
+                    .endpoint,
+                ProviderEndpointId::default_endpoint(),
+                "{model}"
+            );
+        }
+        for model in [
+            "minimax-m3",
+            "minimax-m2.7",
+            "minimax-m2.5",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.6-plus",
+        ] {
+            assert_eq!(
+                catalog
+                    .preferred_route_for_model(&ModelRef::new(provider.clone(), model))
+                    .unwrap()
+                    .endpoint
+                    .as_str(),
+                "messages",
+                "{model}"
             );
         }
     }

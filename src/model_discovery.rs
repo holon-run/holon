@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{ModelRef, ProviderId, ProviderRuntimeConfig},
+    config::{ModelRef, ProviderEndpointId, ProviderId, ProviderRuntimeConfig},
     model_catalog::{BuiltInModelMetadata, ModelCapabilityFlags, ModelMetadataSource},
 };
 
@@ -90,6 +90,7 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
             | "huggingface"
             | "kilocode"
             | "nearai"
+            | "opencode-go"
             | "openrouter"
             | "synthetic"
             | "vercel-ai-gateway"
@@ -99,7 +100,7 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
     !matches!(
         provider.id.as_str(),
-        "huggingface" | "kilocode" | "nearai" | "synthetic" | "vercel-ai-gateway"
+        "huggingface" | "kilocode" | "nearai" | "opencode-go" | "synthetic" | "vercel-ai-gateway"
     )
 }
 
@@ -234,6 +235,9 @@ pub async fn refresh_provider_models(
         "nearai" => serde_json::from_slice::<NearAiModelsResponse>(&raw)
             .context("failed to parse NEAR AI model discovery response")?
             .into_model_metadata(&provider.id),
+        "opencode-go" => serde_json::from_slice::<OpenCodeGoModelsResponse>(&raw)
+            .context("failed to parse OpenCode Go model discovery response")?
+            .into_model_metadata(&provider.id),
         "openrouter" => serde_json::from_slice::<OpenRouterModelsResponse>(&raw)
             .context("failed to parse OpenRouter model discovery response")?
             .into_model_metadata(&provider.id),
@@ -274,6 +278,7 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
         "huggingface" => openai_compatible_models_url(&provider.base_url),
         "kilocode" => openai_compatible_models_url(&provider.base_url),
         "nearai" => openai_compatible_models_url(&provider.base_url),
+        "opencode-go" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
         "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
         "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
@@ -303,6 +308,62 @@ fn vercel_models_url(base_url: &str) -> Result<String> {
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}/v1/models"));
     Ok(url.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeGoModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenCodeGoModel>,
+}
+
+impl OpenCodeGoModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| left.model_ref.model.cmp(&right.model_ref.model));
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeGoModel {
+    id: String,
+}
+
+impl OpenCodeGoModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        let id = self.id.trim();
+        let endpoint = match id {
+            "deepseek-v4-pro" | "deepseek-v4-flash" | "glm-5.2" | "glm-5.1" | "kimi-k2.7-code"
+            | "kimi-k2.6" | "mimo-v2.5-pro" | "mimo-v2.5" => None,
+            "minimax-m3" | "minimax-m2.7" | "minimax-m2.5" | "qwen3.7-max" | "qwen3.7-plus"
+            | "qwen3.6-plus" => {
+                Some(ProviderEndpointId::parse("messages").expect("valid OpenCode Go endpoint id"))
+            }
+            _ => return None,
+        };
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name: id.to_string(),
+            description:
+                "Remote discovered OpenCode Go route confirmed by the official endpoint table."
+                    .to_string(),
+            context_window_tokens: None,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags::default(),
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1130,6 +1191,30 @@ mod tests {
         }
     }
 
+    fn opencode_go_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("opencode-go").unwrap(),
+            route_provider: ProviderId::parse("opencode-go").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://opencode.ai/zen/go/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     fn nearai_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
             id: ProviderId::parse("nearai").unwrap(),
@@ -1485,6 +1570,53 @@ mod tests {
     }
 
     #[test]
+    fn maps_opencode_go_models_to_the_published_transport_endpoints() {
+        let payload: OpenCodeGoModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {"id":"minimax-m3"},
+                {"id":"kimi-k2.7-code"},
+                {"id":"qwen3.7-plus"},
+                {"id":"glm-5"},
+                {"id":"kimi-k2.5"},
+                {"id":" "}
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model_ref.model.as_str())
+                .collect::<Vec<_>>(),
+            ["kimi-k2.7-code", "minimax-m3", "qwen3.7-plus"]
+        );
+        assert_eq!(
+            models
+                .iter()
+                .find(|model| model.model_ref.model == "kimi-k2.7-code")
+                .unwrap()
+                .endpoint,
+            None
+        );
+        for model in ["minimax-m3", "qwen3.7-plus"] {
+            assert_eq!(
+                models
+                    .iter()
+                    .find(|metadata| metadata.model_ref.model == model)
+                    .unwrap()
+                    .endpoint
+                    .as_ref()
+                    .map(ProviderEndpointId::as_str),
+                Some("messages")
+            );
+        }
+        assert!(models
+            .iter()
+            .all(|model| model.source == ModelMetadataSource::RemoteDiscovered));
+    }
+
+    #[test]
     fn maps_only_ready_nearai_models_from_published_metadata() {
         let payload: NearAiModelsResponse = serde_json::from_str(
             r#"{"data":[
@@ -1650,6 +1782,27 @@ mod tests {
         assert_eq!(
             provider_models_url(&provider).unwrap(),
             "https://api.kilo.ai/api/gateway/models"
+        );
+    }
+
+    #[test]
+    fn opencode_go_discovery_is_public_and_uses_the_openai_models_endpoint() {
+        let provider = opencode_go_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://opencode.ai/zen/go/v1/models"
         );
     }
 
