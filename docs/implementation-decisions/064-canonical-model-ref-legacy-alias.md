@@ -30,6 +30,15 @@ when the same model is available through multiple endpoints. Separate route
 metadata keeps model identity stable while retaining exact transport and plan
 contracts.
 
+Diagnostics and list projections (`resolved_model_availability`,
+`resolved_model_providers`, `resolved_provider_models`) expand per route, not
+per canonical model. A single canonical model that is available on both the
+default and a plan endpoint produces separate availability entries with
+correct endpoint, route provider, credential, and policy for each route.
+Canonical-model-level deduplication alone would collapse these routes into one
+and hide valid endpoint availability from the user-facing provider and model
+lists.
+
 ## Preserved boundary
 
 Legacy provider ids remain valid as configuration keys and as model ref input;
