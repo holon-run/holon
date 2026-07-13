@@ -991,7 +991,7 @@ pub(crate) fn populate_built_in_provider_catalog(
     insert_openai_compatible_provider(
         catalog,
         "arcee",
-        "https://api.arcee.ai/api/v1",
+        "https://api.arcee.ai/v1",
         &["ARCEE_API_KEY"],
         settings_env,
     )?;

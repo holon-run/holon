@@ -86,7 +86,7 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
 pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
     matches!(
         provider.id.as_str(),
-        "nearai" | "openrouter" | "synthetic" | "vercel-ai-gateway"
+        "arcee" | "nearai" | "openrouter" | "synthetic" | "vercel-ai-gateway"
     )
 }
 
@@ -216,6 +216,9 @@ pub async fn refresh_provider_models(
     })?;
     let response_hash = format!("sha256:{}", sha256_hex(&raw));
     let models = match provider.id.as_str() {
+        "arcee" => serde_json::from_slice::<ArceeModelsResponse>(&raw)
+            .context("failed to parse Arcee model discovery response")?
+            .into_model_metadata(&provider.id),
         "nearai" => serde_json::from_slice::<NearAiModelsResponse>(&raw)
             .context("failed to parse NEAR AI model discovery response")?
             .into_model_metadata(&provider.id),
@@ -255,6 +258,7 @@ pub async fn refresh_provider_models(
 
 fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
     match provider.id.as_str() {
+        "arcee" => Ok("https://api.arcee.ai/api/v1/models".to_string()),
         "nearai" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
         "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
@@ -285,6 +289,63 @@ fn vercel_models_url(base_url: &str) -> Result<String> {
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}/v1/models"));
     Ok(url.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct ArceeModelsResponse {
+    #[serde(default)]
+    data: Vec<ArceeModel>,
+}
+
+impl ArceeModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ArceeModel {
+    id: String,
+}
+
+impl ArceeModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let (display_name, context_window_tokens) = match id {
+            "trinity-mini" => ("Trinity Mini 26B", Some(131_072)),
+            "trinity-large-preview" => ("Trinity Large Preview", Some(131_072)),
+            _ => (id, None),
+        };
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name: display_name.to_string(),
+            description: "Remote discovered Arcee hosted model metadata.".to_string(),
+            context_window_tokens,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags::default(),
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -713,6 +774,30 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn arcee_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("arcee").unwrap(),
+            route_provider: ProviderId::parse("arcee").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://api.arcee.ai/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     fn openrouter_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
             id: ProviderId::parse("openrouter").unwrap(),
@@ -807,6 +892,60 @@ mod tests {
             context_management: Default::default(),
             builtin_web_search: None,
         }
+    }
+
+    #[test]
+    fn maps_arcee_models_without_inventing_capabilities_or_output_limits() {
+        let payload: ArceeModelsResponse = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"trinity-mini","object":"model","owned_by":"arcee-ai"},
+                {"id":"trinity-large-preview","object":"model","owned_by":"arcee-ai"},
+                {"id":"future-model","object":"model","owned_by":"arcee-ai"},
+                {"id":" ","object":"model","owned_by":"arcee-ai"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("arcee").unwrap());
+
+        assert_eq!(models.len(), 3);
+        let mini = models
+            .iter()
+            .find(|model| model.model_ref.model == "trinity-mini")
+            .unwrap();
+        assert_eq!(mini.context_window_tokens, Some(131_072));
+        assert!(mini.default_max_output_tokens.is_none());
+        assert!(mini.max_output_tokens_upper_limit.is_none());
+        assert_eq!(mini.capabilities, ModelCapabilityFlags::default());
+        assert_eq!(mini.source, ModelMetadataSource::RemoteDiscovered);
+
+        let unknown = models
+            .iter()
+            .find(|model| model.model_ref.model == "future-model")
+            .unwrap();
+        assert!(unknown.context_window_tokens.is_none());
+        assert_eq!(unknown.capabilities, ModelCapabilityFlags::default());
+    }
+
+    #[test]
+    fn arcee_discovery_requires_a_credential_and_uses_its_models_api() {
+        let provider = arcee_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Unauthenticated);
+        assert!(!discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://api.arcee.ai/api/v1/models"
+        );
     }
 
     #[test]
