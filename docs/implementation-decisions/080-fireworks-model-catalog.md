@@ -5,7 +5,9 @@ Holon snapshots Fireworks AI models that the official model library marks
 function calling or image input. The snapshot was verified on 2026-07-13.
 
 The built-in catalog records context windows and image input only when the
-individual Fireworks model page publishes them. Fireworks does not publish a
+individual Fireworks model page publishes them. This makes `kimi-k2p6`
+image-capable in the current snapshot, matching its Fireworks model page.
+Fireworks does not publish a
 maximum output-token limit on those pages, so Holon leaves that limit unset
 rather than treating the context window as a generation limit. Qwen 3.6 Plus
 currently reports its context length as `N/A`, which is also kept unknown.
@@ -13,7 +15,7 @@ currently reports its context length as `N/A`, which is also kept unknown.
 Reasoning controls follow the Fireworks chat-completions API contract where it
 names model-family behavior. DeepSeek V4 exposes `none`, `low`, `medium`,
 `high`, `xhigh`, and `max`; GLM 5.2 exposes disabled, High, and Max tiers; GPT
-OSS 120B and MiniMax M2 accept `low`, `medium`, and `high`. Other reasoning
+OSS 120B and MiniMax M2.7 accept `low`, `medium`, and `high`. Other reasoning
 models remain marked as reasoning-capable without claiming adjustable effort
 levels that Fireworks does not explicitly document for that route.
 
