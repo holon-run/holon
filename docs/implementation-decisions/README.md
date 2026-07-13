@@ -102,3 +102,4 @@ Current decision notes:
 - [088 Hugging Face Model Catalog](./088-huggingface-model-catalog.md)
 - [089 Kilocode Model Catalog](./089-kilocode-model-catalog.md)
 - [090 OpenCode Go Model Catalog](./090-opencode-go-model-catalog.md)
+- [091 Tencent TokenHub Model Catalog](./091-tencent-tokenhub-model-catalog.md)

@@ -93,6 +93,7 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
             | "opencode-go"
             | "openrouter"
             | "synthetic"
+            | "tencent-tokenhub"
             | "vercel-ai-gateway"
     )
 }
@@ -244,6 +245,9 @@ pub async fn refresh_provider_models(
         "synthetic" => serde_json::from_slice::<SyntheticModelsResponse>(&raw)
             .context("failed to parse Synthetic model discovery response")?
             .into_model_metadata(&provider.id),
+        "tencent-tokenhub" => serde_json::from_slice::<TencentTokenHubModelsResponse>(&raw)
+            .context("failed to parse Tencent TokenHub model discovery response")?
+            .into_model_metadata(&provider.id),
         "vercel-ai-gateway" => serde_json::from_slice::<VercelModelsResponse>(&raw)
             .context("failed to parse Vercel AI Gateway model discovery response")?
             .into_model_metadata(&provider.id),
@@ -281,6 +285,7 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
         "opencode-go" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
         "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
+        "tencent-tokenhub" => openai_compatible_models_url(&provider.base_url),
         "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
         _ => Err(anyhow!(
             "provider {} does not support model discovery yet",
@@ -308,6 +313,85 @@ fn vercel_models_url(base_url: &str) -> Result<String> {
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}/v1/models"));
     Ok(url.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct TencentTokenHubModelsResponse {
+    #[serde(default)]
+    data: Vec<TencentTokenHubModel>,
+}
+
+impl TencentTokenHubModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| left.model_ref.model.cmp(&right.model_ref.model));
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TencentTokenHubModel {
+    id: String,
+}
+
+impl TencentTokenHubModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        let id = self.id.trim();
+        if !matches!(
+            id,
+            "hy3"
+                | "hy3-preview"
+                | "hy-mt2-pro"
+                | "hy-mt2-plus"
+                | "hy-mt2-lite"
+                | "hunyuan-role-latest"
+                | "hy-role"
+                | "deepseek-v4-flash"
+                | "deepseek-v4-pro"
+                | "deepseek-v3.2"
+                | "glm-5.2"
+                | "glm-5.1"
+                | "glm-5v-turbo"
+                | "glm-5-turbo"
+                | "glm-5"
+                | "kimi-k2.7-code-highspeed"
+                | "kimi-k2.7-code"
+                | "kimi-k2.6"
+                | "kimi-k2.5"
+                | "minimax-m3"
+                | "minimax-m2.7"
+                | "minimax-m2.5"
+                | "qwen3.5-flash"
+                | "qwen3.5-plus"
+                | "youtu-vita"
+                | "hy-vision-2.0-instruct"
+                | "hunyuan-t1-vision-20250916"
+        ) {
+            return None;
+        }
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name: id.to_string(),
+            description:
+                "Remote discovered Tencent TokenHub model confirmed by the official model table."
+                    .to_string(),
+            context_window_tokens: None,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags::default(),
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1263,6 +1347,30 @@ mod tests {
         }
     }
 
+    fn tencent_tokenhub_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("tencent-tokenhub").unwrap(),
+            route_provider: ProviderId::parse("tencent-tokenhub").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://tokenhub.tencentmaas.com/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     #[test]
     fn maps_arcee_models_without_inventing_capabilities_or_output_limits() {
         let payload: ArceeModelsResponse = serde_json::from_str(
@@ -1617,6 +1725,35 @@ mod tests {
     }
 
     #[test]
+    fn maps_only_current_tencent_tokenhub_turn_models() {
+        let payload: TencentTokenHubModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {"id":"hy3"},
+                {"id":"glm-5v-turbo"},
+                {"id":"deepseek-r1-0528"},
+                {"id":"HY-Image-V3.0"},
+                {"id":"future-model"},
+                {"id":" "}
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("tencent-tokenhub").unwrap());
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model_ref.model.as_str())
+                .collect::<Vec<_>>(),
+            ["glm-5v-turbo", "hy3"]
+        );
+        assert!(models.iter().all(|model| {
+            model.endpoint.is_none()
+                && model.source == ModelMetadataSource::RemoteDiscovered
+                && model.capabilities == ModelCapabilityFlags::default()
+        }));
+    }
+
+    #[test]
     fn maps_only_ready_nearai_models_from_published_metadata() {
         let payload: NearAiModelsResponse = serde_json::from_str(
             r#"{"data":[
@@ -1803,6 +1940,27 @@ mod tests {
         assert_eq!(
             provider_models_url(&provider).unwrap(),
             "https://opencode.ai/zen/go/v1/models"
+        );
+    }
+
+    #[test]
+    fn tencent_tokenhub_discovery_requires_a_credential_and_uses_its_models_endpoint() {
+        let provider = tencent_tokenhub_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Unauthenticated);
+        assert!(!discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://tokenhub.tencentmaas.com/v1/models"
         );
     }
 

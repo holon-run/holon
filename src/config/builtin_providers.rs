@@ -844,6 +844,7 @@ pub(crate) fn built_in_provider_endpoint_identity(
         "dashscope-coding-plan" => ("dashscope", "coding-plan"),
         "opencode-go-messages" => ("opencode-go", "messages"),
         "stepfun-plan" => ("stepfun", "plan"),
+        "tencent-tokenhub-messages" => ("tencent-tokenhub", "messages"),
         "volcengine-coding" => ("volcengine", "coding"),
         "volcengine-agent" => ("volcengine", "plan"),
         "volcengine-image-openai" => ("volcengine", "plan"),
@@ -1154,6 +1155,13 @@ pub(crate) fn populate_built_in_provider_catalog(
         catalog,
         "tencent-tokenhub",
         "https://tokenhub.tencentmaas.com/v1",
+        &["TOKENHUB_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        catalog,
+        "tencent-tokenhub-messages",
+        "https://tokenhub.tencentmaas.com",
         &["TOKENHUB_API_KEY"],
         settings_env,
     )?;

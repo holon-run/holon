@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **41 endpoints** and **227 models**.
+across **42 endpoints** and **253 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -54,6 +54,7 @@ used in existing `provider/model` refs and config shortcuts.
 | `stepfun` | `plan` | `stepfun-plan` | OpenAI Chat Completions | `https://api.stepfun.com/step_plan/v1` | `STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY` |
 | `synthetic` | `default` | `synthetic` | Anthropic Messages | `https://api.synthetic.new/anthropic` | `SYNTHETIC_API_KEY` |
 | `tencent-tokenhub` | `default` | `tencent-tokenhub` | OpenAI Chat Completions | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
+| `tencent-tokenhub` | `messages` | `tencent-tokenhub-messages` | Anthropic Messages | `https://tokenhub.tencentmaas.com` | `TOKENHUB_API_KEY` |
 | `together` | `default` | `together` | OpenAI Chat Completions | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
 | `venice` | `default` | `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
 | `vercel-ai-gateway` | `default` | `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
@@ -247,7 +248,33 @@ and capabilities.
 | `synthetic` | `syn:large:vision` | `synthetic/syn:large:vision` | 262144 | 65536 | ✅ | ✅ |
 | `synthetic` | `syn:small:text` | `synthetic/syn:small:text` | 196608 | 65536 | ✅ | — |
 | `synthetic` | `syn:small:vision` | `synthetic/syn:small:vision` | 262144 | 65536 | ✅ | ✅ |
-| `tencent-tokenhub` | `hy3-preview` | `tencent-tokenhub/hy3-preview` | 256000 | 64000 | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v3.2` | `tencent-tokenhub/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v4-flash` | `tencent-tokenhub/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v4-pro` | `tencent-tokenhub/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `tencent-tokenhub` | `glm-5` | `tencent-tokenhub/glm-5` | 202800 | 131072 | ✅ | — |
+| `tencent-tokenhub` | `glm-5-turbo` | `tencent-tokenhub/glm-5-turbo` | 202800 | 131072 | ✅ | — |
+| `tencent-tokenhub` | `glm-5.1` | `tencent-tokenhub/glm-5.1` | 202800 | 131072 | ✅ | — |
+| `tencent-tokenhub` | `glm-5.2` | `tencent-tokenhub/glm-5.2` | 1000000 | 131072 | ✅ | — |
+| `tencent-tokenhub` | `glm-5v-turbo` | `tencent-tokenhub/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
+| `tencent-tokenhub` | `hunyuan-role-latest` | `tencent-tokenhub/hunyuan-role-latest` | — | — | — | — |
+| `tencent-tokenhub` | `hunyuan-t1-vision-20250916` | `tencent-tokenhub/hunyuan-t1-vision-20250916` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `hy-mt2-lite` | `tencent-tokenhub/hy-mt2-lite` | — | — | — | — |
+| `tencent-tokenhub` | `hy-mt2-plus` | `tencent-tokenhub/hy-mt2-plus` | — | — | — | — |
+| `tencent-tokenhub` | `hy-mt2-pro` | `tencent-tokenhub/hy-mt2-pro` | — | — | — | — |
+| `tencent-tokenhub` | `hy-role` | `tencent-tokenhub/hy-role` | — | — | — | — |
+| `tencent-tokenhub` | `hy-vision-2.0-instruct` | `tencent-tokenhub/hy-vision-2.0-instruct` | — | — | — | ✅ |
+| `tencent-tokenhub` | `hy3` | `tencent-tokenhub/hy3` | 256000 | 128000 | ✅ | — |
+| `tencent-tokenhub` | `hy3-preview` | `tencent-tokenhub/hy3-preview` | 256000 | 128000 | ✅ | — |
+| `tencent-tokenhub` | `kimi-k2.5` | `tencent-tokenhub/kimi-k2.5` | 262144 | 262144 | ✅ | ✅ |
+| `tencent-tokenhub` | `kimi-k2.6` | `tencent-tokenhub/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
+| `tencent-tokenhub` | `kimi-k2.7-code` | `tencent-tokenhub/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
+| `tencent-tokenhub` | `kimi-k2.7-code-highspeed` | `tencent-tokenhub/kimi-k2.7-code-highspeed` | 262144 | 262144 | ✅ | ✅ |
+| `tencent-tokenhub` | `minimax-m2.5` | `tencent-tokenhub/minimax-m2.5` | 196608 | 32768 | ✅ | — |
+| `tencent-tokenhub` | `minimax-m2.7` | `tencent-tokenhub/minimax-m2.7` | 204800 | — | ✅ | — |
+| `tencent-tokenhub` | `minimax-m3` | `tencent-tokenhub/minimax-m3` | 1000000 | — | ✅ | ✅ |
+| `tencent-tokenhub` | `qwen3.5-flash` | `tencent-tokenhub/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `tencent-tokenhub` | `qwen3.5-plus` | `tencent-tokenhub/qwen3.5-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `tencent-tokenhub` | `youtu-vita` | `tencent-tokenhub/youtu-vita` | — | — | — | ✅ |
 | `together` | `MiniMaxAI/MiniMax-M2.7` | `together/MiniMaxAI/MiniMax-M2.7` | 202752 | — | ✅ | — |
 | `together` | `MiniMaxAI/MiniMax-M3` | `together/MiniMaxAI/MiniMax-M3` | 524288 | — | — | ✅ |
 | `together` | `Qwen/Qwen3.5-9B` | `together/Qwen/Qwen3.5-9B` | 262144 | — | ✅ | ✅ |

@@ -332,6 +332,42 @@ fn opencode_go_registers_chat_and_messages_endpoints() {
 }
 
 #[test]
+fn tencent_tokenhub_registers_chat_and_messages_endpoints() {
+    let entries = built_in_provider_doc_entries().unwrap();
+    let mut endpoints = entries
+        .into_iter()
+        .filter(|entry| entry.provider.as_str() == "tencent-tokenhub")
+        .map(|entry| {
+            (
+                entry.endpoint.as_str().to_string(),
+                entry.legacy_provider.as_str().to_string(),
+                entry.transport,
+                entry.base_url,
+            )
+        })
+        .collect::<Vec<_>>();
+    endpoints.sort_by(|left, right| left.0.cmp(&right.0));
+
+    assert_eq!(
+        endpoints,
+        [
+            (
+                "default".to_string(),
+                "tencent-tokenhub".to_string(),
+                ProviderTransportKind::OpenAiChatCompletions,
+                "https://tokenhub.tencentmaas.com/v1".to_string(),
+            ),
+            (
+                "messages".to_string(),
+                "tencent-tokenhub-messages".to_string(),
+                ProviderTransportKind::AnthropicMessages,
+                "https://tokenhub.tencentmaas.com".to_string(),
+            ),
+        ]
+    );
+}
+
+#[test]
 fn app_config_load_materializes_openai_codex_profile_from_existing_store() {
     let dir = tempdir().unwrap();
     let _agent_guard = EnvVarGuard::unset("HOLON_AGENT_ID");
