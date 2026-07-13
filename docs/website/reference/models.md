@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **224 models**.
+across **40 endpoints** and **226 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -246,14 +246,16 @@ and capabilities.
 | `synthetic` | `hf:zai-org/GLM-4.7` | `synthetic/hf:zai-org/GLM-4.7` | 198000 | 128000 | — | — |
 | `synthetic` | `hf:zai-org/GLM-5` | `synthetic/hf:zai-org/GLM-5` | 256000 | 128000 | ✅ | ✅ |
 | `tencent-tokenhub` | `hy3-preview` | `tencent-tokenhub/hy3-preview` | 256000 | 64000 | ✅ | — |
-| `together` | `deepseek-ai/DeepSeek-R1` | `together/deepseek-ai/DeepSeek-R1` | 131072 | 8192 | ✅ | — |
-| `together` | `deepseek-ai/DeepSeek-V3.1` | `together/deepseek-ai/DeepSeek-V3.1` | 131072 | 8192 | — | — |
-| `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `together/meta-llama/Llama-3.3-70B-Instruct-Turbo` | 131072 | 8192 | — | — |
-| `together` | `meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | `together/meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | 20000000 | 32768 | — | ✅ |
-| `together` | `meta-llama/Llama-4-Scout-17B-16E-Instruct` | `together/meta-llama/Llama-4-Scout-17B-16E-Instruct` | 10000000 | 32768 | — | ✅ |
-| `together` | `moonshotai/Kimi-K2-Instruct-0905` | `together/moonshotai/Kimi-K2-Instruct-0905` | 262144 | 8192 | — | — |
-| `together` | `moonshotai/Kimi-K2.5` | `together/moonshotai/Kimi-K2.5` | 262144 | 32768 | ✅ | ✅ |
-| `together` | `zai-org/GLM-4.7` | `together/zai-org/GLM-4.7` | 202752 | 8192 | — | — |
+| `together` | `MiniMaxAI/MiniMax-M2.7` | `together/MiniMaxAI/MiniMax-M2.7` | 202752 | — | ✅ | — |
+| `together` | `MiniMaxAI/MiniMax-M3` | `together/MiniMaxAI/MiniMax-M3` | 524288 | — | — | ✅ |
+| `together` | `Qwen/Qwen3.5-9B` | `together/Qwen/Qwen3.5-9B` | 262144 | — | ✅ | ✅ |
+| `together` | `deepseek-ai/DeepSeek-V4-Pro` | `together/deepseek-ai/DeepSeek-V4-Pro` | 512000 | — | ✅ | — |
+| `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `together/meta-llama/Llama-3.3-70B-Instruct-Turbo` | 131072 | — | — | — |
+| `together` | `moonshotai/Kimi-K2.6` | `together/moonshotai/Kimi-K2.6` | 262144 | — | ✅ | ✅ |
+| `together` | `moonshotai/Kimi-K2.7-Code` | `together/moonshotai/Kimi-K2.7-Code` | 262144 | — | — | ✅ |
+| `together` | `nvidia/nemotron-3-ultra-550b-a55b` | `together/nvidia/nemotron-3-ultra-550b-a55b` | 512300 | — | ✅ | — |
+| `together` | `openai/gpt-oss-120b` | `together/openai/gpt-oss-120b` | 128000 | — | ✅ | — |
+| `together` | `zai-org/GLM-5.2` | `together/zai-org/GLM-5.2` | 262144 | — | — | — |
 | `venice` | `claude-opus-4-6` | `venice/claude-opus-4-6` | 1000000 | 128000 | ✅ | ✅ |
 | `venice` | `claude-sonnet-4-6` | `venice/claude-sonnet-4-6` | 1000000 | 128000 | ✅ | ✅ |
 | `vercel-ai-gateway` | `anthropic/claude-opus-4.6` | `vercel-ai-gateway/anthropic/claude-opus-4.6` | 1000000 | 128000 | ✅ | ✅ |
