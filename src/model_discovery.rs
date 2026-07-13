@@ -260,6 +260,7 @@ fn openrouter_models_url(base_url: &str) -> Result<String> {
 }
 
 fn vercel_models_url(base_url: &str) -> Result<String> {
+    // `base_url` is the gateway root (optionally with a deployment prefix), not a `/v1` API URL.
     let mut url = reqwest::Url::parse(base_url)
         .with_context(|| format!("invalid Vercel AI Gateway base_url {base_url:?}"))?;
     let path = url.path().trim_end_matches('/');
@@ -487,6 +488,7 @@ impl VercelModel {
             capabilities: ModelCapabilityFlags {
                 image_input: has_tag("vision"),
                 supports_reasoning: has_tag("reasoning"),
+                // `tool-use` does not establish portable parallel tool-call semantics.
                 ..ModelCapabilityFlags::default()
             },
             reasoning_effort_options: Vec::new(),
