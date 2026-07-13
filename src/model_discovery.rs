@@ -86,14 +86,20 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
 pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
     matches!(
         provider.id.as_str(),
-        "arcee" | "huggingface" | "nearai" | "openrouter" | "synthetic" | "vercel-ai-gateway"
+        "arcee"
+            | "huggingface"
+            | "kilocode"
+            | "nearai"
+            | "openrouter"
+            | "synthetic"
+            | "vercel-ai-gateway"
     )
 }
 
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
     !matches!(
         provider.id.as_str(),
-        "huggingface" | "nearai" | "synthetic" | "vercel-ai-gateway"
+        "huggingface" | "kilocode" | "nearai" | "synthetic" | "vercel-ai-gateway"
     )
 }
 
@@ -222,6 +228,9 @@ pub async fn refresh_provider_models(
         "huggingface" => serde_json::from_slice::<HuggingFaceModelsResponse>(&raw)
             .context("failed to parse Hugging Face model discovery response")?
             .into_model_metadata(&provider.id),
+        "kilocode" => serde_json::from_slice::<KiloModelsResponse>(&raw)
+            .context("failed to parse Kilo Gateway model discovery response")?
+            .into_model_metadata(&provider.id),
         "nearai" => serde_json::from_slice::<NearAiModelsResponse>(&raw)
             .context("failed to parse NEAR AI model discovery response")?
             .into_model_metadata(&provider.id),
@@ -263,6 +272,7 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
     match provider.id.as_str() {
         "arcee" => Ok("https://api.arcee.ai/api/v1/models".to_string()),
         "huggingface" => openai_compatible_models_url(&provider.base_url),
+        "kilocode" => openai_compatible_models_url(&provider.base_url),
         "nearai" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
         "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
@@ -774,6 +784,131 @@ struct OpenRouterTopProvider {
 }
 
 #[derive(Debug, Deserialize)]
+struct KiloModelsResponse {
+    #[serde(default)]
+    data: Vec<KiloModel>,
+}
+
+impl KiloModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct KiloModel {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    context_length: Option<usize>,
+    #[serde(default)]
+    architecture: Option<OpenRouterArchitecture>,
+    #[serde(default)]
+    top_provider: Option<OpenRouterTopProvider>,
+    #[serde(default)]
+    supported_parameters: Vec<String>,
+    #[serde(default)]
+    opencode: Option<KiloOpenCodeMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KiloOpenCodeMetadata {
+    #[serde(default)]
+    variants: BTreeMap<String, serde_json::Value>,
+}
+
+impl KiloModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let display_name = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        let description = self
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Remote discovered Kilo Gateway model metadata.")
+            .to_string();
+        let has_parameter = |expected: &str| {
+            self.supported_parameters
+                .iter()
+                .any(|parameter| parameter == expected)
+        };
+        let image_input = self.architecture.as_ref().is_some_and(|architecture| {
+            architecture
+                .input_modalities
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case("image"))
+        });
+        let reasoning_effort_options = if has_parameter("reasoning_effort") {
+            self.opencode
+                .as_ref()
+                .map(|metadata| {
+                    metadata
+                        .variants
+                        .keys()
+                        .filter(|variant| {
+                            matches!(
+                                variant.as_str(),
+                                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                            )
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name,
+            description,
+            context_window_tokens: self.context_length,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: self
+                .top_provider
+                .and_then(|provider| provider.max_completion_tokens),
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags {
+                image_input,
+                supports_reasoning: has_parameter("reasoning")
+                    || has_parameter("reasoning_effort")
+                    || has_parameter("include_reasoning"),
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options,
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct VercelModelsResponse {
     #[serde(default)]
     data: Vec<VercelModel>,
@@ -957,6 +1092,30 @@ mod tests {
             auth: crate::config::ProviderAuthConfig {
                 source: crate::config::CredentialSource::Env,
                 kind: crate::config::CredentialKind::BearerToken,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
+    fn kilocode_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("kilocode").unwrap(),
+            route_provider: ProviderId::parse("kilocode").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://api.kilo.ai/api/gateway".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
                 env: None,
                 profile: None,
                 external: None,
@@ -1273,6 +1432,59 @@ mod tests {
     }
 
     #[test]
+    fn maps_kilocode_models_from_published_gateway_metadata() {
+        let payload: KiloModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {
+                    "id":"kilo-auto/balanced",
+                    "name":"Auto Balanced",
+                    "description":"test",
+                    "context_length":1000000,
+                    "architecture":{"input_modalities":["text","image"]},
+                    "top_provider":{"max_completion_tokens":65536},
+                    "supported_parameters":["reasoning","include_reasoning"]
+                },
+                {
+                    "id":"example/reasoning-model",
+                    "context_length":262144,
+                    "architecture":{"input_modalities":["text"]},
+                    "top_provider":{"max_completion_tokens":32768},
+                    "supported_parameters":["reasoning","reasoning_effort"],
+                    "opencode":{"variants":{
+                        "none":{"reasoning":{"enabled":false}},
+                        "low":{"reasoning":{"effort":"low"}},
+                        "high":{"reasoning":{"effort":"high"}},
+                        "thinking":{"reasoning":{"enabled":true}}
+                    }}
+                },
+                {"id":" "}
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("kilocode").unwrap());
+
+        assert_eq!(models.len(), 2);
+        let balanced = models
+            .iter()
+            .find(|model| model.model_ref.model == "kilo-auto/balanced")
+            .unwrap();
+        assert_eq!(balanced.context_window_tokens, Some(1_000_000));
+        assert_eq!(balanced.max_output_tokens_upper_limit, Some(65_536));
+        assert!(balanced.capabilities.image_input);
+        assert!(balanced.capabilities.supports_reasoning);
+        assert!(balanced.reasoning_effort_options.is_empty());
+
+        let reasoning = models
+            .iter()
+            .find(|model| model.model_ref.model == "example/reasoning-model")
+            .unwrap();
+        assert_eq!(reasoning.reasoning_effort_options, ["high", "low", "none"]);
+        assert!(!reasoning.capabilities.image_input);
+        assert_eq!(reasoning.source, ModelMetadataSource::RemoteDiscovered);
+    }
+
+    #[test]
     fn maps_only_ready_nearai_models_from_published_metadata() {
         let payload: NearAiModelsResponse = serde_json::from_str(
             r#"{"data":[
@@ -1417,6 +1629,27 @@ mod tests {
         assert_eq!(
             vercel_models_url(&provider.base_url).unwrap(),
             "https://ai-gateway.vercel.sh/v1/models"
+        );
+    }
+
+    #[test]
+    fn kilocode_discovery_is_public_but_inference_still_requires_authentication() {
+        let provider = kilocode_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://api.kilo.ai/api/gateway/models"
         );
     }
 
