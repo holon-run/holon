@@ -871,6 +871,39 @@ fn nvidia_model(
     }
 }
 
+fn together_model(
+    model: &str,
+    display_name: &str,
+    context_window_tokens: usize,
+    supports_reasoning: bool,
+    image_input: bool,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("together"), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: display_name.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the Together serverless {model} model."
+        ),
+        context_window_tokens: Some(context_window_tokens),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input,
+            supports_reasoning,
+            ..ModelCapabilityFlags::default()
+        },
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
 fn stepfun_model(
     provider: &str,
     model: &str,
@@ -2426,75 +2459,67 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        catalog_model(
-            "together",
-            "zai-org/GLM-4.7",
-            "GLM 4.7 Fp8",
+        together_model(
+            "MiniMaxAI/MiniMax-M3",
+            "MiniMax M3",
+            524_288,
+            false,
+            true,
+        ),
+        together_model(
+            "MiniMaxAI/MiniMax-M2.7",
+            "MiniMax M2.7",
             202_752,
-            8_192,
-            false,
+            true,
             false,
         ),
-        catalog_model(
-            "together",
-            "moonshotai/Kimi-K2.5",
-            "Kimi K2.5",
+        together_model(
+            "Qwen/Qwen3.5-9B",
+            "Qwen3.5 9B",
             262_144,
-            32_768,
             true,
             true,
         ),
-        catalog_model(
-            "together",
+        together_model(
+            "moonshotai/Kimi-K2.7-Code",
+            "Kimi K2.7 Code",
+            262_144,
+            false,
+            true,
+        ),
+        together_model(
+            "moonshotai/Kimi-K2.6",
+            "Kimi K2.6",
+            262_144,
+            true,
+            true,
+        ),
+        together_model("zai-org/GLM-5.2", "GLM-5.2", 262_144, false, false),
+        together_model(
+            "openai/gpt-oss-120b",
+            "GPT-OSS 120B",
+            128_000,
+            true,
+            false,
+        ),
+        together_model(
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "DeepSeek V4 Pro",
+            512_000,
+            true,
+            false,
+        ),
+        together_model(
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "NVIDIA Nemotron 3 Ultra 550B",
+            512_300,
+            true,
+            false,
+        ),
+        together_model(
             "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             "Llama 3.3 70B Instruct Turbo",
             131_072,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "together",
-            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-            "Llama 4 Scout 17B 16E Instruct",
-            10_000_000,
-            32_768,
-            false,
-            true,
-        ),
-        catalog_model(
-            "together",
-            "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-            "Llama 4 Maverick 17B 128E Instruct FP8",
-            20_000_000,
-            32_768,
-            false,
-            true,
-        ),
-        catalog_model(
-            "together",
-            "deepseek-ai/DeepSeek-V3.1",
-            "DeepSeek V3.1",
-            131_072,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "together",
-            "deepseek-ai/DeepSeek-R1",
-            "DeepSeek R1",
-            131_072,
-            8_192,
-            true,
-            false,
-        ),
-        catalog_model(
-            "together",
-            "moonshotai/Kimi-K2-Instruct-0905",
-            "Kimi K2-Instruct 0905",
-            262_144,
-            8_192,
             false,
             false,
         ),
@@ -3959,6 +3984,73 @@ mod tests {
             assert!(
                 catalog
                     .get(&ModelRef::parse(&format!("nvidia/{retired}")).unwrap())
+                    .is_none(),
+                "{retired} should not remain in the built-in catalog"
+            );
+        }
+    }
+
+    #[test]
+    fn together_catalog_tracks_current_serverless_chat_models() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("MiniMaxAI/MiniMax-M3", 524_288, false, true),
+            ("MiniMaxAI/MiniMax-M2.7", 202_752, true, false),
+            ("Qwen/Qwen3.5-9B", 262_144, true, true),
+            ("moonshotai/Kimi-K2.7-Code", 262_144, false, true),
+            ("moonshotai/Kimi-K2.6", 262_144, true, true),
+            ("zai-org/GLM-5.2", 262_144, false, false),
+            ("openai/gpt-oss-120b", 128_000, true, false),
+            ("deepseek-ai/DeepSeek-V4-Pro", 512_000, true, false),
+            ("nvidia/nemotron-3-ultra-550b-a55b", 512_300, true, false),
+            (
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                131_072,
+                false,
+                false,
+            ),
+        ];
+
+        for (model, context_window, supports_reasoning, image_input) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("together/{model}")).unwrap())
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(
+                metadata.context_window_tokens,
+                Some(context_window),
+                "{model}"
+            );
+            assert_eq!(
+                metadata.capabilities.supports_reasoning, supports_reasoning,
+                "{model}"
+            );
+            assert_eq!(metadata.capabilities.image_input, image_input, "{model}");
+            assert!(metadata.default_max_output_tokens.is_none(), "{model}");
+            assert!(metadata.max_output_tokens_upper_limit.is_none(), "{model}");
+            assert_eq!(metadata.source, ModelMetadataSource::ConservativeBuiltin);
+            assert!(
+                reasoning_effort_options(
+                    &metadata.model_ref,
+                    metadata.endpoint.as_ref(),
+                    &metadata.capabilities,
+                )
+                .is_empty(),
+                "{model} should not expose controls unsupported by the transport"
+            );
+        }
+
+        for retired in [
+            "zai-org/GLM-4.7",
+            "moonshotai/Kimi-K2.5",
+            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+            "deepseek-ai/DeepSeek-V3.1",
+            "deepseek-ai/DeepSeek-R1",
+            "moonshotai/Kimi-K2-Instruct-0905",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::parse(&format!("together/{retired}")).unwrap())
                     .is_none(),
                 "{retired} should not remain in the built-in catalog"
             );
