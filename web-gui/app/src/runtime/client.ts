@@ -2147,6 +2147,9 @@ function selectWorkItems(
     .filter((item): item is WorkItemSummary => Boolean(item))
     .sort((left, right) => {
       if (left.current !== right.current) return left.current ? -1 : 1;
+      const leftTime = left.updatedAt ? Date.parse(left.updatedAt) : 0;
+      const rightTime = right.updatedAt ? Date.parse(right.updatedAt) : 0;
+      if (leftTime !== rightTime) return rightTime - leftTime;
       return left.objective.localeCompare(right.objective);
     });
 }
