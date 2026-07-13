@@ -83,11 +83,14 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
 }
 
 pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
-    matches!(provider.id.as_str(), "openrouter" | "vercel-ai-gateway")
+    matches!(
+        provider.id.as_str(),
+        "nearai" | "openrouter" | "vercel-ai-gateway"
+    )
 }
 
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
-    provider.id.as_str() != "vercel-ai-gateway"
+    !matches!(provider.id.as_str(), "nearai" | "vercel-ai-gateway")
 }
 
 pub fn discovery_cache_status_for_provider(
@@ -209,6 +212,9 @@ pub async fn refresh_provider_models(
     })?;
     let response_hash = format!("sha256:{}", sha256_hex(&raw));
     let models = match provider.id.as_str() {
+        "nearai" => serde_json::from_slice::<NearAiModelsResponse>(&raw)
+            .context("failed to parse NEAR AI model discovery response")?
+            .into_model_metadata(&provider.id),
         "openrouter" => serde_json::from_slice::<OpenRouterModelsResponse>(&raw)
             .context("failed to parse OpenRouter model discovery response")?
             .into_model_metadata(&provider.id),
@@ -242,6 +248,7 @@ pub async fn refresh_provider_models(
 
 fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
     match provider.id.as_str() {
+        "nearai" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
         "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
         _ => Err(anyhow!(
@@ -252,8 +259,12 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
 }
 
 fn openrouter_models_url(base_url: &str) -> Result<String> {
+    openai_compatible_models_url(base_url)
+}
+
+fn openai_compatible_models_url(base_url: &str) -> Result<String> {
     let mut url = reqwest::Url::parse(base_url)
-        .with_context(|| format!("invalid OpenRouter base_url {base_url:?}"))?;
+        .with_context(|| format!("invalid OpenAI-compatible base_url {base_url:?}"))?;
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}{OPENROUTER_MODELS_PATH}"));
     Ok(url.to_string())
@@ -389,6 +400,103 @@ impl OpenRouterModel {
                 ..ModelCapabilityFlags::default()
             },
             reasoning_effort_options,
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NearAiModelsResponse {
+    #[serde(default)]
+    data: Vec<NearAiModel>,
+}
+
+impl NearAiModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NearAiModel {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    context_length: Option<usize>,
+    #[serde(default)]
+    max_output_length: Option<u32>,
+    #[serde(default)]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    supported_features: Vec<String>,
+    #[serde(default)]
+    is_ready: Option<bool>,
+}
+
+impl NearAiModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        if self.is_ready != Some(true) {
+            return None;
+        }
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let display_name = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        let description = self
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Remote discovered NEAR AI Cloud model metadata.")
+            .to_string();
+        let has_input_modality = |expected: &str| {
+            self.input_modalities
+                .iter()
+                .any(|modality| modality.eq_ignore_ascii_case(expected))
+        };
+        let has_feature = |expected: &str| {
+            self.supported_features
+                .iter()
+                .any(|feature| feature.eq_ignore_ascii_case(expected))
+        };
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name,
+            description,
+            context_window_tokens: self.context_length,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: self.max_output_length,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags {
+                image_input: has_input_modality("image"),
+                supports_reasoning: has_feature("reasoning"),
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::RemoteDiscovered,
             endpoint: None,
         })
@@ -557,6 +665,30 @@ mod tests {
         }
     }
 
+    fn nearai_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("nearai").unwrap(),
+            route_provider: ProviderId::parse("nearai").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://cloud-api.near.ai/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     #[test]
     fn maps_openrouter_models_to_remote_metadata() {
         let payload: OpenRouterModelsResponse = serde_json::from_str(
@@ -680,6 +812,72 @@ mod tests {
         assert!(!models
             .iter()
             .any(|model| model.model_ref.model == "openai/dall-e-3"));
+    }
+
+    #[test]
+    fn maps_only_ready_nearai_models_from_published_metadata() {
+        let payload: NearAiModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {
+                    "id":"Qwen/Qwen3.5-122B-A10B",
+                    "name":"Qwen3.5 122B A10B",
+                    "description":"test",
+                    "context_length":262144,
+                    "max_output_length":16384,
+                    "input_modalities":["text","image"],
+                    "supported_features":["tools","structured_outputs","reasoning"],
+                    "is_ready":true
+                },
+                {
+                    "id":"anthropic/claude-opus-4-6",
+                    "name":"Claude Opus 4.6",
+                    "context_length":200000,
+                    "max_output_length":32768,
+                    "input_modalities":["text"],
+                    "supported_features":["tools","reasoning"],
+                    "is_ready":false
+                },
+                {
+                    "id":"missing-ready",
+                    "name":"Missing Ready"
+                }
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("nearai").unwrap());
+
+        assert_eq!(models.len(), 1);
+        let qwen = &models[0];
+        assert_eq!(qwen.model_ref.as_string(), "nearai/Qwen/Qwen3.5-122B-A10B");
+        assert_eq!(qwen.context_window_tokens, Some(262_144));
+        assert_eq!(qwen.max_output_tokens_upper_limit, Some(16_384));
+        assert!(qwen.capabilities.image_input);
+        assert!(qwen.capabilities.supports_reasoning);
+        assert!(!qwen.capabilities.parallel_tool_calls);
+        assert!(qwen.reasoning_effort_options.is_empty());
+        assert_eq!(qwen.source, ModelMetadataSource::RemoteDiscovered);
+    }
+
+    #[test]
+    fn nearai_discovery_is_public_but_inference_remains_unauthenticated() {
+        let provider = nearai_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://cloud-api.near.ai/v1/models"
+        );
     }
 
     #[test]

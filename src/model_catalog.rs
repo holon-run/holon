@@ -1751,7 +1751,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "zai-org/GLM-5.1-FP8",
             "GLM 5.1 (NEAR AI Cloud TEE)",
             202_752,
-            131_072,
+            16_384,
             true,
             false,
         ),
@@ -1760,7 +1760,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "Qwen/Qwen3.6-35B-A3B-FP8",
             "Qwen 3.6 35B A3B FP8 (NEAR AI Cloud TEE)",
             262_144,
-            65_536,
+            8_192,
             true,
             false,
         ),
@@ -1768,18 +1768,18 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "nearai",
             "Qwen/Qwen3.5-122B-A10B",
             "Qwen 3.5 122B A10B (NEAR AI Cloud TEE)",
-            131_072,
-            65_536,
+            262_144,
+            16_384,
             true,
-            false,
+            true,
         ),
         catalog_model(
             "nearai",
             "Qwen/Qwen3-VL-30B-A3B-Instruct",
             "Qwen3 VL 30B A3B Instruct (NEAR AI Cloud TEE)",
-            256_000,
-            65_536,
-            true,
+            16_384,
+            8_192,
+            false,
             true,
         ),
         catalog_model(
@@ -1787,9 +1787,9 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "google/gemma-4-31B-it",
             "Gemma 4 31B Instruct (NEAR AI Cloud TEE)",
             262_144,
-            32_768,
-            false,
-            false,
+            8_192,
+            true,
+            true,
         ),
         nvidia_model(
             "nvidia/nemotron-3-super-120b-a12b",
@@ -3586,7 +3586,7 @@ mod tests {
         );
         assert_eq!(nearai.display_name, "GLM 5.1 (NEAR AI Cloud TEE)");
         assert_eq!(nearai.context_window_tokens, Some(202_752));
-        assert_eq!(nearai.runtime_max_output_tokens, 131_072);
+        assert_eq!(nearai.runtime_max_output_tokens, 16_384);
         assert!(nearai.capabilities.supports_reasoning);
         assert_eq!(nearai.source, ModelMetadataSource::BuiltInCatalog);
     }

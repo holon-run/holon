@@ -185,11 +185,11 @@ and capabilities.
 | `moonshot` | `moonshot-v1-8k` | `moonshot/moonshot-v1-8k` | 8192 | 8192 | — | — |
 | `moonshot` | `moonshot-v1-8k-vision-preview` | `moonshot/moonshot-v1-8k-vision-preview` | 8192 | 8192 | — | ✅ |
 | `moonshot` | `moonshot-v1-auto` | `moonshot/moonshot-v1-auto` | 131072 | 131072 | — | — |
-| `nearai` | `Qwen/Qwen3-VL-30B-A3B-Instruct` | `nearai/Qwen/Qwen3-VL-30B-A3B-Instruct` | 256000 | 65536 | ✅ | ✅ |
-| `nearai` | `Qwen/Qwen3.5-122B-A10B` | `nearai/Qwen/Qwen3.5-122B-A10B` | 131072 | 65536 | ✅ | — |
-| `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262144 | 65536 | ✅ | — |
-| `nearai` | `google/gemma-4-31B-it` | `nearai/google/gemma-4-31B-it` | 262144 | 32768 | — | — |
-| `nearai` | `zai-org/GLM-5.1-FP8` | `nearai/zai-org/GLM-5.1-FP8` | 202752 | 131072 | ✅ | — |
+| `nearai` | `Qwen/Qwen3-VL-30B-A3B-Instruct` | `nearai/Qwen/Qwen3-VL-30B-A3B-Instruct` | 16384 | 8192 | — | ✅ |
+| `nearai` | `Qwen/Qwen3.5-122B-A10B` | `nearai/Qwen/Qwen3.5-122B-A10B` | 262144 | 16384 | ✅ | ✅ |
+| `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262144 | 8192 | ✅ | — |
+| `nearai` | `google/gemma-4-31B-it` | `nearai/google/gemma-4-31B-it` | 262144 | 8192 | ✅ | ✅ |
+| `nearai` | `zai-org/GLM-5.1-FP8` | `nearai/zai-org/GLM-5.1-FP8` | 202752 | 16384 | ✅ | — |
 | `nvidia` | `minimaxai/minimax-m2.7` | `nvidia/minimaxai/minimax-m2.7` | 204800 | — | ✅ | — |
 | `nvidia` | `minimaxai/minimax-m3` | `nvidia/minimaxai/minimax-m3` | 1000000 | — | ✅ | ✅ |
 | `nvidia` | `moonshotai/kimi-k2.6` | `nvidia/moonshotai/kimi-k2.6` | 262144 | — | ✅ | ✅ |
