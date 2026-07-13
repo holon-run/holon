@@ -14,7 +14,7 @@ use crate::{
     model_catalog::{BuiltInModelMetadata, ModelCapabilityFlags, ModelMetadataSource},
 };
 
-const OPENROUTER_MODELS_PATH: &str = "/models";
+const OPENAI_COMPATIBLE_MODELS_PATH: &str = "/models";
 pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -266,7 +266,7 @@ fn openai_compatible_models_url(base_url: &str) -> Result<String> {
     let mut url = reqwest::Url::parse(base_url)
         .with_context(|| format!("invalid OpenAI-compatible base_url {base_url:?}"))?;
     let path = url.path().trim_end_matches('/');
-    url.set_path(&format!("{path}{OPENROUTER_MODELS_PATH}"));
+    url.set_path(&format!("{path}{OPENAI_COMPATIBLE_MODELS_PATH}"));
     Ok(url.to_string())
 }
 
