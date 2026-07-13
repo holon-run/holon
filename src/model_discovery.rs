@@ -97,6 +97,7 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
             | "openrouter"
             | "synthetic"
             | "tencent-tokenhub"
+            | "venice"
             | "vercel-ai-gateway"
     )
 }
@@ -104,7 +105,13 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
     !matches!(
         provider.id.as_str(),
-        "huggingface" | "kilocode" | "nearai" | "opencode-go" | "synthetic" | "vercel-ai-gateway"
+        "huggingface"
+            | "kilocode"
+            | "nearai"
+            | "opencode-go"
+            | "synthetic"
+            | "venice"
+            | "vercel-ai-gateway"
     )
 }
 
@@ -251,6 +258,9 @@ pub async fn refresh_provider_models(
         "tencent-tokenhub" => serde_json::from_slice::<TencentTokenHubModelsResponse>(&raw)
             .context("failed to parse Tencent TokenHub model discovery response")?
             .into_model_metadata(&provider.id),
+        "venice" => serde_json::from_slice::<VeniceModelsResponse>(&raw)
+            .context("failed to parse Venice model discovery response")?
+            .into_model_metadata(&provider.id, Utc::now()),
         "vercel-ai-gateway" => serde_json::from_slice::<VercelModelsResponse>(&raw)
             .context("failed to parse Vercel AI Gateway model discovery response")?
             .into_model_metadata(&provider.id),
@@ -289,6 +299,7 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
         "openrouter" => openrouter_models_url(&provider.base_url),
         "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
         "tencent-tokenhub" => openai_compatible_models_url(&provider.base_url),
+        "venice" => venice_models_url(&provider.base_url),
         "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
         _ => Err(anyhow!(
             "provider {} does not support model discovery yet",
@@ -299,6 +310,13 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
 
 fn openrouter_models_url(base_url: &str) -> Result<String> {
     openai_compatible_models_url(base_url)
+}
+
+fn venice_models_url(base_url: &str) -> Result<String> {
+    Ok(format!(
+        "{}?type=text",
+        openai_compatible_models_url(base_url)?
+    ))
 }
 
 fn openai_compatible_models_url(base_url: &str) -> Result<String> {
@@ -362,6 +380,146 @@ impl TencentTokenHubModel {
             tool_output_truncation_estimated_tokens: None,
             capabilities: ModelCapabilityFlags::default(),
             reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct VeniceModelsResponse {
+    #[serde(default)]
+    data: Vec<VeniceModel>,
+}
+
+impl VeniceModelsResponse {
+    fn into_model_metadata(
+        self,
+        provider: &ProviderId,
+        now: DateTime<Utc>,
+    ) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider, now))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct VeniceModel {
+    id: String,
+    #[serde(rename = "type")]
+    model_type: String,
+    #[serde(default)]
+    context_length: Option<usize>,
+    #[serde(default)]
+    model_spec: VeniceModelSpec,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VeniceModelSpec {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default, rename = "availableContextTokens")]
+    available_context_tokens: Option<usize>,
+    #[serde(default, rename = "maxCompletionTokens")]
+    max_completion_tokens: Option<u32>,
+    #[serde(default)]
+    offline: bool,
+    #[serde(default)]
+    capabilities: VeniceModelCapabilities,
+    #[serde(default)]
+    deprecation: Option<VeniceModelDeprecation>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VeniceModelCapabilities {
+    #[serde(default, rename = "supportsVision")]
+    supports_vision: bool,
+    #[serde(default, rename = "supportsReasoning")]
+    supports_reasoning: bool,
+    #[serde(default, rename = "supportsReasoningEffort")]
+    supports_reasoning_effort: bool,
+    #[serde(default, rename = "reasoningEffortOptions")]
+    reasoning_effort_options: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VeniceModelDeprecation {
+    #[serde(default, rename = "removesAt")]
+    removes_at: Option<DateTime<Utc>>,
+}
+
+impl VeniceModel {
+    fn into_model_metadata(
+        self,
+        provider: &ProviderId,
+        now: DateTime<Utc>,
+    ) -> Option<BuiltInModelMetadata> {
+        let id = self.id.trim();
+        if id.is_empty()
+            || self.model_type != "text"
+            || self.model_spec.offline
+            || self
+                .model_spec
+                .deprecation
+                .as_ref()
+                .and_then(|deprecation| deprecation.removes_at)
+                .is_some_and(|removes_at| removes_at <= now)
+        {
+            return None;
+        }
+        let display_name = self
+            .model_spec
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        let description = self
+            .model_spec
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Remote discovered Venice text model metadata.")
+            .to_string();
+        let reasoning_effort_options = self
+            .model_spec
+            .capabilities
+            .supports_reasoning_effort
+            .then_some(self.model_spec.capabilities.reasoning_effort_options)
+            .unwrap_or_default();
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name,
+            description,
+            context_window_tokens: self
+                .model_spec
+                .available_context_tokens
+                .or(self.context_length),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: self.model_spec.max_completion_tokens,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags {
+                image_input: self.model_spec.capabilities.supports_vision,
+                supports_reasoning: self.model_spec.capabilities.supports_reasoning,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options,
             source: ModelMetadataSource::RemoteDiscovered,
             endpoint: None,
         })
@@ -1321,6 +1479,30 @@ mod tests {
         }
     }
 
+    fn venice_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("venice").unwrap(),
+            route_provider: ProviderId::parse("venice").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://api.venice.ai/api/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
     fn tencent_tokenhub_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
             id: ProviderId::parse("tencent-tokenhub").unwrap(),
@@ -1471,6 +1653,81 @@ mod tests {
             provider_models_url(&provider).unwrap(),
             "https://router.huggingface.co/v1/models"
         );
+    }
+
+    #[test]
+    fn maps_only_available_venice_text_models_and_reported_capabilities() {
+        let payload: VeniceModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {
+                    "id":"zai-org-glm-4.7",
+                    "type":"text",
+                    "context_length":128000,
+                    "model_spec":{
+                        "name":"GLM 4.7",
+                        "description":"default",
+                        "availableContextTokens":198000,
+                        "maxCompletionTokens":16384,
+                        "offline":false,
+                        "capabilities":{
+                            "supportsVision":false,
+                            "supportsReasoning":true,
+                            "supportsReasoningEffort":true,
+                            "reasoningEffortOptions":["low","medium","high"]
+                        }
+                    }
+                },
+                {
+                    "id":"qwen3-vl-235b-a22b",
+                    "type":"text",
+                    "context_length":128000,
+                    "model_spec":{
+                        "name":"Qwen3 VL 235B",
+                        "maxCompletionTokens":16384,
+                        "capabilities":{
+                            "supportsVision":true,
+                            "supportsReasoning":false,
+                            "supportsReasoningEffort":false,
+                            "reasoningEffortOptions":["low"]
+                        }
+                    }
+                },
+                {"id":"offline","type":"text","model_spec":{"offline":true}},
+                {"id":"image-model","type":"image","model_spec":{}},
+                {
+                    "id":"removed",
+                    "type":"text",
+                    "model_spec":{"deprecation":{"removesAt":"2025-01-01T00:00:00Z"}}
+                }
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(
+            &ProviderId::parse("venice").unwrap(),
+            DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        );
+
+        assert_eq!(models.len(), 2);
+        let glm = models
+            .iter()
+            .find(|model| model.model_ref.model == "zai-org-glm-4.7")
+            .unwrap();
+        assert_eq!(glm.context_window_tokens, Some(198_000));
+        assert_eq!(glm.max_output_tokens_upper_limit, Some(16_384));
+        assert!(!glm.capabilities.image_input);
+        assert!(glm.capabilities.supports_reasoning);
+        assert_eq!(glm.reasoning_effort_options, ["low", "medium", "high"]);
+
+        let vision = models
+            .iter()
+            .find(|model| model.model_ref.model == "qwen3-vl-235b-a22b")
+            .unwrap();
+        assert!(vision.capabilities.image_input);
+        assert!(!vision.capabilities.supports_reasoning);
+        assert!(vision.reasoning_effort_options.is_empty());
     }
 
     #[test]
@@ -1935,6 +2192,27 @@ mod tests {
         assert_eq!(
             provider_models_url(&provider).unwrap(),
             "https://tokenhub.tencentmaas.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn venice_discovery_is_public_and_filters_to_text_models() {
+        let provider = venice_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://api.venice.ai/api/v1/models?type=text"
         );
     }
 

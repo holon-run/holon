@@ -736,6 +736,9 @@ fn reasoning_effort_options(
         ("fireworks", "accounts/fireworks/models/gpt-oss-120b")
         | ("fireworks", "accounts/fireworks/models/minimax-m2p7") => &["low", "medium", "high"][..],
         ("huggingface", "openai/gpt-oss-120b") => &["low", "medium", "high"][..],
+        ("venice", "zai-org-glm-4.7" | "qwen3-235b-a22b-thinking-2507") => {
+            &["low", "medium", "high"][..]
+        }
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
         ("xiaomi" | "xiaomi-token-plan", "mimo-v2.5-pro" | "mimo-v2.5") => &["none", "high"][..],
         ("volcengine", _)
@@ -821,6 +824,42 @@ fn opencode_go_model(
         endpoint: endpoint.map(|endpoint| {
             ProviderEndpointId::parse(endpoint).expect("valid OpenCode Go endpoint id")
         }),
+    }
+}
+
+fn venice_model(
+    model: &str,
+    display_name: &str,
+    context_window_tokens: usize,
+    max_output_tokens: u32,
+    supports_reasoning: bool,
+    image_input: bool,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("venice"), model);
+    let capabilities = ModelCapabilityFlags {
+        image_input,
+        supports_reasoning,
+        ..ModelCapabilityFlags::default()
+    };
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref: model_ref.clone(),
+        display_name: display_name.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the Venice {model} text model."
+        ),
+        context_window_tokens: Some(context_window_tokens),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: Some(max_output_tokens),
+        max_output_tokens_upper_limit: Some(max_output_tokens),
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        reasoning_effort_options: reasoning_effort_options(&model_ref, None, &capabilities),
+        capabilities,
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
     }
 }
 
@@ -2798,22 +2837,44 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
             false,
         ),
-        catalog_model(
-            "venice",
-            "claude-opus-4-6",
-            "Claude Opus 4.6 (via Venice)",
-            1_000_000,
-            128_000,
+        venice_model(
+            "zai-org-glm-4.7",
+            "GLM 4.7 (via Venice)",
+            198_000,
+            16_384,
             true,
+            false,
+        ),
+        venice_model(
+            "qwen3-235b-a22b-thinking-2507",
+            "Qwen3 235B A22B Thinking 2507 (via Venice)",
+            128_000,
+            16_384,
+            true,
+            false,
+        ),
+        venice_model(
+            "qwen3-vl-235b-a22b",
+            "Qwen3 VL 235B (via Venice)",
+            128_000,
+            16_384,
+            false,
             true,
         ),
-        catalog_model(
-            "venice",
-            "claude-sonnet-4-6",
-            "Claude Sonnet 4.6 (via Venice)",
-            1_000_000,
+        venice_model(
+            "qwen3-coder-480b-a35b-instruct-turbo",
+            "Qwen3 Coder 480B Turbo (via Venice)",
+            256_000,
+            65_536,
+            false,
+            false,
+        ),
+        venice_model(
+            "venice-uncensored-1-2",
+            "Venice Uncensored 1.2",
             128_000,
-            true,
+            8_192,
+            false,
             true,
         ),
         catalog_model(
@@ -5276,5 +5337,49 @@ mod tests {
                 .get(&ModelRef::new(provider.clone(), retired_or_unsupported))
                 .is_none());
         }
+    }
+
+    #[test]
+    fn venice_catalog_tracks_stable_trait_defaults() {
+        let catalog = BuiltInModelCatalog::new();
+        let provider = provider_id("venice");
+        let models = catalog
+            .list()
+            .into_iter()
+            .filter(|model| model.model_ref.provider == provider)
+            .collect::<Vec<_>>();
+
+        assert_eq!(models.len(), 5);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model_ref.model.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "zai-org-glm-4.7",
+                "qwen3-235b-a22b-thinking-2507",
+                "qwen3-coder-480b-a35b-instruct-turbo",
+                "qwen3-vl-235b-a22b",
+                "venice-uncensored-1-2",
+            ]
+        );
+        assert!(models
+            .iter()
+            .all(|model| model.source == ModelMetadataSource::ConservativeBuiltin));
+
+        let default = catalog
+            .get(&ModelRef::new(provider.clone(), "zai-org-glm-4.7"))
+            .unwrap();
+        assert_eq!(default.context_window_tokens, Some(198_000));
+        assert_eq!(default.max_output_tokens_upper_limit, Some(16_384));
+        assert!(default.capabilities.supports_reasoning);
+        assert!(!default.capabilities.image_input);
+        assert_eq!(default.reasoning_effort_options, ["low", "medium", "high"]);
+
+        let vision = catalog
+            .get(&ModelRef::new(provider, "qwen3-vl-235b-a22b"))
+            .unwrap();
+        assert!(vision.capabilities.image_input);
+        assert!(!vision.capabilities.supports_reasoning);
     }
 }
