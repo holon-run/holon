@@ -2566,7 +2566,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "vercel-ai-gateway",
             "openai/gpt-5.4",
             "GPT 5.4",
-            200_000,
+            1_050_000,
             128_000,
             true,
             true,
@@ -2575,7 +2575,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "vercel-ai-gateway",
             "openai/gpt-5.4-pro",
             "GPT 5.4 Pro",
-            200_000,
+            1_050_000,
             128_000,
             true,
             true,
@@ -2584,8 +2584,8 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "vercel-ai-gateway",
             "moonshotai/kimi-k2.6",
             "Kimi K2.6",
-            262_144,
-            262_144,
+            262_000,
+            262_000,
             true,
             true,
         ),
@@ -4097,6 +4097,47 @@ mod tests {
                     .get(&ModelRef::parse(&format!("openrouter/{dynamic_or_removed}")).unwrap())
                     .is_none(),
                 "{dynamic_or_removed} should come from discovery or explicit configuration"
+            );
+        }
+    }
+
+    #[test]
+    fn vercel_ai_gateway_catalog_tracks_current_picker_defaults() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("anthropic/claude-opus-4.6", 1_000_000, 128_000),
+            ("openai/gpt-5.4", 1_050_000, 128_000),
+            ("openai/gpt-5.4-pro", 1_050_000, 128_000),
+            ("moonshotai/kimi-k2.6", 262_000, 262_000),
+        ];
+
+        for (model, context_window, max_output) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("vercel-ai-gateway/{model}")).unwrap())
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(
+                metadata.context_window_tokens,
+                Some(context_window),
+                "{model} context window"
+            );
+            assert_eq!(
+                metadata.default_max_output_tokens,
+                Some(max_output),
+                "{model} default output"
+            );
+            assert_eq!(
+                metadata.max_output_tokens_upper_limit,
+                Some(max_output),
+                "{model} output limit"
+            );
+            assert!(metadata.capabilities.image_input, "{model} image input");
+            assert!(
+                metadata.capabilities.supports_reasoning,
+                "{model} reasoning"
+            );
+            assert!(
+                metadata.reasoning_effort_options.is_empty(),
+                "{model} should not expose an undocumented discrete effort vocabulary"
             );
         }
     }

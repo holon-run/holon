@@ -256,9 +256,9 @@ and capabilities.
 | `venice` | `claude-opus-4-6` | `venice/claude-opus-4-6` | 1000000 | 128000 | ✅ | ✅ |
 | `venice` | `claude-sonnet-4-6` | `venice/claude-sonnet-4-6` | 1000000 | 128000 | ✅ | ✅ |
 | `vercel-ai-gateway` | `anthropic/claude-opus-4.6` | `vercel-ai-gateway/anthropic/claude-opus-4.6` | 1000000 | 128000 | ✅ | ✅ |
-| `vercel-ai-gateway` | `moonshotai/kimi-k2.6` | `vercel-ai-gateway/moonshotai/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
-| `vercel-ai-gateway` | `openai/gpt-5.4` | `vercel-ai-gateway/openai/gpt-5.4` | 200000 | 128000 | ✅ | ✅ |
-| `vercel-ai-gateway` | `openai/gpt-5.4-pro` | `vercel-ai-gateway/openai/gpt-5.4-pro` | 200000 | 128000 | ✅ | ✅ |
+| `vercel-ai-gateway` | `moonshotai/kimi-k2.6` | `vercel-ai-gateway/moonshotai/kimi-k2.6` | 262000 | 262000 | ✅ | ✅ |
+| `vercel-ai-gateway` | `openai/gpt-5.4` | `vercel-ai-gateway/openai/gpt-5.4` | 1050000 | 128000 | ✅ | ✅ |
+| `vercel-ai-gateway` | `openai/gpt-5.4-pro` | `vercel-ai-gateway/openai/gpt-5.4-pro` | 1050000 | 128000 | ✅ | ✅ |
 | `vllm` | `meta-llama/Meta-Llama-3-8B-Instruct` | `vllm/meta-llama/Meta-Llama-3-8B-Instruct` | 131072 | 8192 | — | — |
 | `volcengine` | `ark-code-latest` | `volcengine/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `volcengine` | `deepseek-v3-2-251201` | `volcengine/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
