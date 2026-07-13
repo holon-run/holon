@@ -600,7 +600,17 @@ impl OpenAiCodexProvider {
         }
         match self.refresh_holon_oauth_profile(false).await {
             Ok(refreshed) => Ok(refreshed),
-            Err(_) if cli.is_some() => Ok(cli.expect("CLI fallback was checked above")),
+            Err(error) if cli.is_some() => {
+                tracing::warn!(
+                    %error,
+                    credential_profile = self
+                        .credential_profile
+                        .as_deref()
+                        .unwrap_or("openai-codex"),
+                    "OpenAI Codex profile refresh failed; falling back to Codex CLI credential"
+                );
+                Ok(cli.expect("CLI fallback was checked above"))
+            }
             Err(error) => Err(error),
         }
     }
