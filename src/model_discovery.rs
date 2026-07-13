@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{ModelRef, ProviderEndpointId, ProviderId, ProviderRuntimeConfig},
-    model_catalog::{BuiltInModelMetadata, ModelCapabilityFlags, ModelMetadataSource},
+    model_catalog::{
+        is_tencent_tokenhub_model_id, BuiltInModelMetadata, ModelCapabilityFlags,
+        ModelMetadataSource,
+    },
 };
 
 const OPENAI_COMPATIBLE_MODELS_PATH: &str = "/models";
@@ -341,36 +344,7 @@ struct TencentTokenHubModel {
 impl TencentTokenHubModel {
     fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
         let id = self.id.trim();
-        if !matches!(
-            id,
-            "hy3"
-                | "hy3-preview"
-                | "hy-mt2-pro"
-                | "hy-mt2-plus"
-                | "hy-mt2-lite"
-                | "hunyuan-role-latest"
-                | "hy-role"
-                | "deepseek-v4-flash"
-                | "deepseek-v4-pro"
-                | "deepseek-v3.2"
-                | "glm-5.2"
-                | "glm-5.1"
-                | "glm-5v-turbo"
-                | "glm-5-turbo"
-                | "glm-5"
-                | "kimi-k2.7-code-highspeed"
-                | "kimi-k2.7-code"
-                | "kimi-k2.6"
-                | "kimi-k2.5"
-                | "minimax-m3"
-                | "minimax-m2.7"
-                | "minimax-m2.5"
-                | "qwen3.5-flash"
-                | "qwen3.5-plus"
-                | "youtu-vita"
-                | "hy-vision-2.0-instruct"
-                | "hunyuan-t1-vision-20250916"
-        ) {
+        if !is_tencent_tokenhub_model_id(id) {
             return None;
         }
         Some(BuiltInModelMetadata {
