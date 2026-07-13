@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createRuntimeClient, projectModelOptions } from "./client";
 
@@ -248,6 +248,41 @@ describe("createRuntimeClient", () => {
         accept: "*/*",
       },
     ]);
+  });
+
+  it("honors a custom workspace file blob timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const request: { signal?: AbortSignal } = {};
+      const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        request.signal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+        return await new Promise<Response>((_resolve, reject) => {
+          request.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      };
+      const client = createRuntimeClient({
+        mode: "remote",
+        baseUrl: "http://example.test:7878",
+        token: "secret-token",
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+      const blobRequest = client.fetchWorkspaceFileBlob("workspace", "large.bin", undefined, {
+        download: true,
+        timeoutMs: 60_000,
+      });
+      const rejection = expect(blobRequest).rejects.toThrow("aborted");
+
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(request.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(request.signal?.aborted).toBe(true);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sends generic file attachments in operator prompts", async () => {

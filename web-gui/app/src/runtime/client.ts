@@ -1182,7 +1182,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       workspaceId: string,
       path: string,
       executionRootId?: string,
-      options?: { download?: boolean },
+      options?: { download?: boolean; timeoutMs?: number },
     ): Promise<Blob> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
@@ -1196,7 +1196,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query ? `?${query}` : ""}`,
-        { headers: requestHeaders },
+        { headers: requestHeaders, timeoutMs: options?.timeoutMs },
       );
     },
   };

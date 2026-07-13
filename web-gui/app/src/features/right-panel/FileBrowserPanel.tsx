@@ -41,6 +41,8 @@ interface SelectedFile {
   error?: string;
 }
 
+const FILE_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
 function fileIcon(entry: WorkspaceFileEntry): LucideIcon {
   if (entry.type === "directory") return Folder;
   if (entry.type === "symlink") return Link;
@@ -182,6 +184,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       contentScrollRef.current.scrollTop = 0;
     }
     setShowRendered(true);
+    downloadRequestRef.current += 1;
+    setDownloadState(undefined);
   }, [selectedFile?.path]);
 
   const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
@@ -302,7 +306,10 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     const requestId = ++downloadRequestRef.current;
     setDownloadState({ path, loading: true });
     try {
-      const blob = await fetchWorkspaceFileBlob(workspaceId, path, executionRootId, { download: true });
+      const blob = await fetchWorkspaceFileBlob(workspaceId, path, executionRootId, {
+        download: true,
+        timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
+      });
       triggerBlobDownload(blob, path.split("/").pop() ?? path);
     } catch (err) {
       if (downloadRequestRef.current === requestId) {

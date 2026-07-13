@@ -283,7 +283,7 @@ export interface RuntimeStoreState {
     workspaceId: string,
     path: string,
     executionRootId?: string,
-    options?: { download?: boolean },
+    options?: { download?: boolean; timeoutMs?: number },
   ) => Promise<Blob>;
   navigateBack: () => void;
   toggleRightPanel: () => void;
