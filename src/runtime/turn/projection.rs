@@ -525,7 +525,7 @@ pub(super) fn build_turn_local_projection(
     available_tools: &[ToolSpec],
     checkpoint_state: &TurnLocalCheckpointState,
     checkpoint_request_id: Option<String>,
-    prompt_budget: usize,
+    request_prompt_budget: usize,
     keep_recent_budget: usize,
 ) -> TurnLocalProjectionOutcome {
     build_turn_local_projection_with_runtime_reminder(
@@ -534,7 +534,7 @@ pub(super) fn build_turn_local_projection(
         available_tools,
         checkpoint_state,
         checkpoint_request_id,
-        prompt_budget,
+        request_prompt_budget,
         keep_recent_budget,
         None,
     )
@@ -546,7 +546,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     available_tools: &[ToolSpec],
     checkpoint_state: &TurnLocalCheckpointState,
     checkpoint_request_id: Option<String>,
-    prompt_budget: usize,
+    request_prompt_budget: usize,
     keep_recent_budget: usize,
     runtime_reminder: Option<&str>,
 ) -> TurnLocalProjectionOutcome {
@@ -557,7 +557,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     let runtime_reminder_estimated_tokens = runtime_reminder
         .map(estimate_text_tokens)
         .unwrap_or_default();
-    let effective_budget_estimated_tokens = prompt_budget
+    let effective_budget_estimated_tokens = request_prompt_budget
         .saturating_sub(tool_overhead_estimated_tokens)
         .saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS);
     let estimated_baseline_tokens = system_prompt_estimated_tokens

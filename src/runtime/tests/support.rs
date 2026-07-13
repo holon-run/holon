@@ -374,6 +374,10 @@ impl BaselineOverBudgetProbeProvider {
     }
 }
 
+pub(crate) struct LargeBudgetContinuationProbeProvider {
+    pub(crate) calls: Mutex<usize>,
+}
+
 pub(crate) struct ContextLengthExceededProvider;
 
 pub(crate) struct DeferredFallbackProvider;
@@ -688,6 +692,46 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
                 request_diagnostics: None,
             }),
             _ => panic!("continuation request should not be sent after baseline-over-budget"),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentProvider for LargeBudgetContinuationProbeProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        match *calls {
+            1 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::ToolUse {
+                    id: "exec-large-budget-continuation".into(),
+                    name: "ExecCommand".into(),
+                    input: serde_json::json!({
+                        "cmd": "printf 'large-budget-continuation'"
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                }],
+                stop_reason: Some("tool_use".into()),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            }),
+            2 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "Finished within the resolved model prompt budget.".into(),
+                }],
+                stop_reason: Some("end_turn".into()),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            }),
+            _ => panic!("large-budget continuation should finish on the second provider call"),
         }
     }
 }

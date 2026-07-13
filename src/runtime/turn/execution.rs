@@ -800,11 +800,13 @@ impl TurnExecution<'_> {
                 let stale_work_item_reminder = if let Some((work_item, reminder)) =
                     stale_work_item_reminder
                 {
-                    let turn_projection_budget = context_config.turn_projection_budget();
+                    // Continuation reminders are part of the complete provider request, so this
+                    // check uses the model prompt budget rather than the recent-turns sub-budget.
+                    let request_prompt_budget = context_config.prompt_budget_estimated_tokens;
                     if runtime_reminder_fits_baseline(
                         &prompt_frame,
                         &available_tools,
-                        turn_projection_budget,
+                        request_prompt_budget,
                         &reminder,
                     ) {
                         Some((work_item, reminder))
@@ -884,7 +886,9 @@ impl TurnExecution<'_> {
                     &available_tools,
                     &checkpoint_state,
                     checkpoint_request_id,
-                    context_config.turn_projection_budget(),
+                    // Turn-local continuation projection covers the complete provider request.
+                    // The bounded turn projection budget only applies to initial recent_turns.
+                    context_config.prompt_budget_estimated_tokens,
                     context_config.compaction_keep_recent_estimated_tokens,
                     runtime_reminder.as_deref(),
                 ) {

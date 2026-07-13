@@ -876,6 +876,73 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
 }
 
 #[tokio::test]
+async fn turn_local_continuation_uses_full_prompt_budget_above_history_ceiling() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(LargeBudgetContinuationProbeProvider {
+        calls: Mutex::new(0),
+    });
+    let available_tools = crate::tool::ToolRegistry::new(workspace.path().to_path_buf())
+        .tool_specs_with_families()
+        .unwrap()
+        .into_iter()
+        .filter(|(family, _)| {
+            AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
+        })
+        .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
+        .map(|(_, tool)| tool)
+        .collect::<Vec<_>>();
+    let prompt_budget_estimated_tokens = turn::estimate_tool_specs_tokens(&available_tools)
+        + turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+        + 70_000;
+    let context_config = ContextConfig {
+        prompt_budget_estimated_tokens,
+        turn_projection_budget_ratio: 1.0,
+        turn_projection_min_budget: 0,
+        turn_projection_max_budget: 64_000,
+        callback_base_url: String::new(),
+        ..context_config()
+    };
+    assert_eq!(context_config.turn_projection_budget(), 64_000);
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config,
+    )
+    .unwrap();
+    let mut prompt = test_effective_prompt();
+    prompt.rendered_system_prompt = "system ".repeat(36_000);
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            prompt,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*provider.calls.lock().await, 2);
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
+    assert!(outcome
+        .final_text
+        .contains("Finished within the resolved model prompt budget."));
+    assert!(runtime
+        .storage()
+        .read_recent_events(20)
+        .unwrap()
+        .iter()
+        .all(|event| event.kind != "turn_local_baseline_over_budget"));
+}
+
+#[tokio::test]
 async fn context_length_exceeded_turn_fails_fast_without_runtime_error() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

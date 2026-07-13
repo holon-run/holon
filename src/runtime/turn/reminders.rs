@@ -194,10 +194,10 @@ pub(super) fn truncate_reminder_to_token_budget(reminder: &str, max_tokens: usiz
 pub(super) fn runtime_reminder_fits_baseline(
     prompt_frame: &ProviderPromptFrame,
     available_tools: &[ToolSpec],
-    prompt_budget: usize,
+    request_prompt_budget: usize,
     reminder: &str,
 ) -> bool {
-    let effective_budget_estimated_tokens = prompt_budget
+    let effective_budget_estimated_tokens = request_prompt_budget
         .saturating_sub(estimate_tool_specs_tokens(available_tools))
         .saturating_sub(CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS);
     let baseline_with_reminder = estimate_prompt_frame_tokens(prompt_frame)

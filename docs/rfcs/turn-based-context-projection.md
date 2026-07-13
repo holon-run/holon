@@ -384,6 +384,14 @@ would allocate `64000` estimated tokens to turn projection after applying the
 ceiling. For a small fallback model or an unresolved default policy, the floor
 keeps recent semantic turns from collapsing below `4096` estimated tokens.
 
+This bounded budget applies only to the cross-turn `recent_turns` region in the
+initial context projection. It is not the budget for a complete provider
+request. Turn-local continuation projection uses the model's resolved
+`prompt_budget_estimated_tokens` as the complete request budget, then deducts
+tool overhead and the continuation safety margin before checking retained
+turn-local rounds. Reusing the bounded `recent_turns` budget for continuation
+would incorrectly cap large-context models at the history ceiling.
+
 The budget should be spent by retention priority, continuation-chain
 membership, and semantic turn value, not by physical-turn FIFO order. Current
 input and pinned turn anchors are mandatory and may borrow from the free pool
