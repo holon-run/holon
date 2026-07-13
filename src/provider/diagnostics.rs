@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use crate::{
     auth::{load_codex_cli_credential, load_codex_oauth_profile_credential},
     config::{
-        AppConfig, CredentialSource, ModelRef, ModelRouteCapability, ProviderId,
+        AppConfig, CredentialSource, ModelRouteCapability, ModelRouteRef, ProviderId,
         RuntimeModelCatalog,
     },
     context::ContextConfig,
@@ -24,7 +24,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
     let mut model_availability = Vec::new();
     for route_ref in config.provider_chain() {
         let model_ref = route_ref.model_ref();
-        let availability = provider_availability(config, &model_ref);
+        let availability = provider_availability(config, &route_ref);
         let provider_cfg = config
             .providers
             .get(&model_ref.provider)
@@ -53,7 +53,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
         model_availability.push(resolved_model_availability_entry(
             config,
             &catalog,
-            &model_ref,
+            &route_ref,
             &availability,
         ));
     }
@@ -90,27 +90,28 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
 
 pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvailability> {
     let catalog = RuntimeModelCatalog::from_config(config);
-    let mut models = BTreeMap::new();
-    for entry in catalog.available_models() {
-        models.insert(entry.model_ref.as_string(), entry.model_ref);
+    let mut routes = BTreeMap::new();
+    for route_ref in catalog.available_model_routes() {
+        routes.insert(route_ref.as_string(), route_ref);
     }
-    models.insert(
-        config.default_model.model_ref().as_string(),
-        config.default_model.model_ref(),
-    );
-    for model_ref in &config.fallback_models {
-        let model_ref = model_ref.model_ref();
-        models.insert(model_ref.as_string(), model_ref);
+    for route_ref in std::iter::once(&config.default_model)
+        .chain(config.fallback_models.iter())
+        .chain(config.vision_model.iter())
+        .chain(config.image_generation_model.iter())
+        .chain(config.vision_candidate_models.iter())
+    {
+        routes.insert(route_ref.as_string(), route_ref.clone());
     }
     for model_ref in config.validated_model_overrides.keys() {
-        models.insert(model_ref.as_string(), model_ref.clone());
+        let route_ref = ModelRouteRef::from_legacy_model_ref(model_ref);
+        routes.insert(route_ref.as_string(), route_ref);
     }
 
-    models
+    routes
         .into_values()
-        .map(|model_ref| {
-            let availability = provider_availability(config, &model_ref);
-            resolved_model_availability_entry(config, &catalog, &model_ref, &availability)
+        .map(|route_ref| {
+            let availability = provider_availability(config, &route_ref);
+            resolved_model_availability_entry(config, &catalog, &route_ref, &availability)
         })
         .collect()
 }
@@ -266,11 +267,9 @@ pub(crate) fn provider_models_from_availability_for_runtime(
     models
         .iter()
         .filter(|model| {
-            // Accept catalog identity, canonical route family, runtime config id,
-            // and endpoint-qualified group ids exposed by ListModelProviders.
-            model.provider == provider
-                || model.provider_family == provider
-                || model.route_provider == provider
+            // Accept the endpoint-qualified group id exposed by ListModelProviders
+            // and the legacy runtime config id for backward compatibility.
+            model.route_provider == provider
                 || provider_endpoint_group_id(&model.provider_family, &model.endpoint) == provider
         })
         .cloned()
@@ -323,14 +322,14 @@ fn supported_model_parameters(model: &ResolvedModelAvailability) -> Vec<String> 
 fn resolved_model_availability_entry(
     config: &AppConfig,
     catalog: &RuntimeModelCatalog,
-    model_ref: &ModelRef,
+    route_ref: &ModelRouteRef,
     availability: &Value,
 ) -> ResolvedModelAvailability {
     let base_context = base_context_config(config);
-    let route_ref = crate::config::ModelRouteRef::from_legacy_model_ref(model_ref);
-    let policy = catalog.resolved_model_policy(&base_context, Some(&route_ref));
-    let route = catalog.resolve_model_route(&base_context, model_ref, ModelRouteCapability::Turn);
-    let metadata_source = if config.validated_model_overrides.contains_key(model_ref) {
+    let model_ref = route_ref.model_ref();
+    let policy = catalog.resolved_model_policy(&base_context, Some(route_ref));
+    let route = resolve_route_for_diagnostics(catalog, &base_context, route_ref);
+    let metadata_source = if config.validated_model_overrides.contains_key(&model_ref) {
         "config_override".to_string()
     } else {
         serde_json::to_value(policy.source)
@@ -341,7 +340,7 @@ fn resolved_model_availability_entry(
     let route_provider = route
         .as_ref()
         .map(|route| route.endpoint.runtime_config.id.clone())
-        .unwrap_or_else(|| model_ref.provider.clone());
+        .unwrap_or_else(|| route_ref.provider.clone());
     let provider = config.providers.get(&route_provider);
     let provider_configured = provider.is_some();
     let provider_source = provider.map(|_| provider_source_for_config(config, &route_provider));
@@ -397,6 +396,22 @@ fn resolved_model_availability_entry(
     }
 }
 
+fn resolve_route_for_diagnostics(
+    catalog: &RuntimeModelCatalog,
+    base_context: &ContextConfig,
+    route_ref: &ModelRouteRef,
+) -> Option<crate::config::ResolvedModelRoute> {
+    [
+        ModelRouteCapability::Turn,
+        ModelRouteCapability::ImageGeneration,
+        ModelRouteCapability::VisionObservation,
+    ]
+    .into_iter()
+    .find_map(|capability| {
+        catalog.resolve_explicit_model_route(base_context, route_ref, capability)
+    })
+}
+
 fn provider_source_for_config(config: &AppConfig, provider_id: &ProviderId) -> String {
     if config.stored_config.providers.contains_key(provider_id) {
         "config".to_string()
@@ -447,9 +462,8 @@ fn base_context_config(config: &AppConfig) -> ContextConfig {
     }
 }
 
-fn provider_availability(config: &AppConfig, model_ref: &ModelRef) -> Value {
-    let route_ref = crate::config::ModelRouteRef::from_legacy_model_ref(model_ref);
-    let mut availability = match build_candidate(config, &route_ref) {
+fn provider_availability(config: &AppConfig, route_ref: &ModelRouteRef) -> Value {
+    let mut availability = match build_candidate(config, route_ref) {
         Ok(candidate) => json!({
             "available": true,
             "prompt_capabilities": candidate.provider.prompt_capabilities(),
@@ -469,7 +483,10 @@ fn provider_availability(config: &AppConfig, model_ref: &ModelRef) -> Value {
         }
     };
 
-    if let Some(provider) = config.providers.get(&model_ref.provider) {
+    if let Some(provider) = config.providers.values().find(|provider| {
+        provider.route_provider == route_ref.provider
+            && provider.route_endpoint == route_ref.endpoint
+    }) {
         if provider.auth.source != CredentialSource::ExternalCli
             && !(provider.id.is_openai_codex()
                 && provider.auth.source == CredentialSource::AuthProfile)
@@ -794,6 +811,68 @@ mod tests {
                 && entry.endpoint == "default"
                 && entry.route_provider == "volcengine"
         }));
+    }
+
+    #[test]
+    fn resolved_model_availability_expands_same_model_across_default_and_plan_endpoints() {
+        let mut fixture = test_config(Some("openai-key"));
+        let built_ins = crate::config::built_in_provider_registry_with_settings(
+            &std::collections::HashMap::from([
+                (
+                    "DASHSCOPE_API_KEY".to_string(),
+                    "dashscope-default-key".to_string(),
+                ),
+                (
+                    "DASHSCOPE_TOKEN_PLAN_API_KEY".to_string(),
+                    "dashscope-plan-key".to_string(),
+                ),
+            ]),
+        )
+        .unwrap();
+        let default_provider = ProviderId::parse("dashscope").unwrap();
+        let plan_provider = ProviderId::parse("dashscope-token-plan").unwrap();
+        fixture.config.providers.insert(
+            default_provider.clone(),
+            built_ins.get(&default_provider).unwrap().clone(),
+        );
+        fixture.config.providers.insert(
+            plan_provider.clone(),
+            built_ins.get(&plan_provider).unwrap().clone(),
+        );
+
+        let availability = resolved_model_availability(&fixture.config);
+
+        // A model that exists on both default and token-plan should produce
+        // separate availability entries for each endpoint.
+        let default_entries: Vec<_> = availability
+            .iter()
+            .filter(|entry| entry.endpoint == "default" && entry.provider_family == "dashscope")
+            .collect();
+        let plan_entries: Vec<_> = availability
+            .iter()
+            .filter(|entry| entry.endpoint == "token-plan" && entry.provider_family == "dashscope")
+            .collect();
+        assert!(
+            !default_entries.is_empty(),
+            "dashscope default endpoint should have models"
+        );
+        assert!(
+            !plan_entries.is_empty(),
+            "dashscope token-plan endpoint should have models"
+        );
+
+        // Verify the same canonical model appears on both endpoints if it's in both catalogs.
+        let default_models: std::collections::HashSet<_> =
+            default_entries.iter().map(|e| e.model.as_str()).collect();
+        let plan_models: std::collections::HashSet<_> =
+            plan_entries.iter().map(|e| e.model.as_str()).collect();
+        let shared = default_models.intersection(&plan_models).count();
+        // At least some models should be shared between the two endpoints,
+        // proving that canonical-model dedup no longer collapses routes.
+        assert!(
+            shared > 0,
+            "expected shared models across endpoints, got none"
+        );
     }
 
     #[test]

@@ -611,6 +611,21 @@ impl RuntimeModelCatalog {
         models
     }
 
+    pub fn available_model_routes(&self) -> Vec<ModelRouteRef> {
+        let mut routes = self.built_in_catalog.list_routes();
+        for model in self.available_models() {
+            if !routes
+                .iter()
+                .any(|route| route.model_ref() == model.model_ref)
+            {
+                routes.push(ModelRouteRef::from_legacy_model_ref(&model.model_ref));
+            }
+        }
+        routes.sort_by_key(ModelRouteRef::as_string);
+        routes.dedup();
+        routes
+    }
+
     pub fn select_view_image_vision_model(
         &self,
         base_context_config: &ContextConfig,

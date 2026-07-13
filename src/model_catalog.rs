@@ -432,6 +432,12 @@ impl BuiltInModelCatalog {
         entries
     }
 
+    pub fn list_routes(&self) -> Vec<ModelRouteRef> {
+        let mut routes = self.route_entries.keys().cloned().collect::<Vec<_>>();
+        routes.sort_by_key(ModelRouteRef::as_string);
+        routes
+    }
+
     pub fn preferred_model_for_provider(&self, provider: &ProviderId) -> Option<ModelRef> {
         self.preferred_models.get(provider).cloned()
     }
@@ -3077,15 +3083,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-agent",
-            "deepseek-v3-2-251201",
-            "DeepSeek V3.2",
-            128_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             1_000_000,
@@ -3127,6 +3124,24 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "GLM-5.2",
             204_800,
             128_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "volcengine-agent",
+            "doubao-seed-2-0-mini-260215",
+            "Doubao Seed 2.0 Mini",
+            256_000,
+            4_096,
+            false,
+            false,
+        ),
+        catalog_model(
+            "volcengine-agent",
+            "MiniMax-M3",
+            "MiniMax M3",
+            1_000_000,
+            8_192,
             true,
             false,
         ),
@@ -3507,6 +3522,15 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "ZHIPU/GLM-5.2",
             1_000_000,
             131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "glm-5.2",
+            "glm-5.2",
+            204_800,
+            128_000,
             true,
             false,
         ),
