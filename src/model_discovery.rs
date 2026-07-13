@@ -15,6 +15,7 @@ use crate::{
 };
 
 const OPENAI_COMPATIBLE_MODELS_PATH: &str = "/models";
+const SYNTHETIC_MODELS_URL: &str = "https://api.synthetic.new/openai/v1/models";
 pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -85,12 +86,15 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
 pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
     matches!(
         provider.id.as_str(),
-        "nearai" | "openrouter" | "vercel-ai-gateway"
+        "nearai" | "openrouter" | "synthetic" | "vercel-ai-gateway"
     )
 }
 
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
-    !matches!(provider.id.as_str(), "nearai" | "vercel-ai-gateway")
+    !matches!(
+        provider.id.as_str(),
+        "nearai" | "synthetic" | "vercel-ai-gateway"
+    )
 }
 
 pub fn discovery_cache_status_for_provider(
@@ -218,6 +222,9 @@ pub async fn refresh_provider_models(
         "openrouter" => serde_json::from_slice::<OpenRouterModelsResponse>(&raw)
             .context("failed to parse OpenRouter model discovery response")?
             .into_model_metadata(&provider.id),
+        "synthetic" => serde_json::from_slice::<SyntheticModelsResponse>(&raw)
+            .context("failed to parse Synthetic model discovery response")?
+            .into_model_metadata(&provider.id),
         "vercel-ai-gateway" => serde_json::from_slice::<VercelModelsResponse>(&raw)
             .context("failed to parse Vercel AI Gateway model discovery response")?
             .into_model_metadata(&provider.id),
@@ -250,6 +257,7 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
     match provider.id.as_str() {
         "nearai" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
+        "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
         "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
         _ => Err(anyhow!(
             "provider {} does not support model discovery yet",
@@ -504,6 +512,94 @@ impl NearAiModel {
 }
 
 #[derive(Debug, Deserialize)]
+struct SyntheticModelsResponse {
+    #[serde(default)]
+    data: Vec<SyntheticModel>,
+}
+
+impl SyntheticModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SyntheticModel {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    always_on: bool,
+    #[serde(default)]
+    context_length: Option<usize>,
+    #[serde(default)]
+    max_output_length: Option<u32>,
+    #[serde(default)]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    supported_features: Vec<String>,
+}
+
+impl SyntheticModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        if !self.always_on {
+            return None;
+        }
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let display_name = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        let has_input_modality = |expected: &str| {
+            self.input_modalities
+                .iter()
+                .any(|modality| modality.eq_ignore_ascii_case(expected))
+        };
+        let has_feature = |expected: &str| {
+            self.supported_features
+                .iter()
+                .any(|feature| feature.eq_ignore_ascii_case(expected))
+        };
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name,
+            description: "Remote discovered Synthetic always-on model metadata.".to_string(),
+            context_window_tokens: self.context_length,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: self.max_output_length,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags {
+                image_input: has_input_modality("image"),
+                supports_reasoning: has_feature("reasoning"),
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenRouterArchitecture {
     #[serde(default)]
     input_modalities: Vec<String>,
@@ -672,6 +768,30 @@ mod tests {
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
             transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
             base_url: "https://cloud-api.near.ai/v1".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::Env,
+                kind: crate::config::CredentialKind::ApiKey,
+                env: None,
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
+    fn synthetic_provider() -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::parse("synthetic").unwrap(),
+            route_provider: ProviderId::parse("synthetic").unwrap(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::AnthropicMessages,
+            base_url: "https://api.synthetic.new/anthropic".into(),
             auth: crate::config::ProviderAuthConfig {
                 source: crate::config::CredentialSource::Env,
                 kind: crate::config::CredentialKind::ApiKey,
@@ -860,6 +980,46 @@ mod tests {
     }
 
     #[test]
+    fn maps_only_synthetic_always_on_models_from_published_metadata() {
+        let payload: SyntheticModelsResponse = serde_json::from_str(
+            r#"{"data":[
+                {
+                    "id":"syn:large:vision",
+                    "name":"syn:large:vision",
+                    "always_on":true,
+                    "context_length":262144,
+                    "max_output_length":65536,
+                    "input_modalities":["text","image"],
+                    "supported_features":["tools","structured_outputs","reasoning"]
+                },
+                {
+                    "id":"hf:rotating/model",
+                    "name":"Rotating Model",
+                    "always_on":false,
+                    "context_length":131072,
+                    "max_output_length":8192,
+                    "input_modalities":["text"],
+                    "supported_features":["tools"]
+                }
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("synthetic").unwrap());
+
+        assert_eq!(models.len(), 1);
+        let model = &models[0];
+        assert_eq!(model.model_ref.as_string(), "synthetic/syn:large:vision");
+        assert_eq!(model.context_window_tokens, Some(262_144));
+        assert_eq!(model.default_max_output_tokens, None);
+        assert_eq!(model.max_output_tokens_upper_limit, Some(65_536));
+        assert!(model.capabilities.image_input);
+        assert!(model.capabilities.supports_reasoning);
+        assert!(model.reasoning_effort_options.is_empty());
+        assert_eq!(model.source, ModelMetadataSource::RemoteDiscovered);
+    }
+
+    #[test]
     fn nearai_discovery_is_public_but_inference_remains_unauthenticated() {
         let provider = nearai_provider();
         let cache = ModelDiscoveryCacheFile::default();
@@ -877,6 +1037,27 @@ mod tests {
         assert_eq!(
             provider_models_url(&provider).unwrap(),
             "https://cloud-api.near.ai/v1/models"
+        );
+    }
+
+    #[test]
+    fn synthetic_discovery_is_public_and_uses_the_openai_models_endpoint() {
+        let provider = synthetic_provider();
+        let cache = ModelDiscoveryCacheFile::default();
+        let status =
+            discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+
+        assert!(status.supports_auto_refresh);
+        assert!(!status.credential_configured);
+        assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
+        assert!(discovery_cache_needs_refresh(
+            &provider,
+            &cache,
+            Duration::from_secs(60)
+        ));
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            "https://api.synthetic.new/openai/v1/models"
         );
     }
 

@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **223 models**.
+across **40 endpoints** and **213 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -221,27 +221,17 @@ and capabilities.
 | `stepfun` | `step-3.5-flash` | `stepfun/step-3.5-flash` | 262144 | — | ✅ | — |
 | `stepfun` | `step-3.5-flash-2603` | `stepfun/step-3.5-flash-2603` | 262144 | — | ✅ | — |
 | `stepfun` | `step-3.7-flash` | `stepfun/step-3.7-flash` | 262144 | — | ✅ | ✅ |
-| `synthetic` | `hf:MiniMaxAI/MiniMax-M2.5` | `synthetic/hf:MiniMaxAI/MiniMax-M2.5` | 192000 | 65536 | — | — |
-| `synthetic` | `hf:Qwen/Qwen3-235B-A22B-Instruct-2507` | `synthetic/hf:Qwen/Qwen3-235B-A22B-Instruct-2507` | 256000 | 8192 | — | — |
-| `synthetic` | `hf:Qwen/Qwen3-235B-A22B-Thinking-2507` | `synthetic/hf:Qwen/Qwen3-235B-A22B-Thinking-2507` | 256000 | 8192 | ✅ | — |
-| `synthetic` | `hf:Qwen/Qwen3-Coder-480B-A35B-Instruct` | `synthetic/hf:Qwen/Qwen3-Coder-480B-A35B-Instruct` | 256000 | 8192 | — | — |
-| `synthetic` | `hf:Qwen/Qwen3-VL-235B-A22B-Instruct` | `synthetic/hf:Qwen/Qwen3-VL-235B-A22B-Instruct` | 250000 | 8192 | — | ✅ |
-| `synthetic` | `hf:deepseek-ai/DeepSeek-R1-0528` | `synthetic/hf:deepseek-ai/DeepSeek-R1-0528` | 128000 | 8192 | — | — |
-| `synthetic` | `hf:deepseek-ai/DeepSeek-V3` | `synthetic/hf:deepseek-ai/DeepSeek-V3` | 128000 | 8192 | — | — |
-| `synthetic` | `hf:deepseek-ai/DeepSeek-V3-0324` | `synthetic/hf:deepseek-ai/DeepSeek-V3-0324` | 128000 | 8192 | — | — |
-| `synthetic` | `hf:deepseek-ai/DeepSeek-V3.1` | `synthetic/hf:deepseek-ai/DeepSeek-V3.1` | 128000 | 8192 | — | — |
-| `synthetic` | `hf:deepseek-ai/DeepSeek-V3.1-Terminus` | `synthetic/hf:deepseek-ai/DeepSeek-V3.1-Terminus` | 128000 | 8192 | — | — |
-| `synthetic` | `hf:deepseek-ai/DeepSeek-V3.2` | `synthetic/hf:deepseek-ai/DeepSeek-V3.2` | 159000 | 8192 | — | — |
-| `synthetic` | `hf:meta-llama/Llama-3.3-70B-Instruct` | `synthetic/hf:meta-llama/Llama-3.3-70B-Instruct` | 128000 | 8192 | — | — |
-| `synthetic` | `hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | `synthetic/hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | 524000 | 8192 | — | — |
-| `synthetic` | `hf:moonshotai/Kimi-K2-Instruct-0905` | `synthetic/hf:moonshotai/Kimi-K2-Instruct-0905` | 256000 | 8192 | — | — |
-| `synthetic` | `hf:moonshotai/Kimi-K2-Thinking` | `synthetic/hf:moonshotai/Kimi-K2-Thinking` | 256000 | 8192 | ✅ | — |
-| `synthetic` | `hf:moonshotai/Kimi-K2.5` | `synthetic/hf:moonshotai/Kimi-K2.5` | 256000 | 8192 | ✅ | ✅ |
-| `synthetic` | `hf:openai/gpt-oss-120b` | `synthetic/hf:openai/gpt-oss-120b` | 128000 | 8192 | — | — |
-| `synthetic` | `hf:zai-org/GLM-4.5` | `synthetic/hf:zai-org/GLM-4.5` | 128000 | 128000 | — | — |
-| `synthetic` | `hf:zai-org/GLM-4.6` | `synthetic/hf:zai-org/GLM-4.6` | 198000 | 128000 | — | — |
-| `synthetic` | `hf:zai-org/GLM-4.7` | `synthetic/hf:zai-org/GLM-4.7` | 198000 | 128000 | — | — |
-| `synthetic` | `hf:zai-org/GLM-5` | `synthetic/hf:zai-org/GLM-5` | 256000 | 128000 | ✅ | ✅ |
+| `synthetic` | `hf:MiniMaxAI/MiniMax-M3` | `synthetic/hf:MiniMaxAI/MiniMax-M3` | 262144 | 65536 | ✅ | ✅ |
+| `synthetic` | `hf:Qwen/Qwen3.6-27B` | `synthetic/hf:Qwen/Qwen3.6-27B` | 262144 | 65536 | ✅ | ✅ |
+| `synthetic` | `hf:moonshotai/Kimi-K2.7-Code` | `synthetic/hf:moonshotai/Kimi-K2.7-Code` | 262144 | 65536 | ✅ | ✅ |
+| `synthetic` | `hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | `synthetic/hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 262144 | 65536 | ✅ | — |
+| `synthetic` | `hf:openai/gpt-oss-120b` | `synthetic/hf:openai/gpt-oss-120b` | 131072 | 65536 | ✅ | — |
+| `synthetic` | `hf:zai-org/GLM-4.7-Flash` | `synthetic/hf:zai-org/GLM-4.7-Flash` | 196608 | 65536 | ✅ | — |
+| `synthetic` | `hf:zai-org/GLM-5.2` | `synthetic/hf:zai-org/GLM-5.2` | 524288 | 65536 | ✅ | — |
+| `synthetic` | `syn:large:text` | `synthetic/syn:large:text` | 524288 | 65536 | ✅ | — |
+| `synthetic` | `syn:large:vision` | `synthetic/syn:large:vision` | 262144 | 65536 | ✅ | ✅ |
+| `synthetic` | `syn:small:text` | `synthetic/syn:small:text` | 196608 | 65536 | ✅ | — |
+| `synthetic` | `syn:small:vision` | `synthetic/syn:small:vision` | 262144 | 65536 | ✅ | ✅ |
 | `tencent-tokenhub` | `hy3-preview` | `tencent-tokenhub/hy3-preview` | 256000 | 64000 | ✅ | — |
 | `together` | `MiniMaxAI/MiniMax-M2.7` | `together/MiniMaxAI/MiniMax-M2.7` | 202752 | — | ✅ | — |
 | `together` | `MiniMaxAI/MiniMax-M3` | `together/MiniMaxAI/MiniMax-M3` | 524288 | — | — | ✅ |
