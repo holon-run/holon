@@ -233,12 +233,17 @@ describe("createRuntimeClient", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    const blob = await client.fetchWorkspaceFileBlob("ws/one", "outputs/chart 1.png", "root:ws");
+    const blob = await client.fetchWorkspaceFileBlob(
+      "ws/one",
+      "outputs/chart 1.png",
+      "root:ws",
+      { download: true },
+    );
 
     expect(blob.type).toBe("image/png");
     expect(seen).toEqual([
       {
-        url: "http://example.test:7878/api/workspaces/ws%2Fone/files/outputs/chart%201.png?execution_root_id=root%3Aws",
+        url: "http://example.test:7878/api/workspaces/ws%2Fone/files/outputs/chart%201.png?download=true&execution_root_id=root%3Aws",
         authorization: "Bearer secret-token",
         accept: "*/*",
       },

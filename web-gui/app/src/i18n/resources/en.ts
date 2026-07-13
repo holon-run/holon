@@ -622,6 +622,8 @@ const en = {
     binaryFile: "Binary file ({{type}}).",
     binaryFileUnknown: "Binary file (unknown type).",
     download: "Download",
+    downloading: "Downloading…",
+    downloadFailed: "Download failed: {{error}}",
     openInFileBrowser: "Open in file browser",
     markdownView: "Markdown view mode",
     pathBreadcrumb: "Path breadcrumb",
