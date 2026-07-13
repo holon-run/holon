@@ -2961,6 +2961,7 @@ fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
                 default_verbosity: None,
                 tool_output_truncation_estimated_tokens: None,
                 capabilities: Default::default(),
+                reasoning_effort_options: Vec::new(),
                 source: ModelMetadataSource::RemoteDiscovered,
                 endpoint: None,
             }],

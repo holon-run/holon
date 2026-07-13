@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **226 models**.
+across **40 endpoints** and **223 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -211,10 +211,7 @@ and capabilities.
 | `openai-codex` | `gpt-5.6-terra` | `openai-codex/gpt-5.6-terra` | 372000 | — | ✅ | ✅ |
 | `opencode-go` | `deepseek-v4-flash` | `opencode-go/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4-pro` | `opencode-go/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
-| `openrouter` | `auto` | `openrouter/auto` | 200000 | 8192 | — | ✅ |
-| `openrouter` | `moonshotai/kimi-k2.6` | `openrouter/moonshotai/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
-| `openrouter` | `openrouter/healer-alpha` | `openrouter/openrouter/healer-alpha` | 262144 | 65536 | ✅ | ✅ |
-| `openrouter` | `openrouter/hunter-alpha` | `openrouter/openrouter/hunter-alpha` | 1048576 | 65536 | ✅ | — |
+| `openrouter` | `auto` | `openrouter/auto` | 2000000 | — | ✅ | ✅ |
 | `qianfan` | `deepseek-v3.2` | `qianfan/deepseek-v3.2` | 131072 | 32768 | — | — |
 | `qianfan` | `deepseek-v3.2-think` | `qianfan/deepseek-v3.2-think` | 163840 | 65536 | ✅ | — |
 | `qianfan` | `ernie-5.0` | `qianfan/ernie-5.0` | 248832 | 65536 | — | ✅ |
