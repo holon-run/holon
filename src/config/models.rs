@@ -1232,7 +1232,7 @@ mod tests {
             ModelRouteRef::parse_compatible("volcengine-image-openai/doubao-seedream-5.0-lite")
                 .unwrap();
         assert_eq!(route_ref.provider.as_str(), "volcengine");
-        assert_eq!(route_ref.endpoint.as_str(), "plan");
+        assert_eq!(route_ref.endpoint.as_str(), "default");
         assert_eq!(route_ref.model, "doubao-seedream-5.0-lite");
     }
 

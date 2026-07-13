@@ -847,7 +847,7 @@ pub(crate) fn built_in_provider_endpoint_identity(
         "tencent-tokenhub-messages" => ("tencent-tokenhub", "messages"),
         "volcengine-coding" => ("volcengine", "coding"),
         "volcengine-agent" => ("volcengine", "plan"),
-        "volcengine-image-openai" => ("volcengine", "plan"),
+        "volcengine-image-openai" => ("volcengine", "default"),
         "xiaomi-token-plan" => ("xiaomi", "token-plan"),
         _ => {
             return Ok((
@@ -1192,7 +1192,7 @@ pub(crate) fn populate_built_in_provider_catalog(
         "volcengine",
         ProviderTransportKind::OpenAiResponses,
         "https://ark.cn-beijing.volces.com/api/v3",
-        &["VOLCENGINE_API_KEY"],
+        &["VOLCENGINE_API_KEY", "VOLCENGINE_IMAGE_OPENAI_API_KEY"],
         settings_env,
     )?;
     // Coding Plan tier — OpenAI Responses at /api/coding/v3 (independent plan, isolated key).
@@ -1204,16 +1204,13 @@ pub(crate) fn populate_built_in_provider_catalog(
         &["VOLCENGINE_CODING_API_KEY"],
         settings_env,
     )?;
-    // Agent Plan tier — OpenAI Responses at /api/plan/v3 (text + image generation, isolated key, no cross-tier fallback).
+    // Agent Plan tier — OpenAI Responses at /api/plan/v3 (isolated key, no cross-tier fallback).
     insert_builtin_http_provider(
         catalog,
         "volcengine-agent",
         ProviderTransportKind::OpenAiResponses,
         "https://ark.cn-beijing.volces.com/api/plan/v3",
-        &[
-            "VOLCENGINE_AGENT_API_KEY",
-            "VOLCENGINE_IMAGE_OPENAI_API_KEY",
-        ],
+        &["VOLCENGINE_AGENT_API_KEY"],
         settings_env,
     )?;
     insert_builtin_http_provider(
