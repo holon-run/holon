@@ -723,6 +723,13 @@ fn reasoning_effort_options(
         ("xai", "grok-4.5") => &["low", "medium", "high"][..],
         ("stepfun", "step-3.7-flash") => &["low", "medium", "high"][..],
         ("stepfun", "step-3.5-flash-2603") => &["low", "high"][..],
+        ("fireworks", "accounts/fireworks/models/deepseek-v4-flash")
+        | ("fireworks", "accounts/fireworks/models/deepseek-v4-pro") => {
+            &["none", "low", "medium", "high", "xhigh", "max"][..]
+        }
+        ("fireworks", "accounts/fireworks/models/glm-5p2") => &["none", "high", "max"][..],
+        ("fireworks", "accounts/fireworks/models/gpt-oss-120b")
+        | ("fireworks", "accounts/fireworks/models/minimax-m2p7") => &["low", "medium", "high"][..],
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
         ("xiaomi" | "xiaomi-token-plan", "mimo-v2.5-pro" | "mimo-v2.5") => &["none", "high"][..],
         ("volcengine", _)
@@ -793,6 +800,39 @@ fn chutes_model_without_published_capabilities(
             DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
         ),
         capabilities: ModelCapabilityFlags::default(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
+fn fireworks_model(
+    model: &str,
+    display_name: &str,
+    context_window_tokens: Option<usize>,
+    supports_reasoning: bool,
+    image_input: bool,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("fireworks"), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: display_name.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the Fireworks serverless {model} model."
+        ),
+        context_window_tokens,
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input,
+            supports_reasoning,
+            ..ModelCapabilityFlags::default()
+        },
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     }
@@ -1296,22 +1336,88 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        catalog_model(
-            "fireworks",
+        fireworks_model(
             "accounts/fireworks/models/kimi-k2p6",
             "Kimi K2.6",
-            262_144,
-            262_144,
-            false,
+            Some(262_144),
+            true,
             true,
         ),
-        catalog_model(
-            "fireworks",
-            "accounts/fireworks/routers/kimi-k2p5-turbo",
-            "Kimi K2.5 Turbo (Fire Pass)",
-            256_000,
-            256_000,
+        fireworks_model(
+            "accounts/fireworks/models/kimi-k2p7-code",
+            "Kimi K2.7 Code",
+            Some(262_144),
+            true,
+            true,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            Some(1_048_576),
+            true,
             false,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            Some(1_048_576),
+            true,
+            false,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/glm-5p1",
+            "GLM 5.1",
+            Some(202_752),
+            true,
+            false,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/glm-5p2",
+            "GLM 5.2",
+            Some(1_048_576),
+            true,
+            false,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/gpt-oss-120b",
+            "GPT-OSS 120B",
+            Some(131_072),
+            true,
+            false,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/minimax-m2p7",
+            "MiniMax M2.7",
+            Some(196_608),
+            true,
+            false,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/minimax-m3",
+            "MiniMax M3",
+            Some(524_288),
+            true,
+            true,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+            "Nemotron 3 Ultra NVFP4",
+            Some(262_144),
+            true,
+            false,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/qwen3p6-plus",
+            "Qwen 3.6 Plus",
+            None,
+            true,
+            true,
+        ),
+        fireworks_model(
+            "accounts/fireworks/models/qwen3p7-plus",
+            "Qwen 3.7 Plus",
+            Some(262_144),
+            true,
             true,
         ),
         catalog_model(
@@ -3708,6 +3814,81 @@ mod tests {
         assert_eq!(mistral.source, ModelMetadataSource::ConservativeBuiltin);
         assert!(!mistral.capabilities.supports_reasoning);
         assert!(mistral.max_output_tokens_upper_limit.is_none());
+    }
+
+    #[test]
+    fn fireworks_catalog_tracks_current_serverless_chat_models() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            (
+                "accounts/fireworks/models/deepseek-v4-flash",
+                Some(1_048_576),
+                false,
+            ),
+            (
+                "accounts/fireworks/models/deepseek-v4-pro",
+                Some(1_048_576),
+                false,
+            ),
+            ("accounts/fireworks/models/glm-5p1", Some(202_752), false),
+            ("accounts/fireworks/models/glm-5p2", Some(1_048_576), false),
+            (
+                "accounts/fireworks/models/gpt-oss-120b",
+                Some(131_072),
+                false,
+            ),
+            ("accounts/fireworks/models/kimi-k2p6", Some(262_144), true),
+            (
+                "accounts/fireworks/models/kimi-k2p7-code",
+                Some(262_144),
+                true,
+            ),
+            (
+                "accounts/fireworks/models/minimax-m2p7",
+                Some(196_608),
+                false,
+            ),
+            ("accounts/fireworks/models/minimax-m3", Some(524_288), true),
+            (
+                "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+                Some(262_144),
+                false,
+            ),
+            ("accounts/fireworks/models/qwen3p6-plus", None, true),
+            (
+                "accounts/fireworks/models/qwen3p7-plus",
+                Some(262_144),
+                true,
+            ),
+        ];
+
+        for (model, context_window, image_input) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("fireworks/{model}")).unwrap())
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(metadata.context_window_tokens, context_window, "{model}");
+            assert_eq!(metadata.capabilities.image_input, image_input, "{model}");
+            assert!(metadata.capabilities.supports_reasoning, "{model}");
+            assert!(metadata.max_output_tokens_upper_limit.is_none(), "{model}");
+            assert_eq!(metadata.source, ModelMetadataSource::ConservativeBuiltin);
+        }
+
+        assert!(catalog
+            .get(&ModelRef::parse("fireworks/accounts/fireworks/routers/kimi-k2p5-turbo").unwrap())
+            .is_none());
+
+        let deepseek = catalog.resolve_policy(
+            &ModelRef::parse("fireworks/accounts/fireworks/models/deepseek-v4-flash").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(
+            deepseek.reasoning_effort_options,
+            ["none", "low", "medium", "high", "xhigh", "max"]
+        );
     }
 
     #[test]
