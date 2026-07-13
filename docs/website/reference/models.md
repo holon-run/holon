@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **204 models**.
+across **40 endpoints** and **213 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -99,10 +99,19 @@ and capabilities.
 | `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 204800 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 204800 | 131072 | ✅ | ✅ |
+| `chutes` | `MiniMaxAI/MiniMax-M2.5-TEE` | `chutes/MiniMaxAI/MiniMax-M2.5-TEE` | 196608 | 65536 | ✅ | — |
+| `chutes` | `Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | `chutes/Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | 262144 | 262144 | ✅ | — |
+| `chutes` | `Qwen/Qwen3-32B-TEE` | `chutes/Qwen/Qwen3-32B-TEE` | 40960 | 40960 | ✅ | — |
+| `chutes` | `Qwen/Qwen3.5-397B-A17B-TEE` | `chutes/Qwen/Qwen3.5-397B-A17B-TEE` | 262144 | 65536 | ✅ | ✅ |
+| `chutes` | `Qwen/Qwen3.6-27B-TEE` | `chutes/Qwen/Qwen3.6-27B-TEE` | 262144 | 65536 | ✅ | ✅ |
 | `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | `chutes/deepseek-ai/DeepSeek-V3.2-TEE` | 131072 | 65536 | ✅ | — |
+| `chutes` | `google/gemma-4-31B-turbo-TEE` | `chutes/google/gemma-4-31B-turbo-TEE` | 131072 | 65536 | ✅ | ✅ |
 | `chutes` | `moonshotai/Kimi-K2.5-TEE` | `chutes/moonshotai/Kimi-K2.5-TEE` | 262144 | 65535 | ✅ | ✅ |
-| `chutes` | `openai/gpt-oss-120b-TEE` | `chutes/openai/gpt-oss-120b-TEE` | 131072 | 65536 | ✅ | — |
-| `chutes` | `zai-org/GLM-4.7-TEE` | `chutes/zai-org/GLM-4.7-TEE` | 202752 | 65535 | ✅ | — |
+| `chutes` | `moonshotai/Kimi-K2.6-TEE` | `chutes/moonshotai/Kimi-K2.6-TEE` | 262144 | 65535 | ✅ | ✅ |
+| `chutes` | `unsloth/Mistral-Nemo-Instruct-2407-TEE` | `chutes/unsloth/Mistral-Nemo-Instruct-2407-TEE` | 131072 | — | — | — |
+| `chutes` | `zai-org/GLM-5-TEE` | `chutes/zai-org/GLM-5-TEE` | 202752 | 65535 | ✅ | — |
+| `chutes` | `zai-org/GLM-5.1-TEE` | `chutes/zai-org/GLM-5.1-TEE` | 202752 | 65535 | ✅ | — |
+| `chutes` | `zai-org/GLM-5.2-TEE` | `chutes/zai-org/GLM-5.2-TEE` | 1048576 | 65535 | ✅ | — |
 | `dashscope` | `MiniMax-M2.5` | `dashscope/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
 | `dashscope` | `MiniMax/MiniMax-M3` | `dashscope/MiniMax/MiniMax-M3` | 196608 | 32768 | ✅ | — |
 | `dashscope` | `ZHIPU/GLM-5.2` | `dashscope/ZHIPU/GLM-5.2` | 1000000 | 131072 | ✅ | — |

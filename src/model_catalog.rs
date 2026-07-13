@@ -772,6 +772,32 @@ fn catalog_model(
     }
 }
 
+fn chutes_model_without_published_capabilities(
+    model: &str,
+    context_window_tokens: usize,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("chutes"), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: model.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the Chutes {model} model; the public model entry does not publish complete capability fields."
+        ),
+        context_window_tokens: Some(context_window_tokens),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags::default(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
 fn stepfun_model(
     provider: &str,
     model: &str,
@@ -1230,39 +1256,27 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "chutes",
-            "zai-org/GLM-4.7-TEE",
-            "zai-org/GLM-4.7-TEE",
-            202_752,
-            65_535,
-            true,
-            false,
-        ),
-        catalog_model(
-            "chutes",
-            "deepseek-ai/DeepSeek-V3.2-TEE",
-            "deepseek-ai/DeepSeek-V3.2-TEE",
-            131_072,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "chutes",
-            "moonshotai/Kimi-K2.5-TEE",
-            "moonshotai/Kimi-K2.5-TEE",
+            "moonshotai/Kimi-K2.6-TEE",
+            "moonshotai/Kimi-K2.6-TEE",
             262_144,
             65_535,
             true,
             true,
         ),
-        catalog_model(
-            "chutes",
-            "openai/gpt-oss-120b-TEE",
-            "openai/gpt-oss-120b-TEE",
+        catalog_model("chutes", "zai-org/GLM-5.2-TEE", "zai-org/GLM-5.2-TEE", 1_048_576, 65_535, true, false),
+        catalog_model("chutes", "zai-org/GLM-5.1-TEE", "zai-org/GLM-5.1-TEE", 202_752, 65_535, true, false),
+        catalog_model("chutes", "zai-org/GLM-5-TEE", "zai-org/GLM-5-TEE", 202_752, 65_535, true, false),
+        catalog_model("chutes", "deepseek-ai/DeepSeek-V3.2-TEE", "deepseek-ai/DeepSeek-V3.2-TEE", 131_072, 65_536, true, false),
+        catalog_model("chutes", "MiniMaxAI/MiniMax-M2.5-TEE", "MiniMaxAI/MiniMax-M2.5-TEE", 196_608, 65_536, true, false),
+        catalog_model("chutes", "moonshotai/Kimi-K2.5-TEE", "moonshotai/Kimi-K2.5-TEE", 262_144, 65_535, true, true),
+        catalog_model("chutes", "Qwen/Qwen3.6-27B-TEE", "Qwen/Qwen3.6-27B-TEE", 262_144, 65_536, true, true),
+        catalog_model("chutes", "Qwen/Qwen3.5-397B-A17B-TEE", "Qwen/Qwen3.5-397B-A17B-TEE", 262_144, 65_536, true, true),
+        catalog_model("chutes", "Qwen/Qwen3-235B-A22B-Thinking-2507-TEE", "Qwen/Qwen3-235B-A22B-Thinking-2507-TEE", 262_144, 262_144, true, false),
+        catalog_model("chutes", "Qwen/Qwen3-32B-TEE", "Qwen/Qwen3-32B-TEE", 40_960, 40_960, true, false),
+        catalog_model("chutes", "google/gemma-4-31B-turbo-TEE", "google/gemma-4-31B-turbo-TEE", 131_072, 65_536, true, true),
+        chutes_model_without_published_capabilities(
+            "unsloth/Mistral-Nemo-Instruct-2407-TEE",
             131_072,
-            65_536,
-            true,
-            false,
         ),
         catalog_model(
             "deepseek",
@@ -3638,6 +3652,62 @@ mod tests {
                 "{model} image input"
             );
         }
+    }
+
+    #[test]
+    fn chutes_catalog_tracks_the_public_live_model_directory() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("moonshotai/Kimi-K2.6-TEE", 262_144, Some(65_535), true),
+            ("zai-org/GLM-5.2-TEE", 1_048_576, Some(65_535), false),
+            (
+                "deepseek-ai/DeepSeek-V3.2-TEE",
+                131_072,
+                Some(65_536),
+                false,
+            ),
+            ("Qwen/Qwen3.6-27B-TEE", 262_144, Some(65_536), true),
+            ("google/gemma-4-31B-turbo-TEE", 131_072, Some(65_536), true),
+            (
+                "unsloth/Mistral-Nemo-Instruct-2407-TEE",
+                131_072,
+                None,
+                false,
+            ),
+        ];
+
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("chutes").unwrap())
+                .unwrap()
+                .as_string(),
+            "chutes/moonshotai/Kimi-K2.6-TEE"
+        );
+
+        for (model, context_window, max_output, image_input) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("chutes/{model}")).unwrap())
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(metadata.context_window_tokens, Some(context_window));
+            assert_eq!(metadata.max_output_tokens_upper_limit, max_output);
+            assert_eq!(metadata.capabilities.image_input, image_input);
+        }
+
+        for retired in ["zai-org/GLM-4.7-TEE", "openai/gpt-oss-120b-TEE"] {
+            assert!(
+                catalog
+                    .get(&ModelRef::parse(&format!("chutes/{retired}")).unwrap())
+                    .is_none(),
+                "{retired} should not remain in the built-in catalog"
+            );
+        }
+
+        let mistral = catalog
+            .get(&ModelRef::parse("chutes/unsloth/Mistral-Nemo-Instruct-2407-TEE").unwrap())
+            .unwrap();
+        assert_eq!(mistral.source, ModelMetadataSource::ConservativeBuiltin);
+        assert!(!mistral.capabilities.supports_reasoning);
+        assert!(mistral.max_output_tokens_upper_limit.is_none());
     }
 
     #[test]
