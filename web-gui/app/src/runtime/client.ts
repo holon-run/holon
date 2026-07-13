@@ -1178,26 +1178,26 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         content: response.content,
       };
     },
-    async fetchWorkspaceFileBlob(workspaceId: string, path: string, executionRootId?: string): Promise<Blob> {
+    async fetchWorkspaceFileBlob(
+      workspaceId: string,
+      path: string,
+      executionRootId?: string,
+      options?: { download?: boolean; timeoutMs?: number },
+    ): Promise<Blob> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
       const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-      const query = executionRootId ? `?execution_root_id=${encodeURIComponent(executionRootId)}` : "";
+      const params = new URLSearchParams();
+      if (options?.download) params.set("download", "true");
+      if (executionRootId) params.set("execution_root_id", executionRootId);
+      const query = params.toString();
       return getBlob(
         fetchImpl,
         baseUrl,
-        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query}`,
-        { headers: requestHeaders },
+        `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query ? `?${query}` : ""}`,
+        { headers: requestHeaders, timeoutMs: options?.timeoutMs },
       );
-    },
-    workspaceFileUrl(workspaceId: string, path: string, download?: boolean, executionRootId?: string): string {
-      const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-      const params = new URLSearchParams();
-      if (download) params.set("download", "true");
-      if (executionRootId) params.set("execution_root_id", executionRootId);
-      const query = params.toString();
-      return `${baseUrl}/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query ? `?${query}` : ""}`;
     },
   };
 }

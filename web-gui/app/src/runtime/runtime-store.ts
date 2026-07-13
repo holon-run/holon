@@ -279,9 +279,13 @@ export interface RuntimeStoreState {
   showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
   readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
-  fetchWorkspaceFileBlob: (workspaceId: string, path: string, executionRootId?: string) => Promise<Blob>;
+  fetchWorkspaceFileBlob: (
+    workspaceId: string,
+    path: string,
+    executionRootId?: string,
+    options?: { download?: boolean; timeoutMs?: number },
+  ) => Promise<Blob>;
   navigateBack: () => void;
-  workspaceFileUrl: (workspaceId: string, path: string, download?: boolean, executionRootId?: string) => string;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
@@ -925,8 +929,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }),
   browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
   readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
-  fetchWorkspaceFileBlob: (workspaceId, path, executionRootId) => runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId),
-  workspaceFileUrl: (workspaceId, path, download, executionRootId) => runtimeClient.workspaceFileUrl(workspaceId, path, download, executionRootId),
+  fetchWorkspaceFileBlob: (workspaceId, path, executionRootId, options) =>
+    runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId, options),
   inspectActivity: (agentId, activity) => {
     // Use relatedStateObjectRef as fallback for task/work_item navigation,
     // since their child activities (status_updated, result_received, etc.)

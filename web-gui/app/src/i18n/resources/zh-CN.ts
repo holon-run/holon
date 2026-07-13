@@ -624,6 +624,8 @@ const zh: Record<string, any> = {
     binaryFile: "二进制文件（{{type}}）。",
     binaryFileUnknown: "二进制文件（未知类型）。",
     download: "下载",
+    downloading: "下载中…",
+    downloadFailed: "下载失败：{{error}}",
     openInFileBrowser: "在文件浏览器中打开",
     markdownView: "Markdown 查看模式",
     pathBreadcrumb: "路径面包屑导航",

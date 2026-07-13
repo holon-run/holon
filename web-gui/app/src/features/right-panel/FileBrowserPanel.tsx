@@ -21,6 +21,7 @@ import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtim
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import { useTranslation } from "react-i18next";
 import { parseWorkspaceImageRef, resolveWorkspaceRelativePath, WorkspaceImage } from "../../components/MarkdownContent";
+import { triggerBlobDownload } from "./download";
 
 interface FileBrowserPanelProps {
   workspaceId: string;
@@ -39,6 +40,8 @@ interface SelectedFile {
   loading: boolean;
   error?: string;
 }
+
+const FILE_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 function fileIcon(entry: WorkspaceFileEntry): LucideIcon {
   if (entry.type === "directory") return Folder;
@@ -156,7 +159,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const { t } = useTranslation();
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
-  const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
+  const fetchWorkspaceFileBlob = useRuntimeStore((s) => s.fetchWorkspaceFileBlob);
 
   const effectiveInitialPath =
     initialPath ?? (initialFilePath ? initialFilePath.split("/").slice(0, -1).join("/") : "");
@@ -166,6 +169,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const [error, setError] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const [downloadState, setDownloadState] = useState<{ path: string; loading: boolean; error?: string }>();
+  const downloadRequestRef = useRef(0);
   const autoOpenedRef = useRef(false);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const [showRendered, setShowRendered] = useState(true);
@@ -179,6 +184,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       contentScrollRef.current.scrollTop = 0;
     }
     setShowRendered(true);
+    downloadRequestRef.current += 1;
+    setDownloadState(undefined);
   }, [selectedFile?.path]);
 
   const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
@@ -290,6 +297,34 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         loading: false,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  };
+
+  const downloadSelectedFile = async () => {
+    if (!selectedFile?.path) return;
+    const path = selectedFile.path;
+    const requestId = ++downloadRequestRef.current;
+    setDownloadState({ path, loading: true });
+    try {
+      const blob = await fetchWorkspaceFileBlob(workspaceId, path, executionRootId, {
+        download: true,
+        timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
+      });
+      triggerBlobDownload(blob, path.split("/").pop() ?? path);
+    } catch (err) {
+      if (downloadRequestRef.current === requestId) {
+        setDownloadState({
+          path,
+          loading: false,
+          error: t("fileBrowser.downloadFailed", {
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        });
+      }
+      return;
+    }
+    if (downloadRequestRef.current === requestId) {
+      setDownloadState({ path, loading: false });
     }
   };
 
@@ -475,16 +510,26 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               )}
             </>
           ) : (
-            <p className="inspector-muted">
-              Binary file ({selectedFile.mimeType ?? "unknown type"}).
-              {" "}
-              <a
-                href={workspaceFileUrl(workspaceId, selectedFile.path, true, executionRootId)}
-                download
-              >
-                Download
-              </a>
-            </p>
+            <div>
+              <p className="inspector-muted">
+                {selectedFile.mimeType
+                  ? t("fileBrowser.binaryFile", { type: selectedFile.mimeType })
+                  : t("fileBrowser.binaryFileUnknown")}
+                {" "}
+                <button
+                  type="button"
+                  disabled={downloadState?.path === selectedFile.path && downloadState.loading}
+                  onClick={() => void downloadSelectedFile()}
+                >
+                  {downloadState?.path === selectedFile.path && downloadState.loading
+                    ? t("fileBrowser.downloading")
+                    : t("fileBrowser.download")}
+                </button>
+              </p>
+              {downloadState?.path === selectedFile.path && downloadState.error ? (
+                <p className="inspector-error">{downloadState.error}</p>
+              ) : null}
+            </div>
           )}
         </div>
       ) : null}
