@@ -92,6 +92,7 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
         "arcee"
             | "huggingface"
             | "kilocode"
+            | "litellm"
             | "nearai"
             | "opencode-go"
             | "openrouter"
@@ -99,6 +100,7 @@ pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bo
             | "tencent-tokenhub"
             | "venice"
             | "vercel-ai-gateway"
+            | "vllm"
     )
 }
 
@@ -112,6 +114,7 @@ fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig
             | "synthetic"
             | "venice"
             | "vercel-ai-gateway"
+            | "vllm"
     )
 }
 
@@ -243,6 +246,9 @@ pub async fn refresh_provider_models(
         "kilocode" => serde_json::from_slice::<KiloModelsResponse>(&raw)
             .context("failed to parse Kilo Gateway model discovery response")?
             .into_model_metadata(&provider.id),
+        "litellm" | "vllm" => serde_json::from_slice::<OpenAiCompatibleModelsResponse>(&raw)
+            .context("failed to parse OpenAI-compatible model discovery response")?
+            .into_model_metadata(&provider.id),
         "nearai" => serde_json::from_slice::<NearAiModelsResponse>(&raw)
             .context("failed to parse NEAR AI model discovery response")?
             .into_model_metadata(&provider.id),
@@ -294,6 +300,7 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
         "arcee" => Ok("https://api.arcee.ai/api/v1/models".to_string()),
         "huggingface" => openai_compatible_models_url(&provider.base_url),
         "kilocode" => openai_compatible_models_url(&provider.base_url),
+        "litellm" => openai_v1_models_url(&provider.base_url),
         "nearai" => openai_compatible_models_url(&provider.base_url),
         "opencode-go" => openai_compatible_models_url(&provider.base_url),
         "openrouter" => openrouter_models_url(&provider.base_url),
@@ -301,11 +308,25 @@ fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
         "tencent-tokenhub" => openai_compatible_models_url(&provider.base_url),
         "venice" => venice_models_url(&provider.base_url),
         "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
+        "vllm" => openai_compatible_models_url(&provider.base_url),
         _ => Err(anyhow!(
             "provider {} does not support model discovery yet",
             provider.id.as_str()
         )),
     }
+}
+
+fn openai_v1_models_url(base_url: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url)
+        .with_context(|| format!("invalid OpenAI-compatible base_url {base_url:?}"))?;
+    let path = url.path().trim_end_matches('/');
+    // LiteLLM commonly omits `/v1`; avoid duplicating it for providers that include it.
+    if path.ends_with("/v1") {
+        url.set_path(&format!("{path}/models"));
+    } else {
+        url.set_path(&format!("{path}/v1/models"));
+    }
+    Ok(url.to_string())
 }
 
 fn openrouter_models_url(base_url: &str) -> Result<String> {
@@ -334,6 +355,54 @@ fn vercel_models_url(base_url: &str) -> Result<String> {
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}/v1/models"));
     Ok(url.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompatibleModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiCompatibleModel>,
+}
+
+impl OpenAiCompatibleModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| left.model_ref.model.cmp(&right.model_ref.model));
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompatibleModel {
+    id: String,
+}
+
+impl OpenAiCompatibleModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        let id = self.id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name: id.to_string(),
+            description: "Remote discovered OpenAI-compatible model.".to_string(),
+            context_window_tokens: None,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags::default(),
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2215,6 +2284,62 @@ mod tests {
             provider_models_url(&provider).unwrap(),
             "https://api.venice.ai/api/v1/models?type=text"
         );
+    }
+
+    #[test]
+    fn local_openai_compatible_servers_use_deployment_model_discovery() {
+        let providers =
+            crate::config::built_in_provider_registry_with_settings(&Default::default()).unwrap();
+        let litellm = providers
+            .get(&ProviderId::parse("litellm").unwrap())
+            .unwrap();
+        let vllm = providers.get(&ProviderId::parse("vllm").unwrap()).unwrap();
+        let cache = ModelDiscoveryCacheFile::default();
+
+        assert_eq!(
+            discovery_cache_status_for_provider(litellm, &cache, Duration::from_secs(60), false)
+                .state,
+            ModelDiscoveryCacheState::Unauthenticated
+        );
+        assert_eq!(
+            provider_models_url(litellm).unwrap(),
+            "http://localhost:4000/v1/models"
+        );
+        assert_eq!(
+            discovery_cache_status_for_provider(vllm, &cache, Duration::from_secs(60), false).state,
+            ModelDiscoveryCacheState::Missing
+        );
+        assert_eq!(
+            provider_models_url(vllm).unwrap(),
+            "http://127.0.0.1:8000/v1/models"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_discovery_keeps_only_non_empty_server_model_ids() {
+        let payload: OpenAiCompatibleModelsResponse = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"deployment-alias","object":"model"},
+                {"id":"org/model","object":"model"},
+                {"id":" ","object":"model"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let models = payload.into_model_metadata(&ProviderId::parse("vllm").unwrap());
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model_ref.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["deployment-alias", "org/model"]
+        );
+        assert!(models
+            .iter()
+            .all(|model| model.source == ModelMetadataSource::RemoteDiscovered));
+        assert!(models
+            .iter()
+            .all(|model| model.capabilities == ModelCapabilityFlags::default()));
     }
 
     #[test]

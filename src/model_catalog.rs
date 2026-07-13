@@ -1912,15 +1912,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "litellm",
-            "claude-opus-4-6",
-            "Claude Opus 4.6",
-            200_000,
-            128_000,
-            true,
-            true,
-        ),
-        catalog_model(
             "minimax",
             "MiniMax-M3",
             "MiniMax M3",
@@ -2914,15 +2905,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "vllm",
-            "meta-llama/Meta-Llama-3-8B-Instruct",
-            "Meta Llama 3 8B Instruct",
-            131_072,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
             "volcengine",
             "doubao-seed-1-8-251228",
             "Doubao Seed 1.8",
@@ -3687,6 +3669,22 @@ mod tests {
         assert!(catalog
             .get(&ModelRef::new(arcee, "trinity-large-thinking"))
             .is_none());
+    }
+
+    #[test]
+    fn deployment_defined_openai_compatible_providers_have_no_static_models() {
+        let catalog = BuiltInModelCatalog::new();
+
+        for provider in ["litellm", "vllm"] {
+            let provider = ProviderId::parse(provider).unwrap();
+            assert!(
+                catalog
+                    .list()
+                    .into_iter()
+                    .all(|entry| entry.model_ref.provider != provider),
+                "{provider:?} models must come from deployment discovery"
+            );
+        }
     }
 
     #[test]

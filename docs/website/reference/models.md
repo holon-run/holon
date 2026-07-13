@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **42 endpoints** and **253 models**.
+across **42 endpoints** and **251 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -165,7 +165,6 @@ and capabilities.
 | `kilocode` | `kilo-auto/efficient` | `kilocode/kilo-auto/efficient` | 1000000 | — | ✅ | ✅ |
 | `kilocode` | `kilo-auto/free` | `kilocode/kilo-auto/free` | 256000 | — | ✅ | — |
 | `kilocode` | `kilo-auto/frontier` | `kilocode/kilo-auto/frontier` | 1000000 | — | ✅ | ✅ |
-| `litellm` | `claude-opus-4-6` | `litellm/claude-opus-4-6` | 200000 | 128000 | ✅ | ✅ |
 | `minimax` | `MiniMax-M2` | `minimax/MiniMax-M2` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M2.1` | `minimax/MiniMax-M2.1` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M2.1-highspeed` | `minimax/MiniMax-M2.1-highspeed` | 204800 | 128000 | ✅ | — |
@@ -294,7 +293,6 @@ and capabilities.
 | `vercel-ai-gateway` | `moonshotai/kimi-k2.6` | `vercel-ai-gateway/moonshotai/kimi-k2.6` | 262000 | 262000 | ✅ | ✅ |
 | `vercel-ai-gateway` | `openai/gpt-5.4` | `vercel-ai-gateway/openai/gpt-5.4` | 1050000 | 128000 | ✅ | ✅ |
 | `vercel-ai-gateway` | `openai/gpt-5.4-pro` | `vercel-ai-gateway/openai/gpt-5.4-pro` | 1050000 | 128000 | ✅ | ✅ |
-| `vllm` | `meta-llama/Meta-Llama-3-8B-Instruct` | `vllm/meta-llama/Meta-Llama-3-8B-Instruct` | 131072 | 8192 | — | — |
 | `volcengine` | `ark-code-latest` | `volcengine/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `volcengine` | `deepseek-v3-2-251201` | `volcengine/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
 | `volcengine` | `deepseek-v4-flash` | `volcengine/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
