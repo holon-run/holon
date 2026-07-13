@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **212 models**.
+across **40 endpoints** and **215 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -159,7 +159,10 @@ and capabilities.
 | `gemini` | `gemini-3.1-pro-preview` | `gemini/gemini-3.1-pro-preview` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.5-flash` | `gemini/gemini-3.5-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `huggingface` | `openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | 131072 | — | ✅ | — |
-| `kilocode` | `kilo/auto` | `kilocode/kilo/auto` | 1000000 | 128000 | ✅ | ✅ |
+| `kilocode` | `kilo-auto/balanced` | `kilocode/kilo-auto/balanced` | 1000000 | — | ✅ | ✅ |
+| `kilocode` | `kilo-auto/efficient` | `kilocode/kilo-auto/efficient` | 1000000 | — | ✅ | ✅ |
+| `kilocode` | `kilo-auto/free` | `kilocode/kilo-auto/free` | 256000 | — | ✅ | — |
+| `kilocode` | `kilo-auto/frontier` | `kilocode/kilo-auto/frontier` | 1000000 | — | ✅ | ✅ |
 | `litellm` | `claude-opus-4-6` | `litellm/claude-opus-4-6` | 200000 | 128000 | ✅ | ✅ |
 | `minimax` | `MiniMax-M2` | `minimax/MiniMax-M2` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M2.1` | `minimax/MiniMax-M2.1` | 204800 | 128000 | ✅ | — |

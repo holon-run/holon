@@ -864,6 +864,40 @@ fn huggingface_gpt_oss_model() -> BuiltInModelMetadata {
     }
 }
 
+fn kilocode_auto_model(
+    model: &str,
+    display_name: &str,
+    context_window_tokens: usize,
+    max_output_tokens: u32,
+    image_input: bool,
+) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id("kilocode"), model);
+    BuiltInModelMetadata {
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
+        display_name: display_name.into(),
+        description: format!(
+            "Holon conservative built-in metadata for the Kilo Gateway {display_name} virtual model."
+        ),
+        context_window_tokens: Some(context_window_tokens),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: Some(max_output_tokens),
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input,
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
 fn fireworks_model(
     model: &str,
     display_name: &str,
@@ -1540,14 +1574,33 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         huggingface_gpt_oss_model(),
-        catalog_model(
-            "kilocode",
-            "kilo/auto",
-            "Kilo Auto",
+        kilocode_auto_model(
+            "kilo-auto/frontier",
+            "Kilo Auto Frontier",
             1_000_000,
             128_000,
             true,
+        ),
+        kilocode_auto_model(
+            "kilo-auto/balanced",
+            "Kilo Auto Balanced",
+            1_000_000,
+            65_536,
             true,
+        ),
+        kilocode_auto_model(
+            "kilo-auto/efficient",
+            "Kilo Auto Efficient",
+            1_000_000,
+            65_536,
+            true,
+        ),
+        kilocode_auto_model(
+            "kilo-auto/free",
+            "Kilo Auto Free",
+            256_000,
+            10_000,
+            false,
         ),
         catalog_model(
             "litellm",
@@ -3986,6 +4039,34 @@ mod tests {
         assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
         assert!(catalog
             .get(&ModelRef::parse("huggingface/moonshotai/Kimi-K2-Instruct").unwrap())
+            .is_none());
+    }
+
+    #[test]
+    fn kilocode_catalog_tracks_the_current_auto_virtual_models() {
+        let catalog = BuiltInModelCatalog::new();
+        let expected = [
+            ("kilo-auto/frontier", 1_000_000, 128_000, true),
+            ("kilo-auto/balanced", 1_000_000, 65_536, true),
+            ("kilo-auto/efficient", 1_000_000, 65_536, true),
+            ("kilo-auto/free", 256_000, 10_000, false),
+        ];
+
+        for (model, context, output, image_input) in expected {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("kilocode/{model}")).unwrap())
+                .unwrap_or_else(|| panic!("{model} should be registered"));
+            assert_eq!(metadata.context_window_tokens, Some(context));
+            assert!(metadata.default_max_output_tokens.is_none());
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(output));
+            assert_eq!(metadata.capabilities.image_input, image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert!(metadata.reasoning_effort_options.is_empty());
+            assert_eq!(metadata.source, ModelMetadataSource::ConservativeBuiltin);
+        }
+
+        assert!(catalog
+            .get(&ModelRef::parse("kilocode/kilo/auto").unwrap())
             .is_none());
     }
 
