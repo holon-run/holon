@@ -596,6 +596,9 @@ impl RuntimeModelCatalog {
                     base.map(|model| &model.capabilities),
                     override_config.capabilities.as_ref(),
                 ),
+                reasoning_effort_options: base
+                    .map(|model| model.reasoning_effort_options.clone())
+                    .unwrap_or_default(),
                 source: crate::model_catalog::ModelMetadataSource::ConfigOverride,
                 endpoint: None,
             });

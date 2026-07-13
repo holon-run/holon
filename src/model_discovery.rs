@@ -266,6 +266,20 @@ struct OpenRouterModel {
     architecture: Option<OpenRouterArchitecture>,
     #[serde(default)]
     top_provider: Option<OpenRouterTopProvider>,
+    #[serde(default)]
+    supported_parameters: Vec<String>,
+    #[serde(default)]
+    reasoning: Option<OpenRouterReasoning>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterReasoning {
+    #[serde(default)]
+    mandatory: bool,
+    #[serde(default)]
+    default_enabled: bool,
+    #[serde(default)]
+    supported_efforts: Vec<String>,
 }
 
 impl OpenRouterModel {
@@ -302,6 +316,25 @@ impl OpenRouterModel {
                     .any(|value| value.eq_ignore_ascii_case("image"))
             })
             .unwrap_or(false);
+        let supports_reasoning = self
+            .supported_parameters
+            .iter()
+            .any(|parameter| parameter == "reasoning")
+            || self.reasoning.as_ref().is_some_and(|reasoning| {
+                reasoning.mandatory
+                    || reasoning.default_enabled
+                    || !reasoning.supported_efforts.is_empty()
+            });
+        let reasoning_effort_options = self
+            .reasoning
+            .as_ref()
+            .filter(|_| {
+                self.supported_parameters
+                    .iter()
+                    .any(|parameter| parameter == "reasoning_effort")
+            })
+            .map(|reasoning| reasoning.supported_efforts.clone())
+            .unwrap_or_default();
         Some(BuiltInModelMetadata {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),
             display_name,
@@ -315,8 +348,10 @@ impl OpenRouterModel {
             tool_output_truncation_estimated_tokens: None,
             capabilities: ModelCapabilityFlags {
                 image_input,
+                supports_reasoning,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options,
             source: ModelMetadataSource::RemoteDiscovered,
             endpoint: None,
         })
@@ -373,23 +408,65 @@ mod tests {
     #[test]
     fn maps_openrouter_models_to_remote_metadata() {
         let payload: OpenRouterModelsResponse = serde_json::from_str(
-            r#"{"data":[{"id":"anthropic/claude-3.5-sonnet","name":"Claude 3.5 Sonnet","description":"test","context_length":200000,"architecture":{"input_modalities":["text","image"]},"top_provider":{"max_completion_tokens":8192}}]}"#,
+            r#"{"data":[
+                {
+                    "id":"openrouter/auto",
+                    "name":"Auto Router",
+                    "context_length":2000000,
+                    "architecture":{"input_modalities":["text","image","audio","file","video"]},
+                    "top_provider":{"max_completion_tokens":null},
+                    "supported_parameters":["reasoning","reasoning_effort"],
+                    "reasoning":null
+                },
+                {
+                    "id":"anthropic/claude-sonnet-5",
+                    "name":"Claude Sonnet 5",
+                    "description":"test",
+                    "context_length":1000000,
+                    "architecture":{"input_modalities":["text","image"]},
+                    "top_provider":{"max_completion_tokens":128000},
+                    "supported_parameters":["reasoning","reasoning_effort"],
+                    "reasoning":{
+                        "mandatory":false,
+                        "default_enabled":true,
+                        "supported_efforts":["max","xhigh","high","medium","low"]
+                    }
+                }
+            ]}"#,
         )
         .unwrap();
 
         let models = payload.into_model_metadata(&ProviderId::parse("openrouter").unwrap());
 
-        assert_eq!(models.len(), 1);
-        let model = &models[0];
+        assert_eq!(models.len(), 2);
+        let model = models
+            .iter()
+            .find(|model| model.model_ref.model == "anthropic/claude-sonnet-5")
+            .unwrap();
         assert_eq!(
             model.model_ref.as_string(),
-            "openrouter/anthropic/claude-3.5-sonnet"
+            "openrouter/anthropic/claude-sonnet-5"
         );
-        assert_eq!(model.display_name, "Claude 3.5 Sonnet");
-        assert_eq!(model.context_window_tokens, Some(200_000));
-        assert_eq!(model.max_output_tokens_upper_limit, Some(8192));
+        assert_eq!(model.display_name, "Claude Sonnet 5");
+        assert_eq!(model.context_window_tokens, Some(1_000_000));
+        assert_eq!(model.max_output_tokens_upper_limit, Some(128_000));
         assert!(model.capabilities.image_input);
+        assert!(model.capabilities.supports_reasoning);
+        assert_eq!(
+            model.reasoning_effort_options,
+            ["max", "xhigh", "high", "medium", "low"]
+        );
         assert_eq!(model.source, ModelMetadataSource::RemoteDiscovered);
+
+        let auto = models
+            .iter()
+            .find(|model| model.model_ref.model == "openrouter/auto")
+            .unwrap();
+        assert_eq!(auto.context_window_tokens, Some(2_000_000));
+        assert!(auto.max_output_tokens_upper_limit.is_none());
+        assert!(auto.capabilities.image_input);
+        assert!(auto.capabilities.supports_reasoning);
+        assert!(auto.reasoning_effort_options.is_empty());
     }
 
     #[test]

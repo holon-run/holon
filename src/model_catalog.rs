@@ -168,6 +168,8 @@ pub struct BuiltInModelMetadata {
     pub tool_output_truncation_estimated_tokens: Option<usize>,
     #[serde(default)]
     pub capabilities: ModelCapabilityFlags,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_effort_options: Vec<String>,
     pub source: ModelMetadataSource,
     /// Non-default endpoint this model belongs to under its canonical provider.
     /// When `None`, the model uses the provider's default endpoint.
@@ -625,7 +627,10 @@ impl BuiltInModelCatalog {
         {
             override_capabilities.apply_to(&mut capabilities);
         }
-        let reasoning_effort_options = reasoning_effort_options(model_ref, endpoint, &capabilities);
+        let reasoning_effort_options = built_in
+            .map(|entry| entry.reasoning_effort_options.clone())
+            .filter(|options| !options.is_empty())
+            .unwrap_or_else(|| reasoning_effort_options(model_ref, endpoint, &capabilities));
 
         ResolvedRuntimeModelPolicy {
             model_ref: model_ref.clone(),
@@ -774,6 +779,7 @@ fn catalog_model(
             supports_reasoning,
             ..ModelCapabilityFlags::default()
         },
+        reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::BuiltInCatalog,
         endpoint: None,
     }
@@ -800,6 +806,7 @@ fn chutes_model_without_published_capabilities(
             DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
         ),
         capabilities: ModelCapabilityFlags::default(),
+        reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     }
@@ -833,6 +840,7 @@ fn fireworks_model(
             supports_reasoning,
             ..ModelCapabilityFlags::default()
         },
+        reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     }
@@ -866,6 +874,7 @@ fn nvidia_model(
             supports_reasoning,
             ..ModelCapabilityFlags::default()
         },
+        reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     }
@@ -899,6 +908,7 @@ fn together_model(
             supports_reasoning,
             ..ModelCapabilityFlags::default()
         },
+        reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     }
@@ -929,6 +939,7 @@ fn stepfun_model(
             supports_reasoning: true,
             ..ModelCapabilityFlags::default()
         },
+        reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::BuiltInCatalog,
         endpoint: None,
     }
@@ -960,6 +971,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -979,6 +991,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -998,6 +1011,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1017,6 +1031,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1038,6 +1053,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1059,6 +1075,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1080,6 +1097,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1101,6 +1119,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1122,6 +1141,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1143,6 +1163,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1163,6 +1184,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1181,6 +1203,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 image_generation: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -1200,6 +1223,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::ConservativeBuiltin,
             endpoint: None,
         },
@@ -1219,6 +1243,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::ConservativeBuiltin,
             endpoint: None,
         },
@@ -1238,6 +1263,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::ConservativeBuiltin,
             endpoint: None,
         },
@@ -1812,42 +1838,28 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        catalog_model(
-            "openrouter",
-            "auto",
-            "OpenRouter Auto",
-            200_000,
-            8_192,
-            false,
-            true,
-        ),
-        catalog_model(
-            "openrouter",
-            "openrouter/hunter-alpha",
-            "Hunter Alpha",
-            1_048_576,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "openrouter",
-            "openrouter/healer-alpha",
-            "Healer Alpha",
-            262_144,
-            65_536,
-            true,
-            true,
-        ),
-        catalog_model(
-            "openrouter",
-            "moonshotai/kimi-k2.6",
-            "MoonshotAI: Kimi K2.6",
-            262_144,
-            262_144,
-            true,
-            true,
-        ),
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("openrouter"), "auto"),
+            display_name: "OpenRouter Auto".into(),
+            description: "OpenRouter Auto Router metadata aligned with the official Models API; the selected upstream model and provider are dynamic.".into(),
+            context_window_tokens: Some(2_000_000),
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+            ),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::ConservativeBuiltin,
+            endpoint: None,
+        },
         catalog_model(
             "qianfan",
             "deepseek-v3.2",
@@ -2833,6 +2845,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
                 image_generation: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: Some(ProviderEndpointId::parse("plan").expect("valid built-in endpoint id")),
         },
@@ -2889,6 +2902,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -2909,6 +2923,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
                 supports_reasoning: true,
                 ..ModelCapabilityFlags::default()
             },
+            reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
@@ -4053,6 +4068,35 @@ mod tests {
                     .get(&ModelRef::parse(&format!("together/{retired}")).unwrap())
                     .is_none(),
                 "{retired} should not remain in the built-in catalog"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_catalog_keeps_only_the_dynamic_auto_router_default() {
+        let catalog = BuiltInModelCatalog::new();
+        let auto = catalog
+            .get(&ModelRef::parse("openrouter/auto").unwrap())
+            .expect("OpenRouter auto router should be registered");
+
+        assert_eq!(auto.context_window_tokens, Some(2_000_000));
+        assert!(auto.default_max_output_tokens.is_none());
+        assert!(auto.max_output_tokens_upper_limit.is_none());
+        assert!(auto.capabilities.image_input);
+        assert!(auto.capabilities.supports_reasoning);
+        assert!(auto.reasoning_effort_options.is_empty());
+        assert_eq!(auto.source, ModelMetadataSource::ConservativeBuiltin);
+
+        for dynamic_or_removed in [
+            "moonshotai/kimi-k2.6",
+            "openrouter/healer-alpha",
+            "openrouter/hunter-alpha",
+        ] {
+            assert!(
+                catalog
+                    .get(&ModelRef::parse(&format!("openrouter/{dynamic_or_removed}")).unwrap())
+                    .is_none(),
+                "{dynamic_or_removed} should come from discovery or explicit configuration"
             );
         }
     }
