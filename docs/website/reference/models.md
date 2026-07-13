@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **33 provider accounts**
-across **40 endpoints** and **215 models**.
+across **41 endpoints** and **227 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -47,6 +47,7 @@ used in existing `provider/model` refs and config shortcuts.
 | `openai` | `default` | `openai` | OpenAI Responses | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `openai-codex` | `default` | `openai-codex` | OpenAI Codex | `https://chatgpt.com/backend-api/codex` | `—` |
 | `opencode-go` | `default` | `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
+| `opencode-go` | `messages` | `opencode-go-messages` | Anthropic Messages | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
 | `openrouter` | `default` | `openrouter` | OpenAI Chat Completions | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `qianfan` | `default` | `qianfan` | OpenAI Chat Completions | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
 | `stepfun` | `default` | `stepfun` | OpenAI Chat Completions | `https://api.stepfun.com/v1` | `STEPFUN_API_KEY` |
@@ -213,6 +214,18 @@ and capabilities.
 | `openai-codex` | `gpt-5.6-terra` | `openai-codex/gpt-5.6-terra` | 372000 | — | ✅ | ✅ |
 | `opencode-go` | `deepseek-v4-flash` | `opencode-go/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4-pro` | `opencode-go/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `opencode-go` | `glm-5.1` | `opencode-go/glm-5.1` | 202800 | 131072 | ✅ | — |
+| `opencode-go` | `glm-5.2` | `opencode-go/glm-5.2` | 1000000 | 131072 | ✅ | — |
+| `opencode-go` | `kimi-k2.6` | `opencode-go/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
+| `opencode-go` | `kimi-k2.7-code` | `opencode-go/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
+| `opencode-go` | `mimo-v2.5` | `opencode-go/mimo-v2.5` | 1048576 | 131072 | ✅ | ✅ |
+| `opencode-go` | `mimo-v2.5-pro` | `opencode-go/mimo-v2.5-pro` | 1048576 | 131072 | ✅ | — |
+| `opencode-go` | `minimax-m2.5` | `opencode-go/minimax-m2.5` | 196608 | 32768 | ✅ | — |
+| `opencode-go` | `minimax-m2.7` | `opencode-go/minimax-m2.7` | 204800 | — | ✅ | — |
+| `opencode-go` | `minimax-m3` | `opencode-go/minimax-m3` | 1000000 | — | ✅ | ✅ |
+| `opencode-go` | `qwen3.6-plus` | `opencode-go/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `opencode-go` | `qwen3.7-max` | `opencode-go/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
+| `opencode-go` | `qwen3.7-plus` | `opencode-go/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `openrouter` | `auto` | `openrouter/auto` | 2000000 | — | ✅ | ✅ |
 | `qianfan` | `deepseek-v3.2` | `qianfan/deepseek-v3.2` | 131072 | 32768 | — | — |
 | `qianfan` | `deepseek-v3.2-think` | `qianfan/deepseek-v3.2-think` | 163840 | 65536 | ✅ | — |

@@ -296,6 +296,42 @@ fn built_in_openai_codex_defaults_to_holon_oauth_profile() {
 }
 
 #[test]
+fn opencode_go_registers_chat_and_messages_endpoints() {
+    let entries = built_in_provider_doc_entries().unwrap();
+    let mut endpoints = entries
+        .into_iter()
+        .filter(|entry| entry.provider.as_str() == "opencode-go")
+        .map(|entry| {
+            (
+                entry.endpoint.as_str().to_string(),
+                entry.legacy_provider.as_str().to_string(),
+                entry.transport,
+                entry.base_url,
+            )
+        })
+        .collect::<Vec<_>>();
+    endpoints.sort_by(|left, right| left.0.cmp(&right.0));
+
+    assert_eq!(
+        endpoints,
+        [
+            (
+                "default".to_string(),
+                "opencode-go".to_string(),
+                ProviderTransportKind::OpenAiChatCompletions,
+                "https://opencode.ai/zen/go/v1".to_string(),
+            ),
+            (
+                "messages".to_string(),
+                "opencode-go-messages".to_string(),
+                ProviderTransportKind::AnthropicMessages,
+                "https://opencode.ai/zen/go/v1".to_string(),
+            ),
+        ]
+    );
+}
+
+#[test]
 fn app_config_load_materializes_openai_codex_profile_from_existing_store() {
     let dir = tempdir().unwrap();
     let _agent_guard = EnvVarGuard::unset("HOLON_AGENT_ID");
@@ -2713,6 +2749,48 @@ fn runtime_model_catalog_materializes_legacy_provider_as_default_route_endpoint(
     assert_eq!(
         route.endpoint.runtime_config.transport,
         ProviderTransportKind::OpenAiResponses
+    );
+}
+
+#[test]
+fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
+    let mut fixture = test_app_config("opencode-go/minimax-m3", &[]);
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    for legacy_provider in ["opencode-go", "opencode-go-messages"] {
+        let provider = ProviderId::parse(legacy_provider).unwrap();
+        fixture
+            .config
+            .providers
+            .insert(provider.clone(), built_ins.get(&provider).unwrap().clone());
+    }
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let messages = catalog
+        .resolve_model_route(
+            &ContextConfig::default(),
+            &ModelRef::parse("opencode-go/minimax-m3").unwrap(),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+    assert_eq!(messages.endpoint.provider.as_str(), "opencode-go");
+    assert_eq!(messages.endpoint.endpoint.as_str(), "messages");
+    assert_eq!(
+        messages.endpoint.runtime_config.transport,
+        ProviderTransportKind::AnthropicMessages
+    );
+
+    let chat = catalog
+        .resolve_model_route(
+            &ContextConfig::default(),
+            &ModelRef::parse("opencode-go/kimi-k2.7-code").unwrap(),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+    assert_eq!(chat.endpoint.provider.as_str(), "opencode-go");
+    assert_eq!(chat.endpoint.endpoint.as_str(), "default");
+    assert_eq!(
+        chat.endpoint.runtime_config.transport,
+        ProviderTransportKind::OpenAiChatCompletions
     );
 }
 
