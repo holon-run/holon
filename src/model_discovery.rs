@@ -466,6 +466,7 @@ impl VeniceModel {
         now: DateTime<Utc>,
     ) -> Option<BuiltInModelMetadata> {
         let id = self.id.trim();
+        // Exclude models at or past their removal time.
         if id.is_empty()
             || self.model_type != "text"
             || self.model_spec.offline
