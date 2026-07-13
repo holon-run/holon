@@ -90,3 +90,4 @@ Current decision notes:
 - [076 DashScope Model Catalog](./076-dashscope-model-catalog.md)
 - [077 StepFun Model Catalog](./077-stepfun-model-catalog.md)
 - [078 Xiaomi Model Catalog](./078-xiaomi-model-catalog.md)
+- [079 Chutes Model Catalog](./079-chutes-model-catalog.md)
