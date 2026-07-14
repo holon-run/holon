@@ -86,9 +86,6 @@ Holon uses a provider-based search model with multiple provider options:
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these when available.
-- **Bing Web Search** — Microsoft Bing Web Search API. Requires an API key
-  set via credential profile. Configure with
-  `holon config set providers bing --kind bing --credential-profile <profile>`.
 
 Search results from all providers are standardized into a consistent format
 with title, URL, and snippet text. Citations are preserved so agents can
