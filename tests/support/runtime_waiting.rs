@@ -34,7 +34,7 @@ use holon::{
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority,
         QueueEntryStatus, TaskStatus, TodoItem, TodoItemState, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, WaitingReason, WorkItemState,
+        TranscriptEntryKind, TurnTerminalKind, WaitConditionKind, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -62,6 +62,187 @@ use crate::support::{
 
 // ============================================================================
 // Runtime waiting and reactivation domain test support
+
+struct WaitForDispatchProvider {
+    calls: Mutex<usize>,
+    assistant_text: Option<&'static str>,
+}
+
+impl WaitForDispatchProvider {
+    fn new(assistant_text: Option<&'static str>) -> Self {
+        Self {
+            calls: Mutex::new(0),
+            assistant_text,
+        }
+    }
+
+    async fn calls(&self) -> usize {
+        *self.calls.lock().await
+    }
+}
+
+#[async_trait]
+impl AgentProvider for WaitForDispatchProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls > 1 {
+            anyhow::bail!("WaitFor should complete the turn without another provider call");
+        }
+        assert!(
+            request.tools.iter().any(|tool| tool.name == "WaitFor"),
+            "WaitFor must be exposed to the provider tool surface"
+        );
+
+        let mut blocks = Vec::new();
+        if let Some(text) = self.assistant_text {
+            blocks.push(ModelBlock::Text { text: text.into() });
+        }
+        blocks.push(ModelBlock::ToolUse {
+            id: "wait-for-dispatch".into(),
+            name: "WaitFor".into(),
+            input: json!({
+                "reason": "waiting for PR checks",
+                "wake": "external",
+                "resource": "github:holon-run/holon#2237"
+            }),
+            kind: holon::provider::ModelToolCallKind::Function,
+        });
+
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+pub async fn tool_only_wait_for_persists_turn_without_result_brief() -> Result<()> {
+    let provider = Arc::new(WaitForDispatchProvider::new(None));
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
+    let runtime = host.default_runtime().await?;
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "wait for the checks".into(),
+            },
+        ))
+        .await?;
+
+    wait_until(|| {
+        Ok(runtime
+            .storage()
+            .read_recent_turns(10)?
+            .iter()
+            .any(|turn| turn.input_message_ids.contains(&message.id)))
+    })
+    .await?;
+
+    assert_eq!(provider.calls().await, 1);
+    let waits = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")?;
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].kind, WaitConditionKind::External);
+    assert_eq!(waits[0].waiting_for, "waiting for PR checks");
+    assert_eq!(
+        waits[0].subject_ref.as_deref(),
+        Some("github:holon-run/holon#2237")
+    );
+
+    let turns = runtime.storage().read_recent_turns(10)?;
+    let turn = turns
+        .iter()
+        .find(|turn| turn.input_message_ids.contains(&message.id))
+        .expect("tool-only WaitFor turn should be persisted");
+    assert_eq!(
+        turn.terminal.as_ref().map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Completed)
+    );
+    assert!(turn.produced_brief_ids.is_empty());
+    assert_eq!(turn.waiting_condition_ids, vec![waits[0].id.clone()]);
+
+    let briefs = runtime.storage().read_recent_briefs(10)?;
+    assert!(briefs.iter().all(|brief| {
+        brief.related_message_id.as_deref() != Some(message.id.as_str())
+            || brief.kind != BriefKind::Result
+    }));
+    let events = runtime.recent_events(100).await?;
+    assert!(events.iter().all(|event| {
+        event.kind != "brief_created"
+            || event.data["related_message_id"].as_str() != Some(message.id.as_str())
+    }));
+
+    Ok(())
+}
+
+pub async fn wait_for_with_assistant_text_persists_result_brief() -> Result<()> {
+    const DELIVERY: &str = "Checks are still running; I will wait for an update.";
+
+    let provider = Arc::new(WaitForDispatchProvider::new(Some(DELIVERY)));
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
+    let runtime = host.default_runtime().await?;
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "wait for the checks and tell me".into(),
+            },
+        ))
+        .await?;
+
+    wait_until(|| {
+        Ok(runtime
+            .storage()
+            .read_recent_turns(10)?
+            .iter()
+            .any(|turn| turn.input_message_ids.contains(&message.id)))
+    })
+    .await?;
+
+    assert_eq!(provider.calls().await, 1);
+    let waits = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")?;
+    assert_eq!(waits.len(), 1);
+
+    let briefs = runtime.storage().read_recent_briefs(10)?;
+    let result_briefs = briefs
+        .iter()
+        .filter(|brief| {
+            brief.kind == BriefKind::Result
+                && brief.related_message_id.as_deref() == Some(message.id.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(result_briefs.len(), 1);
+    assert_eq!(result_briefs[0].text, DELIVERY);
+    assert!(result_briefs[0].finalizes_assistant_round_id.is_some());
+
+    let turns = runtime.storage().read_recent_turns(10)?;
+    let turn = turns
+        .iter()
+        .find(|turn| turn.input_message_ids.contains(&message.id))
+        .expect("text plus WaitFor turn should be persisted");
+    assert_eq!(turn.produced_brief_ids, vec![result_briefs[0].id.clone()]);
+    assert_eq!(turn.waiting_condition_ids, vec![waits[0].id.clone()]);
+
+    Ok(())
+}
+
 pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> Result<()> {
     let host = RuntimeHost::new_with_provider(
         test_config(),

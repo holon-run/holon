@@ -20,6 +20,8 @@ fn policy_blocks_mismatched_origin() {
 }
 
 runtime_async_tests!(
+    tool_only_wait_for_persists_turn_without_result_brief,
+    wait_for_with_assistant_text_persists_result_brief,
     turn_execution_boundary_persists_queue_transcript_and_briefs,
     message_processing_creates_briefs_and_sleeps,
     terminal_brief_uses_last_assistant_message_without_terminal_delivery_round,
