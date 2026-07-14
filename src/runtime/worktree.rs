@@ -343,11 +343,18 @@ impl RuntimeHandle {
         if removed {
             if let Some(root_id) = prev_execution_root_id.as_deref() {
                 if !root_id.starts_with("canonical_root:") {
-                    let _ = self
+                    if let Err(error) = self
                         .inner
                         .runtime_db
                         .execution_root_entries()
-                        .mark_removed(root_id);
+                        .mark_removed(root_id)
+                    {
+                        tracing::warn!(
+                            execution_root_id = root_id,
+                            error = %error,
+                            "failed to mark execution root as removed"
+                        );
+                    }
                 }
             }
         }
