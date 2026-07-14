@@ -179,4 +179,32 @@ describe("ToolExecutionContent", () => {
     expect(html).toContain("direct");
     expect(html).toContain("canonical_root");
   });
+
+  it("renders input params and error for failed MemoryGet call", () => {
+    const html = renderTool({
+      tool_name: "MemoryGet",
+      status: "error",
+      input: { source_ref: "memory:nonexistent_ref_12345" },
+      output: {
+        is_error: true,
+        error: {
+          kind: "not_found",
+          message: "No memory content found for source_ref 'nonexistent_ref_12345'",
+          recovery_hint: "Use MemorySearch to find valid source_ref values.",
+          retryable: false,
+        },
+      },
+    });
+
+    // Input parameters should be visible
+    expect(html).toContain("Input");
+    expect(html).toContain("nonexistent_ref_12345");
+    // Error message should be visible
+    expect(html).toContain("Error");
+    expect(html).toContain("No memory content found");
+    // Error kind and recovery hint should be included
+    expect(html).toContain("not_found");
+    expect(html).toContain("Hint:");
+    expect(html).toContain("MemorySearch");
+  });
 });
