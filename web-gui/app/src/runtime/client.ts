@@ -140,7 +140,9 @@ async function fetchAgentDetail(
       events: [],
       has_older: false,
     })),
-    fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch((): WorkItemDto[] => []),
+    // Return undefined on failure so projectAgent falls back to state.work_items.
+    // Returning [] would shadow the state endpoint's work_items (empty array is not nullish).
+    fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch(() => undefined),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
