@@ -375,6 +375,72 @@ impl WorkspaceOccupancyRepository<'_> {
     }
 }
 
+impl ExecutionRootEntryRepository<'_> {
+    pub fn upsert(&self, record: &ExecutionRootEntry) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_execution_root_entry_tx(tx, record))
+    }
+
+    /// Look up an execution root entry by its `execution_root_id`.
+    pub fn get(&self, execution_root_id: &str) -> Result<Option<ExecutionRootEntry>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM execution_root_entries
+                 WHERE execution_root_id = ?1",
+                [execution_root_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_execution_root_entry_payload(&payload))
+            .transpose()
+    }
+
+    /// Soft-delete: mark an execution root entry as removed.
+    pub fn mark_removed(&self, execution_root_id: &str) -> Result<bool> {
+        let now = crate::runtime_db::migrations::timestamp(Utc::now());
+        let affected = self.db.transaction(|tx| {
+            // Read the current payload, set removed_at, and write it back
+            // so that reads via decode_execution_root_entry_payload see the change.
+            let payload: Option<String> = tx
+                .query_row(
+                    "SELECT payload_json FROM execution_root_entries
+                     WHERE execution_root_id = ?1 AND removed_at IS NULL",
+                    [execution_root_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(payload) = payload else {
+                return Ok(0);
+            };
+            let mut json: serde_json::Value = serde_json::from_str(&payload)?;
+            json["removed_at"] = serde_json::Value::String(now.clone());
+            let updated_payload = serde_json::to_string(&json)?;
+            let n = tx.execute(
+                "UPDATE execution_root_entries
+                 SET removed_at = ?1, payload_json = ?2
+                 WHERE execution_root_id = ?3 AND removed_at IS NULL",
+                params![now, updated_payload, execution_root_id],
+            )?;
+            Ok(n)
+        })?;
+        Ok(affected > 0)
+    }
+
+    /// Return all non-removed entries for a workspace.
+    pub fn active_for_workspace(&self, workspace_id: &str) -> Result<Vec<ExecutionRootEntry>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json FROM execution_root_entries
+                 WHERE workspace_id = ?1 AND removed_at IS NULL
+                 ORDER BY created_at ASC",
+        )?;
+        let rows = statement.query_map([workspace_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_execution_root_entry_payload(&row?))
+            .collect()
+    }
+}
+
 impl AgentIdentityRepository<'_> {
     pub fn import_legacy(&self, records: Vec<AgentIdentityRecord>) -> Result<()> {
         if self
@@ -3594,6 +3660,10 @@ pub(crate) fn decode_workspace_occupancy_payload(
     payload: &str,
 ) -> Result<WorkspaceOccupancyRecord> {
     serde_json::from_str(payload).context("decoding workspace occupancy payload from runtime db")
+}
+
+pub(crate) fn decode_execution_root_entry_payload(payload: &str) -> Result<ExecutionRootEntry> {
+    serde_json::from_str(payload).context("decoding execution root entry payload from runtime db")
 }
 
 pub(crate) fn decode_agent_identity_payload(payload: &str) -> Result<AgentIdentityRecord> {

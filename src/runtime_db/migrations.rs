@@ -860,6 +860,24 @@ CREATE INDEX IF NOT EXISTS idx_agent_template_remote_source_syncs_status
   ON agent_template_remote_source_syncs(status);
 "#,
     },
+    Migration {
+        version: 24,
+        name: "execution_root_entries",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS execution_root_entries (
+  execution_root_id TEXT PRIMARY KEY,
+  workspace_id       TEXT NOT NULL,
+  filesystem_path    TEXT NOT NULL,
+  root_kind          TEXT NOT NULL,
+  created_at         TEXT NOT NULL,
+  removed_at         TEXT,
+  payload_json       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_root_entries_workspace
+  ON execution_root_entries(workspace_id);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

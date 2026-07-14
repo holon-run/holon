@@ -7521,6 +7521,7 @@ mod tests {
                 .worktree_session
                 .as_ref()
                 .map(|worktree| worktree.worktree_path.clone()),
+            execution_roots: Vec::new(),
         }
     }
 

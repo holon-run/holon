@@ -300,12 +300,17 @@ impl RuntimeHandle {
     }
 
     pub async fn exit_worktree(&self, original_cwd: PathBuf, removed: bool) -> Result<()> {
-        let (worktree_session, occupancy_id) = {
+        let (worktree_session, occupancy_id, prev_execution_root_id) = {
             let mut guard = self.inner.agent.lock().await;
             let session = guard.state.worktree_session.take();
             if session.is_none() {
                 return Err(anyhow!("no active managed worktree to exit"));
             }
+            let prev_execution_root_id = guard
+                .state
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.execution_root_id.clone());
             let occupancy_id = guard
                 .state
                 .active_workspace_entry
@@ -331,8 +336,21 @@ impl RuntimeHandle {
                 });
             }
             guard.persist_state(&self.inner.storage)?;
-            (session, occupancy_id)
+            (session, occupancy_id, prev_execution_root_id)
         };
+        // Soft-delete the worktree execution root entry from the registry
+        // when the worktree was physically removed.
+        if removed {
+            if let Some(root_id) = prev_execution_root_id.as_deref() {
+                if !root_id.starts_with("canonical_root:") {
+                    let _ = self
+                        .inner
+                        .runtime_db
+                        .execution_root_entries()
+                        .mark_removed(root_id);
+                }
+            }
+        }
         if let Some(occupancy_id) = occupancy_id.as_deref() {
             if let Some(bridge) = self.inner.host_bridge.as_ref() {
                 let _ = bridge.release_workspace_occupancy(occupancy_id).await?;

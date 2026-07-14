@@ -163,6 +163,7 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
             projection_kind: None,
             access_mode: None,
             worktree_root: None,
+            execution_roots: Vec::new(),
         },
         loaded_agents_md: LoadedAgentsMd::default(),
         loaded_agent_memory: LoadedAgentMemory::default(),

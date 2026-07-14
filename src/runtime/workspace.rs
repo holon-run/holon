@@ -322,6 +322,7 @@ pub(crate) fn execution_snapshot_for_view(
         },
         access_mode: workspace.access_mode(),
         worktree_root: workspace.worktree_root().map(|path| path.to_path_buf()),
+        execution_roots: Vec::new(),
     }
 }
 

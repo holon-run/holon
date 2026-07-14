@@ -185,6 +185,17 @@ pub struct ExecutionSnapshot {
     pub access_mode: Option<WorkspaceAccessMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_roots: Vec<ExecutionRootRef>,
+}
+
+/// Lightweight reference to an execution root, used by the provider turn
+/// resolver to resolve `?root=` parameters in `workspace://` URIs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionRootRef {
+    pub execution_root_id: String,
+    pub workspace_id: String,
+    pub filesystem_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,6 +218,8 @@ struct ExecutionSnapshotSerde {
     pub access_mode: Option<WorkspaceAccessMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_roots: Vec<ExecutionRootRef>,
 }
 
 impl<'de> Deserialize<'de> for ExecutionSnapshot {
@@ -230,6 +243,7 @@ impl<'de> Deserialize<'de> for ExecutionSnapshot {
             projection_kind: snapshot.projection_kind,
             access_mode: snapshot.access_mode,
             worktree_root: snapshot.worktree_root,
+            execution_roots: snapshot.execution_roots,
         })
     }
 }
@@ -252,6 +266,7 @@ impl EffectiveExecution {
                 .workspace
                 .worktree_root()
                 .map(|path| path.to_path_buf()),
+            execution_roots: Vec::new(),
         }
     }
 }

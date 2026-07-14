@@ -18,9 +18,9 @@ use crate::runtime_db::{
 #[cfg(test)]
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
-    ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope,
-    QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus, ToolExecutionRecord,
-    WorkItemRecord, WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
+    ExecutionRootEntry, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
+    MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus,
+    ToolExecutionRecord, WorkItemRecord, WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 #[cfg(test)]
 use anyhow::{anyhow, bail, Context, Result};
@@ -2236,6 +2236,108 @@ CREATE TABLE working_memory_deltas (
 
         let conn = rusqlite::Connection::open(&db_path)?;
         super::backfill_work_item_recheck_columns(&conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn execution_root_entry_upsert_and_get() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let repo = db.execution_root_entries();
+
+        let entry = ExecutionRootEntry {
+            execution_root_id: "git_worktree_root:ws_abc:/tmp/wt".into(),
+            workspace_id: "ws_abc".into(),
+            filesystem_path: PathBuf::from("/tmp/wt"),
+            root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            created_at: Utc::now(),
+            removed_at: None,
+        };
+        repo.upsert(&entry)?;
+
+        let fetched = repo.get("git_worktree_root:ws_abc:/tmp/wt")?.unwrap();
+        assert_eq!(fetched.workspace_id, "ws_abc");
+        assert_eq!(fetched.filesystem_path, PathBuf::from("/tmp/wt"));
+        assert!(fetched.removed_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn execution_root_entry_mark_removed() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let repo = db.execution_root_entries();
+
+        let entry = ExecutionRootEntry {
+            execution_root_id: "git_worktree_root:ws_xyz:/tmp/wt2".into(),
+            workspace_id: "ws_xyz".into(),
+            filesystem_path: PathBuf::from("/tmp/wt2"),
+            root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            created_at: Utc::now(),
+            removed_at: None,
+        };
+        repo.upsert(&entry)?;
+        assert!(repo.mark_removed("git_worktree_root:ws_xyz:/tmp/wt2")?);
+        let fetched = repo.get("git_worktree_root:ws_xyz:/tmp/wt2")?.unwrap();
+        assert!(fetched.removed_at.is_some());
+
+        // Double mark is a no-op.
+        assert!(!repo.mark_removed("git_worktree_root:ws_xyz:/tmp/wt2")?);
+        Ok(())
+    }
+
+    #[test]
+    fn execution_root_entry_active_for_workspace() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let repo = db.execution_root_entries();
+
+        // Two roots for the same workspace
+        for path in ["/tmp/wt_a", "/tmp/wt_b"] {
+            repo.upsert(&ExecutionRootEntry {
+                execution_root_id: format!("git_worktree_root:ws_multi:{}", path),
+                workspace_id: "ws_multi".into(),
+                filesystem_path: PathBuf::from(path),
+                root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+                created_at: Utc::now(),
+                removed_at: None,
+            })?;
+        }
+
+        // One root for a different workspace
+        repo.upsert(&ExecutionRootEntry {
+            execution_root_id: "git_worktree_root:ws_other:/tmp/wt_c".into(),
+            workspace_id: "ws_other".into(),
+            filesystem_path: PathBuf::from("/tmp/wt_c"),
+            root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            created_at: Utc::now(),
+            removed_at: None,
+        })?;
+
+        // Mark one of ws_multi's roots as removed
+        repo.mark_removed("git_worktree_root:ws_multi:/tmp/wt_a")?;
+
+        let active = repo.active_for_workspace("ws_multi")?;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].filesystem_path, PathBuf::from("/tmp/wt_b"));
+
+        let other = repo.active_for_workspace("ws_other")?;
+        assert_eq!(other.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn execution_root_entry_get_not_found() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let repo = db.execution_root_entries();
+
+        let result = repo.get("nonexistent")?;
+        assert!(result.is_none());
         Ok(())
     }
 }

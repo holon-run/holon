@@ -3548,6 +3548,7 @@ mod tests {
                 projection_kind: None,
                 access_mode: None,
                 worktree_root: None,
+                execution_roots: Vec::new(),
             },
             active_workspace_occupancy: None,
             loaded_agents_md: LoadedAgentsMdView::default(),

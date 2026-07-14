@@ -58,6 +58,10 @@ pub struct WorkspaceOccupancyRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }
 
+pub struct ExecutionRootEntryRepository<'a> {
+    pub(crate) db: &'a RuntimeDb,
+}
+
 pub struct AgentIdentityRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }

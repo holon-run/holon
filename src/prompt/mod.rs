@@ -1047,6 +1047,7 @@ mod tests {
             projection_kind: Some(crate::system::types::WorkspaceProjectionKind::CanonicalRoot),
             access_mode: Some(crate::system::types::WorkspaceAccessMode::SharedRead),
             worktree_root: None,
+            execution_roots: Vec::new(),
         }
     }
 
@@ -2190,6 +2191,7 @@ mod tests {
                 projection_kind: Some(crate::system::types::WorkspaceProjectionKind::CanonicalRoot),
                 access_mode: Some(crate::system::types::WorkspaceAccessMode::SharedRead),
                 worktree_root: None,
+                execution_roots: Vec::new(),
             },
             loaded_agents_md: LoadedAgentsMd {
                 user_global_source: None,
@@ -2303,6 +2305,7 @@ mod tests {
                 projection_kind: Some(crate::system::types::WorkspaceProjectionKind::CanonicalRoot),
                 access_mode: Some(crate::system::types::WorkspaceAccessMode::SharedRead),
                 worktree_root: None,
+                execution_roots: Vec::new(),
             },
             loaded_agents_md: LoadedAgentsMd {
                 user_global_source: None,

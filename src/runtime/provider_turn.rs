@@ -221,8 +221,20 @@ fn markdown_image_message(
 fn resolve_markdown_image_src(src: &str, execution: &ExecutionSnapshot) -> Option<PathBuf> {
     if let Some(rest) = src.strip_prefix("workspace://") {
         let (workspace_id, relative) = rest.split_once('/')?;
-        let root = workspace_root_for_id(workspace_id, execution)?;
-        return resolve_relative_path(root, relative);
+        // Parse ?root=<execution_root_id> from the relative path.
+        // When absent, resolves to the canonical workspace anchor (backward compatible).
+        let (relative_path, root_param) = split_root_query(relative);
+        let root = if let Some(root_id) = root_param {
+            // Look up the root_id in the execution_roots registry from the snapshot.
+            let root_ref = execution
+                .execution_roots
+                .iter()
+                .find(|r| r.execution_root_id == root_id)?;
+            root_ref.filesystem_path.as_path()
+        } else {
+            workspace_root_for_id(workspace_id, execution)?
+        };
+        return resolve_relative_path(root, relative_path);
     }
     if src.contains("://") {
         return None;
@@ -288,6 +300,19 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
         return canonical.starts_with(canonical_root);
     }
     true
+}
+
+/// Split a `workspace://` relative path into the path portion and the
+/// `?root=` query parameter value. Returns `(path, None)` when no `?root=`
+/// is present (backward compatible with canonical-root links).
+fn split_root_query(relative: &str) -> (&str, Option<String>) {
+    if let Some(idx) = relative.find("?root=") {
+        let path = &relative[..idx];
+        let root_value = percent_decode_path(&relative[idx + 6..]);
+        (path, Some(root_value))
+    } else {
+        (relative, None)
+    }
 }
 
 fn percent_decode_path(path: &str) -> String {
@@ -362,6 +387,7 @@ mod tests {
     use crate::{
         prompt::{PromptCacheIdentity, PromptSection, PromptStability},
         system::ExecutionProfile,
+        system::ExecutionRootRef,
         system::ExecutionSnapshot,
         types::{
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
@@ -545,6 +571,7 @@ mod tests {
                 projection_kind: None,
                 access_mode: None,
                 worktree_root: None,
+                execution_roots: Vec::new(),
             },
             loaded_agents_md: LoadedAgentsMd::default(),
             loaded_agent_memory: LoadedAgentMemory::default(),
@@ -594,6 +621,7 @@ mod tests {
                 projection_kind: None,
                 access_mode: None,
                 worktree_root: None,
+                execution_roots: Vec::new(),
             },
             loaded_agents_md: LoadedAgentsMd::default(),
             loaded_agent_memory: LoadedAgentMemory::default(),
@@ -725,5 +753,65 @@ mod tests {
         );
         assert_eq!(request.conversation.len(), 2);
         assert_eq!(request.tools.len(), 1);
+    }
+
+    #[test]
+    fn split_root_query_no_param() {
+        let (path, root) = split_root_query("media/generated/image.png");
+        assert_eq!(path, "media/generated/image.png");
+        assert!(root.is_none());
+    }
+
+    #[test]
+    fn split_root_query_with_param() {
+        let (path, root) = split_root_query("media/img.png?root=git_worktree_root:ws_abc:/tmp/wt");
+        assert_eq!(path, "media/img.png");
+        assert_eq!(root.as_deref(), Some("git_worktree_root:ws_abc:/tmp/wt"));
+    }
+
+    #[test]
+    fn split_root_query_url_encoded() {
+        let (path, root) = split_root_query("img.png?root=git%5Fworktree%3Aws");
+        assert_eq!(path, "img.png");
+        assert_eq!(root.as_deref(), Some("git_worktree:ws"));
+    }
+
+    #[test]
+    fn resolve_markdown_image_src_with_root_param() {
+        let mut execution = ExecutionSnapshot {
+            profile: ExecutionProfile::default(),
+            policy: ExecutionProfile::default().policy_snapshot(),
+            attached_workspaces: vec![],
+            workspace_id: Some("ws_abc".into()),
+            workspace_anchor: PathBuf::from("/tmp/canonical"),
+            execution_root: PathBuf::from("/tmp/canonical"),
+            cwd: PathBuf::from("/tmp/canonical"),
+            execution_root_id: Some("canonical_root:ws_abc".into()),
+            projection_kind: Some(crate::system::WorkspaceProjectionKind::CanonicalRoot),
+            access_mode: None,
+            worktree_root: None,
+            execution_roots: vec![ExecutionRootRef {
+                execution_root_id: "git_worktree_root:ws_abc:/tmp/wt".into(),
+                workspace_id: "ws_abc".into(),
+                filesystem_path: PathBuf::from("/tmp/wt"),
+            }],
+        };
+
+        // With ?root=, resolves to the worktree path.
+        let path = resolve_markdown_image_src(
+            "workspace://ws_abc/media/img.png?root=git_worktree_root:ws_abc:/tmp/wt",
+            &execution,
+        );
+        assert_eq!(path, Some(PathBuf::from("/tmp/wt/media/img.png")));
+
+        // Without ?root=, resolves to canonical anchor (backward compatible).
+        let path = resolve_markdown_image_src("workspace://ws_abc/media/img.png", &execution);
+        assert_eq!(path, Some(PathBuf::from("/tmp/canonical/media/img.png")));
+
+        // Unknown root_id -> None.
+        execution.execution_roots.clear();
+        let path =
+            resolve_markdown_image_src("workspace://ws_abc/media/img.png?root=unknown", &execution);
+        assert_eq!(path, None);
     }
 }
