@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::Result;
+use chrono::Utc;
 use holon::{
     client::{EventStreamRequest, LocalClient},
     config::{AppConfig, ControlAuthMode},
@@ -21,8 +22,8 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, WorkItemState,
+        ExecutionRootEntry, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
+        MessageKind, MessageOrigin, OperatorDeliveryStatus, TodoItem, TodoItemState, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -354,22 +355,32 @@ pub async fn workspace_files_symlink_escape_rejected() -> Result<()> {
     Ok(())
 }
 
-pub async fn workspace_files_execution_root_id_rejected() -> Result<()> {
-    let (_host, base, server) = spawn_server().await?;
+pub async fn workspace_files_execution_root_id_resolves_registered_root() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
 
     let workspace_id = "agent_home:default";
+    let execution_root_id = "test-worktree-root";
+    let execution_root = tempdir()?;
+    std::fs::write(execution_root.path().join("from-worktree.txt"), "worktree")?;
+    host.runtime_db()
+        .execution_root_entries()
+        .upsert(&ExecutionRootEntry {
+            execution_root_id: execution_root_id.into(),
+            workspace_id: workspace_id.into(),
+            filesystem_path: execution_root.path().to_path_buf(),
+            root_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+            created_at: Utc::now(),
+            removed_at: None,
+        })?;
+
     let response = client
         .get(format!(
-            "{base}/api/workspaces/{workspace_id}/files?execution_root_id=git_worktree_root:ws-1"
+            "{base}/api/workspaces/{workspace_id}/files/from-worktree.txt?root={execution_root_id}"
         ))
         .send()
         .await?;
-    assert_eq!(
-        response.status(),
-        400,
-        "execution_root_id should return 400 until supported"
-    );
+    assert_eq!(response.status(), 200, "{}", response.text().await?);
 
     server.abort();
     Ok(())
