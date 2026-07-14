@@ -54,6 +54,68 @@ function arrayRecords(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
+/**
+ * Extracts a human-readable error message from a tool execution record.
+ *
+ * The backend stores the error inside `output.error` as a ToolError object
+ * ({kind, message, details, recovery_hint, retryable}), not as a top-level
+ * `record.error` field. This helper checks both locations and returns a
+ * formatted string including the kind and recovery hint when available.
+ */
+function extractToolError(record: RuntimeToolExecutionRecord): string | undefined {
+  // Legacy/direct top-level error field
+  if (record.error != null) {
+    if (typeof record.error === "string") return record.error;
+    if (isRecord(record.error)) {
+      const msg = nestedText(record.error, ["message", "error"]);
+      if (msg) return msg;
+    }
+  }
+  // Backend nests error inside output.error (ToolError struct)
+  const rawOutput = isRecord(record.output) ? record.output : undefined;
+  if (rawOutput) {
+    const errObj = isRecord(rawOutput.error) ? rawOutput.error : undefined;
+    if (errObj) {
+      const msg = textField(errObj.message);
+      const kind = textField(errObj.kind);
+      const hint = nestedText(errObj, ["recovery_hint", "hint"]);
+      if (msg) {
+        const parts = [msg];
+        if (kind && kind !== msg) parts.push(`(${kind})`);
+        if (hint) parts.push(`Hint: ${hint}`);
+        return parts.join(" ");
+      }
+    }
+    if (typeof rawOutput.error === "string") return rawOutput.error;
+  }
+  return undefined;
+}
+
+/** Returns true when the record represents a failed tool execution. */
+function isFailedRecord(record: RuntimeToolExecutionRecord): boolean {
+  const status = typeof record.status === "string" ? record.status.toLowerCase() : "";
+  return status === "error" || status === "failed" || !!extractToolError(record);
+}
+
+/**
+ * Renders the tool call input parameters as a formatted JSON section.
+ * Shown for failed tool calls so the operator can see what was attempted.
+ */
+function ToolInputSection({ record }: { record: RuntimeToolExecutionRecord }) {
+  const { t } = useTranslation();
+  if (!record.input) return null;
+  const inputText = typeof record.input === "string"
+    ? record.input
+    : JSON.stringify(record.input, null, 2);
+  if (!inputText || inputText.trim() === "{}") return null;
+  return (
+    <OutputField
+      label={t("inspector.input", { defaultValue: "Input" })}
+      value={truncatedText(inputText, 2000)}
+    />
+  );
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -924,44 +986,69 @@ export function ToolExecutionContent({
   record: RuntimeToolExecutionRecord;
   onBrowseFiles?: (workspaceId: string, executionRootId?: string) => void;
 }) {
+  const { t } = useTranslation();
+  const error = extractToolError(record);
+  const failed = isFailedRecord(record);
   switch (record.tool_name) {
     case "ExecCommand":
-      return <ExecCommandRenderer record={record} />;
+      return wrapFailed(<ExecCommandRenderer record={record} />, record, error, failed, t);
     case "ExecCommandBatch":
-      return <ExecCommandBatchRenderer record={record} />;
+      return wrapFailed(<ExecCommandBatchRenderer record={record} />, record, error, failed, t);
     case "ApplyPatch":
-      return <ApplyPatchRenderer record={record} />;
+      return wrapFailed(<ApplyPatchRenderer record={record} />, record, error, failed, t);
     case "ViewImage":
-      return <ViewImageRenderer record={record} />;
+      return wrapFailed(<ViewImageRenderer record={record} />, record, error, failed, t);
     case "GenerateImage":
-      return <GenerateImageRenderer record={record} />;
+      return wrapFailed(<GenerateImageRenderer record={record} />, record, error, failed, t);
     case "WebSearch":
-      return <WebSearchRenderer record={record} />;
+      return wrapFailed(<WebSearchRenderer record={record} />, record, error, failed, t);
     case "WebFetch":
-      return <WebFetchRenderer record={record} />;
+      return wrapFailed(<WebFetchRenderer record={record} />, record, error, failed, t);
     case "MemorySearch":
-      return <MemorySearchRenderer record={record} />;
+      return wrapFailed(<MemorySearchRenderer record={record} />, record, error, failed, t);
     case "MemoryGet":
-      return <MemoryGetRenderer record={record} />;
+      return wrapFailed(<MemoryGetRenderer record={record} />, record, error, failed, t);
     case "UseWorkspace":
-      return <UseWorkspaceRenderer record={record} onBrowseFiles={onBrowseFiles} />;
+      return wrapFailed(<UseWorkspaceRenderer record={record} onBrowseFiles={onBrowseFiles} />, record, error, failed, t);
     case "XSearch":
-      return <XSearchRenderer record={record} />;
+      return wrapFailed(<XSearchRenderer record={record} />, record, error, failed, t);
     case "ListModelProviders":
-      return <ListModelProvidersRenderer record={record} />;
+      return wrapFailed(<ListModelProvidersRenderer record={record} />, record, error, failed, t);
     case "ListProviderModels":
-      return <ListProviderModelsRenderer record={record} />;
+      return wrapFailed(<ListProviderModelsRenderer record={record} />, record, error, failed, t);
     case "AgentGet":
-      return <AgentGetRenderer record={record} />;
+      return wrapFailed(<AgentGetRenderer record={record} />, record, error, failed, t);
     case "SpawnAgent":
-      return <SpawnAgentRenderer record={record} />;
+      return wrapFailed(<SpawnAgentRenderer record={record} />, record, error, failed, t);
     case "WaitFor":
-      return <WaitForRenderer record={record} />;
+      return wrapFailed(<WaitForRenderer record={record} />, record, error, failed, t);
     case "Enqueue":
-      return <EnqueueRenderer record={record} />;
+      return wrapFailed(<EnqueueRenderer record={record} />, record, error, failed, t);
     case "TaskOutput":
-      return <TaskOutputRenderer record={record} />;
+      return wrapFailed(<TaskOutputRenderer record={record} />, record, error, failed, t);
     default:
-      return <GenericToolRenderer record={record} />;
+      return wrapFailed(<GenericToolRenderer record={record} />, record, error, failed, t);
   }
+}
+
+/**
+ * Wraps tool-specific renderer output with input parameters and error
+ * sections for failed tool calls. The tool-specific renderer may have
+ * already produced some output; we only add what's missing.
+ */
+function wrapFailed(
+  children: ReactNode,
+  record: RuntimeToolExecutionRecord,
+  error: string | undefined,
+  failed: boolean,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (!failed) return children;
+  return (
+    <>
+      <ToolInputSection record={record} />
+      {children}
+      {error ? <OutputField label={t("inspector.error")} value={error} variant="error" /> : null}
+    </>
+  );
 }
