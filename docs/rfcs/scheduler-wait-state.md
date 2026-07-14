@@ -237,6 +237,9 @@ WaitFor {
 Rules:
 
 - `reason` is required and must be non-empty.
+- `reason` is scheduling metadata, not operator-facing assistant text. A
+  tool-only `WaitFor` turn does not promote it into a result brief; waiting
+  state remains authoritative in the wait condition and WorkItem projection.
 - `wake=task_result` requires `resource=<task_id>`.
 - `wake=external` may include `resource=<stable external object>`, such as a
   URL or `github:holon-run/holon#1435`; omitting `resource` means any external

@@ -435,6 +435,12 @@ Until then, it remains the correct place for the provider-visible mapping.
 
 ## Brief Rules
 
+An ordinary result brief represents an actual operator-facing delivery and its
+resolved text must not be empty or whitespace-only. A successfully completed
+turn may therefore produce no result brief when it has no operator-facing
+assistant text, such as a tool-only `WaitFor` turn. The turn record and wait
+condition still preserve the terminal and scheduling state in that case.
+
 ### Inline Briefs
 
 An inline brief owns its `text`.

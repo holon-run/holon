@@ -110,12 +110,13 @@ impl RuntimeHandle {
                 outcome.final_text_source_assistant_round_id.as_deref(),
             );
             self.persist_brief(&brief).await?;
-        } else {
+        } else if !outcome.final_text.trim().is_empty() {
             // Always generate the normal result brief (no longer suppressed for
             // promoted completion reports). The same turn supports multiple briefs,
             // and the normal brief and promoted completion reports serve different
-            // purposes — the former records the turn-level result, the latter records
-            // the work-item-level completion.
+            // purposes — the former records the turn-level operator delivery, the
+            // latter records the work-item-level completion. A tool-only waiting turn
+            // has no operator delivery, so it must not create an empty result brief.
             let mut brief =
                 brief::make_result(&message.agent_id, message, outcome.final_text.clone());
             brief.turn_index = Some(outcome.turn_index);
