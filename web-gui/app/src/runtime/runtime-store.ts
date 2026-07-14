@@ -3302,6 +3302,8 @@ function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): bool
   return (
     event.type === "agent_state_changed" ||
     event.type === "state_changed" ||
+    event.type === "message_processing_started" ||
+    event.type === "turn_terminal" ||
     event.type === "work_item_written" ||
     event.type === "task_created" ||
     event.type === "task_status_updated" ||
