@@ -88,7 +88,8 @@ function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummar
     activeTaskCount: httpAgent.tasks?.length ? httpAgent.activeTaskCount : Math.max(cachedAgent.activeTaskCount ?? 0, httpAgent.activeTaskCount ?? 0),
     waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
     pending: Math.max(httpAgent.pending, cachedAgent.pending),
-    workspaceSummary: cachedAgent.workspaceSummary ?? httpAgent.workspaceSummary,
+    // Trust HTTP state for workspace — it changes via UseWorkspace and must reflect fresh data.
+    workspaceSummary: httpAgent.workspaceSummary ?? cachedAgent.workspaceSummary,
     // Unified workspaces array from /state endpoint; fall back to cache when
     // the HTTP source is stale (e.g., bootstrap list without full state).
     attachedWorkspaces: httpAgent.attachedWorkspaces?.length
@@ -3296,7 +3297,14 @@ function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): bool
     event.type === "work_item_written" ||
     event.type === "task_created" ||
     event.type === "task_status_updated" ||
-    event.type === "task_result_received"
+    event.type === "task_result_received" ||
+    event.type === "workspace_entered" ||
+    event.type === "workspace_used" ||
+    event.type === "workspace_attached" ||
+    event.type === "workspace_detached" ||
+    event.type === "workspace_exited" ||
+    event.type === "worktree_entered" ||
+    event.type === "worktree_exited"
   );
 }
 
