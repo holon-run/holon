@@ -223,6 +223,20 @@ pub struct WorkspaceOccupancyRecord {
     pub released_at: Option<DateTime<Utc>>,
 }
 
+/// Durable registry entry mapping an `execution_root_id` to its filesystem
+/// path. Independent of any agent's `active_workspace_entry`, so links
+/// remain resolvable after the agent switches roots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionRootEntry {
+    pub execution_root_id: String,
+    pub workspace_id: String,
+    pub filesystem_path: PathBuf,
+    pub root_kind: WorkspaceProjectionKind,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentKind {
@@ -5035,6 +5049,7 @@ impl AgentListEntry {
                 projection_kind: Some(entry.projection_kind),
                 access_mode: Some(entry.access_mode),
                 worktree_root: None,
+                execution_roots: Vec::new(),
             }
         } else {
             ExecutionSnapshot {
@@ -5049,6 +5064,7 @@ impl AgentListEntry {
                 projection_kind: None,
                 access_mode: None,
                 worktree_root: None,
+                execution_roots: Vec::new(),
             }
         };
 

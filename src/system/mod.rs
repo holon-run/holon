@@ -17,10 +17,10 @@ pub use types::{
     execution_backend_label, execution_guarantee_label, workspace_access_mode_kind_label,
     workspace_access_mode_label, workspace_projection_kind_label, workspace_projection_label,
     CaptureSpec, DirEntry, EditOptions, EffectiveExecution, ExecutionBackendKind,
-    ExecutionGuaranteeLevel, ExecutionPolicySnapshot, ExecutionProfile, ExecutionScopeKind,
-    ExecutionSnapshot, FileContent, FileRead, FileStat, ProcessExecutionCapabilitySnapshot,
-    ProcessPurpose, ProcessRequest, ProcessResult, ProgramInvocation, RemoveOptions,
-    ResourceAuthoritySnapshot, RunningProcessExitStatus, StdioSpec, StopSignal,
-    WorkspaceAccessMode, WorkspaceProjectionKind, WriteOptions,
+    ExecutionGuaranteeLevel, ExecutionPolicySnapshot, ExecutionProfile, ExecutionRootRef,
+    ExecutionScopeKind, ExecutionSnapshot, FileContent, FileRead, FileStat,
+    ProcessExecutionCapabilitySnapshot, ProcessPurpose, ProcessRequest, ProcessResult,
+    ProgramInvocation, RemoveOptions, ResourceAuthoritySnapshot, RunningProcessExitStatus,
+    StdioSpec, StopSignal, WorkspaceAccessMode, WorkspaceProjectionKind, WriteOptions,
 };
 pub use workspace::WorkspaceView;

@@ -1003,12 +1003,30 @@ impl RuntimeHandle {
         workspace: &WorkspaceView,
         attached_workspace_ids: &[String],
     ) -> ExecutionSnapshot {
-        workspace::execution_snapshot_for_view(
+        let mut snapshot = workspace::execution_snapshot_for_view(
             profile,
             workspace,
             attached_workspace_ids,
             &self.inner.storage,
-        )
+        );
+        // Populate execution_roots from the runtime DB registry for all
+        // attached workspaces, so the provider turn resolver can resolve
+        // `?root=` parameters in workspace:// URIs.
+        let repo = self.inner.runtime_db.execution_root_entries();
+        let mut roots = Vec::new();
+        for ws_id in attached_workspace_ids {
+            if let Ok(entries) = repo.active_for_workspace(ws_id) {
+                for entry in entries {
+                    roots.push(crate::system::ExecutionRootRef {
+                        execution_root_id: entry.execution_root_id,
+                        workspace_id: entry.workspace_id,
+                        filesystem_path: entry.filesystem_path,
+                    });
+                }
+            }
+        }
+        snapshot.execution_roots = roots;
+        snapshot
     }
 
     fn workspace_anchor_for_state_ref<'a>(&self, state: &'a AgentState) -> Option<&'a Path> {

@@ -1323,7 +1323,8 @@ fn current_input_summary_extracts_body_from_context_section() {
             execution_root_id: None,
             projection_kind: None,
             access_mode: None,
-            worktree_root: None
+            worktree_root: None,
+            execution_roots: Vec::new(),
         },
         loaded_agents_md: LoadedAgentsMd::default(),
         loaded_agent_memory: LoadedAgentMemory::default(),

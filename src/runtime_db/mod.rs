@@ -30,11 +30,12 @@ pub use crate::runtime_db::index_outbox::{
 pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub use crate::runtime_db::types::{
     AgentIdentityRepository, AgentStateRepository, AuditEventSink, ContextEpisodeRepository,
-    EvidenceRepository, ExternalTriggerRepository, MessageRepository, OperatorDeliveryRepository,
-    OperatorNotificationRepository, OperatorTransportBindingRepository, QueueEntryRepository,
-    TaskRepository, TimerRepository, TranscriptRepository, TurnRecordRepository,
-    WaitConditionRepository, WorkItemContinuationRepository, WorkItemDelegationRepository,
-    WorkItemRepository, WorkspaceEntryRepository, WorkspaceOccupancyRepository,
+    EvidenceRepository, ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
+    OperatorDeliveryRepository, OperatorNotificationRepository, OperatorTransportBindingRepository,
+    QueueEntryRepository, TaskRepository, TimerRepository, TranscriptRepository,
+    TurnRecordRepository, WaitConditionRepository, WorkItemContinuationRepository,
+    WorkItemDelegationRepository, WorkItemRepository, WorkspaceEntryRepository,
+    WorkspaceOccupancyRepository,
 };
 #[cfg(test)]
 mod tests;
@@ -243,6 +244,10 @@ impl RuntimeDb {
 
     pub fn workspace_occupancies(&self) -> WorkspaceOccupancyRepository<'_> {
         WorkspaceOccupancyRepository { db: self }
+    }
+
+    pub fn execution_root_entries(&self) -> ExecutionRootEntryRepository<'_> {
+        ExecutionRootEntryRepository { db: self }
     }
 
     pub fn agent_identities(&self) -> AgentIdentityRepository<'_> {

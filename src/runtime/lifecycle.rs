@@ -5,9 +5,9 @@ use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
 use crate::storage::AppStorage;
 use crate::types::{
     AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
-    ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskRecord, TaskStatus, TokenUsage,
-    WaitingReason, WorkItemState, WorkspaceOccupancyRecord, WorkspaceProjectionMetadata,
-    WorktreeSession,
+    ChildAgentObservabilitySnapshot, ChildAgentPhase, ExecutionRootEntry, TaskRecord, TaskStatus,
+    TokenUsage, WaitingReason, WorkItemState, WorkspaceOccupancyRecord,
+    WorkspaceProjectionMetadata, WorktreeSession,
 };
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -1310,6 +1310,30 @@ impl RuntimeHandle {
         let new_occupancy_id = entry.occupancy_id.clone();
         let worktree_cleanup_session = worktree_session.clone();
 
+        // Register the execution root in the durable registry so that
+        // workspace:// URIs with ?root= can resolve even after the agent
+        // switches to a different root.
+        if let Err(error) =
+            self.inner
+                .runtime_db
+                .execution_root_entries()
+                .upsert(&ExecutionRootEntry {
+                    execution_root_id: execution_root_id.clone(),
+                    workspace_id: workspace.workspace_id.clone(),
+                    filesystem_path: execution_root.clone(),
+                    root_kind: projection_kind,
+                    created_at: chrono::Utc::now(),
+                    removed_at: None,
+                })
+        {
+            tracing::warn!(
+                execution_root_id,
+                workspace_id = %workspace.workspace_id,
+                error = %error,
+                "failed to register execution root"
+            );
+        }
+
         let write_result: Result<()> = async {
             let mut guard = self.inner.agent.lock().await;
             guard.state.active_workspace_entry = Some(entry.clone());
@@ -1433,6 +1457,28 @@ impl RuntimeHandle {
             .as_ref()
             .and_then(|existing_entry| existing_entry.occupancy_id.clone());
         let new_occupancy_id = entry.occupancy_id.clone();
+
+        // Register the execution root in the durable registry.
+        if let Err(error) =
+            self.inner
+                .runtime_db
+                .execution_root_entries()
+                .upsert(&ExecutionRootEntry {
+                    execution_root_id: execution_root_id.clone(),
+                    workspace_id: workspace.workspace_id.clone(),
+                    filesystem_path: execution_root.clone(),
+                    root_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+                    created_at: chrono::Utc::now(),
+                    removed_at: None,
+                })
+        {
+            tracing::warn!(
+                execution_root_id,
+                workspace_id = %workspace.workspace_id,
+                error = %error,
+                "failed to register execution root"
+            );
+        }
 
         let write_result: Result<()> = async {
             let mut guard = self.inner.agent.lock().await;

@@ -81,6 +81,7 @@ fn sample_execution() -> ExecutionSnapshot {
         projection_kind: Some(WorkspaceProjectionKind::CanonicalRoot),
         access_mode: Some(WorkspaceAccessMode::SharedRead),
         worktree_root: None,
+        execution_roots: Vec::new(),
     }
 }
 

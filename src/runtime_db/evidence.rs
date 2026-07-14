@@ -11,7 +11,7 @@ use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::EVIDENCE_PREVIEW_LIMIT;
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, DeliverySummaryRecord,
-    MessageEnvelope, ToolExecutionRecord, TranscriptEntry, WorkspaceEntry,
+    ExecutionRootEntry, MessageEnvelope, ToolExecutionRecord, TranscriptEntry, WorkspaceEntry,
     WorkspaceOccupancyRecord,
 };
 
@@ -236,6 +236,37 @@ pub(crate) fn upsert_workspace_occupancy_tx(
             access_mode,
             timestamp(record.acquired_at),
             record.released_at.map(timestamp),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn upsert_execution_root_entry_tx(
+    tx: &Transaction<'_>,
+    record: &ExecutionRootEntry,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let root_kind = enum_string(&record.root_kind)?;
+    tx.execute(
+        "INSERT INTO execution_root_entries (
+            execution_root_id, workspace_id, filesystem_path, root_kind,
+            created_at, removed_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(execution_root_id) DO UPDATE SET
+            workspace_id = excluded.workspace_id,
+            filesystem_path = excluded.filesystem_path,
+            root_kind = excluded.root_kind,
+            created_at = excluded.created_at,
+            removed_at = excluded.removed_at,
+            payload_json = excluded.payload_json",
+        params![
+            record.execution_root_id,
+            record.workspace_id,
+            record.filesystem_path.display().to_string(),
+            root_kind,
+            timestamp(record.created_at),
+            record.removed_at.map(timestamp),
             payload_json,
         ],
     )?;
