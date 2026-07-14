@@ -399,6 +399,11 @@
         "required": true
       },
       {
+        "name": "artifact_index",
+        "location": "path",
+        "required": true
+      },
+      {
         "name": "tool_execution_id",
         "location": "path",
         "required": true

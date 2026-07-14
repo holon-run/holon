@@ -5914,6 +5914,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Zero-based artifact index within the tool execution result.",
+            "in": "path",
+            "name": "artifact_index",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {

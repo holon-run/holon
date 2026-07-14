@@ -422,6 +422,12 @@ fn path_parameters(path: &str) -> Vec<Value> {
     if path.contains("{tool_execution_id}") {
         params.push(path_param("tool_execution_id", "Tool execution id."));
     }
+    if path.contains("{artifact_index}") {
+        params.push(path_integer_param(
+            "artifact_index",
+            "Zero-based artifact index within the tool execution result.",
+        ));
+    }
     if path.contains("{message_id}") {
         params.push(path_param("message_id", "Message id."));
     }
@@ -444,6 +450,16 @@ fn path_param(name: &str, description: &str) -> Value {
         "required": true,
         "description": description,
         "schema": { "type": "string" }
+    })
+}
+
+fn path_integer_param(name: &str, description: &str) -> Value {
+    json!({
+        "name": name,
+        "in": "path",
+        "required": true,
+        "description": description,
+        "schema": { "type": "integer", "minimum": 0 }
     })
 }
 
