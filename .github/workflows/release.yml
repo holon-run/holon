@@ -114,19 +114,18 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This release introduces a model route resolution system that resolves model capabilities through provider endpoints, calibrates catalogs across 30+ providers, adds an isolated xAI XSearch tool with OAuth device login, distinguishes Volcengine provider tiers, and improves Web GUI event timeline rendering, settings UI, and skill management. It also fixes Codex credential profile prioritization, prompt budget for continuations, workspace file download authentication, provider continuation lineage, and checkpoint operator delivery gaps.
+          This patch release makes workspace file references durable across managed worktrees and improves runtime and Web GUI state consistency. It also fixes empty result briefs during tool-only waits, stale agent details after workspace changes, incomplete failed-tool details, and truncated ExecCommand output rendering.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Introduce model route resolution and route-aware model catalog capabilities through provider endpoints, then canonicalize catalog routes across all built-in providers ([#2133](https://github.com/holon-run/holon/pull/2133), [#2134](https://github.com/holon-run/holon/pull/2134), [#2135](https://github.com/holon-run/holon/pull/2135), [#2196](https://github.com/holon-run/holon/pull/2196), [#2198](https://github.com/holon-run/holon/pull/2198), [#2233](https://github.com/holon-run/holon/pull/2233)).
-          - Calibrate and unify model catalogs across 30+ providers including OpenAI, Codex, Anthropic, xAI, Gemini, DeepSeek, MiniMax, Moonshot, Mistral, DashScope, Volcengine, Tencent TokenHub, Venice, Hugging Face, and more ([#2199](https://github.com/holon-run/holon/pull/2199)–[#2228](https://github.com/holon-run/holon/pull/2228)).
-          - Add an isolated xAI XSearch tool with OAuth device login and credential handling ([#2183](https://github.com/holon-run/holon/pull/2183), [#2154](https://github.com/holon-run/holon/pull/2154), [#2155](https://github.com/holon-run/holon/pull/2155), [#2185](https://github.com/holon-run/holon/pull/2185), [#2186](https://github.com/holon-run/holon/pull/2186)).
-          - Distinguish Volcengine provider tiers (standard, agent-plan, coding-plan) and switch the plan tier to OpenAI Responses transport ([#2136](https://github.com/holon-run/holon/pull/2136), [#2137](https://github.com/holon-run/holon/pull/2137), [#2138](https://github.com/holon-run/holon/pull/2138)).
-          - Improve Web GUI event timeline rendering, tool execution details, workspace detail renderers, settings UI, OAuth auth mode, fallback model chip, and image generation settings ([#2144](https://github.com/holon-run/holon/pull/2144), [#2147](https://github.com/holon-run/holon/pull/2147), [#2148](https://github.com/holon-run/holon/pull/2148), [#2160](https://github.com/holon-run/holon/pull/2160), [#2161](https://github.com/holon-run/holon/pull/2161), [#2164](https://github.com/holon-run/holon/pull/2164), [#2156](https://github.com/holon-run/holon/pull/2156), [#2169](https://github.com/holon-run/holon/pull/2169), [#2170](https://github.com/holon-run/holon/pull/2170)).
-          - Run skill catalog updates as jobs with hardened feedback and Web GUI skill management UI ([#2181](https://github.com/holon-run/holon/pull/2181), [#2182](https://github.com/holon-run/holon/pull/2182)).
-          - Fix Codex credential profile prioritization, use full prompt budget for continuations, authenticate workspace file downloads, and preserve provider continuation lineage ([#2236](https://github.com/holon-run/holon/pull/2236), [#2235](https://github.com/holon-run/holon/pull/2235), [#2231](https://github.com/holon-run/holon/pull/2231), [#2168](https://github.com/holon-run/holon/pull/2168)).
+          - Preserve durable \`workspace://\` file links across managed worktrees by carrying an execution-root identifier through the runtime and resolver ([#2241](https://github.com/holon-run/holon/pull/2241)).
+          - Avoid publishing empty result briefs when a turn only waits for tool completion ([#2240](https://github.com/holon-run/holon/pull/2240)).
+          - Refresh agent state after workspace change events so detail views do not remain stale ([#2243](https://github.com/holon-run/holon/pull/2243)).
+          - Show tool input parameters and errors for failed calls in the Web GUI detail panel ([#2244](https://github.com/holon-run/holon/pull/2244)).
+          - Lazily load and display complete ExecCommand stdout and stderr artifacts when timeline previews are truncated ([#2246](https://github.com/holon-run/holon/pull/2246)).
+          - Refresh documentation for image generation, Web GUI workflows, and WebFetch/WebSearch providers ([#2239](https://github.com/holon-run/holon/pull/2239)).
 
           ## Install
 
