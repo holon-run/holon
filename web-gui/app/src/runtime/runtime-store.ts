@@ -56,6 +56,7 @@ import type {
   SearchResponse,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
+  ToolExecutionArtifactContent,
 } from "./types";
 
 import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState, TaskDetailState, ToolExecutionDetailState } from "./runtime-store-helpers";
@@ -280,6 +281,11 @@ export interface RuntimeStoreState {
   showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
   browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
   readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
+  readToolExecutionArtifact: (
+    agentId: string,
+    toolExecutionId: string,
+    artifactIndex: number,
+  ) => Promise<ToolExecutionArtifactContent>;
   fetchWorkspaceFileBlob: (
     workspaceId: string,
     path: string,
@@ -930,6 +936,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }),
   browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
   readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
+  readToolExecutionArtifact: (agentId, toolExecutionId, artifactIndex) =>
+    runtimeClient.readToolExecutionArtifact(agentId, toolExecutionId, artifactIndex),
   fetchWorkspaceFileBlob: (workspaceId, path, executionRootId, options) =>
     runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId, options),
   inspectActivity: (agentId, activity) => {

@@ -1,5 +1,12 @@
 use super::*;
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ToolExecutionArtifactContent {
+    pub artifact_index: usize,
+    pub size: u64,
+    pub content: String,
+}
+
 pub async fn tasks(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -101,6 +108,79 @@ pub async fn tool_execution(
         )));
     };
     Ok(Json(record))
+}
+
+pub async fn tool_execution_artifact(
+    Path((agent_id, tool_execution_id, artifact_index)): Path<(String, String, usize)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let Some(record) = runtime
+        .storage()
+        .read_tool_execution_by_id(&tool_execution_id)
+        .map_err(error_response)?
+        .filter(|record| record.agent_id == agent_id)
+    else {
+        return Err(not_found(format!(
+            "tool execution {tool_execution_id} not found"
+        )));
+    };
+    let result = record
+        .output
+        .get("result")
+        .or_else(|| {
+            record
+                .output
+                .get("envelope")
+                .and_then(|value| value.get("result"))
+        })
+        .unwrap_or(&record.output);
+    let artifact_path = result
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .and_then(|artifacts| artifacts.get(artifact_index))
+        .and_then(|artifact| artifact.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| not_found(format!("artifact {artifact_index} not found")))?;
+
+    let data_dir = std::fs::canonicalize(runtime.storage().data_dir())
+        .map_err(|error| error_response(error.into()))?;
+    let requested_path = PathBuf::from(artifact_path);
+    let requested_path = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        data_dir.join(requested_path)
+    };
+    let artifact_path = std::fs::canonicalize(&requested_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            not_found(format!("artifact {artifact_index} not found"))
+        } else {
+            error_response(error.into())
+        }
+    })?;
+    if !artifact_path.starts_with(&data_dir) {
+        return Err(forbidden("artifact path escapes runtime data directory"));
+    }
+    let metadata = tokio::fs::metadata(&artifact_path)
+        .await
+        .map_err(|error| error_response(error.into()))?;
+    if !metadata.is_file() {
+        return Err(bad_request("artifact path is not a file"));
+    }
+    let content = tokio::fs::read_to_string(&artifact_path)
+        .await
+        .map_err(|error| error_response(error.into()))?;
+    Ok(Json(ToolExecutionArtifactContent {
+        artifact_index,
+        size: metadata.len(),
+        content,
+    }))
 }
 
 pub async fn task_input(

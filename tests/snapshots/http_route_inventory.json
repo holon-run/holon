@@ -388,6 +388,38 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/tool-executions/{tool_execution_id}/artifacts/{artifact_index}",
+    "handler": "tool_execution_artifact",
+    "operation_id": "agentToolExecutionArtifact",
+    "tag": "tools",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "artifact_index",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "tool_execution_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/transcript",
     "handler": "transcript",
     "operation_id": "agentTranscript",

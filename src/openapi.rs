@@ -84,6 +84,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, "TaskStatusSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tasks/{task_id}/output", "agentTaskOutput", "tasks", "Task output", "Return a task output snapshot. Query parameters: block, timeout_ms.", None, "TaskOutputResult", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tool-executions/{tool_execution_id}", "agentToolExecution", "tools", "Tool execution detail", "Return a persisted tool execution record by id.", None, "ToolExecutionRecord", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/tool-executions/{tool_execution_id}/artifacts/{artifact_index}", "agentToolExecutionArtifact", "tools", "Tool execution artifact", "Return UTF-8 content for an artifact referenced by the selected tool execution. Artifact paths are resolved server-side and confined to the agent runtime data directory.", None, "ToolExecutionArtifactContent", AuthKind::RemoteAccess),
     route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/input", "taskInput", "control", "Task input", "Deliver text input to a managed task.", Some("TaskInputRequest"), "TaskInputResult", AuthKind::Control),
     route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/stop", "taskStop", "control", "Task stop", "Request cancellation for a managed task.", Some("TaskStopRequest"), "TaskStopResult", AuthKind::Control),
     route("get", "/agents/{agent_id}/work-items", "agentWorkItems", "work-items", "List work items", "Return latest work item records for the agent. Query parameter: limit.", None, AuthKind::RemoteAccess),
@@ -421,6 +422,12 @@ fn path_parameters(path: &str) -> Vec<Value> {
     if path.contains("{tool_execution_id}") {
         params.push(path_param("tool_execution_id", "Tool execution id."));
     }
+    if path.contains("{artifact_index}") {
+        params.push(path_integer_param(
+            "artifact_index",
+            "Zero-based artifact index within the tool execution result.",
+        ));
+    }
     if path.contains("{message_id}") {
         params.push(path_param("message_id", "Message id."));
     }
@@ -443,6 +450,16 @@ fn path_param(name: &str, description: &str) -> Value {
         "required": true,
         "description": description,
         "schema": { "type": "string" }
+    })
+}
+
+fn path_integer_param(name: &str, description: &str) -> Value {
+    json!({
+        "name": name,
+        "in": "path",
+        "required": true,
+        "description": description,
+        "schema": { "type": "integer", "minimum": 0 }
     })
 }
 
@@ -572,6 +589,10 @@ fn component_schemas() -> Value {
     schemas.insert(
         "ToolExecutionRecord".into(),
         component_schema::<ToolExecutionRecord>(),
+    );
+    schemas.insert(
+        "ToolExecutionArtifactContent".into(),
+        component_schema::<crate::http::ToolExecutionArtifactContent>(),
     );
     schemas.insert(
         "TaskInputResult".into(),

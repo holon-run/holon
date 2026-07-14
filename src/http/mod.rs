@@ -126,7 +126,8 @@ pub use state::{
 pub use tasks::{
     cancel_timer, complete_work_item, create_command_task, create_timer, create_work_item,
     pick_work_item, task_input, task_output, task_status, task_stop, tasks, timer, timers,
-    tool_execution, update_work_item, work_item, work_items,
+    tool_execution, tool_execution_artifact, update_work_item, work_item, work_items,
+    ToolExecutionArtifactContent,
 };
 pub use types::*;
 pub use web::web_or_not_found_handler;
@@ -339,6 +340,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{agent_id}/tool-executions/{tool_execution_id}",
             get(tasks::tool_execution),
+        )
+        .route(
+            "/agents/{agent_id}/tool-executions/{tool_execution_id}/artifacts/{artifact_index}",
+            get(tasks::tool_execution_artifact),
         )
         .route(
             "/control/agents/{agent_id}/tasks/{task_id}/input",

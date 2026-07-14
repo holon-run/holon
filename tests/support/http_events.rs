@@ -682,6 +682,112 @@ pub async fn tool_execution_route_returns_canonical_output() -> Result<()> {
     Ok(())
 }
 
+pub async fn tool_execution_artifact_route_reads_scoped_content() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+    let artifact_dir = runtime.storage().data_dir().join("tool-artifacts");
+    std::fs::create_dir_all(&artifact_dir)?;
+    let artifact_path = artifact_dir.join("http-artifact.log");
+    let artifact_content = "complete stdout\nsecond line\n";
+    std::fs::write(&artifact_path, artifact_content)?;
+    let record = ToolExecutionRecord {
+        id: "tool-http-artifact".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_index: 1,
+        turn_id: None,
+        tool_name: "ExecCommand".into(),
+        created_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+        duration_ms: 1,
+        authority_class: AuthorityClass::OperatorInstruction,
+        status: ToolExecutionStatus::Success,
+        input: serde_json::json!({"cmd": "printf complete"}),
+        output: serde_json::json!({
+            "envelope": {
+                "result": {
+                    "disposition": "completed",
+                    "truncated": true,
+                    "stdout_preview": "complete stdout",
+                    "artifacts": [{"path": artifact_path}],
+                    "stdout_artifact": 0
+                }
+            }
+        }),
+        summary: "command completed".into(),
+        invocation_surface: None,
+    };
+    runtime.storage().append_tool_execution(&record)?;
+
+    let response = client
+        .get(format!(
+            "{base}/api/agents/default/tool-executions/tool-http-artifact/artifacts/0"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    assert_eq!(payload["artifact_index"], 0);
+    assert_eq!(payload["content"], artifact_content);
+    assert_eq!(payload["size"], artifact_content.len());
+
+    let missing = client
+        .get(format!(
+            "{base}/api/agents/default/tool-executions/tool-http-artifact/artifacts/1"
+        ))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn tool_execution_artifact_route_rejects_outside_data_dir() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+    let outside_dir = tempdir()?;
+    let artifact_path = outside_dir.path().join("outside.log");
+    std::fs::write(&artifact_path, "must not be readable")?;
+    let record = ToolExecutionRecord {
+        id: "tool-http-artifact-outside".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_index: 1,
+        turn_id: None,
+        tool_name: "ExecCommand".into(),
+        created_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+        duration_ms: 1,
+        authority_class: AuthorityClass::OperatorInstruction,
+        status: ToolExecutionStatus::Success,
+        input: serde_json::json!({"cmd": "cat outside"}),
+        output: serde_json::json!({
+            "disposition": "completed",
+            "truncated": true,
+            "stdout_preview": "must not",
+            "artifacts": [{"path": artifact_path}],
+            "stdout_artifact": 0
+        }),
+        summary: "command completed".into(),
+        invocation_surface: None,
+    };
+    runtime.storage().append_tool_execution(&record)?;
+
+    let response = client
+        .get(format!(
+            "{base}/api/agents/default/tool-executions/tool-http-artifact-outside/artifacts/0"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;

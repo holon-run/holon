@@ -250,6 +250,40 @@ describe("createRuntimeClient", () => {
     ]);
   });
 
+  it("reads tool execution artifacts through the scoped artifact endpoint", async () => {
+    const seen: Array<{ url: string; authorization: string | null }> = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen.push({
+        url: String(input),
+        authorization: headers.get("Authorization"),
+      });
+      return Response.json({
+        artifact_index: 2,
+        size: 18,
+        content: "complete output\n",
+      });
+    };
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      token: "secret-token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.readToolExecutionArtifact("agent/one", "tool id", 2)).resolves.toEqual({
+      artifactIndex: 2,
+      size: 18,
+      content: "complete output\n",
+    });
+    expect(seen).toEqual([
+      {
+        url: "http://example.test:7878/api/agents/agent%2Fone/tool-executions/tool%20id/artifacts/2",
+        authorization: "Bearer secret-token",
+      },
+    ]);
+  });
+
   it("honors a custom workspace file blob timeout", async () => {
     vi.useFakeTimers();
     try {
