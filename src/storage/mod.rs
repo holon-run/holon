@@ -428,49 +428,39 @@ impl AppStorage {
             .event_seq_counter
             .lock()
             .map_err(|_| anyhow::anyhow!("event sequence counter mutex poisoned"))?;
-        *counter += 1;
-        event.event_seq = *counter;
-        if let Some(sink) = self
+        event.event_seq = counter
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("event sequence counter overflow"))?;
+        let sink = self
             .audit_event_index
             .lock()
             .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
-            .clone()
-        {
+            .clone();
+        let agent_id = if let Some(sink) = sink {
             let agent_id = sink.agent_id.clone();
-            if let Err(error) = sink
-                .runtime_db
+            sink.runtime_db
                 .audit_events()
-                .append(agent_id.as_deref(), &event)
-            {
-                tracing::warn!(
-                    error = %error,
-                    event_id = %event.id,
-                    event_kind = %event.kind,
-                    event_seq = event.event_seq,
-                    agent_id = agent_id.as_deref().unwrap_or("<global>"),
-                    "failed to enqueue runtime db audit event"
-                );
-            }
-            self.publish_event(agent_id, &event)?;
-            return Ok(());
-        }
-        let runtime_db = self.runtime_db.clone();
-        let agent_id = self.current_agent_id()?;
-        if let Err(error) = runtime_db
-            .audit_events()
-            .append(agent_id.as_deref(), &event)
-        {
+                .append(agent_id.as_deref(), &event)?;
+            agent_id
+        } else {
+            let agent_id = self.current_agent_id()?;
+            self.runtime_db
+                .audit_events()
+                .append(agent_id.as_deref(), &event)?;
+            agent_id
+        };
+        *counter = event.event_seq;
+        if let Err(error) = self.publish_event(agent_id.clone(), &event) {
             tracing::warn!(
                 error = %error,
                 event_id = %event.id,
                 event_kind = %event.kind,
                 event_seq = event.event_seq,
                 agent_id = agent_id.as_deref().unwrap_or("<global>"),
-                "failed to enqueue runtime db audit event"
+                "failed to publish committed audit event"
             );
         }
-        self.publish_event(agent_id, &event)?;
-        return Ok(());
+        Ok(())
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
@@ -2269,6 +2259,84 @@ mod tests {
             .unwrap();
         let events = reopened.read_recent_events(10).unwrap();
         assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
+
+    #[test]
+    fn append_event_persists_before_publishing() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
+        storage.enable_event_bus(EventBus::new(8)).unwrap();
+        let mut receiver = storage.subscribe_events().unwrap().unwrap();
+
+        storage
+            .append_event(&AuditEvent::new(
+                "durable_before_publish",
+                serde_json::json!({}),
+            ))
+            .unwrap();
+
+        let published = receiver.try_recv().unwrap();
+        let reader = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let persisted = reader
+            .audit_events()
+            .page_after(Some("agent-test"), 0, 10)
+            .unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].id, published.event.id);
+        assert_eq!(persisted[0].event_seq, published.event.event_seq);
+    }
+
+    #[test]
+    fn failed_audit_event_append_is_not_published_or_assigned_a_sequence() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
+        let runtime_db = storage.runtime_db.clone();
+        runtime_db
+            .transaction(|tx| {
+                tx.execute_batch(
+                    "CREATE TRIGGER reject_failed_audit_event
+                     BEFORE INSERT ON audit_events
+                     WHEN NEW.kind = 'rejected_event'
+                     BEGIN
+                       SELECT RAISE(FAIL, 'rejected audit event');
+                     END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        storage
+            .enable_audit_event_index(runtime_db.clone(), Some("agent-test".to_string()))
+            .unwrap();
+        storage.enable_event_bus(EventBus::new(8)).unwrap();
+        let mut receiver = storage.subscribe_events().unwrap().unwrap();
+
+        let error = storage
+            .append_event(&AuditEvent::new("rejected_event", serde_json::json!({})))
+            .unwrap_err();
+        assert!(error.to_string().contains("rejected audit event"));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        storage
+            .append_event(&AuditEvent::new("accepted_event", serde_json::json!({})))
+            .unwrap();
+
+        let published = receiver.try_recv().unwrap();
+        assert_eq!(published.event.kind, "accepted_event");
+        assert_eq!(published.event.event_seq, 1);
+        let persisted = runtime_db
+            .audit_events()
+            .page_after(Some("agent-test"), 0, 10)
+            .unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].kind, "accepted_event");
+        assert_eq!(persisted[0].event_seq, 1);
     }
 
     #[test]
