@@ -72,7 +72,7 @@ structured results with citations.
 
 ### Search providers
 
-Holon uses a provider-based search model:
+Holon uses a provider-based search model with multiple provider options:
 
 - **DuckDuckGo (managed)** — Holon's built-in managed search provider. No
   API key required. Enabled during onboarding with "Managed DuckDuckGo" or
@@ -86,6 +86,13 @@ Holon uses a provider-based search model:
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these when available.
+- **Bing Web Search** — Microsoft Bing Web Search API. Requires an API key
+  set via credential profile. Configure with
+  `holon config set providers bing --kind bing --credential-profile <profile>`.
+
+Search results from all providers are standardized into a consistent format
+with title, URL, and snippet text. Citations are preserved so agents can
+follow up with `WebFetch` for full page content.
 
 Search configuration is part of onboarding and can be changed later with
 `holon config set`.
@@ -133,6 +140,72 @@ patterns:
 
 The runtime exposes both tools in the model-facing tool schema, and the agent
 selects them through normal tool-calling when the task requires web access.
+
+## XSearch
+
+`XSearch` searches public X (Twitter) posts using xAI's hosted `x_search`
+endpoint. It operates as an isolated provider request — independent of the
+main conversation model — and returns durable text with citations.
+
+### When to use XSearch
+
+Use XSearch for X-specific content, accounts, or discussions. Use `WebSearch`
+for the general web.
+
+### Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `query` | yes | Search query string |
+| `allowed_x_handles` | no | Restrict results to these X handles (max 10, without `@`) |
+| `excluded_x_handles` | no | Exclude results from these X handles (max 10, without `@`) |
+| `from_date` | no | Start date in `YYYY-MM-DD` format |
+| `to_date` | no | End date in `YYYY-MM-DD` format |
+
+### What XSearch returns
+
+| Field | Description |
+|-------|-------------|
+| `text` | Search result text from the model response |
+| `citations` | Structured citations with URL, title, and text position indices |
+| `provider` | Always `xai` |
+| `backend` | Always `x_search` |
+| `model` | xAI model used for the search |
+| `diagnostics` | Provider request ID, latency, and hosted item type counts |
+
+### Prerequisites
+
+XSearch requires:
+
+1. **xAI provider configured** with `openai_responses` transport and
+   valid credentials (OAuth device login through Codex, or API key).
+2. **XSearch enabled** (enabled by default when xAI credentials are
+   available).
+
+To disable XSearch:
+
+```bash
+holon config set x_search.enabled false
+```
+
+### Configuration
+
+XSearch configuration uses these keys:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `x_search.enabled` | boolean | `true` | Enable XSearch when xAI credentials are available |
+| `x_search.model` | model_ref | `grok-4.3` | xAI model route for isolated XSearch requests |
+| `x_search.timeout_seconds` | integer | `60` | Request timeout in seconds |
+
+The default model is `grok-4.3`. XSearch uses the xAI provider's OAuth
+credentials and refreshes tokens only on 401 Unauthorized responses.
+
+### Example usage
+
+```
+XSearch { query: "Holon runtime agent framework", from_date: "2026-01-01" }
+```
 
 ## Configuration
 

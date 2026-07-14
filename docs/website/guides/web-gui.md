@@ -52,6 +52,12 @@ Select an agent from the Dashboard to open its conversation page:
 - **Input bar** — send operator messages to the selected agent.
 - **Event timeline** — a sidebar timeline of recent events including turns,
   tool executions, and state transitions.
+- **Virtual scrolling** — message lists use virtualized rendering for
+  smooth performance across long conversations without DOM overhead.
+- **Tool execution details** — expand individual tool calls in the message
+  stream to inspect request/response payloads, timing, and metadata.
+  Tool result panels show structured output alongside raw data, making
+  it easier to debug agent behavior.
 
 ### Search
 
@@ -110,6 +116,14 @@ add a skill via the browser, the install runs as a background job (see
 status, and the job state persists in localStorage so you can track it
 across page reloads.
 
+The Skills page also supports **updating** installed skills. A skill that
+has a newer version published in its remote source shows an update button.
+Clicking it queues a catalog update job that fetches the latest version.
+Success and error feedback appears inline after the job completes, and
+update jobs run as background tasks (see [Job API](#job-monitoring)).
+Skill catalog updates also run as jobs, with progress tracked in the job
+list.
+
 For CLI-based skill management, see [Skills Guide](/guides/skills.md).
 
 ### Workspace File Browser
@@ -122,8 +136,16 @@ sidebar when a workspace is attached:
 - **File preview** — Click a file to preview its content in the main
   panel. Text files render inline with syntax highlighting; binary and
   image files display metadata and a download link.
+- **Image rendering** — Image files render inline in the preview panel
+  and in conversation messages via `workspace://` URIs. Supported formats
+  include PNG, JPEG, GIF, and WebP.
 - **Resizable panels** — Drag the divider between the file tree and
   content panel to adjust the layout.
+- **Drag-and-drop attachments** — Drag files from the file browser or
+  your desktop into the agent input bar to attach them as operator
+  messages. Images and text files are attached inline; other file types
+  appear as metadata references. A drop hint appears when dragging
+  files over the conversation area.
 - **Dedicated file viewer page** — Open files in a full-page viewer for
   a larger reading surface, accessible via the file tree context menu.
 
@@ -155,7 +177,8 @@ The Web GUI includes several navigation and usability enhancements:
 Configure Holon from the browser:
 
 - **Model settings** — view and change the default model, override per-agent
-  models, and set reasoning effort.
+  models, and set reasoning effort. The fallback model list uses a chip
+  component with drag-to-reorder support for easy priority adjustment.
 - **API keys** — add or update provider credentials (API keys) through the
   credential store without editing JSON files. The settings page
   automatically determines the right credential method for each provider
@@ -165,6 +188,10 @@ Configure Holon from the browser:
   English (EN) and Simplified Chinese (ZH-CN). All UI text — navigation,
   buttons, labels, and status messages — updates in real time without a
   page reload.
+- **Image generation** — configure the default image-generation model
+  (`image_generation.default`) directly from the Settings page. The
+  model selector shows only models that support image generation
+  capability.
 - **Runtime configuration** — view the current execution environment,
   attached workspaces, and policy snapshot.
 
@@ -176,6 +203,9 @@ Chinese. All interface text — including navigation items, button labels, form
 hints, status messages, and error pages — translates instantly on selection.
 Translation resources are compiled into the embedded build alongside the UI
 assets, so no external files or network access are required.
+
+The Settings page also includes a **search provider** section for configuring
+web search and native search providers through the browser.
 
 ### UI Icons
 
