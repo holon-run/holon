@@ -31,6 +31,7 @@ import type {
   RuntimeTaskOutputResult,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
+  ToolExecutionArtifactContent,
   SearchResponse,
   TaskSummary,
   WorkItemSummary,
@@ -687,6 +688,12 @@ interface WorkspaceFileContentDto {
   content?: string;
 }
 
+interface ToolExecutionArtifactContentDto {
+  artifact_index: number;
+  size: number;
+  content: string;
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -1175,6 +1182,26 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         mimeType: response.mime_type,
         truncated: response.truncated,
         totalSize: response.total_size,
+        content: response.content,
+      };
+    },
+    async readToolExecutionArtifact(
+      agentId: string,
+      toolExecutionId: string,
+      artifactIndex: number,
+    ): Promise<ToolExecutionArtifactContent> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await getJson<ToolExecutionArtifactContentDto>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/tool-executions/${encodeURIComponent(toolExecutionId)}/artifacts/${artifactIndex}`,
+        { headers: requestHeaders },
+      );
+      return {
+        artifactIndex: response.artifact_index,
+        size: response.size,
         content: response.content,
       };
     },

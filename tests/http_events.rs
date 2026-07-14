@@ -22,6 +22,8 @@ http_async_tests!(
     events_route_max_level_filters_with_bounded_visible_pages,
     events_stream_includes_tool_payload,
     tool_execution_route_returns_canonical_output,
+    tool_execution_artifact_route_reads_scoped_content,
+    tool_execution_artifact_route_rejects_outside_data_dir,
     events_stream_includes_assistant_round_payload,
     events_stream_preserves_raw_payload_with_control_auth,
     events_page_cursor_seq_seeds_stream_resume,

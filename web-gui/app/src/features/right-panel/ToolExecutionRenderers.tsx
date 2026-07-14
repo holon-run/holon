@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { formatToolExecutionDetail } from "../inspector/ActivityInspectorPanel";
 import { useRuntimeStore } from "../../runtime/runtime-store";
@@ -171,12 +172,98 @@ export function ResultCard({
 
 // ExecCommand renderer
 
+interface ArtifactTextState {
+  content?: string;
+  error?: string;
+  loading: boolean;
+}
+
+function artifactIndex(output: unknown, key: "stdout_artifact" | "stderr_artifact"): number | undefined {
+  const value = nestedValue(output, [key]);
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function lineCount(value: string): number {
+  if (!value) return 0;
+  return value.endsWith("\n") ? value.split("\n").length - 1 : value.split("\n").length;
+}
+
+function useToolExecutionArtifact(
+  record: RuntimeToolExecutionRecord,
+  output: unknown,
+  key: "stdout_artifact" | "stderr_artifact",
+): ArtifactTextState {
+  const readToolExecutionArtifact = useRuntimeStore((state) => state.readToolExecutionArtifact);
+  const index = artifactIndex(output, key);
+  const truncated = nestedValue(output, ["truncated"]) === true;
+  const agentId = textField(record.agent_id);
+  const toolExecutionId = textField(record.id);
+  const shouldLoad = truncated && index != null && Boolean(agentId) && Boolean(toolExecutionId);
+  const [state, setState] = useState<ArtifactTextState>({ loading: shouldLoad });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!shouldLoad || index == null) {
+      setState({ loading: false });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setState({ loading: true });
+    void readToolExecutionArtifact(agentId, toolExecutionId, index)
+      .then((artifact) => {
+        if (!cancelled) setState({ content: artifact.content, loading: false });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setState({
+            error: error instanceof Error ? error.message : String(error),
+            loading: false,
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, index, readToolExecutionArtifact, shouldLoad, toolExecutionId]);
+
+  return state;
+}
+
+function ArtifactLoadStatus({ state }: { state: ArtifactTextState }) {
+  const { t } = useTranslation();
+  if (state.loading) {
+    return <SimpleField label={t("inspector.fullOutput")} value={t("inspector.fullOutputLoading")} />;
+  }
+  if (state.error) {
+    return (
+      <SimpleField
+        label={t("inspector.fullOutput")}
+        value={t("inspector.fullOutputLoadFailed", { error: state.error })}
+      />
+    );
+  }
+  if (state.content != null) {
+    return (
+      <SimpleField
+        label={t("inspector.fullOutput")}
+        value={t("inspector.fullOutputLoaded", { count: lineCount(state.content) })}
+      />
+    );
+  }
+  return null;
+}
+
 function ExecCommandRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
   const { t } = useTranslation();
   const output = unwrapToolOutput(record.output ?? record.result);
   const cmd = commandText(record.input) || textField(record.cmd_preview);
-  const stdout = nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"]);
-  const stderr = nestedText(output, ["stderr", "stderr_preview"]);
+  const stdoutPreview = nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"]);
+  const stderrPreview = nestedText(output, ["stderr", "stderr_preview"]);
+  const stdoutArtifact = useToolExecutionArtifact(record, output, "stdout_artifact");
+  const stderrArtifact = useToolExecutionArtifact(record, output, "stderr_artifact");
+  const stdout = stdoutArtifact.content ?? stdoutPreview;
+  const stderr = stderrArtifact.content ?? stderrPreview;
   const initialOutput = nestedText(output, ["initial_output_preview"]);
   const result = nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"]) || record.summary;
   const error = record.error != null ? textField(record.error) : nestedText(output, ["error"]);
@@ -186,7 +273,9 @@ function ExecCommandRenderer({ record }: { record: RuntimeToolExecutionRecord })
     <>
       {cmd ? <OutputField label={t("inspector.command")} value={cmd} /> : null}
       {stdout ? <OutputField label={t("inspector.stdout")} value={stdout} /> : null}
+      <ArtifactLoadStatus state={stdoutArtifact} />
       {stderr ? <OutputField label={t("inspector.stderr")} value={stderr} /> : null}
+      <ArtifactLoadStatus state={stderrArtifact} />
       {initialOutput ? <OutputField label={t("inspector.initialOutput")} value={initialOutput} /> : null}
       {result ? <OutputField label={t("inspector.result")} value={result} /> : null}
       {error ? <OutputField label={t("inspector.error")} value={error} variant="error" /> : null}

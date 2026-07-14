@@ -10,6 +10,42 @@ function renderTool(record: RuntimeToolExecutionRecord): string {
 }
 
 describe("ToolExecutionContent", () => {
+  it("marks truncated ExecCommand output as loading its complete artifact", () => {
+    const html = renderTool({
+      id: "tool-1",
+      agent_id: "agent-1",
+      tool_name: "ExecCommand",
+      input: { cmd: "printf output" },
+      output: {
+        disposition: "completed",
+        stdout_preview: "preview output",
+        truncated: true,
+        artifacts: [{ path: "/runtime/tool-artifacts/stdout.log" }],
+        stdout_artifact: 0,
+      },
+    });
+
+    expect(html).toContain("preview output");
+    expect(html).toContain("Loading complete artifact");
+  });
+
+  it("does not request artifact loading for complete ExecCommand output", () => {
+    const html = renderTool({
+      id: "tool-2",
+      agent_id: "agent-1",
+      tool_name: "ExecCommand",
+      input: { cmd: "printf output" },
+      output: {
+        disposition: "completed",
+        stdout_preview: "complete output",
+        truncated: false,
+      },
+    });
+
+    expect(html).toContain("complete output");
+    expect(html).not.toContain("Loading complete artifact");
+  });
+
   it("renders ViewImage details with path, dimensions, and visual observation", () => {
     const html = renderTool({
       tool_name: "ViewImage",

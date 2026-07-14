@@ -4348,6 +4348,30 @@
         "title": "TimerRecord",
         "type": "object"
       },
+      "ToolExecutionArtifactContent": {
+        "properties": {
+          "artifact_index": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_index",
+          "size",
+          "content"
+        ],
+        "title": "ToolExecutionArtifactContent",
+        "type": "object"
+      },
       "ToolExecutionRecord": {
         "properties": {
           "agent_id": {
@@ -5863,6 +5887,73 @@
           }
         ],
         "summary": "Tool execution detail",
+        "tags": [
+          "tools"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}/tool-executions/{tool_execution_id}/artifacts/{artifact_index}": {
+      "get": {
+        "description": "Return UTF-8 content for an artifact referenced by the selected tool execution. Artifact paths are resolved server-side and confined to the agent runtime data directory.",
+        "operationId": "agentToolExecutionArtifact",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Tool execution id.",
+            "in": "path",
+            "name": "tool_execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolExecutionArtifactContent"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Tool execution artifact",
         "tags": [
           "tools"
         ]

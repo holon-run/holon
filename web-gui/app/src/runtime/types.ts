@@ -484,6 +484,12 @@ export interface RuntimeToolExecutionRecord {
   [key: string]: unknown;
 }
 
+export interface ToolExecutionArtifactContent {
+  artifactIndex: number;
+  size: number;
+  content: string;
+}
+
 export interface RuntimeTaskOutputResult {
   retrieval_status?: string;
   task?: {
