@@ -269,16 +269,23 @@ holon --help
 Or step by step:
 
 ```bash
-make web    # build web GUI (requires Node.js)
+make web    # build web GUI (requires Node.js 24 LTS)
 make build  # build Rust binary
 ```
 
 ## Development
 
-Run checks with `make`:
+Use Node.js 24 LTS for Web GUI development. Run the same full validation used
+by CI with `make`:
 
 ```bash
 make ci
+```
+
+For a focused Web GUI check, including Vitest and the production build:
+
+```bash
+make web-ci
 ```
 
 See `make help` for the full list of targets.
