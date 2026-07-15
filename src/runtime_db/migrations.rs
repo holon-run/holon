@@ -885,6 +885,18 @@ CREATE INDEX IF NOT EXISTS idx_execution_root_entries_workspace
 DROP TABLE IF EXISTS workspace_id_aliases;
 "#,
     },
+    Migration {
+        version: 26,
+        name: "strict_runtime_sequences",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS runtime_sequences (
+  domain TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  last_value INTEGER NOT NULL,
+  PRIMARY KEY (domain, scope_key)
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -921,7 +933,13 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     }
 
     let transaction = connection.transaction()?;
+    if migration.name == "strict_runtime_sequences" {
+        preflight_runtime_sequence_uniqueness(&transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
+    if migration.name == "strict_runtime_sequences" {
+        migrate_runtime_sequences(&transaction)?;
+    }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
         (
@@ -931,6 +949,137 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         ),
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn preflight_runtime_sequence_uniqueness(connection: &Connection) -> Result<()> {
+    if table_exists_internal(connection, "audit_events")? {
+        preflight_sequence_domain(
+            connection,
+            "audit_event",
+            "audit_events",
+            "CASE WHEN agent_id IS NULL THEN 'host' ELSE 'agent:' || agent_id END",
+            "event_seq",
+            "audit_event_id",
+        )?;
+    }
+    if table_exists_internal(connection, "messages")? {
+        preflight_sequence_domain(
+            connection,
+            "message",
+            "messages",
+            "'agent:' || agent_id",
+            "message_seq",
+            "evidence_id",
+        )?;
+    }
+    if table_exists_internal(connection, "transcript_entries")? {
+        preflight_sequence_domain(
+            connection,
+            "transcript",
+            "transcript_entries",
+            "'agent:' || agent_id",
+            "transcript_seq",
+            "evidence_id",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_runtime_sequences(connection: &Connection) -> Result<()> {
+    if table_exists_internal(connection, "audit_events")? {
+        connection.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_agent_event_seq_unique
+               ON audit_events(agent_id, event_seq)
+               WHERE agent_id IS NOT NULL AND event_seq IS NOT NULL;
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_host_event_seq_unique
+               ON audit_events(event_seq)
+               WHERE agent_id IS NULL AND event_seq IS NOT NULL;
+             INSERT INTO runtime_sequences(domain, scope_key, last_value)
+             SELECT
+               'audit_event',
+               CASE WHEN agent_id IS NULL THEN 'host' ELSE 'agent:' || agent_id END,
+               MAX(event_seq)
+             FROM audit_events
+             WHERE event_seq IS NOT NULL
+             GROUP BY agent_id
+             ON CONFLICT(domain, scope_key) DO UPDATE SET
+               last_value = MAX(runtime_sequences.last_value, excluded.last_value);",
+        )?;
+    }
+    if table_exists_internal(connection, "messages")? {
+        connection.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_agent_message_seq_unique
+               ON messages(agent_id, message_seq)
+               WHERE message_seq IS NOT NULL;
+             INSERT INTO runtime_sequences(domain, scope_key, last_value)
+             SELECT 'message', 'agent:' || agent_id, MAX(message_seq)
+             FROM messages
+             WHERE message_seq IS NOT NULL
+             GROUP BY agent_id
+             ON CONFLICT(domain, scope_key) DO UPDATE SET
+               last_value = MAX(runtime_sequences.last_value, excluded.last_value);",
+        )?;
+    }
+    if table_exists_internal(connection, "transcript_entries")? {
+        connection.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_transcript_entries_agent_transcript_seq_unique
+               ON transcript_entries(agent_id, transcript_seq)
+               WHERE transcript_seq IS NOT NULL;
+             INSERT INTO runtime_sequences(domain, scope_key, last_value)
+             SELECT 'transcript', 'agent:' || agent_id, MAX(transcript_seq)
+             FROM transcript_entries
+             WHERE transcript_seq IS NOT NULL
+             GROUP BY agent_id
+             ON CONFLICT(domain, scope_key) DO UPDATE SET
+               last_value = MAX(runtime_sequences.last_value, excluded.last_value);",
+        )?;
+    }
+    Ok(())
+}
+
+fn table_exists_internal(connection: &Connection, table_name: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            [table_name],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn preflight_sequence_domain(
+    connection: &Connection,
+    domain: &str,
+    table: &str,
+    scope_expression: &str,
+    sequence_column: &str,
+    id_column: &str,
+) -> Result<()> {
+    let sql = format!(
+        "SELECT {scope_expression}, {sequence_column}, GROUP_CONCAT({id_column}, ',')
+         FROM {table}
+         WHERE {sequence_column} IS NOT NULL
+         GROUP BY {scope_expression}, {sequence_column}
+         HAVING COUNT(*) > 1
+         LIMIT 1"
+    );
+    let duplicate = connection
+        .query_row(&sql, [], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .optional()?;
+    if let Some((scope, sequence, record_ids)) = duplicate {
+        bail!(
+            "runtime sequence migration found duplicate sequence: domain={domain}, scope={scope}, sequence={sequence}, record_ids={record_ids}"
+        );
+    }
     Ok(())
 }
 

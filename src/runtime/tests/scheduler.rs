@@ -232,6 +232,17 @@ fn read_optional_scheduler_jsonl_fixture<T: DeserializeOwned>(name: &str, path: 
     Vec::new()
 }
 
+fn append_work_item_at_revision(storage: &AppStorage, record: &WorkItemRecord) {
+    let target_revision = record.revision;
+    let mut version = record.clone();
+    version.revision = 1;
+    storage.append_work_item(&version).unwrap();
+    for revision in 2..=target_revision {
+        version.revision = revision;
+        storage.append_work_item(&version).unwrap();
+    }
+}
+
 fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentState) {
     let agent_fixture: AgentFixture = read_scheduler_fixture(name, "agent.json");
     let work_items: Vec<WorkItemFixture> =
@@ -293,7 +304,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
             record.plan_status = plan_status;
         }
         record.revision = item.revision;
-        storage.append_work_item(&record).unwrap();
+        append_work_item_at_revision(&storage, &record);
     }
     for task in tasks {
         storage
@@ -546,7 +557,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
     let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
     work_item.id = "work-active".into();
     work_item.revision = 3;
-    storage.append_work_item(&work_item).unwrap();
+    append_work_item_at_revision(&storage, &work_item);
     storage
         .append_task(&TaskRecord {
             id: "task-active".into(),
@@ -798,7 +809,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
     let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
     work_item.id = "work-1".into();
     work_item.revision = 7;
-    storage.append_work_item(&work_item).unwrap();
+    append_work_item_at_revision(&storage, &work_item);
 
     let pending = PendingWakeHint {
         reason: "external update".into(),
@@ -860,7 +871,7 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
     let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
     work_item.id = "work-queued".into();
     work_item.revision = 4;
-    storage.append_work_item(&work_item).unwrap();
+    append_work_item_at_revision(&storage, &work_item);
     append_active_external_wait_condition(&storage, "agent-wait", "default", None);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();

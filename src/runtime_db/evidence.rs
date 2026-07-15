@@ -3,7 +3,7 @@
 use anyhow::Context;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -14,6 +14,52 @@ use crate::types::{
     ExecutionRootEntry, MessageEnvelope, ToolExecutionRecord, TranscriptEntry, WorkspaceEntry,
     WorkspaceOccupancyRecord,
 };
+
+pub(crate) const AUDIT_EVENT_SEQUENCE_DOMAIN: &str = "audit_event";
+pub(crate) const MESSAGE_SEQUENCE_DOMAIN: &str = "message";
+pub(crate) const TRANSCRIPT_SEQUENCE_DOMAIN: &str = "transcript";
+
+pub(crate) fn agent_sequence_scope(agent_id: &str) -> String {
+    format!("agent:{agent_id}")
+}
+
+pub(crate) fn audit_event_sequence_scope(agent_id: Option<&str>) -> String {
+    agent_id.map_or_else(|| "host".to_string(), agent_sequence_scope)
+}
+
+pub(crate) fn allocate_runtime_sequence_tx(
+    tx: &Transaction<'_>,
+    domain: &str,
+    scope_key: &str,
+) -> Result<u64> {
+    let value = tx.query_row(
+        "INSERT INTO runtime_sequences(domain, scope_key, last_value)
+         VALUES (?1, ?2, 1)
+         ON CONFLICT(domain, scope_key) DO UPDATE SET
+           last_value = runtime_sequences.last_value + 1
+         RETURNING last_value",
+        params![domain, scope_key],
+        |row| row.get::<_, i64>(0),
+    )?;
+    u64::try_from(value).context("runtime sequence is negative")
+}
+
+pub(crate) fn observe_runtime_sequence_tx(
+    tx: &Transaction<'_>,
+    domain: &str,
+    scope_key: &str,
+    value: u64,
+) -> Result<()> {
+    let value = i64::try_from(value).context("runtime sequence exceeds SQLite integer range")?;
+    tx.execute(
+        "INSERT INTO runtime_sequences(domain, scope_key, last_value)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(domain, scope_key) DO UPDATE SET
+           last_value = MAX(runtime_sequences.last_value, excluded.last_value)",
+        params![domain, scope_key, value],
+    )?;
+    Ok(())
+}
 
 /// Evidence kind for table routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,11 +177,59 @@ pub(crate) fn insert_message_evidence_tx(
     upsert_message_tx(tx, message)
 }
 
+pub(crate) fn append_message_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+) -> Result<(MessageEnvelope, bool)> {
+    if let Some(payload) = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE evidence_id = ?1",
+            [&message.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Ok((serde_json::from_str(&payload)?, false));
+    }
+    let mut message = message.clone();
+    message.message_seq = Some(allocate_runtime_sequence_tx(
+        tx,
+        MESSAGE_SEQUENCE_DOMAIN,
+        &agent_sequence_scope(&message.agent_id),
+    )?);
+    upsert_message_tx(tx, &message)?;
+    Ok((message, true))
+}
+
 pub(crate) fn insert_transcript_evidence_tx(
     tx: &Transaction<'_>,
     entry: &TranscriptEntry,
 ) -> Result<()> {
     upsert_transcript_entry_tx(tx, entry)
+}
+
+pub(crate) fn append_transcript_entry_tx(
+    tx: &Transaction<'_>,
+    entry: &TranscriptEntry,
+) -> Result<(TranscriptEntry, bool)> {
+    if let Some(payload) = tx
+        .query_row(
+            "SELECT payload_json FROM transcript_entries WHERE evidence_id = ?1",
+            [&entry.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Ok((serde_json::from_str(&payload)?, false));
+    }
+    let mut entry = entry.clone();
+    entry.transcript_seq = Some(allocate_runtime_sequence_tx(
+        tx,
+        TRANSCRIPT_SEQUENCE_DOMAIN,
+        &agent_sequence_scope(&entry.agent_id),
+    )?);
+    upsert_transcript_entry_tx(tx, &entry)?;
+    Ok((entry, true))
 }
 
 pub(crate) fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -> Result<()> {
@@ -327,6 +421,14 @@ pub(crate) fn upsert_agent_identity_tx(
 }
 
 pub(crate) fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
+    if let Some(message_seq) = message.message_seq {
+        observe_runtime_sequence_tx(
+            tx,
+            MESSAGE_SEQUENCE_DOMAIN,
+            &agent_sequence_scope(&message.agent_id),
+            message_seq,
+        )?;
+    }
     let payload_json = serde_json::to_string(message)?;
     let content_hash = content_hash(&payload_json);
     let kind = enum_string(&message.kind)?;
@@ -372,6 +474,14 @@ pub(crate) fn upsert_transcript_entry_tx(
     tx: &Transaction<'_>,
     entry: &TranscriptEntry,
 ) -> Result<()> {
+    if let Some(transcript_seq) = entry.transcript_seq {
+        observe_runtime_sequence_tx(
+            tx,
+            TRANSCRIPT_SEQUENCE_DOMAIN,
+            &agent_sequence_scope(&entry.agent_id),
+            transcript_seq,
+        )?;
+    }
     let turn_id = entry
         .data
         .get("turn_id")
@@ -512,7 +622,59 @@ pub(crate) fn insert_delivery_summary_evidence_tx(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn insert_audit_event_tx(
+    tx: &Transaction<'_>,
+    agent_id: Option<&str>,
+    event: &AuditEvent,
+) -> Result<()> {
+    append_audit_event_tx(tx, agent_id, event).map(|_| ())
+}
+
+pub(crate) fn append_audit_event_tx(
+    tx: &Transaction<'_>,
+    agent_id: Option<&str>,
+    event: &AuditEvent,
+) -> Result<(AuditEvent, bool)> {
+    if let Some(payload) = tx
+        .query_row(
+            "SELECT data_json FROM audit_events WHERE audit_event_id = ?1",
+            [&event.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Ok((serde_json::from_str(&payload)?, false));
+    }
+    let mut event = event.clone();
+    event.event_seq = allocate_runtime_sequence_tx(
+        tx,
+        AUDIT_EVENT_SEQUENCE_DOMAIN,
+        &audit_event_sequence_scope(agent_id),
+    )?;
+    insert_audit_event_with_sequence_tx(tx, agent_id, &event)?;
+    Ok((event, true))
+}
+
+pub(crate) fn import_audit_event_tx(
+    tx: &Transaction<'_>,
+    agent_id: Option<&str>,
+    event: &AuditEvent,
+) -> Result<()> {
+    if event.event_seq == 0 {
+        append_audit_event_tx(tx, agent_id, event)?;
+        return Ok(());
+    }
+    insert_audit_event_with_sequence_tx(tx, agent_id, event)?;
+    observe_runtime_sequence_tx(
+        tx,
+        AUDIT_EVENT_SEQUENCE_DOMAIN,
+        &audit_event_sequence_scope(agent_id),
+        event.event_seq,
+    )
+}
+
+fn insert_audit_event_with_sequence_tx(
     tx: &Transaction<'_>,
     agent_id: Option<&str>,
     event: &AuditEvent,

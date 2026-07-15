@@ -611,8 +611,15 @@ impl RuntimeHandle {
     pub(crate) async fn record_work_item_projection(
         &self,
         record: &crate::types::WorkItemRecord,
+        expected_revision: Option<u64>,
     ) -> Result<()> {
-        self.inner.storage.append_work_item(record)?;
+        if let Some(expected_revision) = expected_revision {
+            self.inner
+                .storage
+                .update_work_item_expected(record, expected_revision)?;
+        } else {
+            self.inner.storage.insert_work_item(record)?;
+        }
         self.inner
             .projection_cache
             .lock()

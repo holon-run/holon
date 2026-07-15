@@ -111,13 +111,8 @@ impl RuntimeHandle {
                 turn_id: current_turn_id,
                 ..refreshed
             };
-            let current_focus = self.agent_state().await?.current_work_item_id.as_deref()
-                == Some(record.id.as_str());
-            self.inner
-                .runtime_db
-                .work_items()
-                .upsert(&record, current_focus)?;
-            self.record_work_item_projection(&record).await?;
+            self.record_work_item_projection(&record, Some(latest.revision))
+                .await?;
             if plan_artifact_changed {
                 self.append_work_item_plan_artifact_refreshed_event(&record)?;
             }

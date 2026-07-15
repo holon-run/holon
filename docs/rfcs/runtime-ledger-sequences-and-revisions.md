@@ -1,7 +1,7 @@
 ---
 title: RFC: Runtime Ledger Sequences and Object Revisions
 date: 2026-05-29
-status: draft
+status: accepted
 Handle: rfc-runtime-ledger-sequences-and-revisions
 ---
 
@@ -373,14 +373,19 @@ Each ledger append path should own sequence assignment for its ledger.
 
 Preferred rule:
 
-1. read the last known sequence for the ledger;
-2. assign `last_seq + 1`;
-3. append the record with the assigned sequence;
-4. expose cursor APIs using `after_seq` only when the sequence field exists.
+1. identify the ledger domain and its explicit scope key;
+2. atomically increment `runtime_sequences(domain, scope_key, last_value)`;
+3. insert the target record with the returned value in the same transaction;
+4. commit or roll back the head update and target insert together;
+5. expose cursor APIs using `after_seq` only when the sequence field exists.
 
-If the storage backend can make sequence assignment atomic, it should. For the
-current local JSONL storage model, the append path should keep the logic narrow
-and covered by tests. Do not spread "find max seq" logic across call sites.
+`audit_event`, `message`, and `transcript` sequences are per-agent. Host audit
+events without an agent use a distinct host scope key. Target tables enforce
+non-null sequence uniqueness within that scope. Process-local counters may be
+used for observation, but they are not allocation authority.
+
+Committed records are monotonic and unique within their scope. The contract does
+not promise an absolutely gap-free sequence after explicit deletion or repair.
 
 ### Backward compatibility
 
@@ -399,14 +404,36 @@ handled before exposing the cursor as stable.
 Adoption should be incremental:
 
 1. document the policy in this RFC;
-2. implement `message_seq` only when a message-ledger cursor or queue replay
-   path needs it;
-3. implement `transcript_seq` when transcript replay, UI paging, or context
-   assembly needs a durable transcript cursor;
-4. defer `tool_seq`, `brief_seq`, and additional revisions until their owning
+2. reject existing duplicate non-null sequences before adding unique indexes;
+3. initialize each database sequence head from the existing scoped maximum;
+4. preserve legacy null sequences rather than inventing historical order;
+5. defer `tool_seq`, `brief_seq`, and additional revisions until their owning
    surfaces need them.
 
 Historical records do not need to be rewritten merely because the RFC exists.
+Legacy import selects canonical records before updating sequence heads. A
+migration must not silently renumber an externally visible event cursor.
+
+### WorkItem revision CAS
+
+WorkItem persistence exposes separate create and semantic-update operations:
+
+- `insert_new(record)` accepts only `revision = 1` and an absent ID.
+- `update_expected(next, expected_revision)` accepts only
+  `next.revision = expected_revision + 1`.
+
+The repository is the final CAS authority. If the stored revision already equals
+`expected_revision + 1`, an exact canonical persisted-payload match is an
+idempotent replay; a different payload is a
+`same_revision_payload_conflict`. Other stale writes return a typed
+`revision_conflict`. Invalid initial or next revisions are rejected rather than
+normalized.
+
+Semantic conflicts are returned to the caller with stable `domain`,
+`record_id`, `code`, expected/actual revision, and retryability metadata. The
+repository does not silently retry them. SQLite `BUSY`/`LOCKED` retry remains an
+infrastructure concern; a higher transition layer may later retry only an
+explicitly merge-safe operation after rereading current state.
 
 ### Tests
 
@@ -423,17 +450,20 @@ Tests for revisions should assert:
 - created records start at revision 1
 - semantic updates increment revision by one
 - no-op reads or projections do not increment revision
-- stale or repeated updates behave according to the owning object contract
+- one of two concurrent updates from the same expected revision wins
+- exact replay is idempotent and different same-revision payload conflicts
+- stale, skipped, or reversed revisions return typed conflicts
 
 ## Proposed First Decision
 
 Holon should adopt the terminology and naming policy now, but should not add new
 runtime fields as part of the runtime ID generation work.
 
-The first implementation batch should be limited to:
+The implemented ledger sequence batch is limited to:
 
-1. `MessageEnvelope.message_seq`
-2. `TranscriptEntry.transcript_seq`
+1. `AuditEvent.event_seq`
+2. `MessageEnvelope.message_seq`
+3. `TranscriptEntry.transcript_seq`
 
 Everything else should wait for a concrete surface:
 
