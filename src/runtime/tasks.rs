@@ -149,6 +149,26 @@ fn task_with_status(
     }
 }
 
+fn task_with_result_message(
+    task: &TaskRecord,
+    status: TaskStatus,
+    mut detail: Option<serde_json::Value>,
+    result_message: &MessageEnvelope,
+) -> TaskRecord {
+    if let (Some(detail), Some(parent_turn_id)) = (detail.as_mut(), result_message.turn_id.as_ref())
+    {
+        if let Some(detail) = detail.as_object_mut() {
+            detail.insert(
+                "parent_turn_id".to_string(),
+                serde_json::json!(parent_turn_id),
+            );
+        }
+    }
+    let mut terminal_task = task_with_status(task, status, detail);
+    terminal_task.parent_message_id = Some(result_message.id.clone());
+    terminal_task
+}
+
 impl RuntimeHandle {
     pub(super) async fn task_work_item_binding(&self) -> Option<String> {
         let guard = self.inner.agent.lock().await;
@@ -296,24 +316,14 @@ impl RuntimeHandle {
                 .unwrap_or_else(|| serde_json::json!({}));
             task_detail["output_summary"] = serde_json::json!(text.clone());
 
-            let terminal_task = task_with_status(&task_record, status, Some(task_detail.clone()));
-            if let Err(error) = runtime
-                .persist_task_status_direct(&terminal_task, "task_status_updated")
-                .await
-            {
-                tracing::warn!(
-                    task_id = %terminal_task.id,
-                    error = %error,
-                    "failed to persist terminal task status before task result"
-                );
-            }
             let result_message = MessageEnvelope {
+                turn_id: Some(crate::ids::turn_id()),
                 metadata: Some(serde_json::json!({
                     "task_id": task_record.id,
                     "task_kind": task_record.kind,
                     "task_status": status_label,
                     "task_summary": task_record.summary,
-                    "task_detail": task_detail,
+                    "task_detail": task_detail.clone(),
                     "task_recovery": task_record.recovery,
                     "work_item_id": task_record.work_item_id.clone(),
                 })),
@@ -332,6 +342,18 @@ impl RuntimeHandle {
                     AdmissionContext::RuntimeOwned,
                 )
             };
+            let terminal_task =
+                task_with_result_message(&task_record, status, Some(task_detail), &result_message);
+            if let Err(error) = runtime
+                .persist_task_status_direct(&terminal_task, "task_status_updated")
+                .await
+            {
+                tracing::warn!(
+                    task_id = %terminal_task.id,
+                    error = %error,
+                    "failed to persist terminal task status before task result"
+                );
+            }
             let _ = runtime.enqueue(result_message).await;
             runtime
                 .inner
@@ -780,18 +802,8 @@ impl RuntimeHandle {
             if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
                 metadata["worktree"] = worktree;
             }
-            let terminal_task = task_with_status(&task_record, status, Some(task_detail.clone()));
-            if let Err(error) = runtime
-                .persist_task_status_direct(&terminal_task, "task_status_updated")
-                .await
-            {
-                tracing::warn!(
-                    task_id = %terminal_task.id,
-                    error = %error,
-                    "failed to persist terminal task status before task result"
-                );
-            }
             let result_message = MessageEnvelope {
+                turn_id: Some(crate::ids::turn_id()),
                 metadata: Some(metadata),
                 ..MessageEnvelope::new(
                     agent_id,
@@ -808,6 +820,18 @@ impl RuntimeHandle {
                     AdmissionContext::RuntimeOwned,
                 )
             };
+            let terminal_task =
+                task_with_result_message(&task_record, status, Some(task_detail), &result_message);
+            if let Err(error) = runtime
+                .persist_task_status_direct(&terminal_task, "task_status_updated")
+                .await
+            {
+                tracing::warn!(
+                    task_id = %terminal_task.id,
+                    error = %error,
+                    "failed to persist terminal task status before task result"
+                );
+            }
             let _ = runtime.enqueue(result_message).await;
             runtime
                 .inner
@@ -905,6 +929,7 @@ impl RuntimeHandle {
                 Ok(spawned) => spawned,
                 Err(err) => {
                     let result_message = MessageEnvelope {
+                        turn_id: Some(crate::ids::turn_id()),
                         metadata: Some(serde_json::json!({
                             "task_id": task_record.id,
                             "task_kind": task_record.kind,
@@ -931,10 +956,11 @@ impl RuntimeHandle {
                             AdmissionContext::RuntimeOwned,
                         )
                     };
-                    let failed_task = task_with_status(
+                    let failed_task = task_with_result_message(
                         &task_record,
                         TaskStatus::Failed,
                         task_record.detail.clone(),
+                        &result_message,
                     );
                     if let Err(error) = runtime
                         .persist_task_status_direct(&failed_task, "task_status_updated")
@@ -1225,18 +1251,8 @@ impl RuntimeHandle {
             metadata["worktree"] = worktree;
         }
         task_detail["output_summary"] = serde_json::json!(text.clone());
-        let terminal_task = task_with_status(&task_record, status, Some(task_detail.clone()));
-        if let Err(error) = self
-            .persist_task_status_direct(&terminal_task, "task_status_updated")
-            .await
-        {
-            tracing::warn!(
-                task_id = %terminal_task.id,
-                error = %error,
-                "failed to persist terminal task status before task result"
-            );
-        }
         let result_message = MessageEnvelope {
+            turn_id: Some(crate::ids::turn_id()),
             metadata: Some(metadata),
             ..MessageEnvelope::new(
                 agent_id,
@@ -1253,6 +1269,18 @@ impl RuntimeHandle {
                 AdmissionContext::RuntimeOwned,
             )
         };
+        let terminal_task =
+            task_with_result_message(&task_record, status, Some(task_detail), &result_message);
+        if let Err(error) = self
+            .persist_task_status_direct(&terminal_task, "task_status_updated")
+            .await
+        {
+            tracing::warn!(
+                task_id = %terminal_task.id,
+                error = %error,
+                "failed to persist terminal task status before task result"
+            );
+        }
         let _ = self.enqueue(result_message).await;
         Ok(())
     }
