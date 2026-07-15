@@ -91,6 +91,42 @@ impl ContextConfig {
 #[derive(Debug, Clone)]
 pub struct BuiltContext {
     pub sections: Vec<PromptSection>,
+    pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RecentTurnsReprojection {
+    turn_records: Vec<TurnRecord>,
+    messages: Vec<MessageEnvelope>,
+    briefs: Vec<BriefRecord>,
+    tools: Vec<ToolExecutionRecord>,
+    current_message: MessageEnvelope,
+    current_work_item: Option<WorkItemRecord>,
+    initial_budget: usize,
+}
+
+impl RecentTurnsReprojection {
+    pub(crate) fn initial_budget(&self) -> usize {
+        self.initial_budget
+    }
+}
+
+pub(crate) fn reproject_recent_turns(
+    storage: &AppStorage,
+    reprojection: &RecentTurnsReprojection,
+    budget: usize,
+) -> Option<PromptSection> {
+    render_recent_turns_with_budget(
+        storage,
+        &reprojection.turn_records,
+        &reprojection.messages,
+        &reprojection.briefs,
+        &reprojection.tools,
+        &reprojection.current_message,
+        reprojection.current_work_item.as_ref(),
+        budget,
+    )
+    .map(|content| turn_section("recent_turns", content))
 }
 
 pub fn build_context(
@@ -417,6 +453,16 @@ pub fn build_context_with_default_external_ingress(
         );
     }
 
+    let recent_turns_budget = remaining_budget.min(config.turn_projection_budget());
+    let recent_turns_reprojection = (!turn_records.is_empty()).then(|| RecentTurnsReprojection {
+        turn_records: turn_records.clone(),
+        messages: messages.clone(),
+        briefs: briefs.clone(),
+        tools: tools.clone(),
+        current_message: current_message.clone(),
+        current_work_item: current_work_item.cloned(),
+        initial_budget: recent_turns_budget,
+    });
     if let Some(content) = render_recent_turns_with_budget(
         storage,
         &turn_records,
@@ -425,7 +471,7 @@ pub fn build_context_with_default_external_ingress(
         &tools,
         current_message,
         current_work_item,
-        remaining_budget.min(config.turn_projection_budget()),
+        recent_turns_budget,
     ) {
         push_budgeted_section(
             &mut sections,
@@ -467,7 +513,10 @@ pub fn build_context_with_default_external_ingress(
         ),
     );
 
-    Ok(BuiltContext { sections })
+    Ok(BuiltContext {
+        sections,
+        recent_turns_reprojection,
+    })
 }
 
 fn hydrate_recent_turn_references(

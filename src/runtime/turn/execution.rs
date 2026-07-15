@@ -445,6 +445,8 @@ impl RuntimeHandle {
 pub(super) const TOOL_AUDIT_INPUT_STRING_LIMIT: usize = 4_096;
 pub(super) const TOOL_AUDIT_INPUT_PREVIEW_LIMIT: usize = 240;
 const TOOL_AUDIT_REDACTED: &str = "[REDACTED]";
+const RECENT_TURNS_RETRY_LIMIT: usize = 3;
+const RECENT_TURNS_RETRY_SAFETY_MARGIN_TOKENS: usize = 128;
 
 pub(super) fn tool_audit_input_field(call: &ToolCall) -> Option<Value> {
     if call.name == crate::tool::names::APPLY_PATCH {
@@ -567,7 +569,7 @@ impl TurnExecution<'_> {
             runtime,
             agent_id,
             authority_class,
-            effective_prompt,
+            mut effective_prompt,
             loop_control,
         } = self;
         let mut completed_rounds = Vec::<TurnRoundRecord>::new();
@@ -774,7 +776,7 @@ impl TurnExecution<'_> {
                 };
                 let checkpoint_request_id =
                     Some(format!("turn-{turn_index}-round-{round}-checkpoint"));
-                let prompt_frame = build_provider_prompt_frame(&effective_prompt);
+                let mut prompt_frame = build_provider_prompt_frame(&effective_prompt);
                 let reminder_rounds = work_item_stale_reminder_rounds();
                 let reminder_cooldown_rounds = work_item_stale_reminder_cooldown_rounds();
                 let stale_work_item_reminder = if rounds_since_work_item_update >= reminder_rounds
@@ -880,61 +882,110 @@ impl TurnExecution<'_> {
                     (None, Some(budget)) => Some(budget.to_string()),
                     (None, None) => None,
                 };
-                let projection = match build_turn_local_projection_with_runtime_reminder(
-                    &prompt_frame,
-                    &completed_rounds,
-                    &available_tools,
-                    &checkpoint_state,
-                    checkpoint_request_id,
-                    // Turn-local continuation projection covers the complete provider request.
-                    // The bounded turn projection budget only applies to initial recent_turns.
-                    context_config.prompt_budget_estimated_tokens,
-                    context_config.compaction_keep_recent_estimated_tokens,
-                    runtime_reminder.as_deref(),
-                ) {
-                    TurnLocalProjectionOutcome::Projection(projection) => projection,
-                    TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
-                        runtime.inner.storage.append_event(&AuditEvent::new(
-                            "turn_local_baseline_over_budget",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "round": round,
-                                "reason": &diagnostics.reason,
-                                "estimated_baseline_tokens": diagnostics.estimated_baseline_tokens,
-                                "minimum_exact_round_estimated_tokens": diagnostics.minimum_exact_round_estimated_tokens,
-                                "minimum_projection_estimated_tokens": diagnostics.minimum_projection_estimated_tokens,
-                                "effective_budget_estimated_tokens": diagnostics.effective_budget_estimated_tokens,
-                                "tool_overhead_estimated_tokens": diagnostics.tool_overhead_estimated_tokens,
-                                "system_prompt_estimated_tokens": diagnostics.system_prompt_estimated_tokens,
-                                "context_attachment_estimated_tokens": diagnostics.context_attachment_estimated_tokens,
-                            }),
-                        ))?;
-                        let final_text = format!(
-                            "Turn stopped because the continuation baseline exceeded the prompt budget (reason={}, estimated_baseline_tokens={}, minimum_projection_estimated_tokens={}, effective_budget_estimated_tokens={}, tool_overhead_estimated_tokens={}).",
-                            diagnostics.reason,
-                            diagnostics.estimated_baseline_tokens,
-                            diagnostics.minimum_projection_estimated_tokens,
-                            diagnostics.effective_budget_estimated_tokens,
-                            diagnostics.tool_overhead_estimated_tokens,
-                        );
-                        let terminal = runtime
-                            .persist_turn_terminal_record(
-                                TurnTerminalKind::BaselineOverBudget,
-                                Some(final_text.clone()),
-                                turn_started_at.elapsed().as_millis() as u64,
-                                None,
-                            )
-                            .await?;
-                        return Ok(AgentLoopOutcome {
-                            final_text,
-                            final_text_source_assistant_round_id: None,
-                            turn_index: terminal.turn_index,
-                            terminal,
-                            should_sleep: false,
-                            sleep_duration_ms: None,
-                            allow_sleep_runnable_work_override: false,
-                            terminal_kind: TurnTerminalKind::BaselineOverBudget,
-                        });
+                let mut recent_turns_budget = effective_prompt.recent_turns_initial_budget();
+                let mut recent_turns_retry_attempts = 0usize;
+                let projection = loop {
+                    match build_turn_local_projection_with_runtime_reminder(
+                        &prompt_frame,
+                        &completed_rounds,
+                        &available_tools,
+                        &checkpoint_state,
+                        checkpoint_request_id.clone(),
+                        // Turn-local continuation projection covers the complete provider request.
+                        // The bounded turn projection budget only applies to initial recent_turns.
+                        context_config.prompt_budget_estimated_tokens,
+                        context_config.compaction_keep_recent_estimated_tokens,
+                        runtime_reminder.as_deref(),
+                    ) {
+                        TurnLocalProjectionOutcome::Projection(projection) => break projection,
+                        TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics)
+                            if diagnostics.reason == "minimum_exact_round_unfit"
+                                && recent_turns_retry_attempts < RECENT_TURNS_RETRY_LIMIT
+                                && recent_turns_budget.is_some() =>
+                        {
+                            let current_budget = recent_turns_budget.unwrap_or_default();
+                            let deficit = diagnostics
+                                .minimum_projection_estimated_tokens
+                                .saturating_sub(diagnostics.effective_budget_estimated_tokens);
+                            let next_budget = current_budget.saturating_sub(
+                                deficit.saturating_add(RECENT_TURNS_RETRY_SAFETY_MARGIN_TOKENS),
+                            );
+                            if next_budget == current_budget {
+                                recent_turns_budget = None;
+                                continue;
+                            }
+                            let Some(reprojected_prompt) = effective_prompt.reproject_recent_turns(
+                                &runtime.inner.storage,
+                                next_budget,
+                                &available_tools,
+                            ) else {
+                                recent_turns_budget = None;
+                                continue;
+                            };
+                            recent_turns_retry_attempts += 1;
+                            runtime.inner.storage.append_event(&AuditEvent::new(
+                                "turn_local_recent_turns_retry",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "round": round,
+                                    "attempt": recent_turns_retry_attempts,
+                                    "reason": &diagnostics.reason,
+                                    "previous_recent_turns_budget": current_budget,
+                                    "next_recent_turns_budget": next_budget,
+                                    "deficit_estimated_tokens": deficit,
+                                    "previous_context_attachment_estimated_tokens": diagnostics.context_attachment_estimated_tokens,
+                                }),
+                            ))?;
+                            effective_prompt = reprojected_prompt;
+                            prompt_frame = build_provider_prompt_frame(&effective_prompt);
+                            recent_turns_budget = Some(next_budget);
+                        }
+                        TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+                            runtime.inner.storage.append_event(&AuditEvent::new(
+                                "turn_local_baseline_over_budget",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "round": round,
+                                    "reason": &diagnostics.reason,
+                                    "estimated_baseline_tokens": diagnostics.estimated_baseline_tokens,
+                                    "minimum_exact_round_estimated_tokens": diagnostics.minimum_exact_round_estimated_tokens,
+                                    "minimum_projection_estimated_tokens": diagnostics.minimum_projection_estimated_tokens,
+                                    "effective_budget_estimated_tokens": diagnostics.effective_budget_estimated_tokens,
+                                    "tool_overhead_estimated_tokens": diagnostics.tool_overhead_estimated_tokens,
+                                    "system_prompt_estimated_tokens": diagnostics.system_prompt_estimated_tokens,
+                                    "context_attachment_estimated_tokens": diagnostics.context_attachment_estimated_tokens,
+                                    "recent_turns_retry_attempts": recent_turns_retry_attempts,
+                                    "final_recent_turns_budget": recent_turns_budget,
+                                }),
+                            ))?;
+                            let final_text = format!(
+                                "Turn stopped because the continuation baseline exceeded the prompt budget after {} recent-turns recovery attempt(s) (reason={}, estimated_baseline_tokens={}, minimum_projection_estimated_tokens={}, effective_budget_estimated_tokens={}, tool_overhead_estimated_tokens={}).",
+                                recent_turns_retry_attempts,
+                                diagnostics.reason,
+                                diagnostics.estimated_baseline_tokens,
+                                diagnostics.minimum_projection_estimated_tokens,
+                                diagnostics.effective_budget_estimated_tokens,
+                                diagnostics.tool_overhead_estimated_tokens,
+                            );
+                            let terminal = runtime
+                                .persist_turn_terminal_record(
+                                    TurnTerminalKind::BaselineOverBudget,
+                                    Some(final_text.clone()),
+                                    turn_started_at.elapsed().as_millis() as u64,
+                                    None,
+                                )
+                                .await?;
+                            return Ok(AgentLoopOutcome {
+                                final_text,
+                                final_text_source_assistant_round_id: None,
+                                turn_index: terminal.turn_index,
+                                terminal,
+                                should_sleep: false,
+                                sleep_duration_ms: None,
+                                allow_sleep_runnable_work_override: false,
+                                terminal_kind: TurnTerminalKind::BaselineOverBudget,
+                            });
+                        }
                     }
                 };
                 if let Some(compaction) = projection.compaction.as_ref() {
