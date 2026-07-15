@@ -385,9 +385,13 @@ fn append_work_item_todo(
     let Some(mut work_item) = storage.latest_work_item(&work_item_id)? else {
         anyhow::bail!("missing work item {work_item_id}");
     };
+    let expected_revision = work_item.revision;
+    work_item.revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("work item revision overflow"))?;
     work_item.todo_list = todo_list;
     work_item.updated_at = Utc::now();
-    storage.append_work_item(&work_item)?;
+    storage.update_work_item_expected(&work_item, expected_revision)?;
     Ok(())
 }
 
@@ -429,7 +433,6 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
         AdmissionContext::LocalProcess,
     );
     previous_operator.id = "msg_focused_prompt_projection".into();
-    storage.append_message(&previous_operator)?;
     let mut result_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -530,7 +533,6 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
     operator_message.id = "msg_runtime_flow_operator".into();
     let mut operator_message_with_turn = operator_message.clone();
     operator_message_with_turn.turn_id = Some("turn_op_test".into());
-    storage.append_message(&operator_message_with_turn)?;
     let mut turn_index_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -630,7 +632,7 @@ runtime flow
 
 ## continuation_anchor
 Continuation anchor:
-Latest trusted operator input: message_seq 2.
+Latest trusted operator input: message_seq 1.
 Current input relation: current_input is a task-result continuation, not a new operator request. Continue the latest trusted operator input above unless the current WorkItem projection is more specific.
 
 ## recent_turns
@@ -638,7 +640,7 @@ Recent turns:
 - Turn turn_index 1:
   - turn_id: turn_op_test
   - trigger: trusted operator input
-  - continues input: message_seq 2
+  - continues input: message_seq 1
   - continuation trigger: a task-result continuation
   - operator input full: Run cargo test runtime_flow and report back. message_ref=message:msg_runtime_flow_operator
   - produced briefs:
@@ -1766,7 +1768,6 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         MessageDeliverySurface::CliPrompt,
         AdmissionContext::LocalProcess,
     );
-    storage.append_message(&first_operator)?;
     let mut first_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -1816,7 +1817,6 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
-    storage.append_message(&task_result)?;
     let mut task_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -1978,7 +1978,6 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         MessageDeliverySurface::CliPrompt,
         AdmissionContext::LocalProcess,
     );
-    storage.append_message(&first_operator)?;
     storage.append_tool_execution(&ToolExecutionRecord {
         id: "tool_issue_list_analysis".into(),
         agent_id: "default".into(),
@@ -2184,7 +2183,6 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         MessageDeliverySurface::CliPrompt,
         AdmissionContext::LocalProcess,
     );
-    storage.append_message(&recent_operator)?;
     let mut recent_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
