@@ -878,6 +878,13 @@ CREATE INDEX IF NOT EXISTS idx_execution_root_entries_workspace
   ON execution_root_entries(workspace_id);
 "#,
     },
+    Migration {
+        version: 25,
+        name: "drop_workspace_id_aliases",
+        sql: r#"
+DROP TABLE IF EXISTS workspace_id_aliases;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
