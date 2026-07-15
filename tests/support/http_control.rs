@@ -1241,6 +1241,20 @@ pub async fn control_agent_model_override_validates_codex_reasoning_effort() -> 
     assert_eq!(ultra.status(), reqwest::StatusCode::BAD_REQUEST);
     assert!(ultra.text().await?.contains("orchestration semantics"));
 
+    let invalid_non_codex = client
+        .post(format!("{base}/api/control/agents/default/model"))
+        .json(&serde_json::json!({
+            "model": "anthropic/claude-haiku-4-5",
+            "reasoning_effort": "arbitrary"
+        }))
+        .send()
+        .await?;
+    assert_eq!(invalid_non_codex.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(invalid_non_codex
+        .text()
+        .await?
+        .contains("must be one of low, medium, high, xhigh, max"));
+
     server.abort();
     Ok(())
 }

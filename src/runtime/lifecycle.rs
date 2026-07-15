@@ -756,12 +756,14 @@ impl RuntimeHandle {
         model_override: crate::config::ModelRouteRef,
         reasoning_effort: Option<String>,
     ) -> Result<crate::types::AgentModelState> {
-        if model_override.provider == crate::config::ProviderId::openai_codex() {
-            if let Some(reasoning_effort) = reasoning_effort.as_deref() {
-                let snap = self.inner.config_snapshot.load();
-                snap.model_catalog
-                    .resolved_model_policy(&snap.base_context_config, Some(&model_override))
-                    .validate_reasoning_effort(reasoning_effort)?;
+        if let Some(reasoning_effort) = reasoning_effort.as_deref() {
+            let snap = self.inner.config_snapshot.load();
+            if let Some(route) = snap.model_catalog.resolve_explicit_model_route(
+                &snap.base_context_config,
+                &model_override,
+                crate::config::ModelRouteCapability::Turn,
+            ) {
+                route.validate_reasoning_effort(reasoning_effort)?;
             }
         }
         let mut next_state = self.agent_state().await?;
