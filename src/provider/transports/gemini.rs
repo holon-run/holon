@@ -257,12 +257,13 @@ impl AgentProvider for GeminiProvider {
 }
 
 fn build_system_instruction(request: &ProviderTurnRequest) -> GeminiContent {
-    let mut text = request.prompt_frame.system_prompt.clone();
-    for block in &request.prompt_frame.system_blocks {
-        append_text_block(&mut text, &block.text);
-    }
-    for block in &request.prompt_frame.context_blocks {
-        append_text_block(&mut text, &block.text);
+    let mut text = String::new();
+    if request.prompt_frame.has_structured_system_blocks() {
+        for block in &request.prompt_frame.system_blocks {
+            append_text_block(&mut text, &block.text);
+        }
+    } else {
+        text = request.prompt_frame.system_prompt.clone();
     }
     GeminiContent {
         role: "user".to_string(),
