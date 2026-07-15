@@ -89,6 +89,101 @@ async fn fetch_events_page_until(
     }
 }
 
+async fn lagged_test_host() -> Result<RuntimeHost> {
+    let config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider_and_event_bus_capacity_for_test(
+        config,
+        Arc::new(StubProvider::new("route result")),
+        1,
+    )?;
+    attach_default_workspace(&host).await?;
+    Ok(host)
+}
+
+async fn collect_sse_until_eof(response: reqwest::Response) -> Result<Vec<ParsedSseEvent>> {
+    let body = tokio::time::timeout(Duration::from_secs(10), response.text()).await??;
+    let events = body
+        .split("\n\n")
+        .filter_map(|frame| {
+            let mut id = None;
+            let mut event = None;
+            let mut data = None;
+            for line in frame.lines() {
+                if let Some(value) = line.strip_prefix("id:") {
+                    id = Some(value.trim().to_string());
+                } else if let Some(value) = line.strip_prefix("event:") {
+                    event = Some(value.trim().to_string());
+                } else if let Some(value) = line.strip_prefix("data:") {
+                    data = serde_json::from_str(value.trim()).ok();
+                }
+            }
+            Some(ParsedSseEvent {
+                _id: id?,
+                event: event?,
+                data: data?,
+            })
+        })
+        .collect();
+    Ok(events)
+}
+
+fn append_lag_events(runtime: &holon::runtime::RuntimeHandle, count: usize) -> Result<()> {
+    let padding = "x".repeat(64 * 1024);
+    for n in 0..count {
+        runtime.storage().append_event(&AuditEvent::new(
+            "lag_test_event",
+            serde_json::json!({ "n": n, "padding": padding }),
+        ))?;
+    }
+    Ok(())
+}
+
+async fn assert_lagged_stream_recovers(
+    base: &str,
+    client: &Client,
+    stream: reqwest::Response,
+    expected_count: usize,
+) -> Result<()> {
+    let streamed = collect_sse_until_eof(stream).await?;
+    let last_contiguous_seq = streamed
+        .iter()
+        .filter(|event| event.event == "lag_test_event")
+        .filter_map(|event| event.data["event_seq"].as_u64())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        streamed
+            .iter()
+            .filter(|event| event.event == "lag_test_event")
+            .count()
+            < expected_count,
+        "the lagged stream should close before delivering every event"
+    );
+
+    let page: serde_json::Value = client
+        .get(format!(
+            "{base}/api/agents/default/events?after_seq={last_contiguous_seq}&limit=512&order=asc"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let recovered = page["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|event| event["type"] == "lag_test_event")
+        .count();
+    let streamed_count = streamed
+        .iter()
+        .filter(|event| event.event == "lag_test_event")
+        .count();
+    assert_eq!(streamed_count + recovered, expected_count);
+    Ok(())
+}
+
 pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
@@ -339,6 +434,40 @@ pub async fn global_events_stream_receives_live_agent_events() -> Result<()> {
         Some(event._id.parse::<u64>()?)
     );
     assert_eq!(event.data["payload"]["global"], true);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn events_stream_closes_on_lag_and_recovers_from_contiguous_cursor() -> Result<()> {
+    let host = lagged_test_host().await?;
+    let runtime = host.default_runtime().await?;
+    let (base, server) = spawn_server_for_host(host).await?;
+    let client = reqwest::Client::new();
+
+    let stream = client
+        .get(format!("{base}/api/agents/default/events/stream"))
+        .send()
+        .await?;
+    append_lag_events(&runtime, 256)?;
+    assert_lagged_stream_recovers(&base, &client, stream, 256).await?;
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn global_events_stream_closes_on_lag_and_recovers_per_agent() -> Result<()> {
+    let host = lagged_test_host().await?;
+    let runtime = host.default_runtime().await?;
+    let (base, server) = spawn_server_for_host(host).await?;
+    let client = reqwest::Client::new();
+
+    let stream = client
+        .get(format!("{base}/api/events/stream"))
+        .send()
+        .await?;
+    append_lag_events(&runtime, 256)?;
+    assert_lagged_stream_recovers(&base, &client, stream, 256).await?;
 
     server.abort();
     Ok(())

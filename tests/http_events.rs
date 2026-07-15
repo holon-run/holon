@@ -17,6 +17,8 @@ http_async_tests!(
     events_stream_supports_cursor_and_rfc3339_ts,
     events_stream_receives_live_events_without_polling_replay,
     global_events_stream_receives_live_agent_events,
+    events_stream_closes_on_lag_and_recovers_from_contiguous_cursor,
+    global_events_stream_closes_on_lag_and_recovers_per_agent,
     events_route_preserves_replay_provenance,
     events_route_payload_includes_full_fields,
     events_route_max_level_filters_with_bounded_visible_pages,

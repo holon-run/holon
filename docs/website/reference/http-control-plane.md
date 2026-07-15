@@ -190,7 +190,14 @@ current replay window. For non-zero `after_seq`, the cursor must still be inside
 the replay window; otherwise the route returns `404` with `code:
 cursor_not_found` and `after_seq`/`event_seq` extension fields before opening
 the SSE stream. If an already-open stream falls behind the replay window, the
-server closes that stream.
+server closes that stream. Clients must treat EOF as a possible gap signal,
+fetch durable event pages after the last contiguous SSE `id`, and then reopen
+the stream from the recovered high-watermark.
+
+**`GET /api/events/stream`** is a live-only stream across public agents. It has
+no global durable cursor or historical replay. If its receiver lags, the server
+closes the stream; clients must backfill each affected agent from that agent's
+last contiguous `event_seq` before reopening the global stream.
 
 Filtering behavior:
 

@@ -5149,7 +5149,7 @@
     },
     "/api/agents/{agent_id}/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
+        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
         "operationId": "agentEventsStream",
         "parameters": [
           {
@@ -9182,7 +9182,7 @@
     },
     "/api/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor.",
+        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor. If the receiver lags, the server closes the stream; clients must backfill each agent from its last contiguous event_seq before reconnecting.",
         "operationId": "eventsStream",
         "parameters": [],
         "responses": {

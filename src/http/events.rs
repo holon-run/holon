@@ -184,6 +184,7 @@ pub async fn events_stream(
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!(agent_id = %runtime_id, skipped, "event stream receiver lagged");
+                    break;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -221,6 +222,7 @@ pub async fn global_events_stream(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!(skipped, "global event stream receiver lagged");
+                    break;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }

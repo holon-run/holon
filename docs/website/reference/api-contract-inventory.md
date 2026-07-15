@@ -194,7 +194,10 @@ Event page cursors are exclusive: `after_seq` returns records with higher
 both returns `after_seq < event_seq < before_seq`. SSE streams start after the
 current tail when `after_seq` is omitted, replay from the current replay window
 when `after_seq=0`, and return `404 cursor_not_found` before opening the stream
-when a non-zero `after_seq` is outside that replay window.
+when a non-zero `after_seq` is outside that replay window. A lagged live
+receiver closes the SSE connection rather than continuing across a hidden gap;
+clients resume from the last contiguous per-agent `event_seq`. The live-only
+global stream has no global cursor, so clients backfill each agent separately.
 
 Stable `StreamEventEnvelope` fields:
 
