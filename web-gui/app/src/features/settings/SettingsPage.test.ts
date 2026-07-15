@@ -111,4 +111,17 @@ describe("buildSearchProviderConfigUpdates", () => {
       { key: "web.providers.searxng.credential_profile", value: "" },
     ]);
   });
+
+  it("omits base_url for native search providers that do not need one", () => {
+    expect(
+      buildSearchProviderConfigUpdates("openai-native", {
+        kind: "open_ai_native",
+        baseUrl: "",
+        credentialProfile: "",
+      }),
+    ).toEqual([
+      { key: "web.providers.openai-native.kind", value: "open_ai_native" },
+      { key: "web.providers.openai-native.credential_profile", value: "" },
+    ]);
+  });
 });

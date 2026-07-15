@@ -75,6 +75,7 @@ type StandardSearchProviderDefinition = {
   label: string;
   description: string;
   requiresApiKey: boolean;
+  requiresBaseUrl?: boolean;
   defaultCredentialProfile?: string;
   baseUrlPlaceholder?: string;
 };
@@ -83,6 +84,8 @@ const webSearchProviderKinds = [
   "duck_duck_go",
   "searxng",
   "brave",
+  "tencent_cloud_wsa",
+  "bocha",
   "tavily",
   "exa",
   "perplexity",
@@ -135,11 +138,28 @@ const standardSearchProviders: StandardSearchProviderDefinition[] = [
     defaultCredentialProfile: "firecrawl:default",
   },
   {
+    id: "tencent-cloud-wsa",
+    kind: "tencent_cloud_wsa",
+    label: "Tencent Cloud WSA",
+    description: "Tencent Cloud WSA SearchPro — research-quality web search with domain filter and freshness support. Requires a Tencent Cloud API key.",
+    requiresApiKey: true,
+    defaultCredentialProfile: "tencent_cloud_wsa:default",
+  },
+  {
+    id: "bocha",
+    kind: "bocha",
+    label: "Bocha AI Search",
+    description: "Bocha AI search optimized for Chinese-language queries with freshness support. Requires a Bocha API key.",
+    requiresApiKey: true,
+    defaultCredentialProfile: "bocha:default",
+  },
+  {
     id: "searxng",
     kind: "searxng",
     label: "SearXNG",
     description: "Use a self-hosted or trusted SearXNG instance. No API key is needed.",
     requiresApiKey: false,
+    requiresBaseUrl: true,
     baseUrlPlaceholder: "https://search.example.com",
   },
   {
@@ -188,11 +208,16 @@ function defaultSearchProviderDraft(providerId: string): SearchProviderDraft {
 }
 
 export function buildSearchProviderConfigUpdates(providerId: string, draft: SearchProviderDraft): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  return [
+  const definition = standardSearchProviderById.get(providerId);
+  const shouldSendBaseUrl = !definition || definition.requiresApiKey || Boolean(definition.requiresBaseUrl);
+  const updates: Array<{ key: string; value?: unknown; unset?: boolean }> = [
     { key: `web.providers.${providerId}.kind`, value: draft.kind },
-    { key: `web.providers.${providerId}.base_url`, value: draft.baseUrl?.trim() ?? "" },
     { key: `web.providers.${providerId}.credential_profile`, value: draft.credentialProfile?.trim() ?? "" },
   ];
+  if (shouldSendBaseUrl) {
+    updates.splice(1, 0, { key: `web.providers.${providerId}.base_url`, value: draft.baseUrl?.trim() ?? "" });
+  }
+  return updates;
 }
 
 export function SettingsPage({
@@ -1164,10 +1189,10 @@ export function SettingsPage({
                       </div>
                       <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"} iconOnly title={providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")} />
                     </header>
-                    {!definition.requiresApiKey ? (
+                    {definition.requiresBaseUrl ? (
                       <div className="settings-form-row">
                         <label>
-                          <span>{t("settings.baseUrl")}</span>
+                          <span>{t("settings.baseUrl")} *</span>
                           <input
                             value={draft.baseUrl ?? ""}
                             onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })}
