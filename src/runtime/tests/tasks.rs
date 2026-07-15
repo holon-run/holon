@@ -164,7 +164,7 @@ fn task_from_message_falls_back_to_message_work_item_id() {
 
 #[test]
 fn task_from_message_preserves_task_detail_and_recovery() {
-    let msg = task_message_with_metadata(
+    let mut msg = task_message_with_metadata(
         MessageKind::TaskStatus,
         serde_json::json!({
             "task_id": "t-detail",
@@ -173,11 +173,16 @@ fn task_from_message_preserves_task_detail_and_recovery() {
             "task_recovery": { "kind": "command_task", "summary": "test cmd", "spec": { "cmd": "true", "workdir": null, "shell": null, "login": false, "tty": false, "yield_time_ms": 0, "max_output_tokens": null, "accepts_input": false, "terminal_reentry": false }, "authority_class": "operator_instruction", "promoted_from_exec_command": false }
         }),
     );
+    msg.turn_id = Some("turn-parent".into());
     let record = tasks::task_from_message(&msg, "default").unwrap();
     assert!(record.detail.is_some());
     assert_eq!(
         record.detail.as_ref().unwrap()["cancel_requested"],
         serde_json::json!(true)
+    );
+    assert_eq!(
+        record.detail.as_ref().unwrap()["parent_turn_id"],
+        serde_json::json!("turn-parent")
     );
     assert!(record.recovery.is_some());
 }

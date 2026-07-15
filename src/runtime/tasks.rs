@@ -2991,6 +2991,16 @@ pub(super) fn task_from_message(message: &MessageEnvelope, agent_id: &str) -> Re
         .map(ToString::to_string)
         .or_else(|| Some(message_text(&message.body)));
 
+    let mut detail = metadata.and_then(|value| value.get("task_detail")).cloned();
+    if let Some(parent_turn_id) = message.turn_id.as_ref() {
+        let detail = detail.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(detail) = detail.as_object_mut() {
+            detail
+                .entry("parent_turn_id")
+                .or_insert_with(|| serde_json::json!(parent_turn_id));
+        }
+    }
+
     Ok(TaskRecord {
         id: task_id,
         agent_id: agent_id.to_string(),
@@ -3005,7 +3015,7 @@ pub(super) fn task_from_message(message: &MessageEnvelope, agent_id: &str) -> Re
             .map(ToString::to_string)
             .or_else(|| message.work_item_id.clone()),
         summary,
-        detail: metadata.and_then(|value| value.get("task_detail")).cloned(),
+        detail,
         recovery: metadata
             .and_then(|value| value.get("task_recovery"))
             .cloned()

@@ -2882,6 +2882,22 @@ fn upsert_work_item_tx(
 }
 
 fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM tasks WHERE task_id = ?1",
+            [&record.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| decode_task_payload(&payload))
+        .transpose()?;
+    if let Some(existing) = existing.as_ref() {
+        match task_transition(existing, record)? {
+            StateTransitionOutcome::Applied => {}
+            StateTransitionOutcome::Idempotent => return Ok(()),
+        }
+    }
+
     let kind = record.kind.as_str();
     let status = enum_string(&record.status)?;
     let status_phase = i64::from(task_status_phase(&record.status));
@@ -3093,6 +3109,29 @@ enum StateTransitionOutcome {
     Idempotent,
 }
 
+fn task_transition(existing: &TaskRecord, incoming: &TaskRecord) -> Result<StateTransitionOutcome> {
+    if is_terminal_task_status(&existing.status) {
+        if is_terminal_task_status(&incoming.status) && task_terminal_payload_eq(existing, incoming)
+        {
+            return Ok(StateTransitionOutcome::Idempotent);
+        }
+        return Err(RuntimeStateTransitionConflict::new(
+            "task",
+            &existing.id,
+            enum_string(&existing.status)?,
+            enum_string(&incoming.status)?,
+        )
+        .into());
+    }
+    if task_revision(incoming) < task_revision(existing)
+        || (task_revision(incoming) == task_revision(existing)
+            && task_status_phase(&incoming.status) < task_status_phase(&existing.status))
+    {
+        return Ok(StateTransitionOutcome::Idempotent);
+    }
+    Ok(StateTransitionOutcome::Applied)
+}
+
 fn queue_entry_transition(
     existing: &QueueEntryRecord,
     incoming: &QueueEntryRecord,
@@ -3173,6 +3212,44 @@ fn wait_condition_terminal_payload_eq(
     let mut existing = existing.clone();
     existing.updated_at = incoming.updated_at;
     existing == *incoming
+}
+
+fn task_terminal_payload_eq(existing: &TaskRecord, incoming: &TaskRecord) -> bool {
+    let mut existing = canonical_task_terminal_payload(existing);
+    let incoming = canonical_task_terminal_payload(incoming);
+    existing.updated_at = incoming.updated_at;
+    existing == incoming
+}
+
+fn canonical_task_terminal_payload(record: &TaskRecord) -> TaskRecord {
+    let mut canonical = record.clone();
+    canonical.detail = canonical
+        .detail
+        .as_ref()
+        .map(canonical_task_terminal_detail);
+    canonical
+}
+
+fn canonical_task_terminal_detail(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut canonical = serde_json::Map::new();
+            for (key, value) in map {
+                if matches!(
+                    key.as_str(),
+                    "initial_output" | "output_summary" | "output_preview"
+                ) {
+                    continue;
+                }
+                canonical.insert(key.clone(), canonical_task_terminal_detail(value));
+            }
+            serde_json::Value::Object(canonical)
+        }
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(canonical_task_terminal_detail).collect())
+        }
+        _ => value.clone(),
+    }
 }
 
 fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<bool> {
