@@ -69,16 +69,53 @@ impl RuntimeHandle {
             return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
         }
 
-        let current_turn_id = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.current_turn_id.clone()
-        };
-
         let now = Utc::now();
         let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
         let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
+        let mut state = self.agent_state().await?;
+        let expected_state = state.clone();
+        let current_turn_id = state.current_turn_id.clone();
         let mut work_item = None;
-        let cancelled_wait_condition_ids;
+        let active_waits = if let Some(work_item_id) = work_item_id.as_deref() {
+            self.inner
+                .storage
+                .raw_active_wait_conditions_for_agent(agent_id)?
+                .into_iter()
+                .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
+                .collect::<Vec<_>>()
+        } else {
+            self.inner
+                .storage
+                .active_wait_conditions_for_agent(agent_id)?
+                .into_iter()
+                .filter(|record| record.work_item_id.is_none())
+                .collect()
+        };
+        let mut wait_conditions = Vec::with_capacity(active_waits.len() + 1);
+        let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
+        for existing in active_waits {
+            let mut cancelled = existing.clone();
+            cancelled.status = WaitConditionStatus::Cancelled;
+            cancelled.updated_at = now;
+            cancelled.cancelled_at = Some(now);
+            cancelled_wait_condition_ids.push(existing.id);
+            wait_conditions.push(cancelled);
+        }
+        let mut work_items = Vec::new();
+        let mut audit_events = Vec::new();
+        let mut index_changes = Vec::new();
+        let mut committed_agent_state = None;
+        if !cancelled_wait_condition_ids.is_empty() {
+            audit_events.push(AuditEvent::new(
+                "wait_conditions_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": work_item_id,
+                    "reason": "wait_for_replaced",
+                    "wait_condition_ids": &cancelled_wait_condition_ids,
+                }),
+            ));
+        }
         if let Some(work_item_id) = work_item_id.as_deref() {
             let existing = self.validate_owned_work_item(agent_id, work_item_id)?;
             if existing.state != WorkItemState::Open {
@@ -87,25 +124,56 @@ impl RuntimeHandle {
                     work_item_id
                 ));
             }
-            cancelled_wait_condition_ids = self
-                .cancel_active_wait_conditions_for_work_item(
-                    agent_id,
-                    work_item_id,
-                    "wait_for_replaced",
-                )
-                .await?;
-            let updated = self
-                .write_wait_for_work_item_blocker(existing, &reason, recheck_at)
-                .await?;
-            self.clear_current_turn_work_item_if_matches(agent_id, &updated, "work_item_waiting")
-                .await?;
+            let mut updated = existing.clone();
+            if existing.blocked_by.as_deref() != Some(reason.as_str())
+                || existing.recheck_at != recheck_at
+                || existing.recheck_consumed_at.is_some()
+            {
+                updated = WorkItemRecord {
+                    revision: existing.revision + 1,
+                    blocked_by: Some(reason.clone()),
+                    recheck_at,
+                    recheck_consumed_at: None,
+                    updated_at: now,
+                    ..existing.clone()
+                };
+                let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+                    self.agent_home().as_path(),
+                    &mut updated,
+                )?;
+                if plan_artifact_changed {
+                    if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
+                        audit_events.push(event);
+                    }
+                }
+                audit_events.push(self.work_item_written_event(
+                    "wait_for_blocked",
+                    &updated,
+                    Value::Null,
+                ));
+                index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
+                work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: updated.clone(),
+                    expected_revision: existing.revision,
+                    current_focus: state.current_work_item_id.as_deref()
+                        == Some(updated.id.as_str()),
+                });
+            }
+            if state.current_turn_work_item_id.as_deref() == Some(updated.id.as_str()) {
+                state.current_turn_work_item_id = None;
+                audit_events.push(AuditEvent::new(
+                    "work_item_turn_binding_released",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "work_item_id": updated.id.as_str(),
+                        "reason": "work_item_waiting",
+                        "readiness": updated.readiness(),
+                        "revision": updated.revision,
+                    }),
+                ));
+                committed_agent_state = Some(state.clone());
+            }
             work_item = Some(updated);
-        } else {
-            // Agent-scoped wait: cancel prior active agent-scoped waits,
-            // symmetric with the work-item-scoped branch above.
-            cancelled_wait_condition_ids = self
-                .cancel_active_wait_conditions_for_agent(agent_id, "wait_for_replaced")
-                .await?;
         }
 
         let condition = WaitConditionRecord {
@@ -137,8 +205,13 @@ impl RuntimeHandle {
             cancelled_at: None,
             turn_id: current_turn_id,
         };
-        self.inner.storage.append_wait_condition(&condition)?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        wait_conditions.push(condition.clone());
+        audit_events.extend(
+            self.inner
+                .storage
+                .wait_condition_auxiliary_events(&condition),
+        );
+        audit_events.push(AuditEvent::new(
             "wait_condition_registered",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -151,8 +224,25 @@ impl RuntimeHandle {
                 "wake_sources": &condition.wake_sources,
                 "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
             }),
-        ))?;
-        self.inner.notify.notify_one();
+        ));
+        let commit = self.inner.runtime_db.transitions().commit_wait(
+            &crate::runtime_db::transitions::WaitTransitionCommand {
+                agent_id: agent_id.to_string(),
+                work_items,
+                wait_conditions,
+                agent_state: committed_agent_state.map(|record| {
+                    crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(record),
+                    }
+                }),
+                audit_events,
+                index_changes,
+                notify_scheduler: true,
+                fault: None,
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
 
         Ok(WaitForRegistration {
             scope: if condition.work_item_id.is_some() {
@@ -168,284 +258,99 @@ impl RuntimeHandle {
         })
     }
 
-    pub(super) async fn cancel_active_wait_conditions_for_work_item(
-        &self,
-        agent_id: &str,
-        work_item_id: &str,
-        reason: &str,
-    ) -> Result<Vec<String>> {
-        let now = Utc::now();
-        // Use raw (unfiltered) active waits: filter_active_wait_conditions_for_live_scope
-        // hides waits whose WorkItem is Completed, but this cancel path is called
-        // AFTER the WorkItem is already marked Completed during completion. Using
-        // the filtered path would find nothing to cancel, leaving orphaned waits.
-        let active = self
-            .inner
-            .storage
-            .raw_active_wait_conditions_for_agent(agent_id)?
-            .into_iter()
-            .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
-            .collect::<Vec<_>>();
-        let mut cancelled = Vec::new();
-        for condition in active {
-            let mut cancelled_condition = condition.clone();
-            cancelled_condition.status = WaitConditionStatus::Cancelled;
-            cancelled_condition.updated_at = now;
-            cancelled_condition.cancelled_at = Some(now);
-            self.inner
-                .storage
-                .append_wait_condition(&cancelled_condition)?;
-            cancelled.push(condition.id);
-        }
-        if !cancelled.is_empty() {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "wait_conditions_cancelled",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "work_item_id": work_item_id,
-                    "reason": reason,
-                    "wait_condition_ids": cancelled,
-                }),
-            ))?;
-        }
-        Ok(cancelled)
-    }
-
-    pub(super) async fn cancel_active_wait_conditions_for_agent(
-        &self,
-        agent_id: &str,
-        reason: &str,
-    ) -> Result<Vec<String>> {
-        let now = Utc::now();
-        let active = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(agent_id)?;
-        let mut cancelled = Vec::new();
-        for condition in active {
-            let mut cancelled_condition = condition.clone();
-            cancelled_condition.status = WaitConditionStatus::Cancelled;
-            cancelled_condition.updated_at = now;
-            cancelled_condition.cancelled_at = Some(now);
-            self.inner
-                .storage
-                .append_wait_condition(&cancelled_condition)?;
-            cancelled.push(condition.id);
-        }
-        if !cancelled.is_empty() {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "wait_conditions_cancelled",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "reason": reason,
-                    "wait_condition_ids": cancelled,
-                }),
-            ))?;
-        }
-        Ok(cancelled)
-    }
-
-    pub(super) async fn resolve_task_wait_conditions(&self, task_id: &str) -> Result<Vec<String>> {
-        let agent_id = self.agent_id().await?;
-        let active_conditions = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?;
-        let matching = active_conditions
-            .into_iter()
-            .filter(|condition| {
-                condition.wake_sources.iter().any(|source| {
-                    matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id)
-                })
-            })
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let now = Utc::now();
-        let mut resolved_ids = Vec::new();
-        for condition in matching {
-            let mut resolved = condition.clone();
-            resolved.status = WaitConditionStatus::Resolved;
-            resolved.updated_at = now;
-            resolved.resolved_at = Some(now);
-            self.inner.storage.append_wait_condition(&resolved)?;
-            if resolved.kind == WaitConditionKind::Task {
-                self.clear_wait_for_blocker_after_task_result(&resolved)
-                    .await?;
-            }
-            resolved_ids.push(condition.id);
-        }
-        self.inner.storage.append_event(&AuditEvent::new(
-            "wait_conditions_resolved",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "task_id": task_id,
-                "reason": "task_result",
-                "wait_condition_ids": &resolved_ids,
-            }),
-        ))?;
-        self.inner.notify.notify_one();
-        Ok(resolved_ids)
-    }
-
-    async fn write_wait_for_work_item_blocker(
-        &self,
-        existing: WorkItemRecord,
-        reason: &str,
-        recheck_at: Option<DateTime<Utc>>,
-    ) -> Result<WorkItemRecord> {
-        if existing.blocked_by.as_deref() == Some(reason)
-            && existing.recheck_at == recheck_at
-            && existing.recheck_consumed_at.is_none()
-        {
-            return Ok(existing);
-        }
-        let mut record = WorkItemRecord {
-            revision: existing.revision + 1,
-            blocked_by: Some(reason.to_string()),
-            recheck_at,
-            recheck_consumed_at: None,
-            updated_at: Utc::now(),
-            ..existing
-        };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
-        self.record_work_item_projection(&record, Some(record.revision - 1))
-            .await?;
-        if plan_artifact_changed {
-            self.append_work_item_plan_artifact_refreshed_event(&record)?;
-        }
-        self.append_work_item_written_event("wait_for_blocked", &record, Value::Null)?;
-        Ok(record)
-    }
-
-    async fn clear_current_turn_work_item_if_matches(
-        &self,
-        agent_id: &str,
-        record: &WorkItemRecord,
-        reason: &str,
-    ) -> Result<bool> {
-        let released = {
-            let mut guard = self.inner.agent.lock().await;
-            if guard.state.current_turn_work_item_id.as_deref() != Some(record.id.as_str()) {
-                return Ok(false);
-            }
-            guard.state.current_turn_work_item_id = None;
-            guard.persist_state(&self.inner.storage)?;
-            true
-        };
-        if released {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_turn_binding_released",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "work_item_id": record.id.as_str(),
-                    "reason": reason,
-                    "readiness": record.readiness(),
-                    "revision": record.revision,
-                }),
-            ))?;
-        }
-        Ok(released)
-    }
-
-    async fn clear_wait_for_blocker_after_task_result(
-        &self,
-        condition: &WaitConditionRecord,
-    ) -> Result<()> {
-        let Some(work_item_id) = condition.work_item_id.as_deref() else {
-            return Ok(());
-        };
-        let Some(existing) = self.inner.runtime_db.work_items().latest(work_item_id)? else {
-            return Ok(());
-        };
-        if existing.state != WorkItemState::Open {
-            return Ok(());
-        }
-        if existing.blocked_by.as_deref() != Some(condition.waiting_for.as_str()) {
-            return Ok(());
-        }
-        let mut record = WorkItemRecord {
-            revision: existing.revision + 1,
-            blocked_by: None,
-            recheck_at: None,
-            recheck_consumed_at: None,
-            updated_at: Utc::now(),
-            ..existing
-        };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
-        self.record_work_item_projection(&record, Some(record.revision - 1))
-            .await?;
-        if plan_artifact_changed {
-            self.append_work_item_plan_artifact_refreshed_event(&record)?;
-        }
-        self.append_work_item_written_event(
-            "wait_for_task_resolved",
-            &record,
-            serde_json::json!({
-                "wait_condition_id": condition.id,
-            }),
-        )?;
-        Ok(())
-    }
-
     pub(super) async fn clear_work_item_blocker_for_pick(
         &self,
         agent_id: &str,
         existing: WorkItemRecord,
         reason: &str,
     ) -> Result<WorkItemBlockerClearance> {
-        let cancelled_wait_condition_ids = self
-            .cancel_active_wait_conditions_for_work_item(
-                agent_id,
-                &existing.id,
-                "pick_work_item_clear_blocker",
-            )
-            .await?;
+        let now = Utc::now();
+        let active_waits = self
+            .inner
+            .storage
+            .raw_active_wait_conditions_for_agent(agent_id)?
+            .into_iter()
+            .filter(|condition| condition.work_item_id.as_deref() == Some(existing.id.as_str()))
+            .collect::<Vec<_>>();
+        let mut wait_conditions = Vec::with_capacity(active_waits.len());
+        let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
+        for condition in active_waits {
+            let mut cancelled = condition.clone();
+            cancelled.status = WaitConditionStatus::Cancelled;
+            cancelled.updated_at = now;
+            cancelled.cancelled_at = Some(now);
+            cancelled_wait_condition_ids.push(condition.id);
+            wait_conditions.push(cancelled);
+        }
         let needs_record_write = existing.blocked_by.is_some()
             || existing.recheck_at.is_some()
             || existing.recheck_consumed_at.is_some();
-        if !needs_record_write {
-            return Ok(WorkItemBlockerClearance {
-                work_item: existing,
-                blocker_cleared: !cancelled_wait_condition_ids.is_empty(),
-                cancelled_wait_condition_ids,
-            });
+        if !needs_record_write && wait_conditions.is_empty() {
+            return Ok(WorkItemBlockerClearance::unchanged(existing));
         }
 
-        let mut record = WorkItemRecord {
-            revision: existing.revision + 1,
-            blocked_by: None,
-            recheck_at: None,
-            recheck_consumed_at: None,
-            updated_at: Utc::now(),
-            ..existing
-        };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
-        self.record_work_item_projection(&record, Some(record.revision - 1))
-            .await?;
-        if plan_artifact_changed {
-            self.append_work_item_plan_artifact_refreshed_event(&record)?;
+        let mut audit_events = Vec::new();
+        if !cancelled_wait_condition_ids.is_empty() {
+            audit_events.push(AuditEvent::new(
+                "wait_conditions_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": existing.id,
+                    "reason": "pick_work_item_clear_blocker",
+                    "wait_condition_ids": &cancelled_wait_condition_ids,
+                }),
+            ));
         }
-        self.append_work_item_written_event(
-            "pick_blocker_cleared",
-            &record,
-            serde_json::json!({
-                "reason": reason,
-                "cancelled_wait_condition_ids": cancelled_wait_condition_ids.clone(),
-            }),
+        let mut record = existing.clone();
+        let mut work_items = Vec::new();
+        let mut index_changes = Vec::new();
+        if needs_record_write {
+            record = WorkItemRecord {
+                revision: existing.revision + 1,
+                blocked_by: None,
+                recheck_at: None,
+                recheck_consumed_at: None,
+                updated_at: now,
+                ..existing.clone()
+            };
+            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+                self.agent_home().as_path(),
+                &mut record,
+            )?;
+            if plan_artifact_changed {
+                if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
+                    audit_events.push(event);
+                }
+            }
+            audit_events.push(self.work_item_written_event(
+                "pick_blocker_cleared",
+                &record,
+                serde_json::json!({
+                    "reason": reason,
+                    "cancelled_wait_condition_ids": cancelled_wait_condition_ids.clone(),
+                }),
+            ));
+            let state = self.agent_state().await?;
+            work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
+                record: record.clone(),
+                expected_revision: existing.revision,
+                current_focus: state.current_work_item_id.as_deref() == Some(existing.id.as_str()),
+            });
+            index_changes = self.inner.storage.index_changes_for_work_item(&record)?;
+        }
+        let commit = self.inner.runtime_db.transitions().commit_wait(
+            &crate::runtime_db::transitions::WaitTransitionCommand {
+                agent_id: agent_id.to_string(),
+                work_items,
+                wait_conditions,
+                agent_state: None,
+                audit_events,
+                index_changes,
+                notify_scheduler: true,
+                fault: None,
+            },
         )?;
-        self.inner.notify.notify_one();
+        self.apply_transition_commit(commit).await;
         Ok(WorkItemBlockerClearance {
             work_item: record,
             blocker_cleared: true,

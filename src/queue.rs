@@ -63,6 +63,18 @@ impl RuntimeQueue {
             .or_else(|| pop_matching_from(&mut self.background, &mut predicate))
     }
 
+    pub fn peek_next_matching(
+        &self,
+        mut predicate: impl FnMut(&MessageEnvelope) -> bool,
+    ) -> Option<&MessageEnvelope> {
+        self.interject
+            .iter()
+            .find(|message| predicate(message))
+            .or_else(|| self.next.iter().find(|message| predicate(message)))
+            .or_else(|| self.normal.iter().find(|message| predicate(message)))
+            .or_else(|| self.background.iter().find(|message| predicate(message)))
+    }
+
     pub fn len(&self) -> usize {
         self.interject.len() + self.next.len() + self.normal.len() + self.background.len()
     }

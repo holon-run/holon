@@ -9,7 +9,7 @@ use crate::types::{
     FailureArtifact, FailureArtifactCategory, SpawnAgentModelRequest, SpawnAgentModelResolution,
     SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind,
     TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
-    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemContinuationFrame,
+    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WaitConditionStatus, WorkItemContinuationFrame,
     WorkItemContinuationReturnPolicy, WorkItemDelegationRecord, WorkItemDelegationState,
     WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
 };
@@ -2183,9 +2183,21 @@ impl RuntimeHandle {
             .active_workspace_entry
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-        self.record_work_item_projection(&record, None).await?;
-        self.append_work_item_written_event("created", &record, Value::Null)?;
-        self.inner.notify.notify_one();
+        let commit = self.inner.runtime_db.transitions().commit_work_item(
+            &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id,
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
+                    record: record.clone(),
+                    current_focus: false,
+                },
+                agent_state: None,
+                audit_events: vec![self.work_item_written_event("created", &record, Value::Null)],
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: true,
+                fault: None,
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
         Ok(record)
     }
 
@@ -2504,12 +2516,13 @@ impl RuntimeHandle {
                 &mut record,
             )?;
             record.revision = existing.revision + 1;
-            self.record_work_item_projection(&record, Some(existing.revision))
-                .await?;
+            let mut audit_events = Vec::new();
             if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
-                self.append_work_item_plan_artifact_refreshed_event(&record)?;
+                if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
+                    audit_events.push(event);
+                }
             }
-            self.append_work_item_written_event(
+            audit_events.push(self.work_item_written_event(
                 "updated",
                 &record,
                 serde_json::json!({
@@ -2519,14 +2532,57 @@ impl RuntimeHandle {
                     ),
                     "objective_changed": previous_objective != record.objective,
                 }),
-            )?;
+            ));
+            let mut state = self.agent_state().await?;
+            let expected_state = state.clone();
+            let mut agent_state = None;
+            let mut current_focus =
+                state.current_work_item_id.as_deref() == Some(record.id.as_str());
             if let Some(reason) = focus_release_reason {
-                self.release_current_work_item_if_matches(&agent_id, &record, reason)
-                    .await?;
+                let release_current =
+                    state.current_work_item_id.as_deref() == Some(record.id.as_str());
+                let release_turn =
+                    state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
+                if release_current {
+                    state.current_work_item_id = None;
+                    current_focus = false;
+                }
+                if release_turn {
+                    state.current_turn_work_item_id = None;
+                }
+                if release_current || release_turn {
+                    audit_events.push(AuditEvent::new(
+                        "work_item_focus_released",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "work_item_id": record.id.as_str(),
+                            "reason": reason,
+                            "readiness": record.readiness(),
+                            "revision": record.revision,
+                        }),
+                    ));
+                    agent_state = Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(state),
+                    });
+                }
             }
-        }
-        if wrote_item {
-            self.inner.notify.notify_one();
+            let commit = self.inner.runtime_db.transitions().commit_work_item(
+                &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                    agent_id,
+                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                        record: record.clone(),
+                        expected_revision: existing.revision,
+                        current_focus,
+                    },
+                    agent_state,
+                    audit_events,
+                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                    notify_scheduler: true,
+                    fault: None,
+                },
+            )?;
+            self.apply_transition_commit(commit).await;
         }
         Ok(record)
     }
@@ -2563,12 +2619,13 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
-        self.record_work_item_projection(&record, Some(existing.revision))
-            .await?;
+        let mut audit_events = Vec::new();
         if plan_artifact_changed {
-            self.append_work_item_plan_artifact_refreshed_event(&record)?;
+            if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
+                audit_events.push(event);
+            }
         }
-        self.inner.storage.append_event(&AuditEvent::new(
+        audit_events.push(AuditEvent::new(
             "work_item_recheck_consumed",
             serde_json::json!({
                 "work_item_id": record.id.clone(),
@@ -2576,7 +2633,25 @@ impl RuntimeHandle {
                 "recheck_at": record.recheck_at,
                 "recheck_consumed_at": record.recheck_consumed_at,
             }),
-        ))?;
+        ));
+        let state = self.agent_state().await?;
+        let commit = self.inner.runtime_db.transitions().commit_work_item(
+            &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id,
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision: existing.revision,
+                    current_focus: state.current_work_item_id.as_deref()
+                        == Some(record.id.as_str()),
+                },
+                agent_state: None,
+                audit_events,
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: true,
+                fault: None,
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
         Ok(Some(record))
     }
 
@@ -2619,33 +2694,118 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
-        self.record_work_item_projection(&record, Some(existing.revision))
-            .await?;
+        let now = Utc::now();
+        let active_waits = self
+            .inner
+            .storage
+            .raw_active_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .filter(|condition| condition.work_item_id.as_deref() == Some(record.id.as_str()))
+            .collect::<Vec<_>>();
+        let mut wait_conditions = Vec::with_capacity(active_waits.len());
+        let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
+        for condition in active_waits {
+            let mut cancelled = condition.clone();
+            cancelled.status = WaitConditionStatus::Cancelled;
+            cancelled.updated_at = now;
+            cancelled.cancelled_at = Some(now);
+            cancelled_wait_condition_ids.push(condition.id);
+            wait_conditions.push(cancelled);
+        }
+        let mut audit_events = Vec::new();
         if plan_artifact_changed {
-            self.append_work_item_plan_artifact_refreshed_event(&record)?;
+            if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
+                audit_events.push(event);
+            }
         }
-        {
-            self.release_current_work_item_if_matches(&agent_id, &record, "work_item_completed")
-                .await?;
+        let mut state = self.agent_state().await?;
+        let expected_state = state.clone();
+        let release_current = state.current_work_item_id.as_deref() == Some(record.id.as_str());
+        let release_turn = state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
+        if release_current {
+            state.current_work_item_id = None;
         }
-        self.cancel_active_wait_conditions_for_work_item(
-            &agent_id,
-            &record.id,
-            "work_item_completed",
-        )
-        .await?;
-        let continuation_resumed = self
-            .resume_direct_caller_after_work_item_completed(&agent_id, &record)
-            .await?;
-        self.append_work_item_written_event(
+        if release_turn {
+            state.current_turn_work_item_id = None;
+        }
+        if release_current || release_turn {
+            audit_events.push(AuditEvent::new(
+                "work_item_focus_released",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": record.id.as_str(),
+                    "reason": "work_item_completed",
+                    "readiness": record.readiness(),
+                    "revision": record.revision,
+                }),
+            ));
+        }
+        if !cancelled_wait_condition_ids.is_empty() {
+            audit_events.push(AuditEvent::new(
+                "wait_conditions_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": record.id,
+                    "reason": "work_item_completed",
+                    "wait_condition_ids": &cancelled_wait_condition_ids,
+                }),
+            ));
+        }
+        audit_events.push(self.work_item_written_event(
             "completed",
             &record,
             serde_json::json!({
                 "warning_count": warnings.len(),
-                "continuation_resumed": continuation_resumed.clone(),
+                "continuation_resumed": Value::Null,
             }),
+        ));
+        let commit = self.inner.runtime_db.transitions().commit_wait(
+            &crate::runtime_db::transitions::WaitTransitionCommand {
+                agent_id: agent_id.clone(),
+                work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision: existing.revision,
+                    current_focus: false,
+                }],
+                wait_conditions,
+                agent_state: (release_current || release_turn).then_some(
+                    crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(state),
+                    },
+                ),
+                audit_events,
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: true,
+                fault: None,
+            },
         )?;
-        self.inner.notify.notify_one();
+        self.apply_transition_commit(commit).await;
+        let continuation_resumed = match self
+            .resume_direct_caller_after_work_item_completed(&agent_id, &record)
+            .await
+        {
+            Ok(continuation) => continuation,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    agent_id = %agent_id,
+                    work_item_id = %record.id,
+                    "work item completion committed but continuation post-commit adapter failed"
+                );
+                let _ = self.inner.storage.append_event(&AuditEvent::new(
+                    "runtime_transition_post_commit_warning",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "transition": "work_item_completed",
+                        "work_item_id": record.id,
+                        "effect": "resume_direct_caller",
+                        "error": error.to_string(),
+                    }),
+                ));
+                None
+            }
+        };
         Ok(CompletedWorkItem {
             work_item: record,
             continuation_resumed,
@@ -2720,22 +2880,37 @@ impl RuntimeHandle {
             updated_at: Utc::now(),
             ..existing
         };
-        self.record_work_item_projection(&record, Some(record.revision - 1))
-            .await?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_completion_report_promoted",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "work_item_id": record.id.clone(),
-                "revision": record.revision,
-                "source_turn_index": source_turn_index,
-                "source_round": source_round,
-                "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
-                "warnings": warnings.clone(),
-                "warning_count": warnings.len(),
-                "brief_id": brief.id.clone(),
-            }),
-        ))?;
+        let state = self.agent_state().await?;
+        let commit = self.inner.runtime_db.transitions().commit_work_item(
+            &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id: agent_id.clone(),
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision: record.revision - 1,
+                    current_focus: state.current_work_item_id.as_deref()
+                        == Some(record.id.as_str()),
+                },
+                agent_state: None,
+                audit_events: vec![AuditEvent::new(
+                    "work_item_completion_report_promoted",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "work_item_id": record.id.clone(),
+                        "revision": record.revision,
+                        "source_turn_index": source_turn_index,
+                        "source_round": source_round,
+                        "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
+                        "warnings": warnings.clone(),
+                        "warning_count": warnings.len(),
+                        "brief_id": brief.id.clone(),
+                    }),
+                )],
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: false,
+                fault: None,
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
         Ok(WorkItemCompletionReportPromotionOutcome::Promoted(
             WorkItemCompletionReportPromotion {
                 record,
@@ -2867,51 +3042,6 @@ impl RuntimeHandle {
             ));
         }
         Ok(record)
-    }
-
-    pub(super) async fn release_current_work_item_if_matches(
-        &self,
-        agent_id: &str,
-        record: &WorkItemRecord,
-        reason: &str,
-    ) -> Result<bool> {
-        let released = {
-            let mut guard = self.inner.agent.lock().await;
-            let release_current =
-                guard.state.current_work_item_id.as_deref() == Some(record.id.as_str());
-            let release_turn =
-                guard.state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
-            if !release_current && !release_turn {
-                return Ok(false);
-            }
-            if release_current {
-                guard.state.current_work_item_id = None;
-            }
-            if release_turn {
-                guard.state.current_turn_work_item_id = None;
-            }
-            guard.persist_state(&self.inner.storage)?;
-            release_current || release_turn
-        };
-        if released {
-            self.inner
-                .runtime_db
-                .work_items()
-                .set_current_focus(agent_id, None)?;
-        }
-        if released {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_focus_released",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "work_item_id": record.id.as_str(),
-                    "reason": reason,
-                    "readiness": record.readiness(),
-                    "revision": record.revision,
-                }),
-            ))?;
-        }
-        Ok(released)
     }
 }
 

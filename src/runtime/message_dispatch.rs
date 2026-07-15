@@ -245,18 +245,32 @@ impl RuntimeHandle {
         record.work_refs = merged;
         record.revision = record.revision.saturating_add(1);
         record.updated_at = Utc::now();
-        self.record_work_item_projection(&record, Some(record.revision - 1))
-            .await?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_refs_updated",
-            serde_json::json!({
-                "agent_id": agent.id,
-                "work_item_id": record.id,
-                "revision": record.revision,
-                "previous_ref_count": previous_count,
-                "ref_count": record.work_refs.len(),
-            }),
-        ))?;
+        let commit = self.inner.runtime_db.transitions().commit_work_item(
+            &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id: agent.id.clone(),
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision: record.revision - 1,
+                    current_focus: agent.current_work_item_id.as_deref()
+                        == Some(record.id.as_str()),
+                },
+                agent_state: None,
+                audit_events: vec![AuditEvent::new(
+                    "work_item_refs_updated",
+                    serde_json::json!({
+                        "agent_id": agent.id,
+                        "work_item_id": record.id,
+                        "revision": record.revision,
+                        "previous_ref_count": previous_count,
+                        "ref_count": record.work_refs.len(),
+                    }),
+                )],
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: false,
+                fault: None,
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
         Ok(true)
     }
 

@@ -1558,10 +1558,9 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
     assert_eq!(first.agent_id, "bench-15");
 
     let first_state = first_host
-        .get_public_agent("bench-15")
-        .await?
-        .agent_state()
-        .await?;
+        .agent_storage("bench-15")?
+        .read_agent()?
+        .expect("persistent agent state should be stored after the first run");
     assert!(first_state.total_message_count > 0);
 
     let second_host =
