@@ -245,7 +245,8 @@ impl RuntimeHandle {
         record.work_refs = merged;
         record.revision = record.revision.saturating_add(1);
         record.updated_at = Utc::now();
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, Some(record.revision - 1))
+            .await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_refs_updated",
             serde_json::json!({

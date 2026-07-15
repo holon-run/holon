@@ -75,9 +75,6 @@ pub struct AppStorage {
     read_only: bool,
     agent_path: PathBuf,
     append_mutex: Arc<Mutex<()>>,
-    event_seq_counter: Arc<Mutex<u64>>,
-    message_seq_counter: Arc<Mutex<u64>>,
-    transcript_seq_counter: Arc<Mutex<u64>>,
     audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
     runtime_db: RuntimeDb,
     event_bus: Arc<Mutex<Option<EventBus>>>,
@@ -221,22 +218,11 @@ impl AppStorage {
             }
         }
 
-        let event_seq_counter = runtime_db
-            .audit_events()
-            .max_event_seq(agent_id.as_deref())?;
-        let message_seq_counter = runtime_db.messages().max_message_seq(agent_id.as_deref())?;
-        let transcript_seq_counter = runtime_db
-            .transcript_entries()
-            .max_transcript_seq(agent_id.as_deref())?;
-
         Ok(Self {
             agent_id,
             read_only: mode == StorageOpenMode::ReadOnly,
             agent_path: state_dir.join("agent.json"),
             append_mutex: Arc::new(Mutex::new(())),
-            event_seq_counter: Arc::new(Mutex::new(event_seq_counter)),
-            message_seq_counter: Arc::new(Mutex::new(message_seq_counter)),
-            transcript_seq_counter: Arc::new(Mutex::new(transcript_seq_counter)),
             audit_event_index: Arc::new(Mutex::new(None)),
             runtime_db,
             event_bus: Arc::new(Mutex::new(None)),
@@ -423,14 +409,6 @@ impl AppStorage {
 
     fn append_event_with_append_mutex_held(&self, event: &AuditEvent) -> Result<()> {
         self.ensure_writable()?;
-        let mut event = event.clone();
-        let mut counter = self
-            .event_seq_counter
-            .lock()
-            .map_err(|_| anyhow::anyhow!("event sequence counter mutex poisoned"))?;
-        event.event_seq = counter
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("event sequence counter overflow"))?;
         let sink = self
             .audit_event_index
             .lock()
@@ -438,18 +416,20 @@ impl AppStorage {
             .clone();
         let agent_id = if let Some(sink) = sink {
             let agent_id = sink.agent_id.clone();
-            sink.runtime_db
+            let event = sink
+                .runtime_db
                 .audit_events()
                 .append(agent_id.as_deref(), &event)?;
-            agent_id
+            (agent_id, event)
         } else {
             let agent_id = self.current_agent_id()?;
-            self.runtime_db
+            let event = self
+                .runtime_db
                 .audit_events()
                 .append(agent_id.as_deref(), &event)?;
-            agent_id
+            (agent_id, event)
         };
-        *counter = event.event_seq;
+        let (agent_id, event) = agent_id;
         if let Err(error) = self.publish_event(agent_id.clone(), &event) {
             tracing::warn!(
                 error = %error,
@@ -473,25 +453,12 @@ impl AppStorage {
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        let mut message = message.clone();
-        {
-            let _guard = self
-                .append_mutex
-                .lock()
-                .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-            let mut counter = self
-                .message_seq_counter
-                .lock()
-                .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
-            *counter += 1;
-            message.message_seq = Some(*counter);
-            drop(counter);
-            let runtime_db = self.runtime_db.clone();
-            let changes = self.index_changes_for_message(&message)?;
-            runtime_db
-                .messages()
-                .upsert_with_index_changes(&message, &changes)?;
-        }
+        self.ensure_writable()?;
+        let runtime_db = self.runtime_db.clone();
+        let changes = self.index_changes_for_message(message)?;
+        let message = runtime_db
+            .messages()
+            .append_with_index_changes(message, &changes)?;
         self.enqueue_memory_index_message_best_effort(&message)
     }
 
@@ -505,6 +472,24 @@ impl AppStorage {
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
+        self.ensure_writable()?;
+        if self.runtime_db.work_items().latest(&record.id)?.is_some() {
+            let expected_revision = record.revision.checked_sub(1).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "work item {} update has invalid revision {}",
+                    record.id,
+                    record.revision
+                )
+            })?;
+            self.update_work_item_expected(record, expected_revision)?;
+        } else {
+            self.insert_work_item(record)?;
+        }
+        Ok(())
+    }
+
+    pub fn insert_work_item(&self, record: &WorkItemRecord) -> Result<()> {
+        self.ensure_writable()?;
         let runtime_db = self.runtime_db.clone();
         let current_focus = self
             .read_agent()?
@@ -514,7 +499,29 @@ impl AppStorage {
         let changes = self.index_changes_for_work_item(record)?;
         runtime_db
             .work_items()
-            .upsert_with_index_changes(record, current_focus, &changes)?;
+            .insert_new_with_index_changes(record, current_focus, &changes)?;
+        self.enqueue_memory_index_work_item_best_effort(record)
+    }
+
+    pub fn update_work_item_expected(
+        &self,
+        record: &WorkItemRecord,
+        expected_revision: u64,
+    ) -> Result<()> {
+        self.ensure_writable()?;
+        let runtime_db = self.runtime_db.clone();
+        let current_focus = self
+            .read_agent()?
+            .and_then(|agent| agent.current_work_item_id)
+            .as_deref()
+            == Some(record.id.as_str());
+        let changes = self.index_changes_for_work_item(record)?;
+        runtime_db.work_items().update_expected_with_index_changes(
+            record,
+            expected_revision,
+            current_focus,
+            &changes,
+        )?;
         self.enqueue_memory_index_work_item_best_effort(record)
     }
 
@@ -558,19 +565,9 @@ impl AppStorage {
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        let _guard = self
-            .append_mutex
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        let mut entry = entry.clone();
-        let mut counter = self
-            .transcript_seq_counter
-            .lock()
-            .map_err(|_| anyhow::anyhow!("transcript sequence counter mutex poisoned"))?;
-        *counter += 1;
-        entry.transcript_seq = Some(*counter);
+        self.ensure_writable()?;
         let runtime_db = self.runtime_db.clone();
-        runtime_db.transcript_entries().upsert(&entry)?;
+        runtime_db.transcript_entries().append(entry)?;
         return Ok(());
     }
 
@@ -3389,7 +3386,7 @@ mod tests {
     }
 
     #[test]
-    fn message_seq_counter_resumes_from_existing_ledger() {
+    fn message_sequence_resumes_from_existing_ledger() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
@@ -3842,6 +3839,90 @@ mod tests {
         assert_eq!(
             entries
                 .iter()
+                .map(|entry| entry.transcript_seq)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn independent_storage_handles_allocate_unique_sequences() {
+        let dir = tempdir().unwrap();
+        let first = AppStorage::new_for_test(dir.path()).unwrap();
+        let second = AppStorage::new_for_test(dir.path()).unwrap();
+
+        first
+            .append_event(&AuditEvent::new("first", serde_json::json!({})))
+            .unwrap();
+        second
+            .append_event(&AuditEvent::new("second", serde_json::json!({})))
+            .unwrap();
+        first
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "first".into(),
+                },
+            ))
+            .unwrap();
+        second
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "second".into(),
+                },
+            ))
+            .unwrap();
+        first
+            .append_transcript_entry(&TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::IncomingMessage,
+                None,
+                Some("message-1".into()),
+                serde_json::json!({}),
+            ))
+            .unwrap();
+        second
+            .append_transcript_entry(&TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::IncomingMessage,
+                None,
+                Some("message-2".into()),
+                serde_json::json!({}),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            second
+                .read_recent_events(10)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            second
+                .read_recent_messages(10)
+                .unwrap()
+                .into_iter()
+                .map(|message| message.message_seq)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+        assert_eq!(
+            second
+                .read_recent_transcript(10)
+                .unwrap()
+                .into_iter()
                 .map(|entry| entry.transcript_seq)
                 .collect::<Vec<_>>(),
             vec![Some(1), Some(2)]
@@ -4893,6 +4974,7 @@ mod tests {
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
         let mut updated = item.clone();
+        updated.revision += 1;
         updated.blocked_by = Some("working".into());
         updated.updated_at = Utc::now();
 
@@ -4912,6 +4994,7 @@ mod tests {
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let older = WorkItemRecord::new("default", "older", WorkItemState::Open);
         let mut updated = older.clone();
+        updated.revision += 1;
         updated.objective = "updated".into();
         updated.updated_at = older.created_at + chrono::Duration::milliseconds(100);
         let other_agent = WorkItemRecord::new("other", "other agent", WorkItemState::Open);

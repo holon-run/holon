@@ -2183,8 +2183,7 @@ impl RuntimeHandle {
             .active_workspace_entry
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-        self.inner.runtime_db.work_items().upsert(&record, false)?;
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, None).await?;
         self.append_work_item_written_event("created", &record, Value::Null)?;
         self.inner.notify.notify_one();
         Ok(record)
@@ -2505,13 +2504,8 @@ impl RuntimeHandle {
                 &mut record,
             )?;
             record.revision = existing.revision + 1;
-            let current_focus = self.agent_state().await?.current_work_item_id.as_deref()
-                == Some(record.id.as_str());
-            self.inner
-                .runtime_db
-                .work_items()
-                .upsert(&record, current_focus)?;
-            self.record_work_item_projection(&record).await?;
+            self.record_work_item_projection(&record, Some(existing.revision))
+                .await?;
             if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
                 self.append_work_item_plan_artifact_refreshed_event(&record)?;
             }
@@ -2569,13 +2563,8 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
-        let current_focus =
-            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
-        self.inner
-            .runtime_db
-            .work_items()
-            .upsert(&record, current_focus)?;
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, Some(existing.revision))
+            .await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -2630,8 +2619,8 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
-        self.inner.runtime_db.work_items().upsert(&record, false)?;
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, Some(existing.revision))
+            .await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -2731,8 +2720,8 @@ impl RuntimeHandle {
             updated_at: Utc::now(),
             ..existing
         };
-        self.inner.runtime_db.work_items().upsert(&record, false)?;
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, Some(record.revision - 1))
+            .await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_completion_report_promoted",
             serde_json::json!({

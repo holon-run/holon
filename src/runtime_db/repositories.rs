@@ -38,7 +38,7 @@ impl WorkItemRepository<'_> {
                     }
                 }
                 for record in latest.values() {
-                    upsert_work_item_tx(
+                    import_work_item_tx(
                         tx,
                         record,
                         current_work_item_id == Some(record.id.as_str()),
@@ -48,20 +48,51 @@ impl WorkItemRepository<'_> {
             })
     }
 
-    pub fn upsert(&self, record: &WorkItemRecord, current_focus: bool) -> Result<()> {
+    pub fn insert_new(&self, record: &WorkItemRecord, current_focus: bool) -> Result<bool> {
         self.db
-            .transaction(|tx| upsert_work_item_tx(tx, record, current_focus))
+            .transaction(|tx| insert_new_work_item_tx(tx, record, current_focus))
     }
 
-    pub fn upsert_with_index_changes(
+    pub fn insert_new_with_index_changes(
         &self,
         record: &WorkItemRecord,
         current_focus: bool,
         changes: &[RuntimeIndexChange],
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.db.transaction(|tx| {
-            upsert_work_item_tx(tx, record, current_focus)?;
-            insert_runtime_index_changes_tx(tx, changes)
+            let inserted = insert_new_work_item_tx(tx, record, current_focus)?;
+            if inserted {
+                insert_runtime_index_changes_tx(tx, changes)?;
+            }
+            Ok(inserted)
+        })
+    }
+
+    pub fn update_expected(
+        &self,
+        record: &WorkItemRecord,
+        expected_revision: u64,
+        current_focus: bool,
+    ) -> Result<bool> {
+        self.db.transaction(|tx| {
+            update_expected_work_item_tx(tx, record, expected_revision, current_focus)
+        })
+    }
+
+    pub fn update_expected_with_index_changes(
+        &self,
+        record: &WorkItemRecord,
+        expected_revision: u64,
+        current_focus: bool,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<bool> {
+        self.db.transaction(|tx| {
+            let updated =
+                update_expected_work_item_tx(tx, record, expected_revision, current_focus)?;
+            if updated {
+                insert_runtime_index_changes_tx(tx, changes)?;
+            }
+            Ok(updated)
         })
     }
 
@@ -1621,6 +1652,20 @@ impl MessageRepository<'_> {
         self.db.transaction(|tx| upsert_message_tx(tx, message))
     }
 
+    pub fn append_with_index_changes(
+        &self,
+        message: &MessageEnvelope,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<MessageEnvelope> {
+        self.db.transaction(|tx| {
+            let (appended, inserted) = append_message_tx(tx, message)?;
+            if inserted {
+                insert_runtime_index_changes_tx(tx, changes)?;
+            }
+            Ok(appended)
+        })
+    }
+
     pub fn upsert_with_index_changes(
         &self,
         message: &MessageEnvelope,
@@ -1830,6 +1875,11 @@ impl TranscriptRepository<'_> {
     pub fn upsert(&self, entry: &TranscriptEntry) -> Result<()> {
         self.db
             .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
+    }
+
+    pub fn append(&self, entry: &TranscriptEntry) -> Result<TranscriptEntry> {
+        self.db
+            .transaction(|tx| append_transcript_entry_tx(tx, entry).map(|(entry, _)| entry))
     }
 
     pub fn upsert_many(&self, entries: &[TranscriptEntry]) -> Result<()> {
@@ -2261,21 +2311,26 @@ impl EvidenceRepository<'_> {
 }
 
 impl AuditEventSink<'_> {
-    pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<()> {
+    pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<AuditEvent> {
         self.db.transaction_with_context(
             RuntimeDbWriteContext::sync("audit_events.append", "audit_events"),
-            |tx| insert_audit_event_tx(tx, agent_id, event),
+            |tx| append_audit_event_tx(tx, agent_id, event).map(|(event, _)| event),
         )
     }
 
-    pub fn append_many(&self, agent_id: Option<&str>, events: &[AuditEvent]) -> Result<()> {
+    pub fn append_many(
+        &self,
+        agent_id: Option<&str>,
+        events: &[AuditEvent],
+    ) -> Result<Vec<AuditEvent>> {
         self.db.transaction_with_context(
             RuntimeDbWriteContext::sync("audit_events.append_many", "audit_events"),
             |tx| {
+                let mut appended = Vec::with_capacity(events.len());
                 for event in events {
-                    insert_audit_event_tx(tx, agent_id, event)?;
+                    appended.push(append_audit_event_tx(tx, agent_id, event)?.0);
                 }
-                Ok(())
+                Ok(appended)
             },
         )
     }
@@ -2287,7 +2342,7 @@ impl AuditEventSink<'_> {
         self.db
             .run_storage_domain_import("audit_events", "jsonl", "db", |tx| {
                 for event in &events {
-                    insert_audit_event_tx(tx, agent_id, event)?;
+                    import_audit_event_tx(tx, agent_id, event)?;
                 }
                 Ok(serde_json::json!({ "imported_records": events.len() }))
             })
@@ -2731,7 +2786,188 @@ fn upsert_operator_delivery_record_tx(
     Ok(())
 }
 
-fn upsert_work_item_tx(
+fn insert_new_work_item_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemRecord,
+    current_focus: bool,
+) -> Result<bool> {
+    if record.revision != 1 {
+        return Err(RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "invalid_initial_revision",
+            Some(1),
+            Some(record.revision),
+            false,
+        )
+        .into());
+    }
+    let actual_revision = tx
+        .query_row(
+            "SELECT revision FROM work_items WHERE work_item_id = ?1",
+            [&record.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|revision| u64::try_from(revision).context("stored work item revision is negative"))
+        .transpose()?;
+    if let Some(actual_revision) = actual_revision {
+        return Err(RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "record_exists",
+            None,
+            Some(actual_revision),
+            false,
+        )
+        .into());
+    }
+    import_work_item_tx(tx, record, current_focus)?;
+    Ok(true)
+}
+
+fn update_expected_work_item_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemRecord,
+    expected_revision: u64,
+    current_focus: bool,
+) -> Result<bool> {
+    let next_revision = expected_revision.checked_add(1).ok_or_else(|| {
+        RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "invalid_revision_transition",
+            Some(expected_revision),
+            Some(record.revision),
+            false,
+        )
+    })?;
+    if record.revision != next_revision {
+        return Err(RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "invalid_revision_transition",
+            Some(expected_revision),
+            Some(record.revision),
+            false,
+        )
+        .into());
+    }
+
+    let existing = tx
+        .query_row(
+            "SELECT revision, payload_json FROM work_items WHERE work_item_id = ?1",
+            [&record.id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((actual_revision, existing_payload)) = existing else {
+        return Err(RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "not_found",
+            Some(expected_revision),
+            None,
+            false,
+        )
+        .into());
+    };
+    let actual_revision =
+        u64::try_from(actual_revision).context("stored work item revision is negative")?;
+    let payload_json = serde_json::to_string(record)?;
+    if actual_revision == next_revision {
+        if existing_payload == payload_json {
+            return Ok(false);
+        }
+        return Err(RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "same_revision_payload_conflict",
+            Some(expected_revision),
+            Some(actual_revision),
+            false,
+        )
+        .into());
+    }
+    if actual_revision != expected_revision {
+        return Err(RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "revision_conflict",
+            Some(expected_revision),
+            Some(actual_revision),
+            true,
+        )
+        .into());
+    }
+
+    update_work_item_row_tx(tx, record, current_focus, &payload_json, expected_revision)?;
+    Ok(true)
+}
+
+fn update_work_item_row_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemRecord,
+    current_focus: bool,
+    payload_json: &str,
+    expected_revision: u64,
+) -> Result<()> {
+    let state = enum_string(&record.state)?;
+    let plan_status = enum_string(&record.plan_status)?;
+    let readiness = enum_string(&record.readiness())?;
+    let completed_at =
+        (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at));
+    let plan_artifact_path = record
+        .plan_artifact
+        .as_ref()
+        .map(|artifact| artifact.path.display().to_string());
+    let changed = tx.execute(
+        "UPDATE work_items SET
+            agent_id = ?1,
+            state = ?2,
+            objective = ?3,
+            plan_status = ?4,
+            readiness = ?5,
+            revision = ?6,
+            current_focus = ?7,
+            created_at = ?8,
+            updated_at = ?9,
+            completed_at = ?10,
+            plan_artifact_path = ?11,
+            last_turn_id = ?12,
+            payload_json = ?13,
+            blocked_by = ?14,
+            recheck_at = ?15,
+            recheck_consumed_at = ?16
+         WHERE work_item_id = ?17 AND revision = ?18",
+        params![
+            record.agent_id,
+            state,
+            record.objective,
+            plan_status,
+            readiness,
+            record.revision as i64,
+            i64::from(current_focus),
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            completed_at,
+            plan_artifact_path,
+            record.turn_id,
+            payload_json,
+            record.blocked_by,
+            record.recheck_at.map(timestamp),
+            record.recheck_consumed_at.map(timestamp),
+            record.id,
+            expected_revision as i64,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(RuntimeStateTransitionConflict::revision(
+            &record.id,
+            "revision_conflict",
+            Some(expected_revision),
+            None,
+            true,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn import_work_item_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
     current_focus: bool,

@@ -1482,8 +1482,9 @@ mod tests {
             holon::types::WorkItemState::Open,
         );
         work_item.id = "work-1".into();
+        storage.insert_work_item(&work_item).unwrap();
         work_item.revision = 2;
-        storage.append_work_item(&work_item).unwrap();
+        storage.update_work_item_expected(&work_item, 1).unwrap();
 
         let output = tempfile::tempdir().unwrap();
         export_scheduler_fixture(&config, None, output.path()).unwrap();

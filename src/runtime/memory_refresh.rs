@@ -927,19 +927,14 @@ mod tests {
         record: &WorkItemRecord,
         current_focus: bool,
     ) {
-        test_runtime
-            .runtime
-            .inner
-            .runtime_db
-            .work_items()
-            .upsert(record, current_focus)
-            .unwrap();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_work_item(record)
-            .unwrap();
+        let repository = test_runtime.runtime.inner.runtime_db.work_items();
+        if let Some(existing) = repository.latest(&record.id).unwrap() {
+            repository
+                .update_expected(record, existing.revision, current_focus)
+                .unwrap();
+        } else {
+            repository.insert_new(record, current_focus).unwrap();
+        }
     }
 
     fn add_current_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
@@ -960,6 +955,7 @@ mod tests {
         blocked_by: &str,
     ) -> WorkItemRecord {
         let mut updated = record.clone();
+        updated.revision += 1;
         updated.blocked_by = Some(blocked_by.to_string());
         updated.updated_at = chrono::Utc::now();
         persist_test_work_item(test_runtime, &updated, false);
@@ -972,6 +968,7 @@ mod tests {
         blocked_by: &str,
     ) -> WorkItemRecord {
         let mut updated = record.clone();
+        updated.revision += 1;
         updated.blocked_by = Some(blocked_by.to_string());
         updated.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
         updated.recheck_consumed_at = None;
@@ -1899,6 +1896,7 @@ mod tests {
         set_agent_idle(&test_runtime);
 
         let mut active = add_current_work_item(&test_runtime, "wi-active", "active-target");
+        active.revision += 1;
         active.todo_list = vec![TodoItem {
             text: "finish remaining implementation".to_string(),
             state: TodoItemState::InProgress,

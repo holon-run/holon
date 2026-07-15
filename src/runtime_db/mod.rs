@@ -110,8 +110,12 @@ impl StdError for RuntimeDbRetryableError {}
 pub struct RuntimeStateTransitionConflict {
     domain: &'static str,
     record_id: String,
+    code: &'static str,
     existing_status: String,
     incoming_status: String,
+    expected_revision: Option<u64>,
+    actual_revision: Option<u64>,
+    retryable: bool,
 }
 
 impl RuntimeStateTransitionConflict {
@@ -124,8 +128,33 @@ impl RuntimeStateTransitionConflict {
         Self {
             domain,
             record_id: record_id.into(),
+            code: "state_transition_conflict",
             existing_status: existing_status.into(),
             incoming_status: incoming_status.into(),
+            expected_revision: None,
+            actual_revision: None,
+            retryable: false,
+        }
+    }
+
+    pub(crate) fn revision(
+        record_id: impl Into<String>,
+        code: &'static str,
+        expected_revision: Option<u64>,
+        actual_revision: Option<u64>,
+        retryable: bool,
+    ) -> Self {
+        Self {
+            domain: "work_item",
+            record_id: record_id.into(),
+            code,
+            existing_status: actual_revision
+                .map_or_else(|| "missing".to_string(), |revision| revision.to_string()),
+            incoming_status: expected_revision
+                .map_or_else(|| "none".to_string(), |revision| revision.to_string()),
+            expected_revision,
+            actual_revision,
+            retryable,
         }
     }
 
@@ -137,6 +166,10 @@ impl RuntimeStateTransitionConflict {
         &self.record_id
     }
 
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
     pub fn existing_status(&self) -> &str {
         &self.existing_status
     }
@@ -144,15 +177,39 @@ impl RuntimeStateTransitionConflict {
     pub fn incoming_status(&self) -> &str {
         &self.incoming_status
     }
+
+    pub fn expected_revision(&self) -> Option<u64> {
+        self.expected_revision
+    }
+
+    pub fn actual_revision(&self) -> Option<u64> {
+        self.actual_revision
+    }
+
+    pub fn retryable(&self) -> bool {
+        self.retryable
+    }
 }
 
 impl fmt::Display for RuntimeStateTransitionConflict {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "conflicting {} transition for {}: {} -> {}",
-            self.domain, self.record_id, self.existing_status, self.incoming_status
-        )
+        if self.expected_revision.is_some() || self.actual_revision.is_some() {
+            write!(
+                formatter,
+                "{} for {} {}: expected revision {:?}, actual revision {:?}",
+                self.code,
+                self.domain,
+                self.record_id,
+                self.expected_revision,
+                self.actual_revision
+            )
+        } else {
+            write!(
+                formatter,
+                "conflicting {} transition for {}: {} -> {}",
+                self.domain, self.record_id, self.existing_status, self.incoming_status
+            )
+        }
     }
 }
 

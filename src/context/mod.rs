@@ -6217,7 +6217,6 @@ mod tests {
                 }
             }
         }));
-        storage.append_message(&system_tick).unwrap();
         append_turn_for_message(&storage, &system_tick, "turn-wake-summary", 1);
 
         let current_message = MessageEnvelope::new(
@@ -6360,7 +6359,6 @@ mod tests {
                 "runtime_switched_current_item": false
             }
         }));
-        storage.append_message(&system_tick).unwrap();
         append_turn_for_message(&storage, &system_tick, "turn-queue-summary", 1);
 
         let current_message = MessageEnvelope::new(
@@ -6429,7 +6427,6 @@ mod tests {
             },
         );
         system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
-        storage.append_message(&system_tick).unwrap();
         append_turn_for_message(&storage, &system_tick, "turn-generic-system-summary", 1);
 
         let current_message = MessageEnvelope::new(

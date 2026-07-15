@@ -21,8 +21,9 @@ use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
     ExecutionRootEntry, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
     MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus,
-    ToolExecutionRecord, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
-    WorkItemRecord, WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
+    ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, WaitConditionKind,
+    WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemState, WorkspaceEntry,
+    WorkspaceOccupancyRecord,
 };
 #[cfg(test)]
 use anyhow::{anyhow, bail, Context, Result};
@@ -286,6 +287,7 @@ mod tests {
             "storage_domains",
             "agents",
             "audit_events",
+            "runtime_sequences",
             "work_items",
             "tasks",
             "external_triggers",
@@ -433,6 +435,110 @@ INSERT INTO storage_domains (
             current_schema_version(&connection)?,
             max_known_migration_version()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_sequence_migration_rejects_duplicate_historical_values() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        {
+            let connection = open_connection(&db_path)?;
+            connection.execute_batch(
+                "DELETE FROM schema_migrations WHERE version = 26;
+                 DROP INDEX idx_messages_agent_message_seq_unique;
+                 DROP TABLE runtime_sequences;",
+            )?;
+            for (id, text) in [("duplicate-a", "a"), ("duplicate-b", "b")] {
+                let mut message = MessageEnvelope::new(
+                    "agent-a",
+                    crate::types::MessageKind::OperatorPrompt,
+                    crate::types::MessageOrigin::Operator { actor_id: None },
+                    crate::types::AuthorityClass::OperatorInstruction,
+                    crate::types::Priority::Normal,
+                    crate::types::MessageBody::Text { text: text.into() },
+                );
+                message.id = id.into();
+                message.message_seq = Some(7);
+                connection.execute(
+                    "INSERT INTO messages (
+                        evidence_id, agent_id, message_id, message_seq, created_at,
+                        kind, payload_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        message.id,
+                        message.agent_id,
+                        message.id,
+                        7_i64,
+                        timestamp(message.created_at),
+                        "operator_prompt",
+                        serde_json::to_string(&message)?,
+                    ],
+                )?;
+            }
+        }
+
+        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("domain=message"), "{text}");
+        assert!(text.contains("scope=agent:agent-a"), "{text}");
+        assert!(text.contains("sequence=7"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_sequence_migration_initializes_head_from_historical_max() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        {
+            let connection = open_connection(&db_path)?;
+            connection.execute_batch(
+                "DELETE FROM schema_migrations WHERE version = 26;
+                 DROP INDEX idx_messages_agent_message_seq_unique;
+                 DROP TABLE runtime_sequences;",
+            )?;
+            let mut historical = MessageEnvelope::new(
+                "agent-a",
+                crate::types::MessageKind::OperatorPrompt,
+                crate::types::MessageOrigin::Operator { actor_id: None },
+                crate::types::AuthorityClass::OperatorInstruction,
+                crate::types::Priority::Normal,
+                crate::types::MessageBody::Text {
+                    text: "historical".into(),
+                },
+            );
+            historical.id = "historical-message".into();
+            historical.message_seq = Some(7);
+            connection.execute(
+                "INSERT INTO messages (
+                    evidence_id, agent_id, message_id, message_seq, created_at,
+                    kind, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    historical.id,
+                    historical.agent_id,
+                    historical.id,
+                    7_i64,
+                    timestamp(historical.created_at),
+                    "operator_prompt",
+                    serde_json::to_string(&historical)?,
+                ],
+            )?;
+        }
+
+        let migrated = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let next = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "next".into(),
+            },
+        );
+        let next = migrated.messages().append_with_index_changes(&next, &[])?;
+        assert_eq!(next.message_seq, Some(8));
         Ok(())
     }
 
@@ -587,7 +693,8 @@ INSERT INTO queue_entries (
                         format!("runtime_db_concurrent_write_{index}"),
                         serde_json::json!({ "index": index }),
                     ),
-                )
+                )?;
+                Ok(())
             }));
         }
 
@@ -680,6 +787,82 @@ INSERT INTO queue_entries (
         assert_eq!(
             kinds,
             vec!["runtime_db_queue_first", "runtime_db_queue_second"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_sequences_are_atomic_across_db_instances_and_scopes() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let second = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        let event_a = first.audit_events().append(
+            Some("agent-a"),
+            &AuditEvent::new("event-a", serde_json::json!({})),
+        )?;
+        let event_b = second.audit_events().append(
+            Some("agent-a"),
+            &AuditEvent::new("event-b", serde_json::json!({})),
+        )?;
+        let host_event = second
+            .audit_events()
+            .append(None, &AuditEvent::new("host-event", serde_json::json!({})))?;
+        assert_eq!((event_a.event_seq, event_b.event_seq), (1, 2));
+        assert_eq!(host_event.event_seq, 1);
+
+        let message_a = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text { text: "a".into() },
+        );
+        let message_b = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text { text: "b".into() },
+        );
+        let appended_a = first
+            .messages()
+            .append_with_index_changes(&message_a, &[])?;
+        let appended_b = second
+            .messages()
+            .append_with_index_changes(&message_b, &[])?;
+        assert_eq!(appended_a.message_seq, Some(1));
+        assert_eq!(appended_b.message_seq, Some(2));
+
+        let transcript_a = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            serde_json::json!({ "text": "a" }),
+        );
+        let transcript_b = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::AssistantRound,
+            Some(2),
+            None,
+            serde_json::json!({ "text": "b" }),
+        );
+        assert_eq!(
+            first
+                .transcript_entries()
+                .append(&transcript_a)?
+                .transcript_seq,
+            Some(1)
+        );
+        assert_eq!(
+            second
+                .transcript_entries()
+                .append(&transcript_b)?
+                .transcript_seq,
+            Some(2)
         );
         Ok(())
     }
@@ -1993,21 +2176,102 @@ CREATE TABLE working_memory_deltas (
         db.work_items().import_legacy(Vec::new(), None)?;
         let mut current = WorkItemRecord::new("agent-a", "current", WorkItemState::Open);
         current.id = "work-revision".into();
-        current.revision = 5;
-        db.work_items().upsert(&current, false)?;
+        db.work_items().insert_new(&current, false)?;
+        current.revision = 2;
+        current.updated_at += chrono::Duration::seconds(1);
+        db.work_items().update_expected(&current, 1, false)?;
 
         let mut stale = current.clone();
         stale.objective = "stale".into();
-        stale.revision = 4;
+        stale.revision = 1;
         stale.updated_at = current.updated_at + chrono::Duration::seconds(10);
-        db.work_items().upsert(&stale, false)?;
+        let error = db
+            .work_items()
+            .update_expected(&stale, 0, false)
+            .unwrap_err();
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("stale update should return typed conflict");
+        assert_eq!(conflict.code(), "revision_conflict");
+        assert_eq!(conflict.expected_revision(), Some(0));
+        assert_eq!(conflict.actual_revision(), Some(2));
+        assert!(conflict.retryable());
 
         let persisted = db
             .work_items()
             .latest("work-revision")?
             .expect("work item persisted");
-        assert_eq!(persisted.revision, 5);
+        assert_eq!(persisted.revision, 2);
         assert_eq!(persisted.objective, "current");
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_expected_update_is_idempotent_and_rejects_same_revision_payload_change(
+    ) -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut initial = WorkItemRecord::new("agent-a", "initial", WorkItemState::Open);
+        initial.id = "work-cas".into();
+        db.work_items().insert_new(&initial, false)?;
+
+        let mut updated = initial.clone();
+        updated.revision = 2;
+        updated.objective = "updated".into();
+        updated.updated_at += chrono::Duration::seconds(1);
+        assert!(db.work_items().update_expected(&updated, 1, false)?);
+        assert!(!db.work_items().update_expected(&updated, 1, false)?);
+
+        let mut conflicting = updated.clone();
+        conflicting.objective = "conflicting".into();
+        let error = db
+            .work_items()
+            .update_expected(&conflicting, 1, false)
+            .unwrap_err();
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("same revision payload change should return typed conflict");
+        assert_eq!(conflict.domain(), "work_item");
+        assert_eq!(conflict.code(), "same_revision_payload_conflict");
+        assert_eq!(conflict.expected_revision(), Some(1));
+        assert_eq!(conflict.actual_revision(), Some(2));
+        assert!(!conflict.retryable());
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_expected_update_allows_only_one_writer_across_db_instances() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let second = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut initial = WorkItemRecord::new("agent-a", "initial", WorkItemState::Open);
+        initial.id = "work-concurrent-cas".into();
+        first.work_items().insert_new(&initial, false)?;
+
+        let mut left = initial.clone();
+        left.revision = 2;
+        left.objective = "left".into();
+        let mut right = initial.clone();
+        right.revision = 2;
+        right.objective = "right".into();
+
+        assert!(first.work_items().update_expected(&left, 1, false)?);
+        let error = second
+            .work_items()
+            .update_expected(&right, 1, false)
+            .unwrap_err();
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("second writer should return typed conflict");
+        assert_eq!(conflict.code(), "same_revision_payload_conflict");
+        assert_eq!(
+            second
+                .work_items()
+                .latest("work-concurrent-cas")?
+                .expect("persisted work item")
+                .objective,
+            "left"
+        );
         Ok(())
     }
 
@@ -2020,8 +2284,8 @@ CREATE TABLE working_memory_deltas (
         first.id = "work-first".into();
         let mut second = WorkItemRecord::new("agent-b", "second", WorkItemState::Open);
         second.id = "work-second".into();
-        db.work_items().upsert(&first, false)?;
-        db.work_items().upsert(&second, false)?;
+        db.work_items().insert_new(&first, false)?;
+        db.work_items().insert_new(&second, false)?;
 
         let agent_items = db.work_items().latest_for_agent("agent-a", 20)?;
         assert_eq!(agent_items.len(), 1);

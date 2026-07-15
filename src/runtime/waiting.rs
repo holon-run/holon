@@ -314,13 +314,8 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
-        let current_focus =
-            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
-        self.inner
-            .runtime_db
-            .work_items()
-            .upsert(&record, current_focus)?;
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, Some(record.revision - 1))
+            .await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -386,13 +381,8 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
-        let current_focus =
-            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
-        self.inner
-            .runtime_db
-            .work_items()
-            .upsert(&record, current_focus)?;
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, Some(record.revision - 1))
+            .await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -442,13 +432,8 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
-        let current_focus =
-            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
-        self.inner
-            .runtime_db
-            .work_items()
-            .upsert(&record, current_focus)?;
-        self.record_work_item_projection(&record).await?;
+        self.record_work_item_projection(&record, Some(record.revision - 1))
+            .await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
