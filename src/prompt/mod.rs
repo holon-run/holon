@@ -16,7 +16,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    context::{build_context_with_default_external_ingress, BuiltContext, ContextConfig},
+    context::{
+        build_context_with_default_external_ingress, reproject_recent_turns, BuiltContext,
+        ContextConfig, RecentTurnsReprojection,
+    },
     storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::{ApplyPatchSurface, ToolSpec},
@@ -78,9 +81,60 @@ pub struct EffectivePrompt {
     pub context_sections: Vec<PromptSection>,
     pub rendered_system_prompt: String,
     pub rendered_context_attachment: String,
+    pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
 }
 
 impl EffectivePrompt {
+    pub(crate) fn recent_turns_initial_budget(&self) -> Option<usize> {
+        self.recent_turns_reprojection
+            .as_ref()
+            .map(RecentTurnsReprojection::initial_budget)
+    }
+
+    pub(crate) fn reproject_recent_turns(
+        &self,
+        storage: &AppStorage,
+        budget: usize,
+        available_tools: &[ToolSpec],
+    ) -> Option<Self> {
+        let reprojection = self.recent_turns_reprojection.as_ref()?;
+        if budget >= reprojection.initial_budget() {
+            return None;
+        }
+        let replacement = reproject_recent_turns(storage, reprojection, budget);
+        let mut context_sections = self
+            .context_sections
+            .iter()
+            .filter(|section| section.name != "recent_turns")
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(replacement) = replacement {
+            let insertion_index = self
+                .context_sections
+                .iter()
+                .position(|section| section.name == "recent_turns")
+                .unwrap_or(context_sections.len())
+                .min(context_sections.len());
+            context_sections.insert(insertion_index, replacement);
+        }
+        let rendered_context_attachment = render_sections(&context_sections);
+        if rendered_context_attachment == self.rendered_context_attachment {
+            return None;
+        }
+        let context_fingerprint = reprojected_context_fingerprint(
+            &self.cache_identity,
+            &self.execution,
+            &self.system_sections,
+            &context_sections,
+            available_tools,
+        );
+        let mut prompt = self.clone();
+        prompt.context_sections = context_sections;
+        prompt.rendered_context_attachment = rendered_context_attachment;
+        prompt.cache_identity.context_fingerprint = context_fingerprint;
+        Some(prompt)
+    }
+
     pub fn cache_scope_diagnostics(&self) -> PromptCacheScopeDiagnostics {
         prompt_cache_scope_diagnostics(&self.system_sections, &self.context_sections)
     }
@@ -469,6 +523,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         context_sections,
         rendered_system_prompt,
         rendered_context_attachment,
+        recent_turns_reprojection: built_context.recent_turns_reprojection,
     })
 }
 
@@ -521,6 +576,26 @@ fn prompt_context_fingerprint(
     });
     let canonical =
         serde_json::to_vec(&payload).expect("prompt cache fingerprint should serialize");
+    format!("{:x}", Sha256::digest(canonical))
+}
+
+fn reprojected_context_fingerprint(
+    cache_identity: &PromptCacheIdentity,
+    execution: &ExecutionSnapshot,
+    system_sections: &[PromptSection],
+    context_sections: &[PromptSection],
+    available_tools: &[ToolSpec],
+) -> String {
+    let payload = json!({
+        "agent_id": cache_identity.agent_id,
+        "compression_epoch": cache_identity.compression_epoch,
+        "execution_semantics": execution_semantic_cache_payload(execution),
+        "system_sections": system_sections,
+        "context_sections": context_sections,
+        "tools": available_tools,
+    });
+    let canonical =
+        serde_json::to_vec(&payload).expect("reprojected prompt fingerprint should serialize");
     format!("{:x}", Sha256::digest(canonical))
 }
 
@@ -2224,6 +2299,7 @@ mod tests {
             }],
             rendered_system_prompt: "rendered system".to_string(),
             rendered_context_attachment: "rendered context".to_string(),
+            recent_turns_reprojection: None,
         };
 
         let dump = prompt.render_dump();
@@ -2274,6 +2350,7 @@ mod tests {
             }],
             rendered_system_prompt: "rendered turn system".to_string(),
             rendered_context_attachment: "rendered turn context".to_string(),
+            recent_turns_reprojection: None,
         };
 
         let dump = prompt.render_dump();
@@ -2328,6 +2405,7 @@ mod tests {
             context_sections: vec![],
             rendered_system_prompt: "very secret agent guidance".to_string(),
             rendered_context_attachment: String::new(),
+            recent_turns_reprojection: None,
         };
 
         let dump = prompt.render_dump();

@@ -590,6 +590,7 @@ mod tests {
             }],
             rendered_system_prompt: "system prompt".to_string(),
             rendered_context_attachment: "context attachment".to_string(),
+            recent_turns_reprojection: None,
         }
     }
 
@@ -667,6 +668,7 @@ mod tests {
             ],
             rendered_system_prompt: "system prompt".to_string(),
             rendered_context_attachment: "context attachment".to_string(),
+            recent_turns_reprojection: None,
         };
 
         let request = build_provider_turn_request(&effective_prompt, Vec::new(), None);

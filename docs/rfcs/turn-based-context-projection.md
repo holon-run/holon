@@ -404,6 +404,35 @@ tool overhead and the continuation safety margin before checking retained
 turn-local rounds. Reusing the bounded `recent_turns` budget for continuation
 would incorrectly cap large-context models at the history ceiling.
 
+If a continuation still reports `minimum_exact_round_unfit` under that complete
+request budget, the runtime may reclaim space from the initial `recent_turns`
+region before terminating the turn. Recovery must re-run the semantic
+recent-turn selection with a smaller token budget rather than truncating the
+rendered section as an opaque string. System instructions, current input,
+continuation anchors, current WorkItem state, runtime-owned continuation
+context, and the newest turn-local round remain outside this recovery target.
+
+The first retry budget should be derived from the measured deficit:
+
+```text
+deficit =
+  minimum_projection_estimated_tokens
+  - effective_budget_estimated_tokens
+
+next_recent_turns_budget =
+  current_recent_turns_budget
+  - deficit
+  - bounded_safety_margin
+```
+
+Recovery is bounded. Each successful reprojection rebuilds the prompt frame and
+its context fingerprint, then repeats turn-local projection. If no smaller
+semantic `recent_turns` projection exists, the retry limit is reached, or the
+minimum continuation still does not fit after history is exhausted, the
+runtime records the normal `baseline_over_budget` terminal with retry
+diagnostics. A successful recovery is runtime-internal and should not surface
+an operator-facing error.
+
 The budget should be spent by retention priority, continuation-chain
 membership, and semantic turn value, not by physical-turn FIFO order. Current
 input and pinned turn anchors are mandatory and may borrow from the free pool

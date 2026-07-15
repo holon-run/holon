@@ -1344,7 +1344,8 @@ fn current_input_summary_extracts_body_from_context_section() {
             stability: PromptStability::AgentScoped
         }],
         rendered_system_prompt: String::new(),
-        rendered_context_attachment: String::new()
+        rendered_context_attachment: String::new(),
+        recent_turns_reprojection: None,
     };
 
     assert_eq!(

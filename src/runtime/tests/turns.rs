@@ -859,6 +859,11 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
         baseline_event.data["reason"].as_str(),
         Some("minimum_exact_round_unfit")
     );
+    assert_eq!(
+        baseline_event.data["recent_turns_retry_attempts"].as_u64(),
+        Some(0)
+    );
+    assert!(baseline_event.data["final_recent_turns_budget"].is_null());
     assert!(
         baseline_event.data["estimated_baseline_tokens"]
             .as_u64()
@@ -871,8 +876,169 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
         events
             .iter()
             .all(|event| event.kind != "turn_local_compaction_applied"),
-        "baseline-over-budget should fail fast, not masquerade as compaction"
+        "unrecoverable baseline-over-budget should not masquerade as compaction"
     );
+}
+
+#[tokio::test]
+async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(RecentTurnsRecoveryProbeProvider {
+        calls: Mutex::new(0),
+        requests: Mutex::new(Vec::new()),
+    });
+    let available_tools = crate::tool::ToolRegistry::new(workspace.path().to_path_buf())
+        .tool_specs_with_families()
+        .unwrap()
+        .into_iter()
+        .filter(|(family, _)| {
+            AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
+        })
+        .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
+        .map(|(_, tool)| tool)
+        .collect::<Vec<_>>();
+    let continuation_effective_budget = 12_000;
+    let prompt_budget_estimated_tokens = turn::estimate_tool_specs_tokens(&available_tools)
+        + turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+        + continuation_effective_budget;
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        ContextConfig {
+            prompt_budget_estimated_tokens,
+            turn_projection_budget_ratio: 1.0,
+            turn_projection_min_budget: 0,
+            turn_projection_max_budget: 10_000,
+            callback_base_url: String::new(),
+            ..context_config()
+        },
+    )
+    .unwrap();
+
+    let mut historical_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: format!(
+                "historical context {}",
+                "large-history-token ".repeat(12_000)
+            ),
+        },
+    );
+    historical_message.turn_id = Some("turn-large-history".into());
+    runtime
+        .storage()
+        .append_message(&historical_message)
+        .unwrap();
+    let mut historical_turn = TurnRecord::new("default", "turn-large-history", 1);
+    historical_turn.input_message_ids = vec![historical_message.id.clone()];
+    historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+        &historical_message,
+    ));
+    runtime.storage().append_turn(&historical_turn).unwrap();
+
+    let current_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue after the large historical turn".into(),
+        },
+    );
+    runtime
+        .process_interactive_message(
+            &current_message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*provider.calls.lock().await, 2);
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state
+            .last_turn_terminal
+            .as_ref()
+            .map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Completed)
+    );
+
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    let first_context = requests[0]
+        .conversation
+        .iter()
+        .find_map(|message| match message {
+            ConversationMessage::UserBlocks(blocks) => Some(
+                blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let continuation_context = requests[1]
+        .conversation
+        .iter()
+        .find_map(|message| match message {
+            ConversationMessage::UserBlocks(blocks) => Some(
+                blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+    assert!(first_context.contains("recent_turns"));
+    assert!(
+        continuation_context.len() < first_context.len(),
+        "continuation should carry a smaller recent-turns projection"
+    );
+    assert!(continuation_context.contains("continue after the large historical turn"));
+    assert!(requests[1].conversation.iter().any(|message| {
+        matches!(
+            message,
+            ConversationMessage::AssistantBlocks(blocks)
+                if blocks.iter().any(|block| matches!(
+                    block,
+                    ModelBlock::ToolUse { id, .. } if id == "exec-recent-turns-recovery"
+                ))
+        )
+    }));
+    drop(requests);
+
+    let events = runtime.storage().read_recent_events(40).unwrap();
+    let retry_event = events
+        .iter()
+        .find(|event| event.kind == "turn_local_recent_turns_retry")
+        .expect("missing recent-turns recovery event");
+    assert_eq!(retry_event.data["attempt"].as_u64(), Some(1));
+    assert!(
+        retry_event.data["next_recent_turns_budget"]
+            .as_u64()
+            .unwrap_or_default()
+            < retry_event.data["previous_recent_turns_budget"]
+                .as_u64()
+                .unwrap_or_default()
+    );
+    assert!(events
+        .iter()
+        .all(|event| event.kind != "turn_local_baseline_over_budget"));
 }
 
 #[tokio::test]

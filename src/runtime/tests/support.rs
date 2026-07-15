@@ -29,7 +29,7 @@ pub(crate) use crate::{
         LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
         PendingWakeHint, Priority, QueueEntryStatus, TaskKind, TaskOutputRetrievalStatus,
         TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TodoItem,
-        TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord, WaitingReason,
+        TodoItemState, TokenUsage, TurnRecord, TurnTerminalKind, TurnTerminalRecord, WaitingReason,
         WorkItemRecord, WorkItemState, WorkReactivationMode, WorkspaceEntry,
     },
 };
@@ -177,6 +177,7 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
         context_sections: vec![],
         rendered_system_prompt: "system".into(),
         rendered_context_attachment: "context".into(),
+        recent_turns_reprojection: None,
     }
 }
 
@@ -377,6 +378,11 @@ impl BaselineOverBudgetProbeProvider {
 
 pub(crate) struct LargeBudgetContinuationProbeProvider {
     pub(crate) calls: Mutex<usize>,
+}
+
+pub(crate) struct RecentTurnsRecoveryProbeProvider {
+    pub(crate) calls: Mutex<usize>,
+    pub(crate) requests: Mutex<Vec<ProviderTurnRequest>>,
 }
 
 pub(crate) struct ContextLengthExceededProvider;
@@ -976,6 +982,47 @@ impl AgentProvider for FailingTimelineProvider {
             },
             anyhow!("bad request"),
         ))
+    }
+}
+
+#[async_trait]
+impl AgentProvider for RecentTurnsRecoveryProbeProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.requests.lock().await.push(request);
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        match *calls {
+            1 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::ToolUse {
+                    id: "exec-recent-turns-recovery".into(),
+                    name: "ExecCommand".into(),
+                    input: serde_json::json!({
+                        "cmd": "printf 'recent-turns-recovery'"
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                }],
+                stop_reason: Some("tool_use".into()),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            }),
+            2 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "Recovered by shrinking recent turns.".into(),
+                }],
+                stop_reason: Some("end_turn".into()),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            }),
+            _ => panic!("recent-turns recovery should require exactly one continuation"),
+        }
     }
 }
 
