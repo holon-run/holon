@@ -71,6 +71,7 @@ pub mod test_support {
 mod tests {
     use super::*;
     use crate::{
+        runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         system::WorkspaceAccessMode,
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
@@ -2079,6 +2080,139 @@ CREATE TABLE working_memory_deltas (
                 .and_then(|detail| detail.get("output_path"))
                 .and_then(serde_json::Value::as_str),
             Some("/tmp/task-sparse.log")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_terminal_state_is_first_writer_wins_across_terminal_matrix() -> Result<()> {
+        let statuses = [
+            TaskStatus::Completed,
+            TaskStatus::Failed,
+            TaskStatus::Cancelled,
+            TaskStatus::Interrupted,
+        ];
+
+        for existing_status in &statuses {
+            for incoming_status in &statuses {
+                let (_temp_dir, db_path, lock_path) = temp_paths()?;
+                let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+                let mut existing =
+                    task_record("task-terminal", "agent-a", existing_status.clone(), 1);
+                existing.parent_message_id = Some("message-1".into());
+                existing.work_item_id = Some("work-1".into());
+                existing
+                    .detail
+                    .as_mut()
+                    .and_then(|detail| detail.as_object_mut())
+                    .unwrap()
+                    .insert("parent_turn_id".into(), serde_json::json!("turn-1"));
+                db.tasks().upsert(&existing)?;
+
+                let mut incoming = existing.clone();
+                incoming.status = incoming_status.clone();
+                incoming.updated_at += chrono::Duration::seconds(1);
+                if existing_status == incoming_status {
+                    db.tasks().upsert(&incoming)?;
+                } else {
+                    let error = db.tasks().upsert(&incoming).unwrap_err();
+                    let conflict = error
+                        .downcast_ref::<RuntimeStateTransitionConflict>()
+                        .expect("conflicting terminal task should return a typed conflict");
+                    assert_eq!(conflict.domain(), "task");
+                    assert_eq!(conflict.record_id(), "task-terminal");
+                    assert_eq!(conflict.existing_status(), enum_string(existing_status)?);
+                    assert_eq!(conflict.incoming_status(), enum_string(incoming_status)?);
+                }
+                assert_eq!(
+                    db.tasks().latest("task-terminal")?.expect("persisted task"),
+                    slim_task_record_for_payload(&existing)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn task_terminal_state_rejects_payload_changes_but_ignores_previews() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut terminal = task_record("task-payload", "agent-a", TaskStatus::Completed, 1);
+        terminal.parent_message_id = Some("message-1".into());
+        terminal.work_item_id = Some("work-1".into());
+        db.tasks().upsert(&terminal)?;
+
+        let mut preview_retry = terminal.clone();
+        preview_retry.updated_at += chrono::Duration::seconds(1);
+        preview_retry
+            .detail
+            .as_mut()
+            .and_then(|detail| detail.as_object_mut())
+            .unwrap()
+            .insert(
+                "output_summary".into(),
+                serde_json::json!("a different preview"),
+            );
+        db.tasks().upsert(&preview_retry)?;
+
+        let mut conflicting_result = terminal.clone();
+        conflicting_result.updated_at += chrono::Duration::seconds(2);
+        conflicting_result
+            .detail
+            .as_mut()
+            .and_then(|detail| detail.as_object_mut())
+            .unwrap()
+            .insert("exit_status".into(), serde_json::json!(9));
+        assert!(db
+            .tasks()
+            .upsert(&conflicting_result)
+            .unwrap_err()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+
+        let mut late_active = terminal.clone();
+        late_active.status = TaskStatus::Running;
+        late_active.updated_at += chrono::Duration::seconds(3);
+        assert!(db
+            .tasks()
+            .upsert(&late_active)
+            .unwrap_err()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+        assert_eq!(
+            db.tasks().latest("task-payload")?.expect("persisted task"),
+            slim_task_record_for_payload(&terminal)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_terminal_state_survives_restart_and_second_db_handle() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let second = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let terminal = task_record("task-restart", "agent-a", TaskStatus::Cancelled, 1);
+        first.tasks().upsert(&terminal)?;
+
+        let mut conflicting = terminal.clone();
+        conflicting.status = TaskStatus::Interrupted;
+        conflicting.updated_at += chrono::Duration::seconds(1);
+        assert!(second
+            .tasks()
+            .upsert(&conflicting)
+            .unwrap_err()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+
+        drop(first);
+        drop(second);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened
+                .tasks()
+                .latest("task-restart")?
+                .expect("persisted task"),
+            slim_task_record_for_payload(&terminal)
         );
         Ok(())
     }
