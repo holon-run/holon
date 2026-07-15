@@ -2,7 +2,7 @@ mod agent_and_tools;
 mod message_dispatch;
 mod runtime_state;
 mod scheduler;
-mod support;
+pub(crate) mod support;
 mod task_recovery;
 mod tasks;
 mod timers;
