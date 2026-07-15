@@ -106,6 +106,58 @@ impl fmt::Display for RuntimeDbRetryableError {
 
 impl StdError for RuntimeDbRetryableError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeStateTransitionConflict {
+    domain: &'static str,
+    record_id: String,
+    existing_status: String,
+    incoming_status: String,
+}
+
+impl RuntimeStateTransitionConflict {
+    pub(crate) fn new(
+        domain: &'static str,
+        record_id: impl Into<String>,
+        existing_status: impl Into<String>,
+        incoming_status: impl Into<String>,
+    ) -> Self {
+        Self {
+            domain,
+            record_id: record_id.into(),
+            existing_status: existing_status.into(),
+            incoming_status: incoming_status.into(),
+        }
+    }
+
+    pub fn domain(&self) -> &'static str {
+        self.domain
+    }
+
+    pub fn record_id(&self) -> &str {
+        &self.record_id
+    }
+
+    pub fn existing_status(&self) -> &str {
+        &self.existing_status
+    }
+
+    pub fn incoming_status(&self) -> &str {
+        &self.incoming_status
+    }
+}
+
+impl fmt::Display for RuntimeStateTransitionConflict {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "conflicting {} transition for {}: {} -> {}",
+            self.domain, self.record_id, self.existing_status, self.incoming_status
+        )
+    }
+}
+
+impl StdError for RuntimeStateTransitionConflict {}
+
 #[derive(Clone)]
 pub struct RuntimeDb {
     path: PathBuf,

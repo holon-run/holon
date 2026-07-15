@@ -12,7 +12,8 @@ use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::types::*;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::runtime_db::{
-    CONTEXT_EPISODE_ANCHORS_DOMAIN, TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT,
+    RuntimeStateTransitionConflict, CONTEXT_EPISODE_ANCHORS_DOMAIN, TASK_PAYLOAD_ARRAY_LIMIT,
+    TASK_PAYLOAD_STRING_LIMIT,
 };
 use crate::types::*;
 
@@ -1267,11 +1268,12 @@ impl WaitConditionRepository<'_> {
         }
         self.db
             .run_storage_domain_import("wait_conditions", "jsonl", "db", |tx| {
-                let latest = reduce_wait_condition_records(records);
-                for record in latest.values() {
-                    upsert_wait_condition_tx(tx, record)?;
+                let mut imported_ids = BTreeMap::<String, ()>::new();
+                for record in records {
+                    imported_ids.insert(record.id.clone(), ());
+                    upsert_wait_condition_tx(tx, &record)?;
                 }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
+                Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
             })
     }
 
@@ -1396,11 +1398,12 @@ impl QueueEntryRepository<'_> {
         }
         self.db
             .run_storage_domain_import("queue_entries", "jsonl", "db", |tx| {
-                let imported_records = records.len();
+                let mut imported_ids = BTreeMap::<String, ()>::new();
                 for record in records {
+                    imported_ids.insert(record.message_id.clone(), ());
                     upsert_queue_entry_tx(tx, &record)?;
                 }
-                Ok(serde_json::json!({ "imported_records": imported_records }))
+                Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
             })
     }
 
@@ -2966,6 +2969,22 @@ pub(crate) fn task_status_phase(status: &TaskStatus) -> u8 {
 }
 
 fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) -> Result<()> {
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1",
+            [&record.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| decode_wait_condition_payload(&payload))
+        .transpose()?;
+    if let Some(existing) = existing.as_ref() {
+        match wait_condition_transition(existing, record)? {
+            StateTransitionOutcome::Applied => {}
+            StateTransitionOutcome::Idempotent => return Ok(()),
+        }
+    }
+
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
     let kind = enum_string(&record.kind)?;
@@ -3024,6 +3043,22 @@ fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) 
 }
 
 fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<()> {
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+            [&record.message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| decode_queue_entry_payload(&payload))
+        .transpose()?;
+    if let Some(existing) = existing.as_ref() {
+        match queue_entry_transition(existing, record)? {
+            StateTransitionOutcome::Applied => {}
+            StateTransitionOutcome::Idempotent => return Ok(()),
+        }
+    }
+
     let payload_json = serde_json::to_string(record)?;
     let priority = enum_string(&record.priority)?;
     let status = enum_string(&record.status)?;
@@ -3050,6 +3085,91 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
         ],
     )?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StateTransitionOutcome {
+    Applied,
+    Idempotent,
+}
+
+fn queue_entry_transition(
+    existing: &QueueEntryRecord,
+    incoming: &QueueEntryRecord,
+) -> Result<StateTransitionOutcome> {
+    if is_terminal_queue_entry_status(&existing.status) {
+        if is_terminal_queue_entry_status(&incoming.status)
+            && queue_entry_terminal_payload_eq(existing, incoming)
+        {
+            return Ok(StateTransitionOutcome::Idempotent);
+        }
+        return Err(RuntimeStateTransitionConflict::new(
+            "queue entry",
+            &existing.message_id,
+            enum_string(&existing.status)?,
+            enum_string(&incoming.status)?,
+        )
+        .into());
+    }
+    if incoming.updated_at < existing.updated_at {
+        return Ok(StateTransitionOutcome::Idempotent);
+    }
+    Ok(StateTransitionOutcome::Applied)
+}
+
+fn wait_condition_transition(
+    existing: &WaitConditionRecord,
+    incoming: &WaitConditionRecord,
+) -> Result<StateTransitionOutcome> {
+    if is_terminal_wait_condition_status(&existing.status) {
+        if is_terminal_wait_condition_status(&incoming.status)
+            && wait_condition_terminal_payload_eq(existing, incoming)
+        {
+            return Ok(StateTransitionOutcome::Idempotent);
+        }
+        return Err(RuntimeStateTransitionConflict::new(
+            "wait condition",
+            &existing.id,
+            enum_string(&existing.status)?,
+            enum_string(&incoming.status)?,
+        )
+        .into());
+    }
+    if incoming.updated_at < existing.updated_at {
+        return Ok(StateTransitionOutcome::Idempotent);
+    }
+    Ok(StateTransitionOutcome::Applied)
+}
+
+fn is_terminal_queue_entry_status(status: &QueueEntryStatus) -> bool {
+    matches!(
+        status,
+        QueueEntryStatus::Processed | QueueEntryStatus::Aborted | QueueEntryStatus::Dropped
+    )
+}
+
+fn is_terminal_wait_condition_status(status: &WaitConditionStatus) -> bool {
+    !matches!(status, WaitConditionStatus::Active)
+}
+
+fn queue_entry_terminal_payload_eq(
+    existing: &QueueEntryRecord,
+    incoming: &QueueEntryRecord,
+) -> bool {
+    let mut existing = existing.clone();
+    let incoming = incoming.clone();
+    existing.updated_at = incoming.updated_at;
+    existing == incoming
+}
+
+fn wait_condition_terminal_payload_eq(
+    existing: &WaitConditionRecord,
+    incoming: &WaitConditionRecord,
+) -> bool {
+    let mut existing = existing.clone();
+    let incoming = incoming.clone();
+    existing.updated_at = incoming.updated_at;
+    existing == incoming
 }
 
 fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<bool> {
@@ -3360,33 +3480,6 @@ pub(crate) fn newer_work_item_record(
         .cmp(&existing.revision)
         .then_with(|| candidate.updated_at.cmp(&existing.updated_at))
         .then_with(|| candidate.created_at.cmp(&existing.created_at))
-        .is_gt()
-}
-
-pub(crate) fn reduce_wait_condition_records(
-    records: Vec<WaitConditionRecord>,
-) -> BTreeMap<String, WaitConditionRecord> {
-    let mut latest = BTreeMap::<String, WaitConditionRecord>::new();
-    for record in records {
-        if latest
-            .get(&record.id)
-            .is_none_or(|existing| newer_wait_condition_record(&record, existing))
-        {
-            latest.insert(record.id.clone(), record);
-        }
-    }
-    latest
-}
-
-pub(crate) fn newer_wait_condition_record(
-    candidate: &WaitConditionRecord,
-    existing: &WaitConditionRecord,
-) -> bool {
-    candidate
-        .updated_at
-        .cmp(&existing.updated_at)
-        .then_with(|| candidate.created_at.cmp(&existing.created_at))
-        .then_with(|| candidate.id.cmp(&existing.id))
         .is_gt()
 }
 
@@ -3791,6 +3884,10 @@ pub(crate) fn decode_wait_condition_row(row: &rusqlite::Row<'_>) -> Result<WaitC
 
 pub(crate) fn decode_queue_entry_payload(payload: &str) -> Result<QueueEntryRecord> {
     serde_json::from_str(payload).context("decoding queue entry payload from runtime db")
+}
+
+pub(crate) fn decode_wait_condition_payload(payload: &str) -> Result<WaitConditionRecord> {
+    serde_json::from_str(payload).context("decoding wait condition payload from runtime db")
 }
 
 pub(crate) fn decode_timer_payload(payload: &str) -> Result<TimerRecord> {
