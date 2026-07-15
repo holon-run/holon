@@ -219,6 +219,18 @@ Turn V:
 This is preferable to separately rendering a recent operator message list and a
 recent brief list with no guaranteed linkage.
 
+Turn ownership is determined only by a non-empty, exact `turn_id` match.
+`message_seq`, `turn_index`, and materialized object ids remain useful for
+ordering, display, and lookup, but they are not ownership keys and must not be
+used as compatibility fallbacks. In particular, equal numeric values from the
+message and turn ledgers do not establish a causal relation.
+
+Prompt projection must revalidate each materialized message, brief, and tool
+reference against the referenced object's own `turn_id`. A missing, blank, or
+different object `turn_id` makes the reference ineligible for that turn even
+when the object id appears in `TurnRecord`. This protects prompt assembly from
+already-persisted cross-turn references.
+
 ### 5.4 Classify Current Input Relation Before Rendering History
 
 Every prompt should make the current turn relation explicit:
@@ -451,6 +463,13 @@ An LLM may be used for:
 An LLM must not be the sole judge of authority, trust, or source replacement.
 
 ## 7. Migration Path
+
+Existing polluted `TurnRecord` rows are not rewritten as part of the
+turn-ownership fix. Normal settlement stops creating sequence-based
+associations, while prompt hydration and rendering ignore historical
+references whose object provenance does not match the record. Any offline
+audit or deterministic rebuild facility should be designed separately rather
+than coupled to startup or prompt assembly.
 
 ### Phase 1: Turn Projection Without New Storage
 

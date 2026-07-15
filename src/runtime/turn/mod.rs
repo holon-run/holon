@@ -178,10 +178,7 @@ impl RuntimeHandle {
 
         let input_messages = messages
             .iter()
-            .filter(|message| {
-                turn_optional_id_matches(message.turn_id.as_deref(), turn_id)
-                    || message.message_seq == Some(terminal.turn_index)
-            })
+            .filter(|message| turn_optional_id_matches(message.turn_id.as_deref(), turn_id))
             .collect::<Vec<_>>();
 
         let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
@@ -196,26 +193,19 @@ impl RuntimeHandle {
             .collect();
         record.tool_execution_ids = tools
             .iter()
-            .filter(|tool| {
-                turn_optional_id_matches(tool.turn_id.as_deref(), turn_id)
-                    || tool.turn_index == terminal.turn_index
-            })
+            .filter(|tool| turn_optional_id_matches(tool.turn_id.as_deref(), turn_id))
             .map(|tool| tool.id.clone())
             .collect();
         record.produced_brief_ids = briefs
             .iter()
-            .filter(|brief| {
-                turn_optional_id_matches(brief.turn_id.as_deref(), turn_id)
-                    || brief.turn_index == Some(terminal.turn_index)
-            })
+            .filter(|brief| turn_optional_id_matches(brief.turn_id.as_deref(), turn_id))
             .map(|brief| brief.id.clone())
             .collect();
         record.completed_work_item_ids = briefs
             .iter()
             .filter(|brief| {
                 brief.kind == BriefKind::Result
-                    && (turn_optional_id_matches(brief.turn_id.as_deref(), turn_id)
-                        || brief.turn_index == Some(terminal.turn_index))
+                    && turn_optional_id_matches(brief.turn_id.as_deref(), turn_id)
             })
             .filter_map(|brief| brief.work_item_id.clone())
             .collect::<std::collections::BTreeSet<_>>()

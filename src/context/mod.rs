@@ -496,8 +496,17 @@ fn hydrate_recent_turn_references(
                 continue;
             }
             if let Some(message) = storage.read_message_by_id(message_id)? {
-                message_ids.insert(message.id.clone());
-                messages.push(message);
+                if turn_record_owns_object(record, message.turn_id.as_deref()) {
+                    message_ids.insert(message.id.clone());
+                    messages.push(message);
+                } else {
+                    tracing::warn!(
+                        turn_id = %record.turn_id,
+                        message_id = %message_id,
+                        object_turn_id = ?message.turn_id,
+                        "recent_turns ignored cross-turn input message reference"
+                    );
+                }
             } else {
                 tracing::warn!(
                     turn_id = %record.turn_id,
@@ -514,8 +523,17 @@ fn hydrate_recent_turn_references(
         {
             if !message_ids.contains(message_id) {
                 if let Some(message) = storage.read_message_by_id(message_id)? {
-                    message_ids.insert(message.id.clone());
-                    messages.push(message);
+                    if turn_record_owns_object(record, message.turn_id.as_deref()) {
+                        message_ids.insert(message.id.clone());
+                        messages.push(message);
+                    } else {
+                        tracing::warn!(
+                            turn_id = %record.turn_id,
+                            message_id = %message_id,
+                            object_turn_id = ?message.turn_id,
+                            "recent_turns ignored cross-turn trigger message reference"
+                        );
+                    }
                 } else {
                     tracing::warn!(
                         turn_id = %record.turn_id,
@@ -531,8 +549,17 @@ fn hydrate_recent_turn_references(
                 continue;
             }
             if let Some(brief) = storage.read_brief_by_id(brief_id)? {
-                brief_ids.insert(brief.id.clone());
-                briefs.push(brief);
+                if turn_record_owns_object(record, brief.turn_id.as_deref()) {
+                    brief_ids.insert(brief.id.clone());
+                    briefs.push(brief);
+                } else {
+                    tracing::warn!(
+                        turn_id = %record.turn_id,
+                        brief_id = %brief_id,
+                        object_turn_id = ?brief.turn_id,
+                        "recent_turns ignored cross-turn brief reference"
+                    );
+                }
             } else {
                 tracing::warn!(
                     turn_id = %record.turn_id,
@@ -547,8 +574,17 @@ fn hydrate_recent_turn_references(
                 continue;
             }
             if let Some(tool) = storage.read_tool_execution_by_id(tool_id)? {
-                tool_ids.insert(tool.id.clone());
-                tools.push(tool);
+                if turn_record_owns_object(record, tool.turn_id.as_deref()) {
+                    tool_ids.insert(tool.id.clone());
+                    tools.push(tool);
+                } else {
+                    tracing::warn!(
+                        turn_id = %record.turn_id,
+                        tool_id = %tool_id,
+                        object_turn_id = ?tool.turn_id,
+                        "recent_turns ignored cross-turn tool execution reference"
+                    );
+                }
             } else {
                 tracing::warn!(
                     turn_id = %record.turn_id,
@@ -1844,13 +1880,39 @@ fn render_turn_record_projection(
     let trigger_message = record
         .input_message_ids
         .iter()
-        .find_map(|id| messages.iter().find(|message| message.id == *id))
+        .find_map(|id| {
+            messages.iter().find(|message| {
+                message.id == *id && turn_record_owns_object(record, message.turn_id.as_deref())
+            })
+        })
         .or_else(|| {
             record
                 .trigger
                 .as_ref()
                 .and_then(|trigger| trigger.message_id.as_ref())
-                .and_then(|id| messages.iter().find(|message| message.id == *id))
+                .and_then(|id| {
+                    messages.iter().find(|message| {
+                        message.id == *id
+                            && turn_record_owns_object(record, message.turn_id.as_deref())
+                    })
+                })
+        });
+    let trigger_summary_is_valid = record
+        .trigger
+        .as_ref()
+        .and_then(|trigger| trigger.message_id.as_ref())
+        .is_none_or(|message_id| match storage.read_message_by_id(message_id) {
+            Ok(Some(message)) => turn_record_owns_object(record, message.turn_id.as_deref()),
+            Ok(None) => true,
+            Err(error) => {
+                tracing::warn!(
+                    turn_id = %record.turn_id,
+                    message_id = %message_id,
+                    %error,
+                    "recent_turns could not validate persisted trigger summary"
+                );
+                false
+            }
         });
     let mut lines = vec![format!(
         "- Turn {}:",
@@ -1866,11 +1928,15 @@ fn render_turn_record_projection(
             "  - trigger: {}",
             turn_trigger_label(trigger_message)
         ));
-    } else if let Some(trigger) = &record.trigger {
-        lines.push(format!(
-            "  - trigger: {}",
-            turn_trigger_summary_label(trigger)
-        ));
+    } else if trigger_summary_is_valid {
+        if let Some(trigger) = &record.trigger {
+            lines.push(format!(
+                "  - trigger: {}",
+                turn_trigger_summary_label(trigger)
+            ));
+        } else {
+            lines.push("  - trigger: unavailable".to_string());
+        }
     } else {
         lines.push("  - trigger: unavailable".to_string());
     }
@@ -1902,11 +1968,11 @@ fn render_turn_record_projection(
 
     let mut related_briefs = Vec::new();
     let mut brief_budget = budget.saturating_sub(estimate_text_tokens(&lines.join("\n")));
-    for brief in record
-        .produced_brief_ids
-        .iter()
-        .filter_map(|id| briefs.iter().find(|brief| brief.id == *id))
-    {
+    for brief in record.produced_brief_ids.iter().filter_map(|id| {
+        briefs.iter().find(|brief| {
+            brief.id == *id && turn_record_owns_object(record, brief.turn_id.as_deref())
+        })
+    }) {
         if let Some(rendered) = render_recent_turn_brief_line(storage, brief, mode, brief_budget) {
             brief_budget = brief_budget.saturating_sub(estimate_text_tokens(&rendered));
             related_briefs.push(rendered);
@@ -1920,7 +1986,11 @@ fn render_turn_record_projection(
     let related_tools = record
         .tool_execution_ids
         .iter()
-        .filter_map(|id| tools.iter().find(|tool| tool.id == *id))
+        .filter_map(|id| {
+            tools.iter().find(|tool| {
+                tool.id == *id && turn_record_owns_object(record, tool.turn_id.as_deref())
+            })
+        })
         .collect::<Vec<_>>();
     if !related_tools.is_empty() {
         lines.push("  - tool executions:".to_string());
@@ -1984,22 +2054,15 @@ fn render_current_continuation_turn_record_projection(
 }
 
 fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -> bool {
-    if let Some(turn_id) = message.turn_id.as_deref().map(str::trim) {
-        if !turn_id.is_empty() {
-            if turn_id == record.turn_id.trim() {
-                return true;
-            }
-            return false;
-        }
-    }
+    turn_record_owns_object(record, message.turn_id.as_deref())
+}
 
-    record.input_message_ids.iter().any(|id| id == &message.id)
-        || record
-            .trigger
-            .as_ref()
-            .and_then(|trigger| trigger.message_id.as_ref())
-            .is_some_and(|id| id == &message.id)
-        || record.turn_index != 0 && message.message_seq == Some(record.turn_index)
+fn turn_record_owns_object(record: &TurnRecord, object_turn_id: Option<&str>) -> bool {
+    let record_turn_id = record.turn_id.trim();
+    object_turn_id.is_some_and(|object_turn_id| {
+        let object_turn_id = object_turn_id.trim();
+        !record_turn_id.is_empty() && !object_turn_id.is_empty() && object_turn_id == record_turn_id
+    })
 }
 
 fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {
@@ -2782,9 +2845,12 @@ mod tests {
         turn_id: &str,
         turn_index: usize,
     ) -> TurnRecord {
+        let mut message = message.clone();
+        message.turn_id = Some(turn_id.to_string());
+        storage.append_message(&message).unwrap();
         let mut turn = TurnRecord::new(&message.agent_id, turn_id, turn_index as u64);
         turn.input_message_ids = vec![message.id.clone()];
-        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
         storage.append_turn(&turn).unwrap();
         turn
     }
@@ -2951,6 +3017,97 @@ mod tests {
         assert!(recent_turns.contains(&format!("message_ref=message:{}", operator.id)));
         assert!(recent_turns.contains("Rendered from DB turn record."));
         assert!(recent_turns.contains("brief_ref=brief:brief-db-context"));
+    }
+
+    #[test]
+    fn recent_turns_ignores_persisted_cross_turn_references() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let turn_id = "turn-owned";
+        let turn_index = 9;
+
+        let mut cross_turn_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "cross-turn operator input must stay hidden".into(),
+            },
+        );
+        cross_turn_message.turn_id = Some("turn-other".into());
+        cross_turn_message.message_seq = Some(turn_index);
+        storage.append_message(&cross_turn_message).unwrap();
+
+        let mut owned_brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "owned result remains visible",
+            None,
+            None,
+        );
+        owned_brief.id = "brief-owned".into();
+        owned_brief.turn_id = Some(turn_id.into());
+        owned_brief.turn_index = Some(99);
+        storage.append_brief(&owned_brief).unwrap();
+
+        let mut cross_turn_brief = owned_brief.clone();
+        cross_turn_brief.id = "brief-cross-turn".into();
+        cross_turn_brief.text = "cross-turn result must stay hidden".into();
+        cross_turn_brief.turn_id = Some("turn-other".into());
+        cross_turn_brief.turn_index = Some(turn_index);
+        storage.append_brief(&cross_turn_brief).unwrap();
+
+        let owned_tool = ToolExecutionRecord {
+            id: "tool-owned".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 99,
+            turn_id: Some(turn_id.into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({}),
+            output: json!({}),
+            summary: "owned tool".into(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&owned_tool).unwrap();
+
+        let mut cross_turn_tool = owned_tool.clone();
+        cross_turn_tool.id = "tool-cross-turn".into();
+        cross_turn_tool.turn_index = turn_index;
+        cross_turn_tool.turn_id = Some("turn-other".into());
+        storage.append_tool_execution(&cross_turn_tool).unwrap();
+
+        let mut turn = TurnRecord::new("default", turn_id, turn_index);
+        turn.input_message_ids = vec![cross_turn_message.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &cross_turn_message,
+        ));
+        turn.produced_brief_ids = vec![owned_brief.id.clone(), cross_turn_brief.id.clone()];
+        turn.tool_execution_ids = vec![owned_tool.id.clone(), cross_turn_tool.id.clone()];
+        storage.append_turn(&turn).unwrap();
+
+        let context = context_for_storage(&storage, "default");
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+
+        assert!(recent_turns.contains("  - trigger: unavailable"));
+        assert!(recent_turns.contains("owned result remains visible"));
+        assert!(recent_turns.contains("tool_execution:tool-owned:output"));
+        assert!(!recent_turns.contains("cross-turn operator input must stay hidden"));
+        assert!(!recent_turns.contains("cross-turn result must stay hidden"));
+        assert!(!recent_turns.contains("tool_execution:tool-cross-turn:output"));
     }
 
     #[test]
@@ -3172,7 +3329,7 @@ mod tests {
             "Please preserve this operator input in recent turns.".repeat(8)
         );
 
-        let operator = MessageEnvelope::new(
+        let mut operator = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
@@ -3184,6 +3341,7 @@ mod tests {
                 text: operator_text.clone(),
             },
         );
+        operator.turn_id = Some("turn-full-operator-input".into());
         storage.append_message(&operator).unwrap();
         let mut brief = BriefRecord::new(
             "default",
@@ -3193,6 +3351,7 @@ mod tests {
             None,
         );
         brief.id = "brief-full-operator-input".into();
+        brief.turn_id = Some("turn-full-operator-input".into());
         storage.append_brief(&brief).unwrap();
         let mut turn = TurnRecord::new("default", "turn-full-operator-input", 1);
         turn.input_message_ids = vec![operator.id.clone()];
@@ -3246,7 +3405,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let long_tail = "older-operator-tail-hidden-behind-message-ref";
-        let message = MessageEnvelope::new(
+        let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
@@ -3256,13 +3415,15 @@ mod tests {
                 text: format!("{} {long_tail}", "older operator input. ".repeat(40)),
             },
         );
-        let brief = BriefRecord::new(
+        message.turn_id = Some("turn-old-message-preview".into());
+        let mut brief = BriefRecord::new(
             "default",
             BriefKind::Result,
             "brief anchor remains visible",
             Some(message.id.clone()),
             None,
         );
+        brief.turn_id = Some("turn-old-message-preview".into());
         let mut turn = TurnRecord::new("default", "turn-old-message-preview", 1);
         turn.input_message_ids = vec![message.id.clone()];
         turn.produced_brief_ids = vec![brief.id.clone()];
@@ -3293,7 +3454,7 @@ mod tests {
     fn recent_turns_resolves_transcript_backed_brief_content() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let message = MessageEnvelope::new(
+        let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
@@ -3303,6 +3464,7 @@ mod tests {
                 text: "summarize from transcript".to_string(),
             },
         );
+        message.turn_id = Some("turn-transcript-backed".into());
         let entry = TranscriptEntry::new(
             "default",
             TranscriptEntryKind::AssistantRound,
@@ -3319,6 +3481,7 @@ mod tests {
             None,
         );
         brief.id = "brief-transcript-backed".into();
+        brief.turn_id = Some("turn-transcript-backed".into());
         brief.content_source = BriefContentSource::TranscriptEntry {
             entry_id: entry.id.clone(),
             relation: BriefContentSourceRelation::DerivedFrom,
@@ -3510,13 +3673,14 @@ mod tests {
         prior_message.turn_id = Some("turn-benchmark".to_string());
         storage.append_message(&prior_message).unwrap();
 
-        let result_brief = BriefRecord::new(
+        let mut result_brief = BriefRecord::new(
             "default",
             BriefKind::Result,
             "Updated benchmark summary reporting and verified cargo test.",
             Some(prior_message.id.clone()),
             None,
         );
+        result_brief.turn_id = Some("turn-benchmark".into());
         storage.append_brief(&result_brief).unwrap();
 
         let tool_record = ToolExecutionRecord {
@@ -4026,7 +4190,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
-        let prior_message = MessageEnvelope::new(
+        let mut prior_message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
@@ -4036,22 +4200,25 @@ mod tests {
                 text: "previous request".to_string(),
             },
         );
+        prior_message.turn_id = Some("turn-previous".into());
         storage.append_message(&prior_message).unwrap();
-        let ack = BriefRecord::new(
+        let mut ack = BriefRecord::new(
             "default",
             BriefKind::Ack,
             "Acknowledged the request. Queued work: previous request",
             Some(prior_message.id.clone()),
             None,
         );
+        ack.turn_id = Some("turn-previous".into());
         storage.append_brief(&ack).unwrap();
-        let result = BriefRecord::new(
+        let mut result = BriefRecord::new(
             "default",
             BriefKind::Result,
             "Unique latest result content.",
             Some(prior_message.id.clone()),
             None,
         );
+        result.turn_id = Some("turn-previous".into());
         storage.append_brief(&result).unwrap();
         let mut turn = TurnRecord::new("default", "turn-previous", 1);
         turn.input_message_ids = vec![prior_message.id.clone()];
@@ -4117,7 +4284,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let tail = "latest-result-tail-visible-after-old-preview-limit";
-        let prior_message = MessageEnvelope::new(
+        let mut prior_message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
@@ -4127,8 +4294,9 @@ mod tests {
                 text: "derive the final principle".to_string(),
             },
         );
+        prior_message.turn_id = Some("turn-latest-result-full".into());
         storage.append_message(&prior_message).unwrap();
-        let result = BriefRecord::new(
+        let mut result = BriefRecord::new(
             "default",
             BriefKind::Result,
             format!(
@@ -4138,6 +4306,7 @@ mod tests {
             Some(prior_message.id.clone()),
             None,
         );
+        result.turn_id = Some("turn-latest-result-full".into());
         storage.append_brief(&result).unwrap();
         let mut turn = TurnRecord::new("default", "turn-latest-result-full", 1);
         turn.input_message_ids = vec![prior_message.id.clone()];
@@ -4188,7 +4357,7 @@ mod tests {
     fn continuity_result_truncation_keeps_explicit_brief_ref() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let message = MessageEnvelope::new(
+        let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
@@ -4198,6 +4367,7 @@ mod tests {
                 text: "summarize the long result".to_string(),
             },
         );
+        message.turn_id = Some("turn-long-continuity".into());
         let mut brief = BriefRecord::new(
             "default",
             BriefKind::Result,
@@ -4206,6 +4376,7 @@ mod tests {
             None,
         );
         brief.id = "brief-long-continuity".into();
+        brief.turn_id = Some("turn-long-continuity".into());
         let mut turn = TurnRecord::new("default", "turn-long-continuity", 1);
         turn.input_message_ids = vec![message.id.clone()];
         turn.produced_brief_ids = vec![brief.id.clone()];
@@ -4254,7 +4425,7 @@ mod tests {
         let mut turns = Vec::new();
 
         for idx in 1..=4 {
-            let message = MessageEnvelope::new(
+            let mut message = MessageEnvelope::new(
                 "default",
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
@@ -4264,6 +4435,8 @@ mod tests {
                     text: format!("turn {idx} request"),
                 },
             );
+            let turn_id = format!("turn-nearby-{idx}");
+            message.turn_id = Some(turn_id.clone());
             let tail = match idx {
                 1 => "older-tail-after-compact-preview",
                 2 => "nearby-two-tail-after-compact-preview",
@@ -4278,7 +4451,8 @@ mod tests {
                 None,
             );
             brief.id = format!("brief-nearby-{idx}");
-            let mut turn = TurnRecord::new("default", format!("turn-nearby-{idx}"), idx);
+            brief.turn_id = Some(turn_id.clone());
+            let mut turn = TurnRecord::new("default", turn_id, idx);
             turn.input_message_ids = vec![message.id.clone()];
             turn.produced_brief_ids = vec![brief.id.clone()];
             turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
@@ -4497,13 +4671,14 @@ mod tests {
         prior_message.turn_id = Some("turn-wake-path".to_string());
         storage.append_message(&prior_message).unwrap();
 
-        let brief = BriefRecord::new(
+        let mut brief = BriefRecord::new(
             "default",
             BriefKind::Failure,
             "Tried cargo test wake_path, but the result is still inconclusive.",
             Some(prior_message.id.clone()),
             None,
         );
+        brief.turn_id = Some("turn-wake-path".into());
         storage.append_brief(&brief).unwrap();
         let tool = ToolExecutionRecord {
             id: "tool-raw-evidence".to_string(),
@@ -7354,7 +7529,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_record_matches_message_uses_turn_id_then_legacy_turn_index_and_input_ids() {
+    fn turn_record_matches_message_requires_matching_non_empty_turn_id() {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -7377,17 +7552,22 @@ mod tests {
 
         record.turn_id = String::new();
         message.turn_id = None;
-        assert!(turn_record_matches_message(&record, &message));
+        assert!(!turn_record_matches_message(&record, &message));
 
-        message.message_seq = Some(5);
+        record.turn_id = "turn-current".into();
+        message.message_seq = Some(4);
         assert!(!turn_record_matches_message(&record, &message));
 
         record.input_message_ids = vec![message.id.clone()];
+        record.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+        assert!(!turn_record_matches_message(&record, &message));
+
+        message.turn_id = Some(" turn-current ".into());
         assert!(turn_record_matches_message(&record, &message));
     }
 
     #[test]
-    fn turn_record_matches_message_ignores_zero_legacy_turn_index() {
+    fn turn_record_matches_message_ignores_sequence_collision() {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -7398,9 +7578,9 @@ mod tests {
                 text: "run tests".into(),
             },
         );
-        message.message_seq = Some(0);
+        message.message_seq = Some(4);
 
-        let record = TurnRecord::new("default", "", 4);
+        let record = TurnRecord::new("default", "turn-current", 4);
 
         assert!(!turn_record_matches_message(&record, &message));
     }

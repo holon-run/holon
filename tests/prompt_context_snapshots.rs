@@ -397,9 +397,12 @@ fn append_turn_for_message(
     turn_id: &str,
     turn_index: u64,
 ) -> Result<TurnRecord> {
+    let mut message = message.clone();
+    message.turn_id = Some(turn_id.into());
+    storage.append_message(&message)?;
     let mut turn = TurnRecord::new(&message.agent_id, turn_id, turn_index);
     turn.input_message_ids = vec![message.id.clone()];
-    turn.trigger = Some(TurnTriggerSummary::from_message(message));
+    turn.trigger = Some(TurnTriggerSummary::from_message(&message));
     storage.append_turn(&turn)?;
     Ok(turn)
 }
@@ -435,6 +438,7 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
         None,
     );
     result_brief.id = "brief_focused_prompt_projection".into();
+    result_brief.turn_id = Some("turn-focused-prompt".into());
     storage.append_brief(&result_brief)?;
     let mut turn = append_turn_for_message(&storage, &previous_operator, "turn-focused-prompt", 1)?;
     turn.produced_brief_ids = vec![result_brief.id.clone()];
@@ -536,6 +540,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
     );
     turn_index_brief.id = "brief_completion_report_promotion".into();
     turn_index_brief.turn_index = Some(1);
+    turn_index_brief.turn_id = Some("turn_op_test".into());
     storage.append_brief(&turn_index_brief)?;
     storage.append_tool_execution(&ToolExecutionRecord {
         id: "tool_exec_1".into(),
@@ -625,7 +630,7 @@ runtime flow
 
 ## continuation_anchor
 Continuation anchor:
-Latest trusted operator input: message_seq 1.
+Latest trusted operator input: message_seq 2.
 Current input relation: current_input is a task-result continuation, not a new operator request. Continue the latest trusted operator input above unless the current WorkItem projection is more specific.
 
 ## recent_turns
@@ -633,7 +638,7 @@ Recent turns:
 - Turn turn_index 1:
   - turn_id: turn_op_test
   - trigger: trusted operator input
-  - continues input: message_seq 1
+  - continues input: message_seq 2
   - continuation trigger: a task-result continuation
   - operator input full: Run cargo test runtime_flow and report back. message_ref=message:msg_runtime_flow_operator
   - produced briefs:
@@ -1770,6 +1775,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         None,
     );
     first_brief.id = "brief_context_eval_started".into();
+    first_brief.turn_id = Some("turn_context_eval_start".into());
     storage.append_brief(&first_brief)?;
 
     storage.append_tool_execution(&ToolExecutionRecord {
@@ -1819,6 +1825,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         Some("task_context_eval".into()),
     );
     task_brief.id = "brief_context_eval_diagnostics".into();
+    task_brief.turn_id = Some("turn_context_eval_tool".into());
     storage.append_brief(&task_brief)?;
     let mut task_turn =
         append_turn_for_message(&storage, &task_result, "turn_context_eval_tool", 2)?;
@@ -1997,6 +2004,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         None,
     );
     first_brief.id = "brief_issue_list_initial".into();
+    first_brief.turn_id = Some("turn_issue_list_analysis".into());
     storage.append_brief(&first_brief)?;
     let mut first_turn =
         append_turn_for_message(&storage, &first_operator, "turn_issue_list_analysis", 1)?;
@@ -2046,6 +2054,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
             None,
         );
         brief.turn_index = Some((turn_index + 2) as u64);
+        brief.turn_id = Some(format!("turn_issue_list_discussion_{}", turn_index + 1));
         storage.append_brief(&brief)?;
         let mut turn = append_turn_for_message(
             &storage,
@@ -2184,6 +2193,7 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
         None,
     );
     recent_brief.id = "brief_active_resume".into();
+    recent_brief.turn_id = Some("turn_active_resume".into());
     storage.append_brief(&recent_brief)?;
     let mut recent_turn =
         append_turn_for_message(&storage, &recent_operator, "turn_active_resume", 2)?;

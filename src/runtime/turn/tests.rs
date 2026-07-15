@@ -39,6 +39,134 @@ fn fixture_plan_artifact(
     }
 }
 
+#[tokio::test]
+async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        std::sync::Arc::new(crate::provider::StubProvider::new("unused")),
+        "default".into(),
+        crate::runtime::tests::support::context_config(),
+    )
+    .unwrap();
+    let turn_id = "turn-owned";
+    let turn_index = 7;
+
+    let mut owned_message = MessageEnvelope::new(
+        "default",
+        crate::types::MessageKind::OperatorPrompt,
+        crate::types::MessageOrigin::Operator { actor_id: None },
+        crate::types::AuthorityClass::OperatorInstruction,
+        crate::types::Priority::Normal,
+        crate::types::MessageBody::Text {
+            text: "owned input".into(),
+        },
+    );
+    owned_message.turn_id = Some(turn_id.into());
+    owned_message.message_seq = Some(99);
+    runtime.storage().append_message(&owned_message).unwrap();
+
+    let mut colliding_message = owned_message.clone();
+    colliding_message.id = "message-collision".into();
+    colliding_message.turn_id = Some("turn-other".into());
+    colliding_message.message_seq = Some(turn_index);
+    runtime
+        .storage()
+        .append_message(&colliding_message)
+        .unwrap();
+
+    let mut missing_turn_message = owned_message.clone();
+    missing_turn_message.id = "message-missing-turn".into();
+    missing_turn_message.turn_id = None;
+    missing_turn_message.message_seq = Some(turn_index);
+    runtime
+        .storage()
+        .append_message(&missing_turn_message)
+        .unwrap();
+
+    let owned_tool = crate::types::ToolExecutionRecord {
+        id: "tool-owned".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_index: 99,
+        turn_id: Some(turn_id.into()),
+        tool_name: "ExecCommand".into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 1,
+        authority_class: crate::types::AuthorityClass::RuntimeInstruction,
+        status: crate::types::ToolExecutionStatus::Success,
+        input: serde_json::json!({}),
+        output: serde_json::json!({}),
+        summary: "owned".into(),
+        invocation_surface: None,
+    };
+    runtime
+        .storage()
+        .append_tool_execution(&owned_tool)
+        .unwrap();
+    let mut colliding_tool = owned_tool.clone();
+    colliding_tool.id = "tool-collision".into();
+    colliding_tool.turn_index = turn_index;
+    colliding_tool.turn_id = Some("turn-other".into());
+    runtime
+        .storage()
+        .append_tool_execution(&colliding_tool)
+        .unwrap();
+
+    let mut owned_brief = crate::types::BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "owned result",
+        Some(owned_message.id.clone()),
+        None,
+    );
+    owned_brief.id = "brief-owned".into();
+    owned_brief.turn_index = Some(99);
+    owned_brief.turn_id = Some(turn_id.into());
+    owned_brief.work_item_id = Some("work-owned".into());
+    runtime.storage().append_brief(&owned_brief).unwrap();
+    let mut colliding_brief = owned_brief.clone();
+    colliding_brief.id = "brief-collision".into();
+    colliding_brief.turn_index = Some(turn_index);
+    colliding_brief.turn_id = Some("turn-other".into());
+    colliding_brief.work_item_id = Some("work-other".into());
+    runtime.storage().append_brief(&colliding_brief).unwrap();
+
+    runtime
+        .persist_turn_record(&TurnTerminalRecord {
+            turn_id: turn_id.into(),
+            turn_index,
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        })
+        .await
+        .unwrap();
+
+    let record = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("persisted turn");
+    assert_eq!(record.input_message_ids, vec![owned_message.id.clone()]);
+    assert_eq!(
+        record.trigger.and_then(|trigger| trigger.message_id),
+        Some(owned_message.id)
+    );
+    assert_eq!(record.tool_execution_ids, vec![owned_tool.id]);
+    assert_eq!(record.produced_brief_ids, vec![owned_brief.id]);
+    assert_eq!(record.completed_work_item_ids, vec!["work-owned"]);
+}
+
 #[test]
 fn truncated_mutation_recovery_hint_is_tool_specific() {
     let apply_patch = truncated_mutation_recovery_hint("ApplyPatch");
