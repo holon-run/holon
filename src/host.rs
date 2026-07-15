@@ -195,9 +195,26 @@ impl RuntimeHost {
         Self::new_inner(config, Some(provider))
     }
 
+    #[doc(hidden)]
+    pub fn new_with_provider_and_event_bus_capacity_for_test(
+        config: AppConfig,
+        provider: Arc<dyn AgentProvider>,
+        event_bus_capacity: usize,
+    ) -> Result<Self> {
+        Self::new_inner_with_event_bus_capacity(config, Some(provider), event_bus_capacity)
+    }
+
     fn new_inner(
         config: AppConfig,
         static_provider: Option<Arc<dyn AgentProvider>>,
+    ) -> Result<Self> {
+        Self::new_inner_with_event_bus_capacity(config, static_provider, 1024)
+    }
+
+    fn new_inner_with_event_bus_capacity(
+        config: AppConfig,
+        static_provider: Option<Arc<dyn AgentProvider>>,
+        event_bus_capacity: usize,
     ) -> Result<Self> {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
@@ -206,7 +223,7 @@ impl RuntimeHost {
             inner: Arc::new(HostInner {
                 registry,
                 runtime_db,
-                event_bus: EventBus::new(1024),
+                event_bus: EventBus::new(event_bus_capacity),
                 memory_index_notify: Arc::new(Notify::new()),
                 daemon_indexer_token: CancellationToken::new(),
                 daemon_indexer_handle: Mutex::new(None),
