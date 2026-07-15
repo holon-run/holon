@@ -6,6 +6,7 @@
 //! - `tool_schema`: Tool schema contract tests and OpenAI request building tests
 //! - `openai_responses`: OpenAI Responses API request/response lowering tests
 //! - `anthropic_messages`: Anthropic Messages API cache/context-management tests
+//! - `gemini_generate_content`: Gemini GenerateContent wire request tests
 //! - `routing_auth_doctor`: Provider routing, fallback, auth, and doctor tests
 //! - `openai_chat_completions`: OpenAI Chat Completions conversion, streaming, and error classification tests
 
@@ -21,6 +22,7 @@ use super::{
 };
 
 mod anthropic_messages;
+mod gemini_generate_content;
 mod openai_chat_completions;
 mod openai_responses;
 mod routing_auth_doctor;
