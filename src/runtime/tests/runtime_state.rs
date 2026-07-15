@@ -95,6 +95,45 @@ fn append_state_changed_events_emits_single_lightweight_agent_event() {
     assert!(payload.get("context_summary").is_none());
 }
 
+#[tokio::test]
+async fn model_override_defers_reasoning_effort_validation_for_unresolved_route() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_run_id = Some("run-1".into());
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+    let model_override = crate::config::ModelRouteRef::parse("unconfigured@default/model").unwrap();
+
+    let model_state = runtime
+        .set_model_override(model_override.clone(), Some("arbitrary".into()))
+        .await
+        .unwrap();
+
+    assert_eq!(model_state.override_model, Some(model_override.clone()));
+    assert_eq!(
+        model_state.override_reasoning_effort.as_deref(),
+        Some("arbitrary")
+    );
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.model_override, Some(model_override));
+    assert_eq!(
+        state.model_override_reasoning_effort.as_deref(),
+        Some("arbitrary")
+    );
+}
+
 #[test]
 fn runtime_projection_cache_rebuilds_current_agent_active_task_projection() {
     let now = Utc::now();
