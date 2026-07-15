@@ -4303,6 +4303,23 @@ code {
   line-height: 1.4;
 }
 
+.settings-provider-group {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-provider-group-head {
+  display: grid;
+  gap: 3px;
+  padding: 4px 2px 0;
+}
+
+.settings-provider-group-head span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .settings-provider-editor {
   display: grid;
   gap: 12px;

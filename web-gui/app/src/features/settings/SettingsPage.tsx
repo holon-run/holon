@@ -16,6 +16,7 @@ import type {
   RuntimeModelCatalog,
   RuntimeModelOption,
   RuntimeProviderSummary,
+  RuntimeWebSearchProviderKindSummary,
   RuntimeWebSearchProviderSummary,
 } from "../../runtime/types";
 
@@ -72,121 +73,32 @@ type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseU
 type StandardSearchProviderDefinition = {
   id: string;
   kind: string;
-  label: string;
-  description: string;
+  category: "api" | "selfHosted" | "native";
   requiresApiKey: boolean;
-  requiresBaseUrl?: boolean;
+  requiresBaseUrl: boolean;
   defaultCredentialProfile?: string;
-  baseUrlPlaceholder?: string;
+  capabilities: RuntimeWebSearchProviderKindSummary["capabilities"];
 };
 
-const webSearchProviderKinds = [
-  "duck_duck_go",
-  "searxng",
-  "brave",
-  "tencent_cloud_wsa",
-  "bocha",
-  "tavily",
-  "exa",
-  "perplexity",
-  "firecrawl",
-  "open_ai_native",
-  "anthropic_native",
-  "gemini_native",
-  "command",
-];
-
-const standardSearchProviders: StandardSearchProviderDefinition[] = [
-  {
-    id: "brave",
-    kind: "brave",
-    label: "Brave Search",
-    description: "Good general-purpose web results. Requires a Brave Search API key.",
-    requiresApiKey: true,
-    defaultCredentialProfile: "brave:default",
-  },
-  {
-    id: "tavily",
-    kind: "tavily",
-    label: "Tavily",
-    description: "Search API optimized for agent and RAG workflows. Requires a Tavily API key.",
-    requiresApiKey: true,
-    defaultCredentialProfile: "tavily:default",
-  },
-  {
-    id: "exa",
-    kind: "exa",
-    label: "Exa",
-    description: "Neural search API for high-relevance web retrieval. Requires an Exa API key.",
-    requiresApiKey: true,
-    defaultCredentialProfile: "exa:default",
-  },
-  {
-    id: "perplexity",
-    kind: "perplexity",
-    label: "Perplexity",
-    description: "Perplexity search-backed answers. Requires a Perplexity API key.",
-    requiresApiKey: true,
-    defaultCredentialProfile: "perplexity:default",
-  },
-  {
-    id: "firecrawl",
-    kind: "firecrawl",
-    label: "Firecrawl",
-    description: "Search and crawl provider for page extraction workflows. Requires a Firecrawl API key.",
-    requiresApiKey: true,
-    defaultCredentialProfile: "firecrawl:default",
-  },
-  {
-    id: "tencent-cloud-wsa",
-    kind: "tencent_cloud_wsa",
-    label: "Tencent Cloud WSA",
-    description: "Tencent Cloud WSA SearchPro — research-quality web search with domain filter and freshness support. Requires a Tencent Cloud API key.",
-    requiresApiKey: true,
-    defaultCredentialProfile: "tencent_cloud_wsa:default",
-  },
-  {
-    id: "bocha",
-    kind: "bocha",
-    label: "Bocha AI Search",
-    description: "Bocha AI search optimized for Chinese-language queries with freshness support. Requires a Bocha API key.",
-    requiresApiKey: true,
-    defaultCredentialProfile: "bocha:default",
-  },
-  {
-    id: "searxng",
-    kind: "searxng",
-    label: "SearXNG",
-    description: "Use a self-hosted or trusted SearXNG instance. No API key is needed.",
-    requiresApiKey: false,
-    requiresBaseUrl: true,
-    baseUrlPlaceholder: "https://search.example.com",
-  },
-  {
-    id: "openai-native",
-    kind: "open_ai_native",
-    label: "OpenAI Native Search",
-    description: "Use OpenAI's built-in web search (e.g. web_search_preview). No separate API key — uses the OpenAI model provider credentials.",
-    requiresApiKey: false,
-  },
-  {
-    id: "anthropic-native",
-    kind: "anthropic_native",
-    label: "Anthropic Native Search",
-    description: "Use Anthropic's built-in web search tool. No separate API key — uses the Anthropic model provider credentials.",
-    requiresApiKey: false,
-  },
-  {
-    id: "gemini-native",
-    kind: "gemini_native",
-    label: "Gemini Native Search",
-    description: "Use Google Gemini's grounding with Google Search. No separate API key — uses the Gemini model provider credentials.",
-    requiresApiKey: false,
-  },
-];
-
-const standardSearchProviderById = new Map(standardSearchProviders.map((provider) => [provider.id, provider]));
-const standardSearchProviderIds = new Set(standardSearchProviders.map((provider) => provider.id));
+export function buildStandardSearchProviderDefinitions(
+  kinds: RuntimeWebSearchProviderKindSummary[],
+): StandardSearchProviderDefinition[] {
+  return kinds
+    .filter(({ capabilities }) =>
+      capabilities.status !== "unsupported"
+      && (capabilities.auth === "api_key" || capabilities.auth === "self_hosted" || capabilities.auth === "native_provider")
+    )
+    .map(({ kind, capabilities }) => ({
+      id: kind.replaceAll("_", "-"),
+      kind,
+      category: capabilities.auth === "api_key" ? "api" as const : capabilities.auth === "self_hosted" ? "selfHosted" as const : "native" as const,
+      requiresApiKey: capabilities.auth === "api_key",
+      requiresBaseUrl: capabilities.auth === "self_hosted",
+      defaultCredentialProfile: capabilities.auth === "api_key" ? `${kind}:default` : undefined,
+      capabilities,
+    }))
+    .sort((left, right) => right.capabilities.defaultPriority - left.capabilities.defaultPriority);
+}
 
 type SettingsTabKey = "general" | "models" | "vision" | "search" | "advanced";
 
@@ -198,8 +110,7 @@ const settingsTabs: Array<{ key: SettingsTabKey; labelKey: string; descriptionKe
   { key: "advanced", labelKey: "settings.tabAdvanced", descriptionKey: "settings.tabAdvancedDesc" },
 ];
 
-function defaultSearchProviderDraft(providerId: string): SearchProviderDraft {
-  const definition = standardSearchProviderById.get(providerId);
+function defaultSearchProviderDraft(providerId: string, definition?: StandardSearchProviderDefinition): SearchProviderDraft {
   return {
     kind: definition?.kind ?? "brave",
     baseUrl: "",
@@ -207,9 +118,12 @@ function defaultSearchProviderDraft(providerId: string): SearchProviderDraft {
   };
 }
 
-export function buildSearchProviderConfigUpdates(providerId: string, draft: SearchProviderDraft): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const definition = standardSearchProviderById.get(providerId);
-  const shouldSendBaseUrl = !definition || definition.requiresApiKey || Boolean(definition.requiresBaseUrl);
+export function buildSearchProviderConfigUpdates(
+  providerId: string,
+  draft: SearchProviderDraft,
+  capabilities?: RuntimeWebSearchProviderKindSummary["capabilities"],
+): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const shouldSendBaseUrl = capabilities?.auth !== "native_provider";
   const updates: Array<{ key: string; value?: unknown; unset?: boolean }> = [
     { key: `web.providers.${providerId}.kind`, value: draft.kind },
     { key: `web.providers.${providerId}.credential_profile`, value: draft.credentialProfile?.trim() ?? "" },
@@ -293,6 +207,30 @@ export function SettingsPage({
   const sortedSearchProviders = useMemo(
     () => sortSearchProvidersForSettings(surface?.webSearchProviders ?? []),
     [surface?.webSearchProviders],
+  );
+  const standardSearchProviders = useMemo(
+    () => buildStandardSearchProviderDefinitions(surface?.availableSearchProviderKinds ?? []),
+    [surface?.availableSearchProviderKinds],
+  );
+  const standardSearchProviderById = useMemo(
+    () => new Map(standardSearchProviders.map((provider) => [provider.id, provider])),
+    [standardSearchProviders],
+  );
+  const standardSearchProviderIds = useMemo(
+    () => new Set(standardSearchProviders.map((provider) => provider.id)),
+    [standardSearchProviders],
+  );
+  const webSearchProviderKinds = useMemo(
+    () => surface?.availableSearchProviderKinds.map(({ kind }) => kind) ?? [],
+    [surface?.availableSearchProviderKinds],
+  );
+  const groupedSearchProviders = useMemo(
+    () => [
+      { category: "api" as const, providers: standardSearchProviders.filter((provider) => provider.category === "api") },
+      { category: "selfHosted" as const, providers: standardSearchProviders.filter((provider) => provider.category === "selfHosted") },
+      { category: "native" as const, providers: standardSearchProviders.filter((provider) => provider.category === "native") },
+    ].filter((group) => group.providers.length > 0),
+    [standardSearchProviders],
   );
 
   useEffect(() => {
@@ -443,10 +381,11 @@ export function SettingsPage({
   }
 
   function updateSearchProviderDraft(providerId: string, patch: Partial<SearchProviderDraft>) {
+    const definition = standardSearchProviderById.get(providerId);
     setSearchProviderDrafts((drafts) => ({
       ...drafts,
       [providerId]: {
-        ...(drafts[providerId] ?? defaultSearchProviderDraft(providerId)),
+        ...(drafts[providerId] ?? defaultSearchProviderDraft(providerId, definition)),
         ...patch,
       },
     }));
@@ -464,9 +403,10 @@ export function SettingsPage({
   }
 
   async function saveSearchProviderConfig(providerId: string) {
-    const draft = searchProviderDrafts[providerId] ?? defaultSearchProviderDraft(providerId);
+    const draft = searchProviderDrafts[providerId] ?? defaultSearchProviderDraft(providerId, standardSearchProviderById.get(providerId));
+    const capabilities = surface?.availableSearchProviderKinds.find(({ kind }) => kind === draft.kind)?.capabilities;
     setSearchProviderSaveMessage(undefined);
-    const result = await onUpdateRuntimeConfig(buildSearchProviderConfigUpdates(providerId, draft));
+    const result = await onUpdateRuntimeConfig(buildSearchProviderConfigUpdates(providerId, draft, capabilities));
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setSearchProviderSaveMessage(
@@ -1075,9 +1015,10 @@ export function SettingsPage({
                     {standardSearchProviders.map((provider) => {
                       const configured = surface.webSearchProviders.find((entry) => entry.id === provider.id);
                       const ready = provider.requiresApiKey ? configured?.credentialConfigured : Boolean(configured);
+                      const label = t(`settings.searchProviderKinds.${provider.kind}.label`, { defaultValue: provider.kind });
                       return (
                         <option key={provider.id} value={provider.id}>
-                          {provider.label}{ready ? ` — ${t("settings.readyLabel")}` : provider.requiresApiKey ? ` — ${t("settings.apiKeyNeededLabel")}` : ""}
+                          {label}{ready ? ` — ${t("settings.readyLabel")}` : provider.requiresApiKey ? ` — ${t("settings.apiKeyNeededLabel")}` : ""}
                         </option>
                       );
                     })}
@@ -1092,7 +1033,7 @@ export function SettingsPage({
                   <span>{t("settings.allowModelNativeSearch")}</span>
                 </label>
                 <p className="settings-hint">
-                  DuckDuckGo and native search do not need API keys. Add keys only for API-backed providers below.
+                  {t("settings.searchCredentialHint")}
                 </p>
                 <details className="settings-advanced">
                   <summary>{t("settings.tabAdvanced")}</summary>
@@ -1151,7 +1092,7 @@ export function SettingsPage({
           ) : (
             <div className="settings-provider-list">
               <p className="settings-muted">
-                Standard providers are shown as product choices. The UI creates the matching <code>web.providers.&lt;id&gt;</code> entry and stores API keys in the existing credential store.
+                {t("settings.searchProviderMetadataHint")}
               </p>
               <div className="settings-builtins">
                 <div>
@@ -1165,12 +1106,22 @@ export function SettingsPage({
                 </div>
                 <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.readyLabel")} />
               </div>
-              {standardSearchProviders.map((definition) => {
+              {groupedSearchProviders.map((group) => (
+                <section className="settings-provider-group" key={group.category}>
+                  <div className="settings-provider-group-head">
+                    <strong>{t(`settings.searchProviderGroups.${group.category}.label`)}</strong>
+                    <span>{t(`settings.searchProviderGroups.${group.category}.description`)}</span>
+                  </div>
+                  {group.providers.map((definition) => {
                 const provider = surface.webSearchProviders.find((entry) => entry.id === definition.id);
-                const draft = searchProviderDrafts[definition.id] ?? defaultSearchProviderDraft(definition.id);
+                const draft = searchProviderDrafts[definition.id] ?? defaultSearchProviderDraft(definition.id, definition);
                 const credentialProfile = draft.credentialProfile?.trim() ?? definition.defaultCredentialProfile ?? "";
                 const credentialReady = credentialProfile ? isCredentialProfileConfigured(credentialProfile) : false;
                 const providerReady = definition.requiresApiKey ? credentialReady : Boolean(provider);
+                const label = t(`settings.searchProviderKinds.${definition.kind}.label`, { defaultValue: definition.kind });
+                const description = t(`settings.searchProviderKinds.${definition.kind}.description`, {
+                  defaultValue: t("settings.searchProviderDefaultDescription"),
+                });
                 return (
                   <form
                     className="settings-provider-editor"
@@ -1182,9 +1133,9 @@ export function SettingsPage({
                   >
                     <header>
                       <div>
-                        <strong>{definition.label}</strong>
+                        <strong>{label}</strong>
                         <small>
-                          {definition.description}
+                          {description}
                         </small>
                       </div>
                       <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"} iconOnly title={providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")} />
@@ -1196,7 +1147,7 @@ export function SettingsPage({
                           <input
                             value={draft.baseUrl ?? ""}
                             onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })}
-                            placeholder={definition.baseUrlPlaceholder ?? t("settings.optionalBaseUrl")}
+                            placeholder={t("settings.selfHostedBaseUrlPlaceholder")}
                           />
                         </label>
                       </div>
@@ -1274,7 +1225,7 @@ export function SettingsPage({
                     </details>
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? t("settings.saving") : provider ? t("settings.saveProvider", { name: definition.label }) : t("settings.enableProvider", { name: definition.label })}
+                        {runtimeConfigSaving ? t("settings.saving") : provider ? t("settings.saveProvider", { name: label }) : t("settings.enableProvider", { name: label })}
                       </Button>
                       {provider ? (
                         <Button
@@ -1289,7 +1240,9 @@ export function SettingsPage({
                     </div>
                   </form>
                 );
-              })}
+                  })}
+                </section>
+              ))}
               {sortedSearchProviders
                 .filter((provider) => !standardSearchProviderIds.has(provider.id))
                 .map((provider) => provider.id)

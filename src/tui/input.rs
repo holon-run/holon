@@ -3081,6 +3081,7 @@ mod tests {
                 max_results: 5,
                 max_provider_attempts: 2,
             },
+            available_search_provider_kinds: Vec::new(),
             web_search_providers: Vec::new(),
         };
         let accepted = crate::http::RuntimeConfigUpdateResponse {

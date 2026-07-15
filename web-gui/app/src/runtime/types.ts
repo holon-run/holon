@@ -292,6 +292,7 @@ export interface RuntimeConfigSurface {
   disableProviderFallback: boolean;
   providers: RuntimeProviderSummary[];
   webSearch?: RuntimeWebSearchSummary;
+  availableSearchProviderKinds: RuntimeWebSearchProviderKindSummary[];
   webSearchProviders: RuntimeWebSearchProviderSummary[];
 }
 
@@ -311,6 +312,24 @@ export interface RuntimeWebSearchProviderSummary {
   baseUrl?: string;
   credentialProfile?: string;
   credentialConfigured: boolean;
+}
+
+export interface RuntimeWebSearchProviderKindSummary {
+  kind: string;
+  capabilities: RuntimeWebSearchProviderCapabilities;
+}
+
+export interface RuntimeWebSearchProviderCapabilities {
+  auth: "none" | "api_key" | "native_provider" | "self_hosted";
+  costClass: "free" | "self_hosted" | "paid" | "provider_metered";
+  qualityHint: "html_fallback" | "keyword" | "semantic" | "research" | "native";
+  supportsDomainFilter: boolean;
+  supportsFreshness: boolean;
+  supportsRegionOrLanguage: boolean;
+  supportsFullContent: boolean;
+  supportsNativeCitations: boolean;
+  defaultPriority: number;
+  status: "supported" | "unsupported" | "native_only";
 }
 
 export interface RuntimeConfigUpdateResult {

@@ -510,6 +510,70 @@ const en = {
     builtinDefaultsValue: "builtin defaults",
     nativeSearchDesc: "Uses model-provider native search when the runtime can route to it. No API key is configured here.",
     duckDuckGoDesc: "Built in and ready by default. No provider id, kind, or API key is required.",
+    searchCredentialHint: "DuckDuckGo and model-native search do not need separate API keys. Add credentials only for API-backed providers.",
+    searchProviderMetadataHint: "Available provider kinds and configuration requirements are reported by the runtime. API keys are stored in the existing credential store.",
+    searchProviderDefaultDescription: "Search provider reported by the runtime.",
+    selfHostedBaseUrlPlaceholder: "https://search.example.com",
+    searchProviderGroups: {
+      api: {
+        label: "API search",
+        description: "Hosted search APIs that require a provider-specific API key.",
+      },
+      selfHosted: {
+        label: "Self-hosted",
+        description: "Search services hosted by you or a trusted operator.",
+      },
+      native: {
+        label: "Model-native",
+        description: "Built-in search through the model API. No separate search credential is required.",
+      },
+    },
+    searchProviderKinds: {
+      brave: {
+        label: "Brave Search",
+        description: "General-purpose web results through the Brave Search API.",
+      },
+      tavily: {
+        label: "Tavily",
+        description: "Search API optimized for agent and RAG workflows.",
+      },
+      exa: {
+        label: "Exa",
+        description: "Neural search API for high-relevance web retrieval.",
+      },
+      perplexity: {
+        label: "Perplexity",
+        description: "Search-backed answers with native citations.",
+      },
+      firecrawl: {
+        label: "Firecrawl",
+        description: "Search and page extraction for crawl-oriented workflows.",
+      },
+      tencent_cloud_wsa: {
+        label: "Tencent Cloud WSA",
+        description: "Tencent Cloud SearchPro with domain filtering and freshness support.",
+      },
+      bocha: {
+        label: "Bocha AI Search",
+        description: "Web search optimized for Chinese-language queries with freshness support.",
+      },
+      searxng: {
+        label: "SearXNG",
+        description: "Use a self-hosted or trusted SearXNG instance.",
+      },
+      open_ai_native: {
+        label: "OpenAI Native Search",
+        description: "Uses OpenAI's built-in web search through the configured model provider.",
+      },
+      anthropic_native: {
+        label: "Anthropic Native Search",
+        description: "Uses Anthropic's built-in web search through the configured model provider.",
+      },
+      gemini_native: {
+        label: "Gemini Native Search",
+        description: "Uses Gemini grounding with Google Search through the configured model provider.",
+      },
+    },
     modelCatalogSummary: "{{models}} models across {{providers}} providers",
     connectLiveRuntime: "Connect to a live runtime and refresh this page to edit model defaults.",
     builtinNoKey: "— builtin, no API key",

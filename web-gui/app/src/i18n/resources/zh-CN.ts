@@ -512,6 +512,70 @@ const zh: Record<string, any> = {
     builtinDefaultsValue: "内置默认值",
     nativeSearchDesc: "当运行时可以路由时，使用模型提供商的原生搜索。此处不配置 API 密钥。",
     duckDuckGoDesc: "默认内置且就绪。无需提供商 ID、类型或 API 密钥。",
+    searchCredentialHint: "DuckDuckGo 和模型原生搜索不需要单独的 API 密钥。仅为 API 搜索提供商添加凭证。",
+    searchProviderMetadataHint: "可用的提供商类型和配置要求由运行时报告。API 密钥仍存储在现有凭证存储中。",
+    searchProviderDefaultDescription: "由运行时报告的搜索提供商。",
+    selfHostedBaseUrlPlaceholder: "https://search.example.com",
+    searchProviderGroups: {
+      api: {
+        label: "API 搜索",
+        description: "需要提供商专用 API 密钥的托管搜索服务。",
+      },
+      selfHosted: {
+        label: "自托管",
+        description: "由你或可信运维方托管的搜索服务。",
+      },
+      native: {
+        label: "模型原生",
+        description: "通过模型 API 使用内置搜索，无需单独的搜索凭证。",
+      },
+    },
+    searchProviderKinds: {
+      brave: {
+        label: "Brave Search",
+        description: "通过 Brave Search API 提供通用网页搜索结果。",
+      },
+      tavily: {
+        label: "Tavily",
+        description: "面向智能体和 RAG 工作流优化的搜索 API。",
+      },
+      exa: {
+        label: "Exa",
+        description: "用于高相关性网页检索的神经搜索 API。",
+      },
+      perplexity: {
+        label: "Perplexity",
+        description: "提供原生引用的搜索增强回答。",
+      },
+      firecrawl: {
+        label: "Firecrawl",
+        description: "面向抓取工作流的搜索与页面内容提取服务。",
+      },
+      tencent_cloud_wsa: {
+        label: "腾讯云 WSA",
+        description: "腾讯云 SearchPro 搜索，支持域名过滤与时效性筛选。",
+      },
+      bocha: {
+        label: "博查 AI 搜索",
+        description: "针对中文查询优化并支持时效性筛选的网页搜索。",
+      },
+      searxng: {
+        label: "SearXNG",
+        description: "使用自托管或可信的 SearXNG 实例。",
+      },
+      open_ai_native: {
+        label: "OpenAI 原生搜索",
+        description: "通过已配置的模型提供商使用 OpenAI 内置网页搜索。",
+      },
+      anthropic_native: {
+        label: "Anthropic 原生搜索",
+        description: "通过已配置的模型提供商使用 Anthropic 内置网页搜索。",
+      },
+      gemini_native: {
+        label: "Gemini 原生搜索",
+        description: "通过已配置的模型提供商使用 Gemini 的 Google 搜索 grounding。",
+      },
+    },
     modelCatalogSummary: "{{models}} 个模型，跨 {{providers}} 个提供商",
     connectLiveRuntime: "连接到实时运行时并刷新此页面以编辑模型默认值。",
     builtinNoKey: "— 内置，无需 API 密钥",
