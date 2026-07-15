@@ -10,3 +10,8 @@ not exposed as an effort value because its upstream meaning includes execution
 orchestration that Holon does not implement. If that behavior is added later,
 it should be represented as an explicit execution capability rather than a
 string passed through as ordinary reasoning effort.
+
+For non-Codex routes, Holon retains generic vocabulary validation at the
+runtime override and provider-construction boundaries, but does not infer
+model-specific support. Provider-specific semantics remain delegated to the
+selected transport and upstream API.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::model_catalog::ReasoningEffortValidationError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelRef {
@@ -297,6 +298,22 @@ impl ResolvedModelRoute {
 
     pub fn provider_name(&self) -> &str {
         self.endpoint.provider.as_str()
+    }
+
+    pub fn validate_reasoning_effort(
+        &self,
+        value: &str,
+    ) -> Result<(), ReasoningEffortValidationError> {
+        if self.provider_config().transport == ProviderTransportKind::OpenAiCodexResponses {
+            return self.policy.validate_reasoning_effort(value);
+        }
+
+        match value {
+            "low" | "medium" | "high" | "xhigh" | "max" => Ok(()),
+            _ => Err(ReasoningEffortValidationError::new(format!(
+                "invalid reasoning_effort '{value}'; must be one of low, medium, high, xhigh, max"
+            ))),
+        }
     }
 }
 

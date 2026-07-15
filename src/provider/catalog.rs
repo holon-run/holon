@@ -81,10 +81,8 @@ pub(crate) fn build_candidate_from_model_route(
     let model_ref = &route.model_ref;
     let provider_config = route.provider_config();
     let resolved_policy = &route.policy;
-    if provider_config.transport == ProviderTransportKind::OpenAiCodexResponses {
-        if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
-            resolved_policy.validate_reasoning_effort(reasoning_effort)?;
-        }
+    if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
+        route.validate_reasoning_effort(reasoning_effort)?;
     }
     let openai_compaction_policy = OpenAiCompactionPolicy {
         trigger_input_tokens: resolved_policy.compaction_trigger_estimated_tokens as u64,
