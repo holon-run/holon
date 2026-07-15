@@ -420,22 +420,6 @@ fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
 fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWorkspaceSnapshot {
     let all_entries = state.host.workspace_entries().unwrap_or_default();
 
-    // Collect all workspace IDs that might need alias resolution.
-    let mut all_ws_ids: Vec<String> = agent.agent.attached_workspaces.clone();
-    if let Some(active) = &agent.agent.active_workspace_entry {
-        all_ws_ids.push(active.workspace_id.clone());
-    }
-    let alias_map = state
-        .host
-        .resolve_workspace_aliases(&all_ws_ids)
-        .unwrap_or_default();
-    let resolve_id = |ws_id: &str| -> String {
-        alias_map
-            .get(ws_id)
-            .cloned()
-            .unwrap_or_else(|| ws_id.to_string())
-    };
-
     use crate::types::AgentWorkspaceInfo;
     use std::collections::HashSet;
 
@@ -444,11 +428,12 @@ fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWork
 
     // Add active workspace first (with full runtime info).
     if let Some(active_entry) = agent.agent.active_workspace_entry.as_ref() {
-        let resolved_id = resolve_id(&active_entry.workspace_id);
-        seen_ids.insert(resolved_id.clone());
+        seen_ids.insert(active_entry.workspace_id.clone());
 
         // Try to enrich with registry data (alias, repo_name).
-        let registry_entry = all_entries.iter().find(|e| e.workspace_id == resolved_id);
+        let registry_entry = all_entries
+            .iter()
+            .find(|e| e.workspace_id == active_entry.workspace_id);
         let worktree = build_worktree_info(
             active_entry.projection_metadata.as_ref(),
             agent.agent.worktree_session.as_ref(),
@@ -471,13 +456,12 @@ fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWork
 
     // Add remaining attached workspaces (identity-only info from registry).
     for ws_id in &agent.agent.attached_workspaces {
-        let resolved = resolve_id(ws_id);
-        if seen_ids.contains(&resolved) {
+        if seen_ids.contains(ws_id) {
             continue;
         }
-        seen_ids.insert(resolved.clone());
+        seen_ids.insert(ws_id.clone());
 
-        if let Some(entry) = all_entries.iter().find(|e| e.workspace_id == resolved) {
+        if let Some(entry) = all_entries.iter().find(|e| e.workspace_id == *ws_id) {
             workspaces.push(AgentWorkspaceInfo {
                 workspace_id: entry.workspace_id.clone(),
                 workspace_alias: entry.workspace_alias.clone(),

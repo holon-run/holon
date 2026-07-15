@@ -108,15 +108,6 @@ impl RuntimeRegistry {
         self.inner.host_storage.latest_workspace_entries()
     }
 
-    pub(crate) fn resolve_workspace_aliases(
-        &self,
-        workspace_ids: &[String],
-    ) -> Result<HashMap<String, String>> {
-        self.inner
-            .host_storage
-            .resolve_workspace_aliases(workspace_ids)
-    }
-
     pub(crate) fn workspace_occupancies(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
         self.inner.host_storage.latest_workspace_occupancies()
     }
@@ -220,25 +211,14 @@ impl RuntimeRegistry {
             .into_iter()
             .find(|entry| entry.workspace_anchor == workspace_anchor)
         {
-            // Lazy migration: migrate non-deterministic workspace IDs in place
-            // and record an alias so old references in agent state still resolve.
-            // Deprecated: planned for removal once migration logs go quiet.
             if existing.workspace_id != det_id {
-                tracing::info!(
-                    old_id = %existing.workspace_id,
-                    new_id = %det_id,
-                    "workspace migration: migrated non-deterministic workspace ID to deterministic ID"
-                );
-                self.inner
-                    .host_storage
-                    .migrate_workspace_id(&existing.workspace_id, &det_id)?;
-                if let Some(entry) = agent_home {
-                    self.inner.host_storage.append_workspace_entry(&entry)?;
-                    return Ok(entry);
-                }
-                let mut migrated = existing;
-                migrated.workspace_id = det_id;
-                return Ok(migrated);
+                return Err(anyhow!(
+                    "unsupported legacy workspace ID '{}' for '{}'; expected deterministic ID '{}'. \
+                     This database predates the supported workspace ID migration window",
+                    existing.workspace_id,
+                    workspace_anchor.display(),
+                    det_id
+                ));
             }
             if let Some(entry) = agent_home {
                 if existing.workspace_alias != entry.workspace_alias
@@ -641,6 +621,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(entry1.workspace_id, entry2.workspace_id);
+    }
+
+    #[test]
+    fn ensure_workspace_entry_rejects_legacy_random_id_without_migrating() {
+        let (_home, registry) = test_registry();
+        let dir = tempdir().unwrap();
+        let legacy = WorkspaceEntry::new(
+            "legacy-random-workspace-id",
+            dir.path().to_path_buf(),
+            Some("legacy-workspace".into()),
+        );
+        registry
+            .inner
+            .host_storage
+            .append_workspace_entry(&legacy)
+            .unwrap();
+
+        let error = registry
+            .ensure_workspace_entry(dir.path().to_path_buf())
+            .unwrap_err();
+        let expected_id = ids::deterministic_workspace_id(dir.path());
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported legacy workspace ID"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains(&expected_id),
+            "error should identify the expected deterministic ID: {error:#}"
+        );
+
+        let entries = registry.workspace_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].workspace_id, legacy.workspace_id);
     }
 
     #[test]

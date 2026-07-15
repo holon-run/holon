@@ -314,6 +314,10 @@ mod tests {
             )?;
             assert_eq!(count, 1, "missing table {table}");
         }
+        assert!(
+            !table_exists(&connection, "workspace_id_aliases")?,
+            "retired workspace ID alias table should be removed"
+        );
 
         Ok(())
     }
