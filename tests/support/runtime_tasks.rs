@@ -1648,7 +1648,13 @@ pub async fn task_output_accepts_terminal_command_without_snapshot_fields() -> R
         detail.remove("initial_output");
     }
     terminal.updated_at = Utc::now();
-    runtime.storage().append_task(&terminal)?;
+    let conflict = runtime.storage().append_task(&terminal).unwrap_err();
+    assert!(
+        conflict
+            .downcast_ref::<holon::runtime_db::RuntimeStateTransitionConflict>()
+            .is_some(),
+        "removing persisted exit status must conflict"
+    );
 
     let output = runtime.task_output(&task.id, false, 0).await?;
     assert_eq!(
@@ -1657,6 +1663,7 @@ pub async fn task_output_accepts_terminal_command_without_snapshot_fields() -> R
     );
     assert_eq!(output.task.status, holon::types::TaskStatus::Failed);
     assert_eq!(output.task.output_preview, "before_fail");
+    assert_eq!(output.task.exit_status, Some(7));
     Ok(())
 }
 

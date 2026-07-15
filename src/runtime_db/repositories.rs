@@ -3215,10 +3215,17 @@ fn wait_condition_terminal_payload_eq(
 }
 
 fn task_terminal_payload_eq(existing: &TaskRecord, incoming: &TaskRecord) -> bool {
-    let mut existing = canonical_task_terminal_payload(existing);
+    let existing = canonical_task_terminal_payload(existing);
     let incoming = canonical_task_terminal_payload(incoming);
-    existing.updated_at = incoming.updated_at;
-    existing == incoming
+    existing.id == incoming.id
+        && existing.agent_id == incoming.agent_id
+        && existing.kind == incoming.kind
+        && existing.status == incoming.status
+        && existing.parent_message_id == incoming.parent_message_id
+        && existing.work_item_id == incoming.work_item_id
+        && existing.summary == incoming.summary
+        && existing.detail == incoming.detail
+        && existing.recovery == incoming.recovery
 }
 
 fn canonical_task_terminal_payload(record: &TaskRecord) -> TaskRecord {
@@ -3237,7 +3244,10 @@ fn canonical_task_terminal_detail(value: &serde_json::Value) -> serde_json::Valu
             for (key, value) in map {
                 if matches!(
                     key.as_str(),
-                    "initial_output" | "output_summary" | "output_preview"
+                    "initial_output"
+                        | "output_summary"
+                        | "output_preview"
+                        | "terminal_snapshot_ready"
                 ) {
                     continue;
                 }

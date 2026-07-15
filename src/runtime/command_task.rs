@@ -665,6 +665,7 @@ impl RuntimeHandle {
                             Some(&err.to_string()),
                             true,
                         ),
+                        None,
                     )
                     .await;
                 runtime
@@ -745,12 +746,13 @@ impl RuntimeHandle {
             terminal.cancel_requested,
             terminal.force_stop_requested,
         );
-        self.persist_command_task_terminal_state(
-            &task_record,
-            terminal.status.clone(),
-            detail.clone(),
-        )
-        .await?;
+        let result_turn_id = crate::ids::turn_id();
+        if let Some(detail) = detail.as_object_mut() {
+            detail.insert(
+                "parent_turn_id".to_string(),
+                serde_json::json!(result_turn_id.clone()),
+            );
+        }
         let result_text = build_command_task_result_text(
             task_record.summary.as_deref().unwrap_or(&resolved.spec.cmd),
             &resolved.output_path,
@@ -760,6 +762,7 @@ impl RuntimeHandle {
             terminal.error.as_deref(),
         );
         let result_message = MessageEnvelope {
+            turn_id: Some(result_turn_id),
             metadata: Some({
                 serde_json::json!({
                     "task_id": task_record.id,
@@ -786,6 +789,13 @@ impl RuntimeHandle {
                 crate::types::AdmissionContext::RuntimeOwned,
             )
         };
+        self.persist_command_task_terminal_state(
+            &task_record,
+            terminal.status.clone(),
+            detail.clone(),
+            Some(&result_message.id),
+        )
+        .await?;
         let enqueue_result = self.enqueue(result_message).await;
         if let Err(err) = enqueue_result {
             self.inner
@@ -797,8 +807,6 @@ impl RuntimeHandle {
                         "error": err.to_string(),
                     }),
                 ))?;
-            self.persist_command_task_terminal_state(&task_record, terminal.status.clone(), detail)
-                .await?;
         }
 
         self.inner.task_handles.lock().await.remove(&task_record.id);
@@ -931,6 +939,7 @@ impl RuntimeHandle {
         task_record: &TaskRecord,
         status: TaskStatus,
         detail: serde_json::Value,
+        parent_message_id: Option<&str>,
     ) -> Result<()> {
         let fallback = TaskRecord {
             id: task_record.id.clone(),
@@ -939,7 +948,7 @@ impl RuntimeHandle {
             status,
             created_at: task_record.created_at,
             updated_at: chrono::Utc::now(),
-            parent_message_id: None,
+            parent_message_id: parent_message_id.map(ToString::to_string),
             work_item_id: task_record.work_item_id.clone(),
             summary: task_record.summary.clone(),
             detail: Some(detail),
