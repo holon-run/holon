@@ -73,7 +73,7 @@ type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseU
 type StandardSearchProviderDefinition = {
   id: string;
   kind: string;
-  category: "api" | "selfHosted" | "native";
+  category: "api" | "selfHosted";
   requiresApiKey: boolean;
   requiresBaseUrl: boolean;
   defaultCredentialProfile?: string;
@@ -86,12 +86,12 @@ export function buildStandardSearchProviderDefinitions(
   return kinds
     .filter(({ capabilities }) =>
       capabilities.status !== "unsupported"
-      && (capabilities.auth === "api_key" || capabilities.auth === "self_hosted" || capabilities.auth === "native_provider")
+      && (capabilities.auth === "api_key" || capabilities.auth === "self_hosted")
     )
     .map(({ kind, capabilities }) => ({
       id: kind.replaceAll("_", "-"),
       kind,
-      category: capabilities.auth === "api_key" ? "api" as const : capabilities.auth === "self_hosted" ? "selfHosted" as const : "native" as const,
+      category: capabilities.auth === "self_hosted" ? "selfHosted" as const : "api" as const,
       requiresApiKey: capabilities.auth === "api_key",
       requiresBaseUrl: capabilities.auth === "self_hosted",
       defaultCredentialProfile: capabilities.auth === "api_key" ? `${kind}:default` : undefined,
@@ -228,7 +228,6 @@ export function SettingsPage({
     () => [
       { category: "api" as const, providers: standardSearchProviders.filter((provider) => provider.category === "api") },
       { category: "selfHosted" as const, providers: standardSearchProviders.filter((provider) => provider.category === "selfHosted") },
-      { category: "native" as const, providers: standardSearchProviders.filter((provider) => provider.category === "native") },
     ].filter((group) => group.providers.length > 0),
     [standardSearchProviders],
   );

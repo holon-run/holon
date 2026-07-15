@@ -61,7 +61,6 @@ describe("buildStandardSearchProviderDefinitions", () => {
     const definitions = buildStandardSearchProviderDefinitions([
       { kind: "future_api", capabilities: searchCapabilities("api_key", 90) },
       { kind: "future_self_hosted", capabilities: searchCapabilities("self_hosted", 40) },
-      { kind: "future_native", capabilities: searchCapabilities("native_provider", 60) },
       { kind: "duck_duck_go", capabilities: searchCapabilities("none", 10) },
       {
         kind: "future_unsupported",
@@ -76,7 +75,6 @@ describe("buildStandardSearchProviderDefinitions", () => {
       requiresBaseUrl,
     }))).toEqual([
       { id: "future-api", category: "api", requiresApiKey: true, requiresBaseUrl: false },
-      { id: "future-native", category: "native", requiresApiKey: false, requiresBaseUrl: false },
       { id: "future-self-hosted", category: "selfHosted", requiresApiKey: false, requiresBaseUrl: true },
     ]);
   });
