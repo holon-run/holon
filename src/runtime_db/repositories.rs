@@ -3238,6 +3238,7 @@ fn canonical_task_terminal_payload(record: &TaskRecord) -> TaskRecord {
 }
 
 fn canonical_task_terminal_detail(value: &serde_json::Value) -> serde_json::Value {
+    // Terminal identity ignores derived observation fields even when storage retains them.
     match value {
         serde_json::Value::Object(map) => {
             let mut canonical = serde_json::Map::new();
