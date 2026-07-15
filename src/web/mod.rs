@@ -7,6 +7,7 @@ pub mod search;
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,7 +178,7 @@ impl WebSearchMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WebProviderAuthClass {
     None,
@@ -186,7 +187,7 @@ pub enum WebProviderAuthClass {
     SelfHosted,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WebProviderCostClass {
     Free,
@@ -195,7 +196,7 @@ pub enum WebProviderCostClass {
     ProviderMetered,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WebProviderQualityHint {
     HtmlFallback,
@@ -205,7 +206,7 @@ pub enum WebProviderQualityHint {
     Native,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WebProviderSupportStatus {
     Supported,
@@ -213,7 +214,7 @@ pub enum WebProviderSupportStatus {
     NativeOnly,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WebProviderCapabilityMetadata {
     pub auth: WebProviderAuthClass,
     pub cost_class: WebProviderCostClass,
@@ -426,6 +427,26 @@ pub enum WebProviderKind {
 }
 
 impl WebProviderKind {
+    /// Must list every `WebProviderKind` variant exactly once.
+    ///
+    /// Missing entries are not caught at compile time, so keep this in sync
+    /// when adding or removing enum variants.
+    pub const ALL: [Self; 13] = [
+        Self::DuckDuckGo,
+        Self::Searxng,
+        Self::Brave,
+        Self::TencentCloudWsa,
+        Self::Bocha,
+        Self::Tavily,
+        Self::Exa,
+        Self::Perplexity,
+        Self::Firecrawl,
+        Self::OpenAiNative,
+        Self::AnthropicNative,
+        Self::GeminiNative,
+        Self::Command,
+    ];
+
     pub fn is_native_search(self) -> bool {
         matches!(
             self,

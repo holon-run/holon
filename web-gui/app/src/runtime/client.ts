@@ -451,6 +451,7 @@ interface RuntimeConfigSurfaceDto {
   disable_provider_fallback?: boolean;
   providers?: RuntimeProviderSummaryDto[];
   web_search?: RuntimeWebSearchSummaryDto;
+  available_search_provider_kinds?: RuntimeWebSearchProviderKindSummaryDto[];
   web_search_providers?: RuntimeWebSearchProviderSummaryDto[];
 }
 
@@ -518,6 +519,24 @@ interface RuntimeWebSearchProviderSummaryDto {
   base_url?: string;
   credential_profile?: string;
   credential_configured?: boolean;
+}
+
+interface RuntimeWebSearchProviderKindSummaryDto {
+  kind?: string;
+  capabilities?: RuntimeWebSearchProviderCapabilitiesDto;
+}
+
+interface RuntimeWebSearchProviderCapabilitiesDto {
+  auth?: "none" | "api_key" | "native_provider" | "self_hosted";
+  cost_class?: "free" | "self_hosted" | "paid" | "provider_metered";
+  quality_hint?: "html_fallback" | "keyword" | "semantic" | "research" | "native";
+  supports_domain_filter?: boolean;
+  supports_freshness?: boolean;
+  supports_region_or_language?: boolean;
+  supports_full_content?: boolean;
+  supports_native_citations?: boolean;
+  default_priority?: number;
+  status?: "supported" | "unsupported" | "native_only";
 }
 
 interface SearchResponseDto {
@@ -1800,6 +1819,21 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
           maxProviderAttempts: surface.web_search.max_provider_attempts ?? 3,
         }
       : undefined,
+    availableSearchProviderKinds: (surface.available_search_provider_kinds ?? []).map((provider) => ({
+      kind: provider.kind ?? "unknown",
+      capabilities: {
+        auth: provider.capabilities?.auth ?? "none",
+        costClass: provider.capabilities?.cost_class ?? "free",
+        qualityHint: provider.capabilities?.quality_hint ?? "keyword",
+        supportsDomainFilter: provider.capabilities?.supports_domain_filter ?? false,
+        supportsFreshness: provider.capabilities?.supports_freshness ?? false,
+        supportsRegionOrLanguage: provider.capabilities?.supports_region_or_language ?? false,
+        supportsFullContent: provider.capabilities?.supports_full_content ?? false,
+        supportsNativeCitations: provider.capabilities?.supports_native_citations ?? false,
+        defaultPriority: provider.capabilities?.default_priority ?? 0,
+        status: provider.capabilities?.status ?? "unsupported",
+      },
+    })),
     webSearchProviders: (surface.web_search_providers ?? []).map((provider) => ({
       id: provider.id ?? "unknown",
       kind: provider.kind ?? "unknown",

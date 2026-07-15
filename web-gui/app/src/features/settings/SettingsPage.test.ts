@@ -3,11 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   buildImageGenerationConfigUpdates,
   buildSearchProviderConfigUpdates,
+  buildStandardSearchProviderDefinitions,
   buildVisionConfigUpdates,
   sortProvidersForSettings,
   sortSearchProvidersForSettings,
 } from "./SettingsPage";
-import type { RuntimeProviderSummary, RuntimeWebSearchProviderSummary } from "../../runtime/types";
+import type {
+  RuntimeProviderSummary,
+  RuntimeWebSearchProviderCapabilities,
+  RuntimeWebSearchProviderSummary,
+} from "../../runtime/types";
 
 function provider(id: string, credentialConfigured: boolean): RuntimeProviderSummary {
   return {
@@ -32,6 +37,50 @@ function searchProvider(id: string, credentialConfigured: boolean): RuntimeWebSe
     credentialConfigured,
   };
 }
+
+function searchCapabilities(
+  auth: RuntimeWebSearchProviderCapabilities["auth"],
+  defaultPriority: number,
+): RuntimeWebSearchProviderCapabilities {
+  return {
+    auth,
+    costClass: auth === "self_hosted" ? "self_hosted" : auth === "native_provider" ? "provider_metered" : "paid",
+    qualityHint: auth === "native_provider" ? "native" : "research",
+    supportsDomainFilter: false,
+    supportsFreshness: false,
+    supportsRegionOrLanguage: false,
+    supportsFullContent: false,
+    supportsNativeCitations: false,
+    defaultPriority,
+    status: auth === "native_provider" ? "native_only" : "supported",
+  };
+}
+
+describe("buildStandardSearchProviderDefinitions", () => {
+  it("derives groups and configuration requirements from runtime capabilities", () => {
+    const definitions = buildStandardSearchProviderDefinitions([
+      { kind: "future_api", capabilities: searchCapabilities("api_key", 90) },
+      { kind: "future_self_hosted", capabilities: searchCapabilities("self_hosted", 40) },
+      { kind: "future_native", capabilities: searchCapabilities("native_provider", 60) },
+      { kind: "duck_duck_go", capabilities: searchCapabilities("none", 10) },
+      {
+        kind: "future_unsupported",
+        capabilities: { ...searchCapabilities("api_key", 100), status: "unsupported" },
+      },
+    ]);
+
+    expect(definitions.map(({ id, category, requiresApiKey, requiresBaseUrl }) => ({
+      id,
+      category,
+      requiresApiKey,
+      requiresBaseUrl,
+    }))).toEqual([
+      { id: "future-api", category: "api", requiresApiKey: true, requiresBaseUrl: false },
+      { id: "future-native", category: "native", requiresApiKey: false, requiresBaseUrl: false },
+      { id: "future-self-hosted", category: "selfHosted", requiresApiKey: false, requiresBaseUrl: true },
+    ]);
+  });
+});
 
 describe("sortProvidersForSettings", () => {
   it("places credential-configured providers first without reordering peers", () => {
@@ -113,15 +162,29 @@ describe("buildSearchProviderConfigUpdates", () => {
   });
 
   it("omits base_url for native search providers that do not need one", () => {
+    const capabilities = searchCapabilities("native_provider", 65);
     expect(
       buildSearchProviderConfigUpdates("openai-native", {
         kind: "open_ai_native",
         baseUrl: "",
         credentialProfile: "",
-      }),
+      }, capabilities),
     ).toEqual([
       { key: "web.providers.openai-native.kind", value: "open_ai_native" },
       { key: "web.providers.openai-native.credential_profile", value: "" },
+    ]);
+  });
+
+  it("uses runtime capabilities for future native provider kinds", () => {
+    expect(
+      buildSearchProviderConfigUpdates("future-native", {
+        kind: "future_native",
+        baseUrl: "should-not-be-persisted",
+        credentialProfile: "",
+      }, searchCapabilities("native_provider", 65)),
+    ).toEqual([
+      { key: "web.providers.future-native.kind", value: "future_native" },
+      { key: "web.providers.future-native.credential_profile", value: "" },
     ]);
   });
 });

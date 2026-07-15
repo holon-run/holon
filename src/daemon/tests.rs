@@ -393,6 +393,36 @@ fn effective_config_mismatch_summary_lists_actionable_differences() {
     assert!(!summary.contains("secret"));
 }
 
+#[test]
+fn runtime_config_surface_reports_available_search_provider_capabilities() {
+    let surface = RuntimeConfigSurface::new(&test_config());
+
+    assert_eq!(
+        surface.available_search_provider_kinds.len(),
+        crate::web::WebProviderKind::ALL.len()
+    );
+    let brave = surface
+        .available_search_provider_kinds
+        .iter()
+        .find(|provider| provider.kind == "brave")
+        .expect("brave provider kind should be reported");
+    assert_eq!(
+        brave.capabilities.auth,
+        crate::web::WebProviderAuthClass::ApiKey
+    );
+    assert_eq!(brave.capabilities.default_priority, 80);
+
+    let native = surface
+        .available_search_provider_kinds
+        .iter()
+        .find(|provider| provider.kind == "open_ai_native")
+        .expect("native provider kind should be reported");
+    assert_eq!(
+        native.capabilities.status,
+        crate::web::WebProviderSupportStatus::NativeOnly
+    );
+}
+
 #[tokio::test]
 async fn runtime_activity_summary_reports_idle_runtime() {
     let config = test_config();

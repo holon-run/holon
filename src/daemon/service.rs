@@ -10,6 +10,7 @@ use crate::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
     types::{AgentStatus, RuntimeFailureSummary},
+    web::{WebProviderCapabilityMetadata, WebProviderKind},
 };
 
 use super::daemon_paths;
@@ -92,6 +93,8 @@ pub struct RuntimeConfigSurface {
     pub disable_provider_fallback: bool,
     pub providers: Vec<RuntimeProviderSummary>,
     pub web_search: RuntimeWebSearchSummary,
+    #[serde(default)]
+    pub available_search_provider_kinds: Vec<RuntimeWebSearchProviderKindSummary>,
     pub web_search_providers: Vec<RuntimeWebSearchProviderSummary>,
 }
 
@@ -129,6 +132,12 @@ pub struct RuntimeWebSearchProviderSummary {
     pub base_url: Option<String>,
     pub credential_profile: Option<String>,
     pub credential_configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeWebSearchProviderKindSummary {
+    pub kind: String,
+    pub capabilities: WebProviderCapabilityMetadata,
 }
 
 impl RuntimeConfigSurface {
@@ -185,6 +194,13 @@ impl RuntimeConfigSurface {
                 max_results: config.web_config.search.max_results,
                 max_provider_attempts: config.web_config.search.max_provider_attempts,
             },
+            available_search_provider_kinds: WebProviderKind::ALL
+                .iter()
+                .map(|kind| RuntimeWebSearchProviderKindSummary {
+                    kind: kind.as_str().to_string(),
+                    capabilities: kind.capabilities(),
+                })
+                .collect(),
             web_search_providers: config
                 .stored_config
                 .web
