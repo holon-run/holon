@@ -13,14 +13,16 @@ use crate::runtime_db::migrations::{
 use crate::runtime_db::storage_domain::upsert_storage_domain;
 #[cfg(test)]
 use crate::runtime_db::{
-    RuntimeDb, RuntimeDbRetryableError, TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT,
+    RuntimeDb, RuntimeDbRetryableError, RuntimeStateTransitionConflict, TASK_PAYLOAD_ARRAY_LIMIT,
+    TASK_PAYLOAD_STRING_LIMIT,
 };
 #[cfg(test)]
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
     ExecutionRootEntry, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
     MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus,
-    ToolExecutionRecord, WorkItemRecord, WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
+    ToolExecutionRecord, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
+    WorkItemRecord, WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 #[cfg(test)]
 use anyhow::{anyhow, bail, Context, Result};
@@ -1077,6 +1079,240 @@ CREATE TABLE working_memory_deltas (
         claim.updated_at = now + chrono::Duration::seconds(2);
         assert!(!db.queue_entries().try_claim_queued_message(&claim)?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn queue_terminal_state_rejects_late_updates_and_allows_identical_retries() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let terminal = QueueEntryRecord {
+            message_id: "message-terminal".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Processed,
+            created_at: now,
+            updated_at: now + chrono::Duration::seconds(1),
+        };
+        db.queue_entries().upsert(&terminal)?;
+
+        let mut identical_retry = terminal.clone();
+        identical_retry.updated_at = now + chrono::Duration::seconds(2);
+        db.queue_entries().upsert(&identical_retry)?;
+        assert_eq!(db.queue_entries().latest_all()?, vec![terminal.clone()]);
+
+        let mut late_active = terminal.clone();
+        late_active.status = QueueEntryStatus::Interrupted;
+        late_active.updated_at = now + chrono::Duration::seconds(3);
+        let error = db.queue_entries().upsert(&late_active).unwrap_err();
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("late queue update should return a typed conflict");
+        assert_eq!(conflict.domain(), "queue entry");
+        assert_eq!(conflict.record_id(), terminal.message_id);
+        assert_eq!(conflict.existing_status(), "processed");
+        assert_eq!(conflict.incoming_status(), "interrupted");
+
+        let mut conflicting_terminal = terminal.clone();
+        conflicting_terminal.status = QueueEntryStatus::Dropped;
+        conflicting_terminal.updated_at = now + chrono::Duration::seconds(4);
+        assert!(db
+            .queue_entries()
+            .upsert(&conflicting_terminal)
+            .unwrap_err()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+        assert_eq!(db.queue_entries().latest_all()?, vec![terminal]);
+        Ok(())
+    }
+
+    #[test]
+    fn wait_terminal_state_rejects_late_updates_and_allows_identical_retries() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let terminal = WaitConditionRecord {
+            id: "wait-terminal".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some("work-1".into()),
+            status: WaitConditionStatus::Resolved,
+            kind: WaitConditionKind::Task,
+            source: Some("task".into()),
+            subject_ref: Some("task-1".into()),
+            waiting_for: "task result".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now + chrono::Duration::seconds(1),
+            expires_at: None,
+            resolved_at: Some(now + chrono::Duration::seconds(1)),
+            cancelled_at: None,
+            turn_id: Some("turn-1".into()),
+        };
+        db.wait_conditions().upsert(&terminal)?;
+        let persisted_terminal = db.wait_conditions().latest_all()?;
+
+        let mut identical_retry = terminal.clone();
+        identical_retry.updated_at = now + chrono::Duration::seconds(2);
+        db.wait_conditions().upsert(&identical_retry)?;
+        assert_eq!(db.wait_conditions().latest_all()?, persisted_terminal);
+
+        let mut late_active = terminal.clone();
+        late_active.status = WaitConditionStatus::Active;
+        late_active.updated_at = now + chrono::Duration::seconds(3);
+        late_active.resolved_at = None;
+        let error = db.wait_conditions().upsert(&late_active).unwrap_err();
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("late wait update should return a typed conflict");
+        assert_eq!(conflict.domain(), "wait condition");
+        assert_eq!(conflict.record_id(), terminal.id);
+        assert_eq!(conflict.existing_status(), "resolved");
+        assert_eq!(conflict.incoming_status(), "active");
+
+        let mut conflicting_terminal = terminal.clone();
+        conflicting_terminal.status = WaitConditionStatus::Cancelled;
+        conflicting_terminal.updated_at = now + chrono::Duration::seconds(4);
+        conflicting_terminal.resolved_at = None;
+        conflicting_terminal.cancelled_at = Some(now + chrono::Duration::seconds(4));
+        assert!(db
+            .wait_conditions()
+            .upsert(&conflicting_terminal)
+            .unwrap_err()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+        assert_eq!(db.wait_conditions().latest_all()?, persisted_terminal);
+        Ok(())
+    }
+
+    #[test]
+    fn queue_and_wait_terminal_state_survive_restart_and_second_db_handle() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let second = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let queue_terminal = QueueEntryRecord {
+            message_id: "message-restart".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Aborted,
+            created_at: now,
+            updated_at: now,
+        };
+        let wait_terminal = WaitConditionRecord {
+            id: "wait-restart".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Expired,
+            kind: WaitConditionKind::Timer,
+            source: Some("timer".into()),
+            subject_ref: Some("timer-1".into()),
+            waiting_for: "timer".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: Some(now),
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        };
+        first.queue_entries().upsert(&queue_terminal)?;
+        first.wait_conditions().upsert(&wait_terminal)?;
+        let persisted_queue_terminal = first.queue_entries().latest_all()?;
+        let persisted_wait_terminal = first.wait_conditions().latest_all()?;
+
+        let mut queue_late = queue_terminal.clone();
+        queue_late.status = QueueEntryStatus::Queued;
+        queue_late.updated_at = now + chrono::Duration::seconds(1);
+        let mut wait_late = wait_terminal.clone();
+        wait_late.status = WaitConditionStatus::Active;
+        wait_late.updated_at = now + chrono::Duration::seconds(1);
+        assert!(second.queue_entries().upsert(&queue_late).is_err());
+        assert!(second.wait_conditions().upsert(&wait_late).is_err());
+
+        drop(first);
+        drop(second);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened.queue_entries().latest_all()?,
+            persisted_queue_terminal
+        );
+        assert_eq!(
+            reopened.wait_conditions().latest_all()?,
+            persisted_wait_terminal
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn queue_and_wait_legacy_import_reject_terminal_regressions() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let queue_terminal = QueueEntryRecord {
+            message_id: "message-import".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Processed,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut queue_late = queue_terminal.clone();
+        queue_late.status = QueueEntryStatus::Queued;
+        queue_late.updated_at = now + chrono::Duration::seconds(1);
+        assert!(db
+            .queue_entries()
+            .import_legacy(vec![queue_terminal.clone(), queue_late])
+            .unwrap_err()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+        assert!(db.queue_entries().latest_all()?.is_empty());
+
+        let mut queue_retry = queue_terminal.clone();
+        queue_retry.updated_at = now + chrono::Duration::seconds(2);
+        db.queue_entries()
+            .import_legacy(vec![queue_terminal.clone(), queue_retry])?;
+        assert_eq!(db.queue_entries().latest_all()?, vec![queue_terminal]);
+
+        let wait_terminal = WaitConditionRecord {
+            id: "wait-import".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Cancelled,
+            kind: WaitConditionKind::Operator,
+            source: Some("operator".into()),
+            subject_ref: None,
+            waiting_for: "operator input".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: Some(now),
+            turn_id: None,
+        };
+        let mut wait_late = wait_terminal.clone();
+        wait_late.status = WaitConditionStatus::Active;
+        wait_late.updated_at = now + chrono::Duration::seconds(1);
+        wait_late.cancelled_at = None;
+        assert!(db
+            .wait_conditions()
+            .import_legacy(vec![wait_terminal.clone(), wait_late])
+            .unwrap_err()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+        assert!(db.wait_conditions().latest_all()?.is_empty());
+
+        let mut wait_retry = wait_terminal.clone();
+        wait_retry.updated_at = now + chrono::Duration::seconds(2);
+        db.wait_conditions()
+            .import_legacy(vec![wait_terminal, wait_retry])?;
+        let imported_waits = db.wait_conditions().latest_all()?;
+        assert_eq!(imported_waits.len(), 1);
+        assert_eq!(imported_waits[0].status, WaitConditionStatus::Cancelled);
         Ok(())
     }
 
