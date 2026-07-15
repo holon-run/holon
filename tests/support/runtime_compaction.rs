@@ -126,9 +126,15 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         None,
     )
     .await?;
+    let expected_revision = completed.revision;
+    completed.revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("work item revision overflow"))?;
     completed.result_summary = Some("Promoted cleanup completion report.".into());
     completed.updated_at = Utc::now();
-    runtime.storage().append_work_item(&completed)?;
+    runtime
+        .storage()
+        .update_work_item_expected(&completed, expected_revision)?;
 
     for idx in 0..4 {
         runtime.storage().append_message(&MessageEnvelope::new(
