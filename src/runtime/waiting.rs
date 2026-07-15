@@ -73,6 +73,7 @@ impl RuntimeHandle {
         let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
         let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
         let mut state = self.agent_state().await?;
+        let expected_state = state.clone();
         let current_turn_id = state.current_turn_id.clone();
         let mut work_item = None;
         let active_waits = if let Some(work_item_id) = work_item_id.as_deref() {
@@ -229,7 +230,12 @@ impl RuntimeHandle {
                 agent_id: agent_id.to_string(),
                 work_items,
                 wait_conditions,
-                agent_state: committed_agent_state,
+                agent_state: committed_agent_state.map(|record| {
+                    crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(record),
+                    }
+                }),
                 audit_events,
                 index_changes,
                 notify_scheduler: true,

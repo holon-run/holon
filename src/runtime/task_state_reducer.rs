@@ -2,6 +2,7 @@ use super::{scheduler, *};
 use crate::types::{
     WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
 };
+use sha2::{Digest, Sha256};
 
 pub(super) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     scheduler::is_terminal_task_status(status)
@@ -63,24 +64,42 @@ impl RuntimeHandle {
         emit_event: bool,
     ) -> Result<()> {
         let task = transition.task;
-        if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, task) {
+        let latest_task = self.inner.runtime_db.tasks().latest(&task.id)?;
+        if should_ignore_task_update(latest_task.clone(), task) {
             return Ok(());
         }
+        let task_will_change = latest_task
+            .as_ref()
+            .map(|latest| {
+                crate::runtime_db::repositories::task_transition(latest, task).map(|outcome| {
+                    outcome == crate::runtime_db::repositories::StateTransitionOutcome::Applied
+                })
+            })
+            .transpose()?
+            .unwrap_or(true);
 
         let agent_id = self.agent_id().await?;
         let mut state = self.agent_state().await?;
+        let expected_state = state.clone();
         if !matches!(state.status, AgentStatus::Stopped) && state.current_run_id.is_none() {
             scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
         }
         let mut wait_conditions = Vec::new();
         let mut work_items = Vec::new();
         let mut audit_events = Vec::new();
-        let mut index_changes = self.inner.storage.index_changes_for_task(task)?;
+        let mut index_changes = Vec::new();
+        if task_will_change {
+            index_changes.extend(self.inner.storage.index_changes_for_task(task)?);
+        }
         if emit_event {
-            audit_events.push(AuditEvent::new(
+            let mut event = AuditEvent::new(
                 transition.event_kind,
                 to_json_value(&TaskLifecycleAuditEvent::from_task(task)),
-            ));
+            );
+            if is_terminal_task_status(&task.status) {
+                event.id = stable_terminal_task_event_id(transition.event_kind, task);
+            }
+            audit_events.push(event);
         }
         if is_terminal_task_status(&task.status) {
             let matching = self
@@ -176,10 +195,16 @@ impl RuntimeHandle {
                 task: task.clone(),
                 work_items,
                 wait_conditions,
-                agent_state: Some(state),
+                agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(expected_state)),
+                    record: Box::new(state),
+                }),
                 audit_events,
                 index_changes,
                 notify_scheduler: false,
+                commit_on_idempotent: emit_event
+                    && !task_will_change
+                    && is_terminal_task_status(&task.status),
                 fault: None,
             },
         )?;
@@ -265,6 +290,30 @@ impl RuntimeHandle {
         }
         Ok(())
     }
+}
+
+fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(event_kind.as_bytes());
+    hasher.update([0]);
+    hasher.update(task.id.as_bytes());
+    hasher.update([0]);
+    if let Some(message_id) = task.parent_message_id.as_deref() {
+        hasher.update(message_id.as_bytes());
+    }
+    hasher.update([0]);
+    let status = match task.status {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running => "running",
+        TaskStatus::Cancelling => "cancelling",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Interrupted => "interrupted",
+    };
+    hasher.update(status.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("event_{}", &digest[..15])
 }
 
 fn should_emit_task_result_brief(task: &TaskRecord) -> bool {

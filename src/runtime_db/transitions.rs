@@ -5,7 +5,10 @@ use rusqlite::{OptionalExtension, Transaction};
 
 use crate::{
     runtime_db::{
-        evidence::{append_audit_event_tx, insert_runtime_index_changes_tx, upsert_agent_state_tx},
+        evidence::{
+            append_audit_event_tx, append_transcript_entry_tx, insert_runtime_index_changes_tx,
+            upsert_agent_state_tx,
+        },
         repositories::{
             insert_new_work_item_tx, queue_entry_transition, task_transition,
             try_claim_queued_message_tx, update_expected_work_item_tx, upsert_queue_entry_tx,
@@ -14,7 +17,8 @@ use crate::{
         RuntimeDb, RuntimeIndexChange,
     },
     types::{
-        AgentState, AuditEvent, QueueEntryRecord, TaskRecord, WaitConditionRecord, WorkItemRecord,
+        AgentState, AuditEvent, QueueEntryRecord, TaskRecord, TranscriptEntry, WaitConditionRecord,
+        WorkItemRecord,
     },
 };
 
@@ -75,13 +79,19 @@ pub(crate) enum QueueMutation {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
-    pub agent_state: Option<AgentState>,
+    pub agent_state: Option<AgentStateMutation>,
     pub work_items: Vec<WorkItemRecord>,
     pub tasks: Vec<TaskRecord>,
     pub audit_events: Vec<AuditEvent>,
     pub notify_memory_index: bool,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentStateMutation {
+    pub expected: Option<Box<AgentState>>,
+    pub record: Box<AgentState>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,7 +110,7 @@ pub(crate) struct TransitionApplyResult {
 pub(crate) struct WorkItemTransitionCommand {
     pub agent_id: String,
     pub mutation: WorkItemMutation,
-    pub agent_state: Option<AgentState>,
+    pub agent_state: Option<AgentStateMutation>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
@@ -112,7 +122,7 @@ pub(crate) struct WaitTransitionCommand {
     pub agent_id: String,
     pub work_items: Vec<WorkItemMutation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
-    pub agent_state: Option<AgentState>,
+    pub agent_state: Option<AgentStateMutation>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
@@ -123,7 +133,8 @@ pub(crate) struct WaitTransitionCommand {
 pub(crate) struct QueueTransitionCommand {
     pub agent_id: String,
     pub mutation: QueueMutation,
-    pub agent_state: Option<AgentState>,
+    pub agent_state: Option<AgentStateMutation>,
+    pub transcript_entries: Vec<TranscriptEntry>,
     pub audit_events: Vec<AuditEvent>,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
@@ -135,10 +146,11 @@ pub(crate) struct TaskTransitionCommand {
     pub task: TaskRecord,
     pub work_items: Vec<WorkItemMutation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
-    pub agent_state: Option<AgentState>,
+    pub agent_state: Option<AgentStateMutation>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
+    pub commit_on_idempotent: bool,
     pub fault: Option<TransitionFaultPoint>,
 }
 
@@ -160,13 +172,14 @@ impl RuntimeTransitionRepository<'_> {
         let record = command.mutation.record().clone();
         self.db.transaction(|tx| {
             validate_work_item_mutation_tx(tx, &command.mutation)?;
+            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-            let applied = apply_work_item_mutation_tx(tx, &command.mutation)?;
+            let mut applied = apply_work_item_mutation_tx(tx, &command.mutation)?;
+            let agent_state_applied =
+                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            applied |= agent_state_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
-            }
-            if let Some(agent_state) = command.agent_state.as_ref() {
-                upsert_agent_state_tx(tx, agent_state)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             finish_transition_tx(
@@ -177,7 +190,9 @@ impl RuntimeTransitionRepository<'_> {
                 &command.index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: command.agent_state.clone(),
+                    agent_state: agent_state_applied
+                        .then(|| command.agent_state.clone())
+                        .flatten(),
                     work_items: applied.then_some(record.clone()).into_iter().collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
@@ -194,6 +209,7 @@ impl RuntimeTransitionRepository<'_> {
             for condition in &command.wait_conditions {
                 validate_wait_condition_tx(tx, condition)?;
             }
+            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
             let mut applied = false;
@@ -208,11 +224,11 @@ impl RuntimeTransitionRepository<'_> {
             for condition in &command.wait_conditions {
                 applied |= upsert_wait_condition_tx(tx, condition)?;
             }
+            let agent_state_applied =
+                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            applied |= agent_state_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
-            }
-            if let Some(agent_state) = command.agent_state.as_ref() {
-                upsert_agent_state_tx(tx, agent_state)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
@@ -224,7 +240,9 @@ impl RuntimeTransitionRepository<'_> {
                 &command.index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: command.agent_state.clone(),
+                    agent_state: agent_state_applied
+                        .then(|| command.agent_state.clone())
+                        .flatten(),
                     work_items,
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
@@ -236,16 +254,20 @@ impl RuntimeTransitionRepository<'_> {
     pub fn commit_queue(&self, command: &QueueTransitionCommand) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_queue_mutation_tx(tx, &command.mutation)?;
+            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-            let applied = match &command.mutation {
+            let mut applied = match &command.mutation {
                 QueueMutation::Claim(record) => try_claim_queued_message_tx(tx, record)?,
                 QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
             };
+            let agent_state_applied =
+                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            applied |= agent_state_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
             }
-            if let Some(agent_state) = command.agent_state.as_ref() {
-                upsert_agent_state_tx(tx, agent_state)?;
+            for entry in &command.transcript_entries {
+                append_transcript_entry_tx(tx, entry)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             finish_transition_tx(
@@ -256,7 +278,9 @@ impl RuntimeTransitionRepository<'_> {
                 &[],
                 command.fault,
                 PostCommitEffects {
-                    agent_state: command.agent_state.clone(),
+                    agent_state: agent_state_applied
+                        .then(|| command.agent_state.clone())
+                        .flatten(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
@@ -273,6 +297,7 @@ impl RuntimeTransitionRepository<'_> {
             for condition in &command.wait_conditions {
                 validate_wait_condition_tx(tx, condition)?;
             }
+            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
             let task_applied = upsert_task_tx(tx, &command.task)?;
@@ -288,11 +313,12 @@ impl RuntimeTransitionRepository<'_> {
             for condition in &command.wait_conditions {
                 applied |= upsert_wait_condition_tx(tx, condition)?;
             }
+            let agent_state_applied =
+                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            applied |= agent_state_applied;
+            applied |= command.commit_on_idempotent;
             if !applied {
                 return Ok(TransitionCommit::default());
-            }
-            if let Some(agent_state) = command.agent_state.as_ref() {
-                upsert_agent_state_tx(tx, agent_state)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
@@ -304,7 +330,9 @@ impl RuntimeTransitionRepository<'_> {
                 &command.index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: command.agent_state.clone(),
+                    agent_state: agent_state_applied
+                        .then(|| command.agent_state.clone())
+                        .flatten(),
                     work_items,
                     tasks: task_applied
                         .then_some(command.task.clone())
@@ -333,7 +361,10 @@ fn finish_transition_tx(
 
     let mut committed_events = Vec::with_capacity(audit_events.len());
     for event in audit_events {
-        committed_events.push(append_audit_event_tx(tx, Some(agent_id), event)?.0);
+        let (event, inserted) = append_audit_event_tx(tx, Some(agent_id), event)?;
+        if inserted {
+            committed_events.push(event);
+        }
     }
     inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
     insert_runtime_index_changes_tx(tx, index_changes)?;
@@ -346,6 +377,50 @@ fn finish_transition_tx(
         applied: true,
         effects,
     })
+}
+
+fn agent_state_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<AgentState>> {
+    tx.query_row(
+        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+        [agent_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+    .transpose()
+}
+
+fn validate_agent_state_mutation_tx(
+    tx: &Transaction<'_>,
+    mutation: Option<&AgentStateMutation>,
+) -> Result<()> {
+    let Some(mutation) = mutation else {
+        return Ok(());
+    };
+    if let Some(expected) = mutation.expected.as_ref() {
+        let actual = agent_state_tx(tx, &mutation.record.id)?;
+        if actual.as_ref() != Some(expected.as_ref()) {
+            return Err(anyhow!(
+                "agent state {} changed before runtime transition commit",
+                mutation.record.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn apply_agent_state_mutation_tx(
+    tx: &Transaction<'_>,
+    mutation: Option<&AgentStateMutation>,
+) -> Result<bool> {
+    let Some(mutation) = mutation else {
+        return Ok(false);
+    };
+    if agent_state_tx(tx, &mutation.record.id)?.as_ref() == Some(mutation.record.as_ref()) {
+        return Ok(false);
+    }
+    upsert_agent_state_tx(tx, mutation.record.as_ref())?;
+    Ok(true)
 }
 
 fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutation) -> Result<()> {
@@ -675,36 +750,60 @@ mod tests {
 
     #[test]
     fn queue_settlement_fault_preserves_claimable_queue_entry() -> Result<()> {
-        let (_dir, db) = runtime_db()?;
-        let now = Utc::now();
-        let queued = QueueEntryRecord {
-            message_id: "message-1".into(),
-            agent_id: "agent-a".into(),
-            priority: Priority::Normal,
-            status: QueueEntryStatus::Queued,
-            created_at: now,
-            updated_at: now,
-        };
-        db.queue_entries().upsert(&queued)?;
-        let mut processed = queued.clone();
-        processed.status = QueueEntryStatus::Processed;
-        processed.updated_at = now + chrono::Duration::seconds(1);
-
-        db.transitions()
-            .commit_queue(&QueueTransitionCommand {
+        for fault in [
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let now = Utc::now();
+            let queued = QueueEntryRecord {
+                message_id: "message-1".into(),
                 agent_id: "agent-a".into(),
-                mutation: QueueMutation::Upsert(processed),
-                agent_state: None,
-                audit_events: vec![AuditEvent::new("queue_settled", serde_json::json!({}))],
-                notify_scheduler: true,
-                fault: Some(TransitionFaultPoint::BeforeCommit),
-            })
-            .unwrap_err();
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            };
+            db.queue_entries().upsert(&queued)?;
+            let mut initial_state = AgentState::new("agent-a");
+            initial_state.pending = 1;
+            db.agent_states().upsert(&initial_state)?;
+            let mut settled_state = initial_state.clone();
+            settled_state.pending = 0;
+            let transcript = TranscriptEntry::new(
+                "agent-a",
+                crate::types::TranscriptEntryKind::IncomingMessage,
+                None,
+                Some(queued.message_id.clone()),
+                serde_json::json!({}),
+            );
+            let mut processed = queued.clone();
+            processed.status = QueueEntryStatus::Processed;
+            processed.updated_at = now + chrono::Duration::seconds(1);
 
-        let latest = db.queue_entries().latest_all()?;
-        assert_eq!(latest.len(), 1);
-        assert_eq!(latest[0].status, QueueEntryStatus::Queued);
-        assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+            db.transitions()
+                .commit_queue(&QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    mutation: QueueMutation::Upsert(processed),
+                    agent_state: Some(AgentStateMutation {
+                        expected: Some(Box::new(initial_state.clone())),
+                        record: Box::new(settled_state),
+                    }),
+                    transcript_entries: vec![transcript],
+                    audit_events: vec![AuditEvent::new("queue_settled", serde_json::json!({}))],
+                    notify_scheduler: true,
+                    fault: Some(fault),
+                })
+                .unwrap_err();
+
+            let latest = db.queue_entries().latest_all()?;
+            assert_eq!(latest.len(), 1);
+            assert_eq!(latest[0].status, QueueEntryStatus::Queued);
+            assert_eq!(db.agent_states().latest("agent-a")?, Some(initial_state));
+            assert!(db.transcript_entries().all(Some("agent-a"))?.is_empty());
+            assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+        }
         Ok(())
     }
 
@@ -749,6 +848,7 @@ mod tests {
                 index_change("work_item", &cleared.id),
             ],
             notify_scheduler: true,
+            commit_on_idempotent: false,
             fault: Some(TransitionFaultPoint::AfterCanonicalWrites),
         };
         db.transitions().commit_task(&command).unwrap_err();

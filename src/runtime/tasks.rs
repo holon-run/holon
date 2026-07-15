@@ -2534,6 +2534,7 @@ impl RuntimeHandle {
                 }),
             ));
             let mut state = self.agent_state().await?;
+            let expected_state = state.clone();
             let mut agent_state = None;
             let mut current_focus =
                 state.current_work_item_id.as_deref() == Some(record.id.as_str());
@@ -2560,7 +2561,10 @@ impl RuntimeHandle {
                             "revision": record.revision,
                         }),
                     ));
-                    agent_state = Some(state);
+                    agent_state = Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(state),
+                    });
                 }
             }
             let commit = self.inner.runtime_db.transitions().commit_work_item(
@@ -2715,6 +2719,7 @@ impl RuntimeHandle {
             }
         }
         let mut state = self.agent_state().await?;
+        let expected_state = state.clone();
         let release_current = state.current_work_item_id.as_deref() == Some(record.id.as_str());
         let release_turn = state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
         if release_current {
@@ -2763,7 +2768,12 @@ impl RuntimeHandle {
                     current_focus: false,
                 }],
                 wait_conditions,
-                agent_state: (release_current || release_turn).then_some(state),
+                agent_state: (release_current || release_turn).then_some(
+                    crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(state),
+                    },
+                ),
                 audit_events,
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: true,

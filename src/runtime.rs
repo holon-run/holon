@@ -626,10 +626,22 @@ impl RuntimeHandle {
                 cache.upsert_task(record.clone());
             }
         }
-        if let Some(state) = effects.agent_state.as_ref() {
+        if let Some(mutation) = effects.agent_state.as_ref() {
             let mut guard = self.inner.agent.lock().await;
-            guard.state = state.clone();
-            guard.last_persisted_state = state.clone();
+            if mutation
+                .expected
+                .as_ref()
+                .is_none_or(|expected| guard.state == **expected)
+            {
+                guard.state = mutation.record.as_ref().clone();
+                guard.last_persisted_state = mutation.record.as_ref().clone();
+            } else {
+                warnings.push(PostCommitWarning {
+                    effect: "agent_state_projection_update",
+                    message: "agent state changed after transition commit; retained newer in-memory state"
+                        .into(),
+                });
+            }
         }
         if effects.fault == Some(TransitionFaultPoint::BeforeEventPublication) {
             warnings.push(PostCommitWarning {
@@ -1514,6 +1526,7 @@ impl RuntimeHandle {
                 agent_id: record.agent_id.clone(),
                 mutation: crate::runtime_db::transitions::QueueMutation::Upsert(record),
                 agent_state: None,
+                transcript_entries: Vec::new(),
                 audit_events,
                 notify_scheduler,
                 fault: None,

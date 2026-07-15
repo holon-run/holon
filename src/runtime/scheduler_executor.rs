@@ -409,7 +409,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     mutation: crate::runtime_db::transitions::QueueMutation::Claim(
                         queue_record.clone(),
                     ),
-                    agent_state: Some(running_state.clone()),
+                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(guard.state.clone())),
+                        record: Box::new(running_state.clone()),
+                    }),
+                    transcript_entries: Vec::new(),
                     audit_events: vec![AuditEvent::new(
                         "queue_entry_claimed",
                         serde_json::json!({

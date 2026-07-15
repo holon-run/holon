@@ -338,75 +338,96 @@ impl RuntimeHandle {
         round: usize,
         boundary: &str,
     ) -> Result<Vec<String>> {
-        let mut messages = Vec::new();
-        {
-            let mut guard = self.inner.agent.lock().await;
-            while let Some(message) = guard
-                .queue
-                .pop_next_matching(scheduler::is_operator_interjection_message)
-            {
-                guard.state.pending = guard.queue.len();
-                messages.push(message);
-            }
-            if !messages.is_empty() {
-                if let Err(err) = guard.persist_state(&self.inner.storage) {
-                    for message in messages.iter().rev().cloned() {
-                        guard.queue.push_front(message);
-                    }
-                    guard.state.pending = guard.queue.len();
-                    return Err(err);
-                }
-            }
-        }
-
         let mut follow_up_texts = Vec::new();
-        for (index, message) in messages.iter().enumerate() {
-            let persist_result = async {
-                self.record_incoming_transcript_entry(message)?;
-                let text = render_operator_interjection_text(message);
-                self.commit_queue_settlement(
-                    QueueEntryRecord {
+        loop {
+            let committed = {
+                let mut guard = self.inner.agent.lock().await;
+                let Some(message) = guard
+                    .queue
+                    .peek_next_matching(scheduler::is_operator_interjection_message)
+                    .cloned()
+                else {
+                    break;
+                };
+                let expected_state = guard.state.clone();
+                let mut committed_state = expected_state.clone();
+                committed_state.pending = guard.queue.len().saturating_sub(1);
+                let text = render_operator_interjection_text(&message);
+                let transcript = TranscriptEntry::new(
+                    message.agent_id.clone(),
+                    TranscriptEntryKind::IncomingMessage,
+                    None,
+                    Some(message.id.clone()),
+                    serde_json::json!({
+                        "authority_class": message.authority_class,
+                        "delivery_surface": message.delivery_surface,
+                        "admission_context": message.admission_context,
+                        "trigger_kind": message.trigger_kind,
+                        "work_item_id": message.work_item_id.clone(),
+                        "task_id": message.task_id.clone(),
+                        "source_refs": message.source_refs.clone(),
+                        "correlation_id": message.correlation_id.clone(),
+                        "causation_id": message.causation_id.clone(),
+                    }),
+                );
+                let queue_record = QueueEntryRecord {
                     message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),
                     priority: message.priority.clone(),
                     status: QueueEntryStatus::Interjected,
                     created_at: message.created_at,
                     updated_at: chrono::Utc::now(),
-                    },
-                    vec![AuditEvent::new(
-                        "operator_interjection_admitted",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "round": round,
-                            "boundary": boundary,
-                            "message_id": message.id,
-                            "origin": message.origin,
-                            "authority_class": message.authority_class,
-                            "priority": message.priority,
-                            "delivery_surface": message.delivery_surface,
-                            "admission_context": message.admission_context,
-                            "text_preview": truncate_preview(&message_text(&message.body), ROUND_TEXT_PREVIEW_LIMIT),
+                };
+                let audit_event = AuditEvent::new(
+                    "operator_interjection_admitted",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "round": round,
+                        "boundary": boundary,
+                        "message_id": message.id,
+                        "origin": message.origin,
+                        "authority_class": message.authority_class,
+                        "priority": message.priority,
+                        "delivery_surface": message.delivery_surface,
+                        "admission_context": message.admission_context,
+                        "text_preview": truncate_preview(
+                            &message_text(&message.body),
+                            ROUND_TEXT_PREVIEW_LIMIT
+                        ),
+                    }),
+                );
+                let mut commit = self.inner.runtime_db.transitions().commit_queue(
+                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                        agent_id: message.agent_id.clone(),
+                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
+                            queue_record,
+                        ),
+                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(expected_state)),
+                            record: Box::new(committed_state.clone()),
                         }),
-                    )],
-                    false,
-                )
-                .await?;
-                Ok::<_, anyhow::Error>(text)
-            }
-            .await;
-
-            match persist_result {
-                Ok(text) => follow_up_texts.push(text),
-                Err(err) => {
-                    let mut guard = self.inner.agent.lock().await;
-                    for message in messages[index..].iter().rev().cloned() {
-                        guard.queue.push_front(message);
-                    }
-                    guard.state.pending = guard.queue.len();
-                    let _ = guard.persist_state(&self.inner.storage);
-                    return Err(err);
+                        transcript_entries: vec![transcript],
+                        audit_events: vec![audit_event],
+                        notify_scheduler: false,
+                        fault: None,
+                    },
+                )?;
+                if !commit.applied {
+                    return Err(anyhow::anyhow!(
+                        "interjection settlement made no durable progress"
+                    ));
                 }
-            }
+                guard
+                    .queue
+                    .pop_next_matching(|candidate| candidate.id == message.id)
+                    .expect("peeked interjection remains queued while agent lock is held");
+                guard.state = committed_state.clone();
+                guard.last_persisted_state = committed_state;
+                commit.effects.agent_state = None;
+                (text, commit)
+            };
+            self.apply_transition_commit(committed.1).await;
+            follow_up_texts.push(committed.0);
         }
         Ok(follow_up_texts)
     }

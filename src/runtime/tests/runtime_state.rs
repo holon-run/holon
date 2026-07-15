@@ -1003,6 +1003,99 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
 }
 
 #[tokio::test]
+async fn terminal_task_replay_repairs_active_wait_without_rewriting_task_index() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("repair task wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-replay".into()),
+            "waiting for task-replay".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let terminal = TaskRecord {
+        id: "task-replay".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some("message-replay".into()),
+        work_item_id: Some(work.id.clone()),
+        summary: Some("task-replay".into()),
+        detail: None,
+        recovery: None,
+    };
+    runtime.storage().append_task(&terminal).unwrap();
+    let before = runtime
+        .inner
+        .runtime_db
+        .runtime_index_outbox()
+        .high_watermark_for_agent("default")
+        .unwrap();
+
+    runtime
+        .reduce_task_result_message(
+            &task_result_message("task-replay"),
+            terminal.clone(),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    runtime
+        .reduce_task_result_message(&task_result_message("task-replay"), terminal, false, None)
+        .await
+        .unwrap();
+
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    assert_eq!(latest.blocked_by, None);
+    assert!(runtime
+        .storage()
+        .active_wait_conditions_for_work_item("default", &work.id)
+        .unwrap()
+        .is_empty());
+    let changes = runtime
+        .inner
+        .runtime_db
+        .runtime_index_outbox()
+        .read_after("default", before, 20)
+        .unwrap();
+    assert!(changes.iter().all(|change| change.source_kind != "task"));
+    assert_eq!(
+        runtime
+            .storage()
+            .read_recent_events(100)
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == "task_result_received")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn message_admission_wakes_asleep_and_booting_agents() {
     for status in [AgentStatus::Asleep, AgentStatus::Booting] {
         let dir = tempdir().unwrap();
@@ -3556,4 +3649,77 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
             fault != crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate
         );
     }
+}
+
+#[tokio::test]
+async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let expected = runtime.agent_state().await.unwrap();
+    let mut committed = expected.clone();
+    committed.pending = 1;
+    let commit = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id: "default".into(),
+            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(QueueEntryRecord {
+                message_id: "message-agent-state-race".into(),
+                agent_id: "default".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }),
+            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                expected: Some(Box::new(expected)),
+                record: Box::new(committed),
+            }),
+            transcript_entries: Vec::new(),
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+        })
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.last_wake_reason = Some("newer-memory-state".into());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let result = runtime.apply_transition_commit(commit).await;
+
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.effect == "agent_state_projection_update"));
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .last_wake_reason
+            .as_deref(),
+        Some("newer-memory-state")
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        Some(runtime.agent_state().await.unwrap())
+    );
 }

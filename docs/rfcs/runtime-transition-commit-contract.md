@@ -189,6 +189,7 @@ and no WorkItem blocker may claim a newly registered wait that is absent.
 | Transition | Expected input | Atomic durable write set | Post-commit effects |
 | --- | --- | --- | --- |
 | claim | queued or interrupted | dequeued queue row and claim audit | publish audit |
+| interjected | queued interjection plus expected AgentState snapshot | interjected queue row, decremented AgentState pending count, incoming transcript evidence, and admission audit | remove the committed message from the in-memory queue, publish audit |
 | processed | dequeued/interjected | processed queue row and processing audit | publish audit, notify scheduler |
 | interrupted/aborted/dropped | allowed non-terminal state | terminal queue row and failure/abort audit | publish audit, notify scheduler |
 
@@ -206,6 +207,10 @@ audit is absent because of a later transaction failure.
 Terminal task persistence and wait release are one transition. A restart cannot
 observe a terminal task with an otherwise matching active task wait solely
 because the runtime crashed between repository calls.
+
+An equivalent terminal replay may commit only residual wait and WorkItem
+repairs. It reuses stable lifecycle audit identity and does not rewrite the
+terminal Task or enqueue another Task index change.
 
 ## Commit And Effect Ordering
 
