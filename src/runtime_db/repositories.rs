@@ -3149,7 +3149,12 @@ fn is_terminal_queue_entry_status(status: &QueueEntryStatus) -> bool {
 }
 
 fn is_terminal_wait_condition_status(status: &WaitConditionStatus) -> bool {
-    !matches!(status, WaitConditionStatus::Active)
+    matches!(
+        status,
+        WaitConditionStatus::Resolved
+            | WaitConditionStatus::Cancelled
+            | WaitConditionStatus::Expired
+    )
 }
 
 fn queue_entry_terminal_payload_eq(
@@ -3157,9 +3162,8 @@ fn queue_entry_terminal_payload_eq(
     incoming: &QueueEntryRecord,
 ) -> bool {
     let mut existing = existing.clone();
-    let incoming = incoming.clone();
     existing.updated_at = incoming.updated_at;
-    existing == incoming
+    existing == *incoming
 }
 
 fn wait_condition_terminal_payload_eq(
@@ -3167,9 +3171,8 @@ fn wait_condition_terminal_payload_eq(
     incoming: &WaitConditionRecord,
 ) -> bool {
     let mut existing = existing.clone();
-    let incoming = incoming.clone();
     existing.updated_at = incoming.updated_at;
-    existing == incoming
+    existing == *incoming
 }
 
 fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<bool> {
