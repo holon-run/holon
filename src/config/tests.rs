@@ -2090,6 +2090,22 @@ fn provider_chain_with_override_inserts_override_before_runtime_default() {
 }
 
 #[test]
+fn resolves_compatible_reasoning_effort_for_non_codex_route() {
+    let fixture = test_app_config("anthropic@default/claude-sonnet-4-6", &[]);
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    let route = catalog
+        .resolve_explicit_model_route(
+            &ContextConfig::default(),
+            &route_ref("anthropic@default/claude-sonnet-4-6"),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+
+    assert!(route.validate_reasoning_effort("xhigh").is_ok());
+    assert!(route.validate_reasoning_effort("arbitrary").is_err());
+}
+
+#[test]
 fn provider_chain_for_turn_starts_at_pending_fallback_model() {
     let fixture = test_app_config(
         "openai@default/gpt-5.4",

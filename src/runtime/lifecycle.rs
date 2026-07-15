@@ -764,6 +764,13 @@ impl RuntimeHandle {
                 crate::config::ModelRouteCapability::Turn,
             ) {
                 route.validate_reasoning_effort(reasoning_effort)?;
+            } else {
+                tracing::debug!(
+                    provider = model_override.provider.as_str(),
+                    endpoint = model_override.endpoint.as_str(),
+                    model = model_override.model,
+                    "model override route not resolvable; skipping early reasoning effort validation"
+                );
             }
         }
         let mut next_state = self.agent_state().await?;
