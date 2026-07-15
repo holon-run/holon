@@ -8,6 +8,8 @@ Thanks for contributing to Holon. This file captures the baseline expectations f
 - Summarize behavior changes and highlight any user-visible impact.
 - Validation:
   - Required: `make test`
+  - Runtime lifecycle, task, wait, SSE, or HTTP task changes:
+    `make test-concurrent`
   - Run focused `cargo test ...` commands for the Rust modules or integration
     tests touched by the change when a full test run is too broad.
   - If you cannot run a required check, state why in the PR description.
@@ -21,6 +23,12 @@ make build
 
 # Run Rust tests
 make test
+
+# Run selected runtime lifecycle integration tests with Rust's default threads
+make test-concurrent
+
+# Stress the core concurrent lifecycle suite; stops at the first failure
+make test-concurrent-repeat CONCURRENT_REPEATS=3
 
 # Run live-provider tests when credentials are configured
 make test-live

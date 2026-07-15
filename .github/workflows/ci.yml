@@ -66,6 +66,25 @@ jobs:
         run: make lint
         env:
           RUSTFLAGS: ""
+
+  rust-concurrent:
+    name: Rust Concurrent
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test concurrent runtime lifecycles
+        run: make test-concurrent
+
+      - name: Repeat core lifecycle tests on main
+        if: github.event_name == 'push'
+        run: make test-concurrent-repeat CONCURRENT_REPEATS=2
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
