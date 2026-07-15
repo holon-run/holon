@@ -191,7 +191,12 @@ export function AgentPage({
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
   const activeReasoningBadge = activeModelSupportsReasoning ? (activeAgent.modelReasoningEffort ?? "auto") : undefined;
   const activeModelTitle = modelButtonTitle(activeAgent.model, activeReasoningBadge, activeAgent.modelSource === "agent_override");
-  const currentProvider = selectedProvider ?? activeModelOption?.provider ?? groupedModelOptions[0]?.provider ?? "runtime";
+  const activeProviderGroup = activeModelOption
+    ? (activeModelOption.endpoint === "default"
+        ? activeModelOption.providerFamily
+        : `${activeModelOption.providerFamily} / ${activeModelOption.endpoint}`)
+    : undefined;
+  const currentProvider = selectedProvider ?? activeProviderGroup ?? groupedModelOptions[0]?.provider ?? "runtime";
   const currentProviderModels = groupedModelOptions.find((group) => group.provider === currentProvider)?.models ?? [];
 
   useEffect(() => {
