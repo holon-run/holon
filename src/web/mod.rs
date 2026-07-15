@@ -427,6 +427,10 @@ pub enum WebProviderKind {
 }
 
 impl WebProviderKind {
+    /// Must list every `WebProviderKind` variant exactly once.
+    ///
+    /// Missing entries are not caught at compile time, so keep this in sync
+    /// when adding or removing enum variants.
     pub const ALL: [Self; 13] = [
         Self::DuckDuckGo,
         Self::Searxng,

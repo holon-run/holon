@@ -1793,6 +1793,96 @@
           },
           "runtime_surface": {
             "properties": {
+              "available_search_provider_kinds": {
+                "default": [],
+                "items": {
+                  "properties": {
+                    "capabilities": {
+                      "properties": {
+                        "auth": {
+                          "enum": [
+                            "none",
+                            "api_key",
+                            "native_provider",
+                            "self_hosted"
+                          ],
+                          "type": "string"
+                        },
+                        "cost_class": {
+                          "enum": [
+                            "free",
+                            "self_hosted",
+                            "paid",
+                            "provider_metered"
+                          ],
+                          "type": "string"
+                        },
+                        "default_priority": {
+                          "format": "uint16",
+                          "maximum": 65535,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "quality_hint": {
+                          "enum": [
+                            "html_fallback",
+                            "keyword",
+                            "semantic",
+                            "research",
+                            "native"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "supported",
+                            "unsupported",
+                            "native_only"
+                          ],
+                          "type": "string"
+                        },
+                        "supports_domain_filter": {
+                          "type": "boolean"
+                        },
+                        "supports_freshness": {
+                          "type": "boolean"
+                        },
+                        "supports_full_content": {
+                          "type": "boolean"
+                        },
+                        "supports_native_citations": {
+                          "type": "boolean"
+                        },
+                        "supports_region_or_language": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "auth",
+                        "cost_class",
+                        "quality_hint",
+                        "supports_domain_filter",
+                        "supports_freshness",
+                        "supports_region_or_language",
+                        "supports_full_content",
+                        "supports_native_citations",
+                        "default_priority",
+                        "status"
+                      ],
+                      "type": "object"
+                    },
+                    "kind": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "capabilities"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "default_tool_output_tokens": {
                 "format": "uint32",
                 "minimum": 0,
@@ -2076,6 +2166,96 @@
           },
           "runtime_surface": {
             "properties": {
+              "available_search_provider_kinds": {
+                "default": [],
+                "items": {
+                  "properties": {
+                    "capabilities": {
+                      "properties": {
+                        "auth": {
+                          "enum": [
+                            "none",
+                            "api_key",
+                            "native_provider",
+                            "self_hosted"
+                          ],
+                          "type": "string"
+                        },
+                        "cost_class": {
+                          "enum": [
+                            "free",
+                            "self_hosted",
+                            "paid",
+                            "provider_metered"
+                          ],
+                          "type": "string"
+                        },
+                        "default_priority": {
+                          "format": "uint16",
+                          "maximum": 65535,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "quality_hint": {
+                          "enum": [
+                            "html_fallback",
+                            "keyword",
+                            "semantic",
+                            "research",
+                            "native"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "supported",
+                            "unsupported",
+                            "native_only"
+                          ],
+                          "type": "string"
+                        },
+                        "supports_domain_filter": {
+                          "type": "boolean"
+                        },
+                        "supports_freshness": {
+                          "type": "boolean"
+                        },
+                        "supports_full_content": {
+                          "type": "boolean"
+                        },
+                        "supports_native_citations": {
+                          "type": "boolean"
+                        },
+                        "supports_region_or_language": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "auth",
+                        "cost_class",
+                        "quality_hint",
+                        "supports_domain_filter",
+                        "supports_freshness",
+                        "supports_region_or_language",
+                        "supports_full_content",
+                        "supports_native_citations",
+                        "default_priority",
+                        "status"
+                      ],
+                      "type": "object"
+                    },
+                    "kind": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "capabilities"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "default_tool_output_tokens": {
                 "format": "uint32",
                 "minimum": 0,
