@@ -114,18 +114,20 @@ jobs:
 
           Holon ${GITHUB_REF_NAME} is part of the Rust runtime line. The Rust runtime is now the main \`holon\` binary.
 
-          This patch release makes workspace file references durable across managed worktrees and improves runtime and Web GUI state consistency. It also fixes empty result briefs during tool-only waits, stale agent details after workspace changes, incomplete failed-tool details, and truncated ExecCommand output rendering.
+          This minor release expands web search provider metadata and configuration, fixes Gemini prompt projection and model capability routing, and strengthens runtime lifecycle consistency, continuation recovery, and Web GUI event handling. It also retires the legacy random workspace ID compatibility path after its migration window.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
           ## Changes
 
-          - Preserve durable \`workspace://\` file links across managed worktrees by carrying an execution-root identifier through the runtime and resolver ([#2241](https://github.com/holon-run/holon/pull/2241)).
-          - Avoid publishing empty result briefs when a turn only waits for tool completion ([#2240](https://github.com/holon-run/holon/pull/2240)).
-          - Refresh agent state after workspace change events so detail views do not remain stale ([#2243](https://github.com/holon-run/holon/pull/2243)).
-          - Show tool input parameters and errors for failed calls in the Web GUI detail panel ([#2244](https://github.com/holon-run/holon/pull/2244)).
-          - Lazily load and display complete ExecCommand stdout and stderr artifacts when timeline previews are truncated ([#2246](https://github.com/holon-run/holon/pull/2246)).
-          - Refresh documentation for image generation, Web GUI workflows, and WebFetch/WebSearch providers ([#2239](https://github.com/holon-run/holon/pull/2239)).
+          - Expose web search provider metadata, complete built-in search provider coverage, and align provider selection and settings behavior for non-default endpoints ([#2292](https://github.com/holon-run/holon/pull/2292), [#2297](https://github.com/holon-run/holon/pull/2297), [#2300](https://github.com/holon-run/holon/pull/2300)).
+          - Deduplicate Gemini system and context prompt sections while preserving the structured GenerateContent request contract ([#2296](https://github.com/holon-run/holon/pull/2296)).
+          - Validate reasoning effort against the resolved model route and capability metadata, including fallback diagnostics ([#2281](https://github.com/holon-run/holon/pull/2281), [#2283](https://github.com/holon-run/holon/pull/2283), [#2285](https://github.com/holon-run/holon/pull/2285)).
+          - Strengthen persisted runtime lifecycle transitions by publishing audit events after persistence, requiring turn ownership, preserving queue/wait terminal states, and enforcing first-writer-wins task completion ([#2276](https://github.com/holon-run/holon/pull/2276), [#2289](https://github.com/holon-run/holon/pull/2289), [#2290](https://github.com/holon-run/holon/pull/2290), [#2293](https://github.com/holon-run/holon/pull/2293)).
+          - Recover oversized continuations by shrinking projected recent turns instead of abandoning resumable work ([#2295](https://github.com/holon-run/holon/pull/2295)).
+          - Close lagged SSE streams, recover Web GUI event gaps from a contiguous cursor, and keep WorkItem detail state visible during refreshes ([#2247](https://github.com/holon-run/holon/pull/2247), [#2287](https://github.com/holon-run/holon/pull/2287), [#2288](https://github.com/holon-run/holon/pull/2288)).
+          - Retire lazy migration and alias resolution for unsupported legacy random workspace IDs while preserving canonical workspace behavior ([#2298](https://github.com/holon-run/holon/pull/2298)).
+          - Expand mainline CI coverage for runtime lifecycle concurrency and the Web GUI test suite, and refresh onboarding-focused project documentation ([#2242](https://github.com/holon-run/holon/pull/2242), [#2277](https://github.com/holon-run/holon/pull/2277), [#2280](https://github.com/holon-run/holon/pull/2280)).
 
           ## Install
 
