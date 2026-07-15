@@ -8,18 +8,6 @@ Holon is a **local workbench for agents doing continuous work**.
 
 Holon itself is not an agent. It provides a local working environment for multiple agents. Agents understand goals and drive execution; Holon treats "work" as the core unit, preserving state, organizing context, recording waits and wakes, so tasks that span sessions, commands, human confirmation, or external events can resume at the right time and eventually deliver results back to the operator.
 
-## Table of contents
-
-- [What does Holon provide?](#what-does-holon-provide)
-- [Install](#install)
-- [Provider setup](#provider-setup)
-- [Quickstart](#quickstart)
-- [Core concepts](#core-concepts)
-- [Status and compatibility](#status-and-compatibility)
-- [Project boundaries](#project-boundaries)
-- [Documentation](#documentation)
-- [Build from source](#build-from-source)
-
 ## What does Holon provide?
 
 | Capability | What it means |
@@ -32,9 +20,51 @@ Holon itself is not an agent. It provides a local working environment for multip
 
 > Keep agent work alive in your local workspace.
 
-## Install
+## Quickstart
 
-Install the latest release with Homebrew:
+Holon provides two interaction modes: **TUI** (terminal) and **Web GUI** (browser).
+
+### 1. Install
+
+```bash
+brew tap holon-run/tap && brew install holon
+```
+
+Or download binaries from [GitHub Releases](https://github.com/holon-run/holon/releases/latest).
+
+### 2. Configure a provider
+
+```bash
+holon onboard
+```
+
+This walks through provider credential setup interactively. You can also
+configure providers through the Web GUI **Settings** page after starting the
+daemon. See [Configuration Reference](docs/website/reference/configuration.md)
+and [Web GUI guide](docs/website/guides/web-gui.md) for more.
+
+### 3. Start the daemon
+
+```bash
+holon daemon start
+```
+
+### 4a. TUI (terminal)
+
+```bash
+holon tui
+```
+
+Select an agent and start working. Agents keep running after you disconnect.
+
+### 4b. Web GUI (browser)
+
+Open <http://localhost:7878>. Create an agent and work through a chat interface
+with built-in file browser, task tracking, and more.
+
+For more: [TUI guide](docs/website/guides/tui.md) · [Web GUI guide](docs/website/guides/web-gui.md) · [First agent](docs/website/getting-started/first-agent.md)
+
+## Install
 
 ```bash
 brew tap holon-run/tap
@@ -49,212 +79,56 @@ The examples below assume `holon` is installed on `PATH`.
 
 ## Provider setup
 
-Holon needs a model provider before it can run agents. It mainly supports three
-setup paths:
+Holon needs a model provider before it can run agents. The recommended path is:
 
-- **Local credential storage**: recommended for daily use. Manage API keys
-  through credential profiles, avoiding dependence on environment variables that
-  must be injected before the daemon starts.
-- **Built-in providers**: supports common providers such as Anthropic, OpenAI,
-  DeepSeek, OpenRouter, Qwen, GLM, Xiaomi, Kimi, and MiniMax.
-- **External login / custom providers**: `openai-codex/...` can reuse a local
-  `codex login` session and supports Codex subscriptions. You can also connect
-  custom providers with compatible protocols.
+- **`holon onboard`** — interactive CLI setup that guides you through provider
+  credential configuration without echoing secrets.
+- **Web GUI Settings** — after starting the daemon, open
+  <http://localhost:7878> and configure providers through the Settings page.
 
-For an interactive first run or repair flow, use:
-
-```bash
-holon onboard
-```
-
-In a TTY this guides you through the default provider credential setup without
-echoing the credential material. In scripts, use `holon onboard --json` for the
-secret-safe diagnostic report.
-
-The equivalent manual setup is to save the API key first, then point the
-provider at the corresponding credential profile:
-
-```bash
-printf '%s' "$DEEPSEEK_API_KEY" \
-  | holon config credentials set --kind api_key --stdin deepseek
-
-holon config providers set deepseek \
-  --credential-source credential_profile \
-  --credential-kind api_key \
-  --credential-profile deepseek
-
-holon config set model.default "deepseek@default/deepseek-v4-pro"
-
-# Or use a local Codex login session / Codex subscription
-holon config set model.default "openai-codex@default/gpt-5.5"
-```
-
-Inspect the configured state with:
-
-```bash
-holon onboard
-holon config doctor
-holon config models list
-```
-
-For more about providers, credential profiles, custom providers, and the model
-catalog, see:
-
-- [Configuration Reference](docs/website/reference/configuration.md)
-- [Supported Models](docs/website/reference/models.md)
-
-## Quickstart
-
-### 1. Start the daemon
-
-Start the long-running local runtime first:
-
-```bash
-holon daemon start
-holon daemon status
-```
-
-### 2. Connect the TUI
-
-Connect the TUI:
-
-```bash
-holon tui
-```
-
-### 3. Select or create an agent
-
-Holon automatically provides a default main agent. There are two ways to create
-a new agent:
-
-- Tell the main agent in the TUI and let it create one for you.
-- Or create one through the CLI:
-
-```bash
-holon agent create builder
-holon agent list
-```
-
-After that, select an agent in the TUI and start working. After the TUI
-disconnects, the agent continues running in the daemon.
-
-For more operations, see the [TUI command reference](docs/website/reference/cli.md#terminal-ui)
-and [Daemon management](docs/website/reference/cli.md#daemon-management).
-
-### Remote Web UI access
-
-Browser-based Web UIs that run on another host or port must be allowed by the
-HTTP API CORS configuration. For LAN access, start the daemon on a reachable
-bind address and list the Web UI origin explicitly:
-
-```bash
-holon daemon start --access lan --host 0.0.0.0 --port 7878 --token-file ~/.config/holon/remote.token
-holon config set api.cors.enabled true
-holon config set api.cors.allowed_origins '["http://192.168.1.10:5173"]'
-```
-
-Holon does not enable wildcard browser access by default. If
-`api.cors.allow_credentials` is true, `api.cors.allowed_origins` must list
-specific origins rather than `"*"`.
+Holon supports common providers such as Anthropic, OpenAI, DeepSeek, OpenRouter,
+Qwen, GLM, Xiaomi, Kimi, and MiniMax. For advanced setup including credential
+profiles, custom providers, and Codex subscriptions, see
+[Configuration Reference](docs/website/reference/configuration.md) and
+[Supported Models](docs/website/reference/models.md).
 
 ## Core concepts
 
 Holon breaks agent work into a few explicit runtime objects:
 
-- **Agent** is a long-lived local identity with its own queue, state, history,
-  and working context.
-- **WorkItem** represents a continuously advanceable goal, including a plan,
-  progress, blockers, wait conditions, and a completion report.
-- **Task** represents supervised asynchronous execution, such as a command,
-  background task, or child agent.
-- **WaitFor / wake** lets an agent explicitly declare that it is waiting for a
-  task result, external event, or operator input, and resume when the condition
-  is satisfied.
-- **Workspace / worktree** lets agents execute in local repositories and isolate
-  coding tasks into managed worktrees.
-- **Origin / brief** preserves input origin and trust information while keeping
-  internal execution traces separate from operator-visible delivery.
-
-Together, these concepts solve one problem: agent work should not depend on a
-single chat or terminal connection. It should be observable, resumable,
-waitable, delegable, and deliverable.
+- **Agent** — long-lived local identity with its own queue, state, and working
+  context.
+- **WorkItem** — continuously advanceable goal with a plan, progress, blockers,
+  wait conditions, and a completion report.
+- **Task** — supervised asynchronous execution (command, background task, or
+  child agent).
+- **WaitFor / wake** — explicit declaration of waiting for a task result,
+  external event, or operator input, and resuming when the condition is
+  satisfied.
+- **Workspace / worktree** — execute in local repositories and isolate coding
+  tasks into managed worktrees.
+- **Origin / brief** — preserves input origin and trust information while
+  keeping execution traces separate from operator-visible delivery.
 
 For more detailed explanations, see [Concepts](docs/website/concepts/).
 
-## Current release
-
-The current recommended release is
-[`v0.29.1`](https://github.com/holon-run/holon/releases/tag/v0.29.1).
-
-`v0.15.0` is the baseline release where the Holon Rust runtime enters public
-compatibility maintenance. Starting from this version, the project will maintain
-compatibility for the CLI, daemon/API semantics, and local persistent storage.
-
-See the full changes in the
-[v0.29.1 Release Notes](https://github.com/holon-run/holon/releases/tag/v0.29.1).
-
 ## Status and compatibility
 
-Holon is under active development. Starting from `v0.15.0`, the project treats
-the following surfaces as public contracts that need compatibility maintenance:
-
-- **CLI**: common commands, arguments, and structured output should remain
-  migratable; breaking changes should be documented with release notes and
-  migration paths.
-- **Interfaces**: daemon client APIs, event semantics, and runtime object fields
-  should remain backward compatible or provide clear versioned evolution paths.
-- **Persistent storage**: local data such as agent state, ledgers, messages,
-  transcripts, WorkItems, and tasks should support upgrades and read
-  compatibility.
+Holon is under active development. The current recommended release is
+[`v0.29.1`](https://github.com/holon-run/holon/releases/tag/v0.29.1).
 
 The current project focus remains the Rust runtime: agent lifecycle, queues,
 WaitFor/wake, tasks, WorkItems, trust boundaries, local workspaces, and
 structured delivery.
 
-## Project boundaries
-
-Holon focuses on runtime semantics: agent identity, work continuity, execution
-state, local workspace projection, and operator-visible results.
-
-Adjacent Holon Run projects cover other layers:
-
-- **[AgentInbox](https://github.com/holon-run/agentinbox)** — source hosting,
-  activation, and delivery
-- **[UXC](https://github.com/holon-run/uxc)** — unified capability and tool
-  access
-- **[WebMCP Bridge](https://github.com/holon-run/webmcp-bridge)** — browser and
-  web-app edge access
-
-When used together, AgentInbox delivers external events to wake Holon; Holon
-decides what those events mean inside the runtime.
-
 ## Documentation
 
-Holon's documentation is organized into three layers. See
-[documentation layers](docs/website/concepts/documentation-layers.md).
-
-**Using Holon:**
-
-- [Website docs](https://holon.run) — install, getting started, concepts,
-  guides, and current reference
-- [Security and execution boundaries](docs/website/concepts/security-and-execution-boundaries.md)
-
-**Integrating and operating Holon:**
-
-- [Local operator troubleshooting](docs/local-operator-troubleshooting.md)
+- [Website docs](https://holon.run) — install, getting started, concepts, guides, reference
+- [Documentation layers](docs/website/concepts/documentation-layers.md)
+- [Architecture overview](docs/architecture-overview.md)
+- [RFCs](docs/rfcs/README.md)
+- [Implementation decisions](docs/implementation-decisions/README.md)
 - [Release process](docs/release.md)
-
-**Contributing to the runtime:**
-
-- [Architecture overview](docs/architecture-overview.md) — start here
-- [RFCs](docs/rfcs/README.md) — specification and design contracts
-- [Implementation decisions](docs/implementation-decisions/README.md) — design
-  rationale
-
-## Community
-
-- [GitHub Discussions](https://github.com/holon-run/holon/discussions)
-- [GitHub Issues](https://github.com/holon-run/holon/issues)
 
 ## Build from source
 
@@ -297,6 +171,11 @@ cd benchmark
 npm install
 npm test
 ```
+
+## Community
+
+- [GitHub Discussions](https://github.com/holon-run/holon/discussions)
+- [GitHub Issues](https://github.com/holon-run/holon/issues)
 
 ## License
 

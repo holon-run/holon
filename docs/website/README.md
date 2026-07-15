@@ -29,49 +29,54 @@ operator.
 
 ## Try Holon
 
-Install the latest release with Homebrew:
+Holon provides two interaction modes: **TUI** (terminal) and **Web GUI** (browser).
+
+### Install
 
 ```bash
-brew tap holon-run/tap
-brew install holon
+brew tap holon-run/tap && brew install holon
 holon --help
 ```
 
-Then configure a model provider, start the local daemon, and connect the TUI:
+Or download binaries from [GitHub Releases](https://github.com/holon-run/holon/releases/latest).
+
+### Configure a provider
 
 ```bash
-# Recommended: save an API key in a local credential profile
-printf '%s' "$DEEPSEEK_API_KEY" \
-  | holon config credentials set --kind api_key --stdin deepseek
+holon onboard
+```
 
-holon config providers set deepseek \
-  --credential-source credential_profile \
-  --credential-kind api_key \
-  --credential-profile deepseek
+This walks through provider credential setup interactively. You can also
+configure providers through the Web GUI **Settings** page after starting the
+daemon. See [Configuration Reference](/reference/configuration) and
+[Web GUI guide](/guides/web-gui) for more.
 
-holon config set model.default "deepseek/deepseek-v4-pro"
+### Start the daemon
 
-# Or use a local Codex login session / Codex subscription
-holon config set model.default "openai-codex/gpt-5.5"
-
-holon config doctor
-
+```bash
 holon daemon start
-holon daemon status
+```
+
+### TUI (terminal)
+
+```bash
 holon tui
 ```
 
-Holon automatically provides a default main agent. You can also create a more
-specialized agent after syncing or installing templates:
+Select an agent and start working. Agents keep running after you disconnect.
 
-```bash
-holon agent create builder --template holon-developer
-holon agent list
-```
+### Web GUI (browser)
 
-Holon supports built-in providers such as Anthropic, OpenAI, DeepSeek,
-OpenRouter, Qwen, GLM, Xiaomi, Kimi, and MiniMax. For a fuller setup path, see
-[Getting started](/getting-started/), the
+Open <http://localhost:7878>. Create an agent and work through a chat interface
+with built-in file browser, task tracking, and more.
+
+Holon automatically provides a default main agent. You can create more
+specialized agents through the TUI or Web GUI. For more:
+[Getting started](/getting-started/) · [TUI guide](/guides/tui) ·
+[Web GUI guide](/guides/web-gui)
+
+Holon supports providers such as Anthropic, OpenAI, DeepSeek, OpenRouter, Qwen,
+GLM, Xiaomi, Kimi, and MiniMax. For advanced setup, see the
 [configuration reference](/reference/configuration), and
 [supported models](/reference/models).
 
