@@ -296,7 +296,7 @@ Breaking migration from the removed projection contract:
 | `POST` | `/control/agents/:agent_id/workspace/attach` | `{ path, authority_class? }` | `{ ok, agent_id, workspace_id, workspace_anchor }` | Candidate stable | `path` is converted into a workspace entry. |
 | `POST` | `/control/agents/:agent_id/workspace/exit` | `{ authority_class? }` | `{ ok, agent_id }` | Candidate stable | Returns agent to default workspace behavior. |
 | `POST` | `/control/agents/:agent_id/workspace/detach` | `{ workspace_id, authority_class? }` | `{ ok, agent_id, workspace_id }` | Candidate stable | `workspace_id` is trimmed before use. |
-| `POST` | `/control/agents/:agent_id/model` | `{ model, reasoning_effort?, authority_class? }` | `{ ok, agent_id, model }` | Experimental | `reasoning_effort` must be `low`, `medium`, `high`, or `xhigh`. |
+| `POST` | `/control/agents/:agent_id/model` | `{ model, reasoning_effort?, authority_class? }` | `{ ok, agent_id, model }` | Experimental | `reasoning_effort` is validated against the selected model's catalog metadata. Codex models may expose `max`; `ultra` is unavailable until Holon implements its orchestration semantics. |
 | `POST` | `/control/agents/:agent_id/model/clear` | `{ authority_class? }` | `{ ok, agent_id, model }` | Experimental | Clears the agent-level model override. |
 
 ### Operator transport integration
