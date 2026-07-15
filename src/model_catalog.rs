@@ -268,6 +268,27 @@ pub struct ResolvedRuntimeModelPolicy {
     pub source: ModelMetadataSource,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningEffortValidationError {
+    message: String,
+}
+
+impl ReasoningEffortValidationError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ReasoningEffortValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ReasoningEffortValidationError {}
+
 impl Default for ResolvedRuntimeModelPolicy {
     fn default() -> Self {
         Self {
@@ -297,6 +318,38 @@ impl Default for ResolvedRuntimeModelPolicy {
             reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::UnknownFallback,
         }
+    }
+}
+
+impl ResolvedRuntimeModelPolicy {
+    pub fn validate_reasoning_effort(
+        &self,
+        value: &str,
+    ) -> Result<(), ReasoningEffortValidationError> {
+        if self
+            .reasoning_effort_options
+            .iter()
+            .any(|option| option == value)
+        {
+            return Ok(());
+        }
+
+        let model = self.model_ref.as_string();
+        if value == "ultra" && self.model_ref.provider == ProviderId::openai_codex() {
+            return Err(ReasoningEffortValidationError::new(format!(
+                "reasoning_effort 'ultra' is unavailable for model {model}; \
+                 Holon does not yet implement the required orchestration semantics"
+            )));
+        }
+        if self.reasoning_effort_options.is_empty() {
+            return Err(ReasoningEffortValidationError::new(format!(
+                "model {model} does not support configurable reasoning_effort"
+            )));
+        }
+        Err(ReasoningEffortValidationError::new(format!(
+            "reasoning_effort '{value}' is not supported by model {model}; supported values: {}",
+            self.reasoning_effort_options.join(", ")
+        )))
     }
 }
 
@@ -726,7 +779,7 @@ fn reasoning_effort_options(
 
     let options = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
         ("openai-codex", "gpt-5.6-sol" | "gpt-5.6-terra") => {
-            &["low", "medium", "high", "xhigh", "max", "ultra"][..]
+            &["low", "medium", "high", "xhigh", "max"][..]
         }
         ("openai-codex", "gpt-5.6-luna") => &["low", "medium", "high", "xhigh", "max"][..],
         ("openai", _) | ("openai-codex", _) => &["low", "medium", "high", "xhigh"][..],
@@ -3925,8 +3978,36 @@ mod tests {
                 codex_sol.endpoint.as_ref(),
                 &codex_sol.capabilities,
             ),
-            ["low", "medium", "high", "xhigh", "max", "ultra"]
+            ["low", "medium", "high", "xhigh", "max"]
         );
+        let codex_luna = catalog.resolve_policy(
+            &ModelRef::parse("openai-codex/gpt-5.6-luna").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert!(codex_luna.validate_reasoning_effort("max").is_ok());
+        assert!(codex_luna
+            .validate_reasoning_effort("ultra")
+            .unwrap_err()
+            .to_string()
+            .contains("orchestration semantics"));
+        let codex_55 = catalog.resolve_policy(
+            &ModelRef::parse("openai-codex/gpt-5.5").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        let unsupported = codex_55
+            .validate_reasoning_effort("max")
+            .unwrap_err()
+            .to_string();
+        assert!(unsupported.contains("openai-codex/gpt-5.5"));
+        assert!(unsupported.contains("low, medium, high, xhigh"));
         assert!(catalog
             .get(&ModelRef::parse("openai/gpt-5.5").unwrap())
             .is_none());

@@ -1187,6 +1187,64 @@ pub async fn control_agent_model_override_set_and_clear_updates_status() -> Resu
     Ok(())
 }
 
+pub async fn control_agent_model_override_validates_codex_reasoning_effort() -> Result<()> {
+    let mut config = test_config();
+    config.default_model =
+        holon::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap();
+    config
+        .providers
+        .get_mut(&holon::config::ProviderId::anthropic())
+        .unwrap()
+        .credential = Some("dummy".into());
+    config
+        .providers
+        .get_mut(&holon::config::ProviderId::openai_codex())
+        .unwrap()
+        .credential = Some(
+        r#"{"tokens":{"access_token":"test-token","refresh_token":"test-refresh","account_id":"test-account"}}"#
+            .into(),
+    );
+    let (_host, base, server) = spawn_server_with_runtime_config(config).await?;
+    let client = reqwest::Client::new();
+
+    let supported = client
+        .post(format!("{base}/api/control/agents/default/model"))
+        .json(&serde_json::json!({
+            "model": "openai-codex/gpt-5.6-luna",
+            "reasoning_effort": "max"
+        }))
+        .send()
+        .await?;
+    assert!(supported.status().is_success());
+
+    let unsupported = client
+        .post(format!("{base}/api/control/agents/default/model"))
+        .json(&serde_json::json!({
+            "model": "openai-codex/gpt-5.5",
+            "reasoning_effort": "max"
+        }))
+        .send()
+        .await?;
+    assert_eq!(unsupported.status(), reqwest::StatusCode::BAD_REQUEST);
+    let unsupported_body = unsupported.text().await?;
+    assert!(unsupported_body.contains("openai-codex/gpt-5.5"));
+    assert!(unsupported_body.contains("low, medium, high, xhigh"));
+
+    let ultra = client
+        .post(format!("{base}/api/control/agents/default/model"))
+        .json(&serde_json::json!({
+            "model": "openai-codex/gpt-5.6-luna",
+            "reasoning_effort": "ultra"
+        }))
+        .send()
+        .await?;
+    assert_eq!(ultra.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(ultra.text().await?.contains("orchestration semantics"));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_prompt_requires_bearer_token_when_required() -> Result<()> {
     let config = test_config_with_paths(
         tempdir().unwrap().keep(),

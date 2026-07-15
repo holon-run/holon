@@ -656,10 +656,8 @@ pub async fn set_agent_model(
     Json(request): Json<SetAgentModelRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    if let Some(reasoning_effort) = request.reasoning_effort.as_deref() {
-        validate_reasoning_effort(reasoning_effort)?;
-    }
-    let model = ModelRouteRef::parse_compatible(&request.model).map_err(error_response)?;
+    let model = ModelRouteRef::parse_compatible(&request.model)
+        .map_err(|error| bad_request(error.to_string()))?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -668,21 +666,12 @@ pub async fn set_agent_model(
     let model_state = runtime
         .set_model_override(model.clone(), request.reasoning_effort.clone())
         .await
-        .map_err(error_response)?;
+        .map_err(agent_model_override_error)?;
     Ok(Json(json!({
         "ok": true,
         "agent_id": agent_id,
         "model": model_state,
     })))
-}
-
-pub(super) fn validate_reasoning_effort(value: &str) -> Result<(), (StatusCode, Json<Value>)> {
-    match value {
-        "low" | "medium" | "high" | "xhigh" => Ok(()),
-        _ => Err(bad_request(format!(
-            "invalid reasoning_effort '{value}'; must be one of low, medium, high, xhigh"
-        ))),
-    }
 }
 
 pub async fn clear_agent_model(
