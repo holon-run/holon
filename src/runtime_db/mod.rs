@@ -15,6 +15,7 @@ pub mod evidence;
 pub mod migrations;
 pub mod repositories;
 pub mod storage_domain;
+pub(crate) mod transitions;
 pub mod types;
 pub mod write_queue;
 

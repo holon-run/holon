@@ -1072,7 +1072,7 @@ impl TaskRepository<'_> {
             .run_storage_domain_import("tasks", "jsonl", "db", |tx| {
                 let latest = reduce_task_records(records);
                 for record in latest.values() {
-                    upsert_task_tx(tx, record)?;
+                    let _ = upsert_task_tx(tx, record)?;
                 }
                 let active_records = latest
                     .values()
@@ -1086,7 +1086,8 @@ impl TaskRepository<'_> {
     }
 
     pub fn upsert(&self, record: &TaskRecord) -> Result<()> {
-        self.db.transaction(|tx| upsert_task_tx(tx, record))
+        self.db
+            .transaction(|tx| upsert_task_tx(tx, record).map(|_| ()))
     }
 
     pub fn upsert_with_index_changes(
@@ -1095,7 +1096,7 @@ impl TaskRepository<'_> {
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
         self.db.transaction(|tx| {
-            upsert_task_tx(tx, record)?;
+            let _ = upsert_task_tx(tx, record)?;
             insert_runtime_index_changes_tx(tx, changes)
         })
     }
@@ -1218,7 +1219,7 @@ impl WaitConditionRepository<'_> {
                 let mut imported_ids = BTreeMap::<String, ()>::new();
                 for record in records {
                     imported_ids.insert(record.id.clone(), ());
-                    upsert_wait_condition_tx(tx, &record)?;
+                    let _ = upsert_wait_condition_tx(tx, &record)?;
                 }
                 Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
             })
@@ -1226,7 +1227,7 @@ impl WaitConditionRepository<'_> {
 
     pub fn upsert(&self, record: &WaitConditionRecord) -> Result<()> {
         self.db
-            .transaction(|tx| upsert_wait_condition_tx(tx, record))
+            .transaction(|tx| upsert_wait_condition_tx(tx, record).map(|_| ()))
     }
 
     pub fn latest_all(&self) -> Result<Vec<WaitConditionRecord>> {
@@ -1348,14 +1349,15 @@ impl QueueEntryRepository<'_> {
                 let mut imported_ids = BTreeMap::<String, ()>::new();
                 for record in records {
                     imported_ids.insert(record.message_id.clone(), ());
-                    upsert_queue_entry_tx(tx, &record)?;
+                    let _ = upsert_queue_entry_tx(tx, &record)?;
                 }
                 Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
             })
     }
 
     pub fn upsert(&self, record: &QueueEntryRecord) -> Result<()> {
-        self.db.transaction(|tx| upsert_queue_entry_tx(tx, record))
+        self.db
+            .transaction(|tx| upsert_queue_entry_tx(tx, record).map(|_| ()))
     }
 
     pub fn try_claim_queued_message(&self, record: &QueueEntryRecord) -> Result<bool> {
@@ -2786,7 +2788,7 @@ fn upsert_operator_delivery_record_tx(
     Ok(())
 }
 
-fn insert_new_work_item_tx(
+pub(crate) fn insert_new_work_item_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
     current_focus: bool,
@@ -2824,7 +2826,7 @@ fn insert_new_work_item_tx(
     Ok(true)
 }
 
-fn update_expected_work_item_tx(
+pub(crate) fn update_expected_work_item_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
     expected_revision: u64,
@@ -3033,7 +3035,7 @@ fn import_work_item_tx(
     Ok(())
 }
 
-fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
+pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
     let existing = tx
         .query_row(
             "SELECT payload_json FROM tasks WHERE task_id = ?1",
@@ -3046,7 +3048,7 @@ fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
     if let Some(existing) = existing.as_ref() {
         match task_transition(existing, record)? {
             StateTransitionOutcome::Applied => {}
-            StateTransitionOutcome::Idempotent => return Ok(()),
+            StateTransitionOutcome::Idempotent => return Ok(false),
         }
     }
 
@@ -3121,7 +3123,7 @@ fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
             status_phase,
         ],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn task_status_phase(status: &TaskStatus) -> u8 {
@@ -3136,7 +3138,10 @@ pub(crate) fn task_status_phase(status: &TaskStatus) -> u8 {
     }
 }
 
-fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) -> Result<()> {
+pub(crate) fn upsert_wait_condition_tx(
+    tx: &Transaction<'_>,
+    record: &WaitConditionRecord,
+) -> Result<bool> {
     let existing = tx
         .query_row(
             "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1",
@@ -3149,7 +3154,7 @@ fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) 
     if let Some(existing) = existing.as_ref() {
         match wait_condition_transition(existing, record)? {
             StateTransitionOutcome::Applied => {}
-            StateTransitionOutcome::Idempotent => return Ok(()),
+            StateTransitionOutcome::Idempotent => return Ok(false),
         }
     }
 
@@ -3207,10 +3212,13 @@ fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) 
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(true)
 }
 
-fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<()> {
+pub(crate) fn upsert_queue_entry_tx(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+) -> Result<bool> {
     let existing = tx
         .query_row(
             "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
@@ -3223,7 +3231,7 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
     if let Some(existing) = existing.as_ref() {
         match queue_entry_transition(existing, record)? {
             StateTransitionOutcome::Applied => {}
-            StateTransitionOutcome::Idempotent => return Ok(()),
+            StateTransitionOutcome::Idempotent => return Ok(false),
         }
     }
 
@@ -3252,16 +3260,22 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StateTransitionOutcome {
+pub(crate) enum StateTransitionOutcome {
     Applied,
     Idempotent,
 }
 
-fn task_transition(existing: &TaskRecord, incoming: &TaskRecord) -> Result<StateTransitionOutcome> {
+pub(crate) fn task_transition(
+    existing: &TaskRecord,
+    incoming: &TaskRecord,
+) -> Result<StateTransitionOutcome> {
+    if existing == incoming {
+        return Ok(StateTransitionOutcome::Idempotent);
+    }
     if is_terminal_task_status(&existing.status) {
         if is_terminal_task_status(&incoming.status) && task_terminal_payload_eq(existing, incoming)
         {
@@ -3284,10 +3298,13 @@ fn task_transition(existing: &TaskRecord, incoming: &TaskRecord) -> Result<State
     Ok(StateTransitionOutcome::Applied)
 }
 
-fn queue_entry_transition(
+pub(crate) fn queue_entry_transition(
     existing: &QueueEntryRecord,
     incoming: &QueueEntryRecord,
 ) -> Result<StateTransitionOutcome> {
+    if existing == incoming {
+        return Ok(StateTransitionOutcome::Idempotent);
+    }
     if is_terminal_queue_entry_status(&existing.status) {
         if is_terminal_queue_entry_status(&incoming.status)
             && queue_entry_terminal_payload_eq(existing, incoming)
@@ -3308,10 +3325,13 @@ fn queue_entry_transition(
     Ok(StateTransitionOutcome::Applied)
 }
 
-fn wait_condition_transition(
+pub(crate) fn wait_condition_transition(
     existing: &WaitConditionRecord,
     incoming: &WaitConditionRecord,
 ) -> Result<StateTransitionOutcome> {
+    if existing == incoming {
+        return Ok(StateTransitionOutcome::Idempotent);
+    }
     if is_terminal_wait_condition_status(&existing.status) {
         if is_terminal_wait_condition_status(&incoming.status)
             && wait_condition_terminal_payload_eq(existing, incoming)
@@ -3415,7 +3435,10 @@ fn canonical_task_terminal_detail(value: &serde_json::Value) -> serde_json::Valu
     }
 }
 
-fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<bool> {
+pub(crate) fn try_claim_queued_message_tx(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+) -> Result<bool> {
     let queued_status = enum_string(&QueueEntryStatus::Queued)?;
     let interrupted_status = enum_string(&QueueEntryStatus::Interrupted)?;
     let mut claimed = record.clone();

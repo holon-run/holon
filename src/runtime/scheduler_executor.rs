@@ -372,7 +372,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             candidate.queue_len,
         )?;
 
-        let (message, running_state) = {
+        let (message, running_state, transition_commit) = {
             let mut guard = self.runtime.inner.agent.lock().await;
             if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
                 return self.shutdown(guard);
@@ -389,19 +389,41 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
 
             scheduler::append_scheduler_decision(&self.runtime.inner.storage, &decision)?;
-            let claimed =
-                self.runtime
-                    .inner
-                    .storage
-                    .try_claim_queued_message(&QueueEntryRecord {
-                        message_id: candidate.message.id.clone(),
-                        agent_id: candidate.message.agent_id.clone(),
-                        priority: candidate.message.priority.clone(),
-                        status: QueueEntryStatus::Dequeued,
-                        created_at: candidate.message.created_at,
-                        updated_at: Utc::now(),
-                    })?;
-            if !claimed {
+            let queue_record = QueueEntryRecord {
+                message_id: candidate.message.id.clone(),
+                agent_id: candidate.message.agent_id.clone(),
+                priority: candidate.message.priority.clone(),
+                status: QueueEntryStatus::Dequeued,
+                created_at: candidate.message.created_at,
+                updated_at: Utc::now(),
+            };
+            let run_id = crate::ids::run_id();
+            let abort_token = CancellationToken::new();
+            let mut running_state = guard.state.clone();
+            running_state.pending = guard.queue.len().saturating_sub(1);
+            scheduler::apply_running_projection(&mut running_state, run_id.clone());
+            running_state.last_wake_reason = Some(format!("{:?}", candidate.message.kind));
+            let mut commit = self.runtime.inner.runtime_db.transitions().commit_queue(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: candidate.message.agent_id.clone(),
+                    mutation: crate::runtime_db::transitions::QueueMutation::Claim(
+                        queue_record.clone(),
+                    ),
+                    agent_state: Some(running_state.clone()),
+                    audit_events: vec![AuditEvent::new(
+                        "queue_entry_claimed",
+                        serde_json::json!({
+                            "message_id": queue_record.message_id,
+                            "agent_id": queue_record.agent_id,
+                            "status": QueueEntryStatus::Dequeued,
+                            "run_id": run_id,
+                        }),
+                    )],
+                    notify_scheduler: false,
+                    fault: None,
+                },
+            )?;
+            if !commit.applied {
                 let _ = guard.queue.pop_if_next(&candidate.message.id);
                 guard.state.pending = guard.queue.len();
                 guard.persist_state(&self.runtime.inner.storage)?;
@@ -411,19 +433,19 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .queue
                 .pop_if_next(&candidate.message.id)
                 .expect("queue head was just checked");
-            let run_id = crate::ids::run_id();
-            let abort_token = CancellationToken::new();
-            guard.state.pending = guard.queue.len();
-            scheduler::apply_running_projection(&mut guard.state, run_id.clone());
+            guard.state = running_state.clone();
+            guard.last_persisted_state = running_state.clone();
             guard.current_run_abort = Some(CurrentRunAbortHandle {
                 run_id: run_id.clone(),
                 token: abort_token,
                 reason: Arc::new(StdMutex::new("operator_aborted".into())),
             });
-            guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
-            guard.persist_state(&self.runtime.inner.storage)?;
-            (message, guard.state.clone())
+            commit.effects.agent_state = None;
+            (message, running_state, commit)
         };
+        self.runtime
+            .apply_transition_commit(transition_commit)
+            .await;
 
         Ok(RunLoopPoll::Message(ScheduledMessage {
             message,

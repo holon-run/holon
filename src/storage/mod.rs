@@ -12,7 +12,10 @@ use tokio::sync::{broadcast, Notify};
 
 use crate::{
     memory::index::enqueue_memory_index_upsert,
-    runtime_db::{RuntimeDb, RuntimeIndexChange, RuntimeIndexOperation},
+    runtime_db::{
+        transitions::{PostCommitEffects, PostCommitWarning},
+        RuntimeDb, RuntimeIndexChange, RuntimeIndexOperation,
+    },
     tool::helpers::{command_output_source_ref, command_receipt_source_ref},
     types::{
         AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
@@ -300,6 +303,58 @@ impl AppStorage {
             });
         }
         Ok(())
+    }
+
+    pub(crate) fn publish_transition_events(
+        &self,
+        effects: &PostCommitEffects,
+    ) -> Vec<PostCommitWarning> {
+        let agent_id = self.agent_id.clone();
+        let mut warnings = Vec::new();
+        for event in &effects.audit_events {
+            if let Err(error) = self.publish_event(agent_id.clone(), event) {
+                tracing::warn!(
+                    error = %error,
+                    event_id = %event.id,
+                    event_kind = %event.kind,
+                    event_seq = event.event_seq,
+                    "failed to publish committed transition audit event"
+                );
+                warnings.push(PostCommitWarning {
+                    effect: "event_publication",
+                    message: error.to_string(),
+                });
+            }
+        }
+        warnings
+    }
+
+    pub(crate) fn notify_transition_memory_index(
+        &self,
+        effects: &PostCommitEffects,
+    ) -> Vec<PostCommitWarning> {
+        let mut warnings = Vec::new();
+        if effects.notify_memory_index {
+            match self.memory_index_notify.lock() {
+                Ok(guard) => {
+                    if let Some(notify) = guard.as_ref() {
+                        notify.notify_one();
+                    }
+                }
+                Err(_) => {
+                    let message = "memory index notify mutex poisoned after transition commit";
+                    tracing::warn!(
+                        agent_id = self.agent_id.as_deref().unwrap_or("<global>"),
+                        message
+                    );
+                    warnings.push(PostCommitWarning {
+                        effect: "memory_index_notification",
+                        message: message.into(),
+                    });
+                }
+            }
+        }
+        warnings
     }
 
     #[cfg(test)]
@@ -727,7 +782,10 @@ impl AppStorage {
         )?])
     }
 
-    fn index_changes_for_task(&self, task: &TaskRecord) -> Result<Vec<RuntimeIndexChange>> {
+    pub(crate) fn index_changes_for_task(
+        &self,
+        task: &TaskRecord,
+    ) -> Result<Vec<RuntimeIndexChange>> {
         Ok(vec![self.runtime_index_upsert(
             task.agent_id.clone(),
             "task",
@@ -738,7 +796,7 @@ impl AppStorage {
         )?])
     }
 
-    fn index_changes_for_work_item(
+    pub(crate) fn index_changes_for_work_item(
         &self,
         record: &WorkItemRecord,
     ) -> Result<Vec<RuntimeIndexChange>> {
@@ -750,6 +808,15 @@ impl AppStorage {
             Some(record.updated_at),
             "work_item_written",
         )?])
+    }
+
+    pub(crate) fn wait_condition_auxiliary_events(
+        &self,
+        record: &WaitConditionRecord,
+    ) -> Vec<AuditEvent> {
+        external_wait_recoverability_event(record)
+            .into_iter()
+            .collect()
     }
 
     fn index_changes_for_context_episode(

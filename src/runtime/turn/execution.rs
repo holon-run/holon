@@ -361,34 +361,39 @@ impl RuntimeHandle {
 
         let mut follow_up_texts = Vec::new();
         for (index, message) in messages.iter().enumerate() {
-            let persist_result = (|| -> Result<String> {
-                self.inner.storage.append_queue_entry(&QueueEntryRecord {
+            let persist_result = async {
+                self.record_incoming_transcript_entry(message)?;
+                let text = render_operator_interjection_text(message);
+                self.commit_queue_settlement(
+                    QueueEntryRecord {
                     message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),
                     priority: message.priority.clone(),
                     status: QueueEntryStatus::Interjected,
                     created_at: message.created_at,
                     updated_at: chrono::Utc::now(),
-                })?;
-                self.record_incoming_transcript_entry(message)?;
-                let text = render_operator_interjection_text(message);
-                self.inner.storage.append_event(&AuditEvent::new(
-                    "operator_interjection_admitted",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "round": round,
-                        "boundary": boundary,
-                        "message_id": message.id,
-                        "origin": message.origin,
-                        "authority_class": message.authority_class,
-                        "priority": message.priority,
-                        "delivery_surface": message.delivery_surface,
-                        "admission_context": message.admission_context,
-                        "text_preview": truncate_preview(&message_text(&message.body), ROUND_TEXT_PREVIEW_LIMIT),
-                    }),
-                ))?;
-                Ok(text)
-            })();
+                    },
+                    vec![AuditEvent::new(
+                        "operator_interjection_admitted",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "round": round,
+                            "boundary": boundary,
+                            "message_id": message.id,
+                            "origin": message.origin,
+                            "authority_class": message.authority_class,
+                            "priority": message.priority,
+                            "delivery_surface": message.delivery_surface,
+                            "admission_context": message.admission_context,
+                            "text_preview": truncate_preview(&message_text(&message.body), ROUND_TEXT_PREVIEW_LIMIT),
+                        }),
+                    )],
+                    false,
+                )
+                .await?;
+                Ok::<_, anyhow::Error>(text)
+            }
+            .await;
 
             match persist_result {
                 Ok(text) => follow_up_texts.push(text),

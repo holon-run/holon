@@ -75,7 +75,12 @@ use crate::{
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
     },
     queue::RuntimeQueue,
-    runtime_db::RuntimeDb,
+    runtime_db::{
+        transitions::{
+            PostCommitWarning, TransitionApplyResult, TransitionCommit, TransitionFaultPoint,
+        },
+        RuntimeDb,
+    },
     skills::{
         effective_skill_root_registrations, find_skill_by_entrypoint, find_skill_by_script_path,
         skills_runtime_view_from_catalog, SkillVisibility,
@@ -598,34 +603,65 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
-    pub(crate) async fn record_task_projection(&self, record: &TaskRecord) -> Result<()> {
-        self.inner.storage.append_task(record)?;
-        self.inner
-            .projection_cache
-            .lock()
-            .await
-            .upsert_task(record.clone());
-        Ok(())
-    }
-
-    pub(crate) async fn record_work_item_projection(
+    pub(crate) async fn apply_transition_commit(
         &self,
-        record: &crate::types::WorkItemRecord,
-        expected_revision: Option<u64>,
-    ) -> Result<()> {
-        if let Some(expected_revision) = expected_revision {
-            self.inner
-                .storage
-                .update_work_item_expected(record, expected_revision)?;
-        } else {
-            self.inner.storage.insert_work_item(record)?;
+        commit: TransitionCommit,
+    ) -> TransitionApplyResult {
+        if !commit.applied {
+            return TransitionApplyResult::default();
         }
-        self.inner
-            .projection_cache
-            .lock()
-            .await
-            .upsert_work_item(record.clone());
-        Ok(())
+        let effects = commit.effects;
+        let mut warnings = Vec::new();
+        if effects.fault == Some(TransitionFaultPoint::BeforeCacheUpdate) {
+            warnings.push(PostCommitWarning {
+                effect: "projection_cache_update",
+                message: "injected runtime transition post-commit fault".into(),
+            });
+        } else {
+            let mut cache = self.inner.projection_cache.lock().await;
+            for record in &effects.work_items {
+                cache.upsert_work_item(record.clone());
+            }
+            for record in &effects.tasks {
+                cache.upsert_task(record.clone());
+            }
+        }
+        if let Some(state) = effects.agent_state.as_ref() {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state = state.clone();
+            guard.last_persisted_state = state.clone();
+        }
+        if effects.fault == Some(TransitionFaultPoint::BeforeEventPublication) {
+            warnings.push(PostCommitWarning {
+                effect: "event_publication",
+                message: "injected runtime transition post-commit fault".into(),
+            });
+        } else {
+            warnings.extend(self.inner.storage.publish_transition_events(&effects));
+        }
+        warnings.extend(self.inner.storage.notify_transition_memory_index(&effects));
+        if effects.notify_scheduler {
+            if effects.fault == Some(TransitionFaultPoint::BeforeSchedulerNotification) {
+                warnings.push(PostCommitWarning {
+                    effect: "scheduler_notification",
+                    message: "injected runtime transition post-commit fault".into(),
+                });
+            } else {
+                self.inner.notify.notify_one();
+            }
+        }
+        let result = TransitionApplyResult {
+            applied: true,
+            warnings,
+        };
+        for warning in &result.warnings {
+            tracing::warn!(
+                effect = warning.effect,
+                error = %warning.message,
+                "runtime transition committed with post-commit warning"
+            );
+        }
+        result
     }
 
     pub(crate) async fn record_timer_projection(&self, record: &TimerRecord) -> Result<()> {
@@ -646,12 +682,12 @@ impl RuntimeHandle {
             .upsert_external_trigger(record.clone());
     }
 
-    pub(crate) fn append_work_item_written_event(
+    pub(crate) fn work_item_written_event(
         &self,
         action: &str,
         record: &crate::types::WorkItemRecord,
         extra: Value,
-    ) -> Result<()> {
+    ) -> AuditEvent {
         let mut payload =
             to_json_value(&WorkItemLifecycleAuditEvent::from_work_item(action, record));
         if let (Some(payload), Some(extra)) = (payload.as_object_mut(), extra.as_object()) {
@@ -659,19 +695,17 @@ impl RuntimeHandle {
                 payload.insert(key.clone(), value.clone());
             }
         }
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new("work_item_written", payload))
+        AuditEvent::new("work_item_written", payload)
     }
 
-    pub(crate) fn append_work_item_plan_artifact_refreshed_event(
+    pub(crate) fn work_item_plan_artifact_refreshed_event(
         &self,
         record: &crate::types::WorkItemRecord,
-    ) -> Result<()> {
+    ) -> Option<AuditEvent> {
         let Some(artifact) = record.plan_artifact.as_ref() else {
-            return Ok(());
+            return None;
         };
-        self.inner.storage.append_event(&AuditEvent::new(
+        Some(AuditEvent::new(
             "work_item_plan_artifact_refreshed",
             serde_json::json!({
                 "work_item_id": record.id,
@@ -1469,6 +1503,25 @@ impl RuntimeHandle {
             .append_event(&AuditEvent::new(kind, data))
     }
 
+    pub(crate) async fn commit_queue_settlement(
+        &self,
+        record: QueueEntryRecord,
+        audit_events: Vec<AuditEvent>,
+        notify_scheduler: bool,
+    ) -> Result<bool> {
+        let commit = self.inner.runtime_db.transitions().commit_queue(
+            &crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: record.agent_id.clone(),
+                mutation: crate::runtime_db::transitions::QueueMutation::Upsert(record),
+                agent_state: None,
+                audit_events,
+                notify_scheduler,
+                fault: None,
+            },
+        )?;
+        Ok(self.apply_transition_commit(commit).await.applied)
+    }
+
     pub(crate) fn persist_message_evidence(&self, message: &MessageEnvelope) -> Result<()> {
         self.inner.storage.append_message(message)?;
         self.inner.notify.notify_one();
@@ -1588,23 +1641,27 @@ impl RuntimeHandle {
             {
                 let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
                 if let Some(aborted) = aborted.as_ref() {
-                    self.inner.storage.append_queue_entry(&QueueEntryRecord {
-                        message_id: message.id.clone(),
-                        agent_id: message.agent_id.clone(),
-                        priority: message.priority.clone(),
-                        status: QueueEntryStatus::Interrupted,
-                        created_at: message.created_at,
-                        updated_at: Utc::now(),
-                    })?;
-                    self.inner.storage.append_event(&AuditEvent::new(
-                        "message_processing_aborted",
-                        serde_json::json!({
-                            "message_id": message.id,
-                            "message_kind": message.kind,
-                            "run_id": aborted.run_id,
-                            "reason": aborted.reason,
-                        }),
-                    ))?;
+                    self.commit_queue_settlement(
+                        QueueEntryRecord {
+                            message_id: message.id.clone(),
+                            agent_id: message.agent_id.clone(),
+                            priority: message.priority.clone(),
+                            status: QueueEntryStatus::Interrupted,
+                            created_at: message.created_at,
+                            updated_at: Utc::now(),
+                        },
+                        vec![AuditEvent::new(
+                            "message_processing_aborted",
+                            serde_json::json!({
+                                "message_id": message.id,
+                                "message_kind": message.kind,
+                                "run_id": aborted.run_id,
+                                "reason": aborted.reason,
+                            }),
+                        )],
+                        true,
+                    )
+                    .await?;
                 } else {
                     error!("failed to process message {}: {err:#}", message.id);
                     self.ensure_runtime_failure_terminal(None, 0).await?;
@@ -1621,14 +1678,27 @@ impl RuntimeHandle {
                     ))?;
                     self.persist_runtime_failure_artifacts(&message, &err)
                         .await?;
-                    self.inner.storage.append_queue_entry(&QueueEntryRecord {
-                        message_id: message.id.clone(),
-                        agent_id: message.agent_id.clone(),
-                        priority: message.priority.clone(),
-                        status: QueueEntryStatus::Aborted,
-                        created_at: message.created_at,
-                        updated_at: Utc::now(),
-                    })?;
+                    self.commit_queue_settlement(
+                        QueueEntryRecord {
+                            message_id: message.id.clone(),
+                            agent_id: message.agent_id.clone(),
+                            priority: message.priority.clone(),
+                            status: QueueEntryStatus::Aborted,
+                            created_at: message.created_at,
+                            updated_at: Utc::now(),
+                        },
+                        vec![AuditEvent::new(
+                            "queue_entry_settled",
+                            serde_json::json!({
+                                "message_id": message.id,
+                                "message_kind": message.kind,
+                                "status": QueueEntryStatus::Aborted,
+                                "reason": "runtime_error",
+                            }),
+                        )],
+                        true,
+                    )
+                    .await?;
                 }
                 let failed_state = {
                     let mut guard = self.inner.agent.lock().await;
@@ -1662,14 +1732,26 @@ impl RuntimeHandle {
                     guard.state.clone()
                 };
                 self.append_state_changed_events(&processed_state)?;
-                self.inner.storage.append_queue_entry(&QueueEntryRecord {
-                    message_id: message.id.clone(),
-                    agent_id: message.agent_id.clone(),
-                    priority: message.priority.clone(),
-                    status: QueueEntryStatus::Processed,
-                    created_at: message.created_at,
-                    updated_at: Utc::now(),
-                })?;
+                self.commit_queue_settlement(
+                    QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: QueueEntryStatus::Processed,
+                        created_at: message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    vec![AuditEvent::new(
+                        "queue_entry_settled",
+                        serde_json::json!({
+                            "message_id": message.id,
+                            "message_kind": message.kind,
+                            "status": QueueEntryStatus::Processed,
+                        }),
+                    )],
+                    true,
+                )
+                .await?;
             }
         }
     }

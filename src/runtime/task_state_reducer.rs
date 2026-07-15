@@ -1,4 +1,7 @@
 use super::{scheduler, *};
+use crate::types::{
+    WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
+};
 
 pub(super) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     scheduler::is_terminal_task_status(status)
@@ -64,23 +67,123 @@ impl RuntimeHandle {
             return Ok(());
         }
 
-        self.inner.runtime_db.tasks().upsert(task)?;
-        self.record_task_projection(task).await?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            if !matches!(guard.state.status, AgentStatus::Stopped) {
-                if guard.state.current_run_id.is_none() {
-                    scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
-                }
-            }
-            guard.persist_state(&self.inner.storage)?;
+        let agent_id = self.agent_id().await?;
+        let mut state = self.agent_state().await?;
+        if !matches!(state.status, AgentStatus::Stopped) && state.current_run_id.is_none() {
+            scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
         }
+        let mut wait_conditions = Vec::new();
+        let mut work_items = Vec::new();
+        let mut audit_events = Vec::new();
+        let mut index_changes = self.inner.storage.index_changes_for_task(task)?;
         if emit_event {
-            self.inner.storage.append_event(&AuditEvent::new(
+            audit_events.push(AuditEvent::new(
                 transition.event_kind,
                 to_json_value(&TaskLifecycleAuditEvent::from_task(task)),
-            ))?;
+            ));
         }
+        if is_terminal_task_status(&task.status) {
+            let matching = self
+                .inner
+                .storage
+                .active_wait_conditions_for_agent(&agent_id)?
+                .into_iter()
+                .filter(|condition| {
+                    condition.wake_sources.iter().any(|source| {
+                        matches!(source, WakeSource::TaskResult { task_id } if task_id == &task.id)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let now = Utc::now();
+            let mut resolved_ids = Vec::with_capacity(matching.len());
+            let mut updated_work_item_ids = std::collections::BTreeSet::new();
+            for condition in matching {
+                let mut resolved = condition.clone();
+                resolved.status = WaitConditionStatus::Resolved;
+                resolved.updated_at = now;
+                resolved.resolved_at = Some(now);
+                wait_conditions.push(resolved.clone());
+                resolved_ids.push(condition.id);
+                if resolved.kind == WaitConditionKind::Task {
+                    if let Some(work_item_id) = resolved.work_item_id.as_deref() {
+                        if updated_work_item_ids.insert(work_item_id.to_string()) {
+                            if let Some(existing) =
+                                self.inner.runtime_db.work_items().latest(work_item_id)?
+                            {
+                                if existing.state == WorkItemState::Open
+                                    && existing.blocked_by.as_deref()
+                                        == Some(resolved.waiting_for.as_str())
+                                {
+                                    let mut record = WorkItemRecord {
+                                        revision: existing.revision + 1,
+                                        blocked_by: None,
+                                        recheck_at: None,
+                                        recheck_consumed_at: None,
+                                        updated_at: now,
+                                        ..existing.clone()
+                                    };
+                                    let plan_artifact_changed =
+                                        crate::work_item_plan::refresh_plan_artifact_metadata(
+                                            self.agent_home().as_path(),
+                                            &mut record,
+                                        )?;
+                                    if plan_artifact_changed {
+                                        if let Some(event) =
+                                            self.work_item_plan_artifact_refreshed_event(&record)
+                                        {
+                                            audit_events.push(event);
+                                        }
+                                    }
+                                    audit_events.push(self.work_item_written_event(
+                                        "wait_for_task_resolved",
+                                        &record,
+                                        serde_json::json!({
+                                            "wait_condition_id": resolved.id,
+                                        }),
+                                    ));
+                                    index_changes.extend(
+                                        self.inner.storage.index_changes_for_work_item(&record)?,
+                                    );
+                                    work_items.push(
+                                        crate::runtime_db::transitions::WorkItemMutation::Update {
+                                            record,
+                                            expected_revision: existing.revision,
+                                            current_focus: state.current_work_item_id.as_deref()
+                                                == Some(existing.id.as_str()),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !resolved_ids.is_empty() {
+                audit_events.push(AuditEvent::new(
+                    "wait_conditions_resolved",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "task_id": task.id,
+                        "reason": "task_result",
+                        "wait_condition_ids": resolved_ids,
+                    }),
+                ));
+            }
+        }
+        let commit = self.inner.runtime_db.transitions().commit_task(
+            &crate::runtime_db::transitions::TaskTransitionCommand {
+                agent_id,
+                task: task.clone(),
+                work_items,
+                wait_conditions,
+                agent_state: Some(state),
+                audit_events,
+                index_changes,
+                notify_scheduler: false,
+                fault: None,
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
         Ok(())
     }
 
@@ -110,7 +213,6 @@ impl RuntimeHandle {
         }
         self.persist_task_transition(&task, "task_result_received")
             .await?;
-        self.resolve_task_wait_conditions(&task.id).await?;
 
         let task_status_label = match task.status {
             TaskStatus::Completed => "completed",

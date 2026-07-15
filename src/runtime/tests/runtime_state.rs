@@ -3,7 +3,8 @@ use super::support::*;
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, QueueEntryStatus, SkillActivationSource,
     SkillActivationState, SkillLoadReason, SkillScope, WaitConditionKind, WaitConditionRecord,
-    WaitConditionStatus, WakeSource, WorkItemPlanStatus, WorkItemSchedulingState,
+    WaitConditionStatus, WakeSource, WorkItemPlanStatus, WorkItemRecord, WorkItemSchedulingState,
+    WorkItemState,
 };
 
 struct BlockingProvider {
@@ -3381,6 +3382,57 @@ async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
 }
 
 #[tokio::test]
+async fn agent_scoped_wait_replacement_preserves_work_item_scoped_waits() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("scoped wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let scoped = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id),
+            WaitForWakeKind::External,
+            Some("github:test/repo#1".into()),
+            "scoped external wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let agent_wait = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "agent operator wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(agent_wait.cancelled_wait_condition_ids.is_empty());
+    let active = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert!(active.iter().any(|wait| wait.id == scoped.condition.id));
+    assert!(active.iter().any(|wait| wait.id == agent_wait.condition.id));
+}
+
+#[tokio::test]
 async fn stop_agent_revokes_active_external_triggers() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -3423,4 +3475,85 @@ async fn stop_agent_revokes_active_external_triggers() {
         .find(|t| t.external_trigger_id == capability.external_trigger_id)
         .expect("trigger should still exist");
     assert_eq!(revoked.status, crate::types::ExternalTriggerStatus::Revoked);
+}
+
+#[tokio::test]
+async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warning() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    for (index, (fault, expected_effect)) in [
+        (
+            crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate,
+            "projection_cache_update",
+        ),
+        (
+            crate::runtime_db::transitions::TransitionFaultPoint::BeforeEventPublication,
+            "event_publication",
+        ),
+        (
+            crate::runtime_db::transitions::TransitionFaultPoint::BeforeSchedulerNotification,
+            "scheduler_notification",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut record = WorkItemRecord::new("default", "post-commit fault", WorkItemState::Open);
+        record.id = format!("work-post-commit-fault-{index}");
+        let commit = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_work_item(&crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id: "default".into(),
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
+                    record: record.clone(),
+                    current_focus: false,
+                },
+                agent_state: None,
+                audit_events: vec![AuditEvent::new(
+                    "post_commit_fault_test",
+                    serde_json::json!({}),
+                )],
+                index_changes: Vec::new(),
+                notify_scheduler: true,
+                fault: Some(fault),
+            })
+            .unwrap();
+
+        let applied = runtime.apply_transition_commit(commit).await;
+
+        assert!(applied.applied);
+        assert_eq!(applied.warnings.len(), 1);
+        assert_eq!(applied.warnings[0].effect, expected_effect);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .work_items()
+                .latest(&record.id)
+                .unwrap(),
+            Some(record.clone())
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .projection_cache
+                .lock()
+                .await
+                .work_items
+                .contains_key(&record.id),
+            fault != crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate
+        );
+    }
 }

@@ -111,12 +111,36 @@ impl RuntimeHandle {
                 turn_id: current_turn_id,
                 ..refreshed
             };
-            self.record_work_item_projection(&record, Some(latest.revision))
-                .await?;
+            let mut audit_events = Vec::new();
             if plan_artifact_changed {
-                self.append_work_item_plan_artifact_refreshed_event(&record)?;
+                if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
+                    audit_events.push(event);
+                }
             }
-            self.append_work_item_written_event("turn_end_committed", &record, Value::Null)?;
+            audit_events.push(self.work_item_written_event(
+                "turn_end_committed",
+                &record,
+                Value::Null,
+            ));
+            let agent_id = self.agent_id().await?;
+            let state = self.agent_state().await?;
+            let commit = self.inner.runtime_db.transitions().commit_work_item(
+                &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                    agent_id,
+                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                        record: record.clone(),
+                        expected_revision: latest.revision,
+                        current_focus: state.current_work_item_id.as_deref()
+                            == Some(record.id.as_str()),
+                    },
+                    agent_state: None,
+                    audit_events,
+                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                    notify_scheduler: true,
+                    fault: None,
+                },
+            )?;
+            self.apply_transition_commit(commit).await;
             record
         } else {
             latest
