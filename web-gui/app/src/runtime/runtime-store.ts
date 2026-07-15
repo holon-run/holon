@@ -6,6 +6,7 @@ import {
   type OperatorPromptAttachment,
   type StreamEventEnvelopeDto,
 } from "./client";
+import { EventGapRecoveryTracker, recoverEventGap } from "./event-gap-recovery";
 import { cacheClearRemote } from "./idb-cache";
 import {
   currentRemoteKey,
@@ -409,8 +410,7 @@ let globalStreamReconnectTimer: number | undefined;
 let globalStreamStaleTimer: number | undefined;
 let globalStreamReconnectAttempt = 0;
 const globalStreamSubscribedAgents = new Set<string>();
-const agentLastSeenSeq = new Map<string, number>();
-const backfillInFlight = new Set<string>();
+const globalEventRecovery = new EventGapRecoveryTracker();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
@@ -1042,8 +1042,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       globalStreamStaleTimer = undefined;
     }
     globalStreamSubscribedAgents.clear();
-    agentLastSeenSeq.clear();
-    backfillInFlight.clear();
+    globalEventRecovery.clear();
     globalStreamReconnectAttempt = 0;
     messageHydrationInFlight.clear();
     transcriptHydrationInFlight.clear();
@@ -2247,7 +2246,7 @@ function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): vo
       scheduleGlobalStaleWatchdog(get, set);
       // Backfill all registered agents on (re)connect.
       for (const agentId of globalStreamSubscribedAgents) {
-        void backfillAgentEvents(set, agentId);
+        void backfillAgentEvents(set, agentId, true);
       }
     },
     onActivity: () => {
@@ -2287,11 +2286,9 @@ function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, age
   globalStreamSubscribedAgents.add(agentId);
   // Initialize seq tracking from existing session state.
   const session = wasSubscribed ? undefined : get().sessionsByAgentId[agentId];
-  if (session && !agentLastSeenSeq.has(agentId)) {
+  if (session && !globalEventRecovery.snapshotFor(agentId)) {
     const lastSeq = highestSeq(session.eventSeqs) ?? session.newestSeq;
-    if (lastSeq != null) {
-      agentLastSeenSeq.set(agentId, lastSeq);
-    }
+    globalEventRecovery.register(agentId, lastSeq);
   }
   // Start global stream if not running.
   startGlobalEventStream(get, set);
@@ -2301,7 +2298,7 @@ function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, age
 
 function unregisterAgentForEvents(agentId: string): void {
   globalStreamSubscribedAgents.delete(agentId);
-  agentLastSeenSeq.delete(agentId);
+  globalEventRecovery.unregister(agentId);
 }
 
 function syncGlobalEventRoster(get: () => RuntimeStoreState, set: StoreSet): void {
@@ -2320,53 +2317,43 @@ function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto)
 
   const seq = event.event_seq;
   if (seq != null) {
-    const lastSeq = agentLastSeenSeq.get(agentId);
-    if (lastSeq != null && seq > lastSeq + 1) {
-      // Gap detected — trigger backfill.
+    const recovery = globalEventRecovery.observe(agentId, seq);
+    if (recovery.recovering) {
+      setAgentLiveStatus(set, agentId, "recovering");
       void backfillAgentEvents(set, agentId);
     }
-    agentLastSeenSeq.set(agentId, Math.max(seq, lastSeq ?? 0));
   }
 
   enqueueStreamEvent(set, agentId, event);
   scheduleBootstrapRefresh(useRuntimeStore.getState);
 }
 
-async function backfillAgentEvents(set: StoreSet, agentId: string): Promise<void> {
-  if (backfillInFlight.has(agentId)) return;
-  const afterSeq = agentLastSeenSeq.get(agentId);
-  if (afterSeq == null) return; // No seq baseline yet; initial fetch handles this.
-  backfillInFlight.add(agentId);
+async function backfillAgentEvents(set: StoreSet, agentId: string, force = false): Promise<void> {
   try {
-    let cursor = afterSeq;
-    let hasMore = true;
-    while (hasMore) {
-      const page = await runtimeClient.getAgentEvents(agentId, {
-        afterSeq: cursor,
-        order: "asc",
-        limit: GLOBAL_BACKFILL_LIMIT,
-      });
-      const events = (page.events ?? []).filter((e) => e.event_seq != null);
-      if (!events.length) break;
-      // Convert EventEnvelopeDto to StreamEventEnvelopeDto for the reducer.
-      const streamEvents: StreamEventEnvelopeDto[] = events.map((e) => ({
-        id: e.id,
-        event_seq: e.event_seq,
-        ts: e.ts,
-        agent_id: agentId,
-        type: e.type,
-        payload: e.payload,
-      }));
-      applyStreamEvents(set, agentId, streamEvents);
-      const maxSeq = events.reduce((max, e) => Math.max(max, e.event_seq!), 0);
-      agentLastSeenSeq.set(agentId, Math.max(maxSeq, agentLastSeenSeq.get(agentId) ?? 0));
-      cursor = maxSeq;
-      hasMore = events.length >= GLOBAL_BACKFILL_LIMIT;
-    }
+    await recoverEventGap(globalEventRecovery, agentId, {
+      force,
+      limit: GLOBAL_BACKFILL_LIMIT,
+      fetchPage: async (afterSeq) => {
+        const page = await runtimeClient.getAgentEvents(agentId, {
+          afterSeq,
+          order: "asc",
+          limit: GLOBAL_BACKFILL_LIMIT,
+        });
+        return (page.events ?? [])
+          .filter((event) => event.event_seq != null)
+          .map((event) => ({
+            id: event.id,
+            event_seq: event.event_seq,
+            ts: event.ts,
+            agent_id: agentId,
+            type: event.type,
+            payload: event.payload,
+          }));
+      },
+      applyEvents: (events) => applyStreamEvents(set, agentId, events),
+    });
   } catch {
     // Silently ignore backfill errors; the stream will retry.
-  } finally {
-    backfillInFlight.delete(agentId);
   }
 }
 
@@ -3208,6 +3195,7 @@ async function catchUpAgentEvents(
 function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
   const incomingEvents = events.filter((event) => event.event_seq != null);
   if (!incomingEvents.length) return;
+  const liveStatus = globalEventRecovery.snapshotFor(agentId)?.recovering ? "recovering" : "streaming";
 
   set((state) => {
     const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -3218,7 +3206,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
           ...state.sessionsByAgentId,
           [agentId]: {
             ...current,
-            liveStatus: "streaming",
+            liveStatus,
             error: undefined,
           },
         },
@@ -3275,7 +3263,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
           eventSeqs,
           newestSeq: Math.max(highestIncomingSeq, current.newestSeq ?? 0),
           oldestSeq: current.oldestSeq ?? eventSeqs[0],
-          liveStatus: "streaming",
+          liveStatus,
           error: undefined,
         },
       },
