@@ -181,8 +181,12 @@ describe("reduceAgentSessionTimeline", () => {
             duration_ms: 9700,
             input: { path: "/Users/jolestar/Desktop/Screenshot.png" },
             view_image_result: {
-              dimensions: { width: 1200, height: 800 },
-              visual_observation: "A browser screenshot showing the conversation timeline.",
+              visual_reference: {
+                size: { width: 1200, height: 800 },
+              },
+              observation: {
+                summary: "A browser screenshot showing the conversation timeline.",
+              },
             },
           }),
         ],

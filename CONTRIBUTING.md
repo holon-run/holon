@@ -7,7 +7,9 @@ Thanks for contributing to Holon. This file captures the baseline expectations f
 - Link the relevant issue or clearly describe the motivation.
 - Summarize behavior changes and highlight any user-visible impact.
 - Validation:
-  - Required: `make test`
+  - Required: `make ci`
+  - Web GUI changes: `make web-ci` for the focused Vitest and production-build
+    check used by the main CI job.
   - Runtime lifecycle, task, wait, SSE, or HTTP task changes:
     `make test-concurrent`
   - Run focused `cargo test ...` commands for the Rust modules or integration
@@ -17,9 +19,18 @@ Thanks for contributing to Holon. This file captures the baseline expectations f
 
 ## Development Commands
 
+Web GUI development and validation require Node.js 24 LTS. The root `.nvmrc`
+selects the supported version.
+
 ```bash
+# Run the full local CI suite, including Web GUI tests and build
+make ci
+
 # Build main CLI
 make build
+
+# Run Web GUI Vitest and the production build after one clean install
+make web-ci
 
 # Run Rust tests
 make test
