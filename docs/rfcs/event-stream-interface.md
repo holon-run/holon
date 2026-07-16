@@ -780,6 +780,14 @@ The server also does not need to claim that every field here belongs to the
 general agent-facing status contract. In phase 1, `/state` is the bootstrap
 aggregate, while `/status` remains the concise agent-facing summary surface.
 
+The bootstrap aggregate is an explicit wire contract rather than a serialized
+domain snapshot. The Rust server and first-party Rust client share
+`AgentStateSnapshotDto`, including dedicated slim task and WorkItem DTOs.
+OpenAPI is generated from those DTOs, and the Web transport layer consumes
+checked-in TypeScript types generated from that OpenAPI schema. UI view models
+remain separate camelCase projections. CI rejects drift in either the OpenAPI
+snapshot or generated TypeScript transport types.
+
 ## Implementation Work Breakdown
 
 The expected rollout should be split into separate work items:

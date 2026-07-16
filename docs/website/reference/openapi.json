@@ -97,6 +97,1337 @@
         "title": "AddSkillRequest",
         "type": "object"
       },
+      "AgentStateSnapshotDto": {
+        "properties": {
+          "agent": {
+            "properties": {
+              "active_children": {
+                "items": {
+                  "properties": {
+                    "active_task_count": {
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "current_run_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "identity": {
+                      "properties": {
+                        "agent_id": {
+                          "type": "string"
+                        },
+                        "delegated_from_task_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "is_default_agent": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "enum": [
+                            "default",
+                            "named",
+                            "child"
+                          ],
+                          "type": "string"
+                        },
+                        "lineage_parent_agent_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ownership": {
+                          "enum": [
+                            "parent_supervised",
+                            "self_owned"
+                          ],
+                          "type": "string"
+                        },
+                        "parent_agent_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "profile_preset": {
+                          "enum": [
+                            "private_child",
+                            "public_named"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "active",
+                            "archived"
+                          ],
+                          "type": "string"
+                        },
+                        "visibility": {
+                          "enum": [
+                            "public",
+                            "private"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent_id",
+                        "kind",
+                        "visibility",
+                        "ownership",
+                        "profile_preset",
+                        "status",
+                        "is_default_agent"
+                      ],
+                      "type": "object"
+                    },
+                    "observability": {
+                      "properties": {
+                        "blocked_reason": {
+                          "enum": [
+                            "managed_task_queued",
+                            "managed_task_running",
+                            "managed_task_cancelling",
+                            "awaiting_managed_task",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "current_work_item_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "last_progress_brief": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "last_result_brief": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "phase": {
+                          "enum": [
+                            "running",
+                            "blocked",
+                            "waiting",
+                            "terminal"
+                          ],
+                          "type": "string"
+                        },
+                        "waiting_reason": {
+                          "enum": [
+                            "awaiting_operator_input",
+                            "awaiting_external_change",
+                            "awaiting_task_result",
+                            "awaiting_timer",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "work_summary": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "phase"
+                      ],
+                      "type": "object"
+                    },
+                    "pending": {
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "enum": [
+                        "booting",
+                        "awake_idle",
+                        "awake_running",
+                        "awaiting_task",
+                        "asleep",
+                        "stopped"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "identity",
+                    "status",
+                    "pending",
+                    "active_task_count",
+                    "observability"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "active_task_count": {
+                "default": 0,
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "agent": {
+                "properties": {
+                  "active_workspace_entry": {
+                    "properties": {
+                      "access_mode": {
+                        "enum": [
+                          "shared_read",
+                          "exclusive_write"
+                        ],
+                        "type": "string"
+                      },
+                      "cwd": {
+                        "type": "string"
+                      },
+                      "execution_root": {
+                        "type": "string"
+                      },
+                      "execution_root_id": {
+                        "type": "string"
+                      },
+                      "projection_kind": {
+                        "enum": [
+                          "canonical_root",
+                          "git_worktree_root"
+                        ],
+                        "type": "string"
+                      },
+                      "workspace_anchor": {
+                        "type": "string"
+                      },
+                      "workspace_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "workspace_id",
+                      "workspace_anchor",
+                      "execution_root_id",
+                      "execution_root",
+                      "projection_kind",
+                      "access_mode",
+                      "cwd"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "attached_workspaces": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "current_run_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_turn_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "last_brief_at": {
+                    "format": "date-time",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "last_turn_terminal": {
+                    "properties": {
+                      "checkpoint": {
+                        "properties": {
+                          "checkpoint_anchor_generation": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "current_anchor_generation": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "request_id": {
+                            "type": "string"
+                          },
+                          "requested_at_round": {
+                            "format": "uint",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "response_round": {
+                            "format": "uint",
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "source_turn_index": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "request_id",
+                          "requested_at_round",
+                          "text",
+                          "checkpoint_anchor_generation",
+                          "current_anchor_generation"
+                        ],
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "completed_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "duration_ms": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "enum": [
+                          "completed",
+                          "aborted",
+                          "baseline_over_budget",
+                          "deferred_to_fallback",
+                          "provider_failed_needs_recovery"
+                        ],
+                        "type": "string"
+                      },
+                      "last_assistant_message": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "turn_id": {
+                        "type": "string"
+                      },
+                      "turn_index": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "turn_index",
+                      "kind",
+                      "completed_at",
+                      "duration_ms"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "last_wake_reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "pending": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "sleeping_until": {
+                    "format": "date-time",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "booting",
+                      "awake_idle",
+                      "awake_running",
+                      "awaiting_task",
+                      "asleep",
+                      "stopped"
+                    ],
+                    "type": "string"
+                  },
+                  "turn_index": {
+                    "default": 0,
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id",
+                  "status",
+                  "pending"
+                ],
+                "type": "object"
+              },
+              "closure": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "completed",
+                      "continuable",
+                      "failed",
+                      "waiting"
+                    ],
+                    "type": "string"
+                  },
+                  "runtime_posture": {
+                    "enum": [
+                      "awake",
+                      "sleeping"
+                    ],
+                    "type": "string"
+                  },
+                  "waiting_reason": {
+                    "enum": [
+                      "awaiting_operator_input",
+                      "awaiting_external_change",
+                      "awaiting_task_result",
+                      "awaiting_timer",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "runtime_posture"
+                ],
+                "type": "object"
+              },
+              "identity": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "delegated_from_task_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "is_default_agent": {
+                    "type": "boolean"
+                  },
+                  "kind": {
+                    "enum": [
+                      "default",
+                      "named",
+                      "child"
+                    ],
+                    "type": "string"
+                  },
+                  "lineage_parent_agent_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "ownership": {
+                    "enum": [
+                      "parent_supervised",
+                      "self_owned"
+                    ],
+                    "type": "string"
+                  },
+                  "parent_agent_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "profile_preset": {
+                    "enum": [
+                      "private_child",
+                      "public_named"
+                    ],
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "active",
+                      "archived"
+                    ],
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "enum": [
+                      "public",
+                      "private"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "kind",
+                  "visibility",
+                  "ownership",
+                  "profile_preset",
+                  "status",
+                  "is_default_agent"
+                ],
+                "type": "object"
+              },
+              "lifecycle": {
+                "default": {
+                  "accepts_external_messages": true
+                },
+                "properties": {
+                  "accepts_external_messages": {
+                    "type": "boolean"
+                  },
+                  "operator_hint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "accepts_external_messages"
+                ],
+                "type": "object"
+              },
+              "model": {
+                "properties": {
+                  "active_model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "effective_fallback_models": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "effective_model": {
+                    "type": "string"
+                  },
+                  "fallback_active": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "override_model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "override_reasoning_effort": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "requested_model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "runtime_default_model": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "enum": [
+                      "runtime_default",
+                      "agent_override"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source",
+                  "runtime_default_model",
+                  "effective_model"
+                ],
+                "type": "object"
+              },
+              "scheduling_posture": {
+                "default": {
+                  "posture": "unknown",
+                  "reason": "posture projection unavailable"
+                },
+                "properties": {
+                  "posture": {
+                    "enum": [
+                      "unknown",
+                      "archived",
+                      "active_turn",
+                      "has_queued_input",
+                      "has_runnable_work",
+                      "waiting_for_task",
+                      "waiting_for_external",
+                      "waiting_for_operator",
+                      "blocked",
+                      "idle"
+                    ],
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "task_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "posture",
+                  "reason"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "identity",
+              "agent",
+              "model",
+              "closure"
+            ],
+            "type": "object"
+          },
+          "external_triggers": {
+            "default": [],
+            "items": {
+              "properties": {
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "delivery_count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "delivery_mode": {
+                  "enum": [
+                    "enqueue_message",
+                    "wake_hint"
+                  ],
+                  "type": "string"
+                },
+                "external_trigger_id": {
+                  "type": "string"
+                },
+                "last_delivered_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "revoked_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope": {
+                  "enum": [
+                    "agent"
+                  ],
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "revoked"
+                  ],
+                  "type": "string"
+                },
+                "target_agent_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "external_trigger_id",
+                "target_agent_id",
+                "scope",
+                "delivery_mode",
+                "status",
+                "delivery_count",
+                "created_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "session": {
+            "properties": {
+              "current_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_turn": {
+                "properties": {
+                  "checkpoint": {
+                    "properties": {
+                      "checkpoint_anchor_generation": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "current_anchor_generation": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "request_id": {
+                        "type": "string"
+                      },
+                      "requested_at_round": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "response_round": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "source_turn_index": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "request_id",
+                      "requested_at_round",
+                      "text",
+                      "checkpoint_anchor_generation",
+                      "current_anchor_generation"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "completed_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "duration_ms": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "completed",
+                      "aborted",
+                      "baseline_over_budget",
+                      "deferred_to_fallback",
+                      "provider_failed_needs_recovery"
+                    ],
+                    "type": "string"
+                  },
+                  "last_assistant_message": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  },
+                  "turn_index": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "turn_index",
+                  "kind",
+                  "completed_at",
+                  "duration_ms"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "pending_count": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "pending_count"
+            ],
+            "type": "object"
+          },
+          "tasks": {
+            "items": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "command_task",
+                    "child_agent_task",
+                    "sleep_job",
+                    "subagent_task",
+                    "worktree_subagent_task"
+                  ],
+                  "type": "string"
+                },
+                "parent_message_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "cancelling",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "work_item_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "agent_id",
+                "kind",
+                "status",
+                "created_at",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "timers": {
+            "default": [],
+            "items": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "fire_count": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "interval_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "last_fired_at": {
+                  "default": null,
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "next_fire_at": {
+                  "default": null,
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "repeat": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "default": "active",
+                  "enum": [
+                    "active",
+                    "completed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "agent_id",
+                "created_at",
+                "duration_ms",
+                "repeat"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "work_items": {
+            "default": [],
+            "items": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "blocked_by": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "candidate_class": {
+                  "enum": [
+                    "current_runnable",
+                    "triggered_blocked",
+                    "queued_runnable",
+                    "waiting_for_operator",
+                    "yielded",
+                    "blocked",
+                    "completed_recent"
+                  ],
+                  "type": "string"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "current_todo": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "pending",
+                        "in_progress",
+                        "completed"
+                      ],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "state"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "focus": {
+                  "enum": [
+                    "current",
+                    "queued",
+                    "yielded",
+                    "blocked",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "is_current": {
+                  "type": "boolean"
+                },
+                "is_runnable": {
+                  "type": "boolean"
+                },
+                "objective": {
+                  "type": "string"
+                },
+                "plan_status": {
+                  "enum": [
+                    "draft",
+                    "ready",
+                    "needs_input"
+                  ],
+                  "type": "string"
+                },
+                "readiness": {
+                  "enum": [
+                    "runnable",
+                    "yielded",
+                    "waiting_for_operator",
+                    "blocked",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "reason_code": {
+                  "enum": [
+                    "completed",
+                    "continuation_yielded",
+                    "active_task_wait",
+                    "active_operator_wait",
+                    "active_timer_wait",
+                    "active_external_wait",
+                    "active_system_wait",
+                    "manual_blocker",
+                    "plan_needs_input",
+                    "runnable"
+                  ],
+                  "type": "string"
+                },
+                "recheck_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "result_brief_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "result_summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "scheduling_state": {
+                  "enum": [
+                    "runnable",
+                    "yielded_to_work_item",
+                    "waiting_operator",
+                    "waiting_task",
+                    "waiting_external",
+                    "waiting_timer",
+                    "waiting_system",
+                    "blocked",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "open",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "agent_id",
+                "workspace_id",
+                "revision",
+                "objective",
+                "state",
+                "plan_status",
+                "created_at",
+                "updated_at",
+                "scheduling_state",
+                "readiness",
+                "candidate_class",
+                "focus",
+                "is_current",
+                "is_runnable",
+                "reason_code"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "workspace": {
+            "default": {
+              "workspaces": []
+            },
+            "properties": {
+              "workspaces": {
+                "default": [],
+                "items": {
+                  "properties": {
+                    "access_mode": {
+                      "enum": [
+                        "shared_read",
+                        "exclusive_write",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cwd": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "execution_root": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "execution_root_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "is_active": {
+                      "type": "boolean"
+                    },
+                    "projection_kind": {
+                      "enum": [
+                        "canonical_root",
+                        "git_worktree_root",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "repo_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "workspace_alias": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "workspace_anchor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "workspace_id": {
+                      "type": "string"
+                    },
+                    "worktree": {
+                      "properties": {
+                        "branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_cwd": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "path": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "workspace_id",
+                    "is_active"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "agent",
+          "session",
+          "tasks"
+        ],
+        "title": "AgentStateSnapshotDto",
+        "type": "object"
+      },
       "AttachWorkspaceRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -133,6 +1464,40 @@
         },
         "required": [
           "messages"
+        ],
+        "type": "object"
+      },
+      "BatchGetTranscriptEntriesRequest": {
+        "properties": {
+          "entry_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "title": "BatchGetTranscriptEntriesRequest",
+        "type": "object"
+      },
+      "BatchGetTranscriptEntriesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "array"
+          },
+          "missing_entry_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
         ],
         "type": "object"
       },
@@ -305,6 +1670,18 @@
           }
         },
         "title": "CancelTimerRequest",
+        "type": "object"
+      },
+      "CheckSkillRequest": {
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "CheckSkillRequest",
         "type": "object"
       },
       "CheckTemplateRequest": {
@@ -1773,6 +3150,22 @@
         "title": "PickWorkItemResponse",
         "type": "object"
       },
+      "ReconcileSkillRequest": {
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ReconcileSkillRequest",
+        "type": "object"
+      },
+      "RefreshCatalogRequest": {
+        "title": "RefreshCatalogRequest",
+        "type": "object"
+      },
       "RemoveSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -2645,6 +4038,276 @@
       "SetCredentialRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "SlimTaskDto": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "command_task",
+              "child_agent_task",
+              "sleep_job",
+              "subagent_task",
+              "worktree_subagent_task"
+            ],
+            "type": "string"
+          },
+          "parent_message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "completed",
+              "failed",
+              "cancelled",
+              "interrupted"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "work_item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "agent_id",
+          "kind",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SlimTaskDto",
+        "type": "object"
+      },
+      "SlimWorkItemDto": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "blocked_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidate_class": {
+            "enum": [
+              "current_runnable",
+              "triggered_blocked",
+              "queued_runnable",
+              "waiting_for_operator",
+              "yielded",
+              "blocked",
+              "completed_recent"
+            ],
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current_todo": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "state"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "focus": {
+            "enum": [
+              "current",
+              "queued",
+              "yielded",
+              "blocked",
+              "completed"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_current": {
+            "type": "boolean"
+          },
+          "is_runnable": {
+            "type": "boolean"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "plan_status": {
+            "enum": [
+              "draft",
+              "ready",
+              "needs_input"
+            ],
+            "type": "string"
+          },
+          "readiness": {
+            "enum": [
+              "runnable",
+              "yielded",
+              "waiting_for_operator",
+              "blocked",
+              "completed"
+            ],
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "completed",
+              "continuation_yielded",
+              "active_task_wait",
+              "active_operator_wait",
+              "active_timer_wait",
+              "active_external_wait",
+              "active_system_wait",
+              "manual_blocker",
+              "plan_needs_input",
+              "runnable"
+            ],
+            "type": "string"
+          },
+          "recheck_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result_brief_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scheduling_state": {
+            "enum": [
+              "runnable",
+              "yielded_to_work_item",
+              "waiting_operator",
+              "waiting_task",
+              "waiting_external",
+              "waiting_timer",
+              "waiting_system",
+              "blocked",
+              "completed"
+            ],
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "completed"
+            ],
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent_id",
+          "workspace_id",
+          "revision",
+          "objective",
+          "state",
+          "plan_status",
+          "created_at",
+          "updated_at",
+          "scheduling_state",
+          "readiness",
+          "candidate_class",
+          "focus",
+          "is_current",
+          "is_runnable",
+          "reason_code"
+        ],
+        "title": "SlimWorkItemDto",
+        "type": "object"
+      },
+      "SyncTemplateRemoteSourcesRequest": {
+        "properties": {
+          "force": {
+            "description": "Force a refresh even if a later TTL policy would consider the cache\n fresh. Currently accepted for forward compatibility.",
+            "type": "boolean"
+          },
+          "source_id": {
+            "description": "Optional configured source id. When omitted, all enabled remote sources\n are synchronized.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "SyncTemplateRemoteSourcesRequest",
         "type": "object"
       },
       "TaskInputRequest": {
@@ -4646,6 +6309,18 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "UpdateSkillRequest": {
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ReconcileSkillRequest",
+        "type": "object"
+      },
       "UpdateWorkItemRequest": {
         "additionalProperties": false,
         "properties": {
@@ -5580,8 +7255,7 @@
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "style": "simple"
+            }
           }
         ],
         "responses": {
@@ -5589,11 +7263,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/AgentStateSnapshotDto"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -5624,8 +7298,7 @@
         "summary": "Agent state snapshot",
         "tags": [
           "agents"
-        ],
-        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+        ]
       }
     },
     "/api/agents/{agent_id}/status": {
@@ -10174,16 +11847,17 @@
       "get": {
         "description": "Compatibility alias for the default agent state route.",
         "operationId": "defaultState",
+        "parameters": [],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/AgentStateSnapshotDto"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -10214,8 +11888,7 @@
         "summary": "Default agent state alias",
         "tags": [
           "compat"
-        ],
-        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+        ]
       }
     },
     "/api/status": {

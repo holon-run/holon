@@ -106,6 +106,38 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload.get("operator_notifications").is_none());
     assert!(state_payload.get("execution").is_none());
     assert!(state_payload.get("cursor").is_none());
+    let agent = state_payload["agent"]
+        .as_object()
+        .expect("state agent should be an object");
+    for heavy_field in [
+        "execution",
+        "loaded_agents_md",
+        "skills",
+        "token_usage",
+        "active_wait_conditions",
+        "active_external_triggers",
+        "recent_operator_notifications",
+    ] {
+        assert!(
+            !agent.contains_key(heavy_field),
+            "/state agent DTO must not expose {heavy_field}"
+        );
+    }
+    let agent_runtime = agent["agent"]
+        .as_object()
+        .expect("state agent runtime should be an object");
+    for domain_field in [
+        "working_memory",
+        "tool_latency",
+        "active_skills",
+        "last_continuation",
+        "execution_profile",
+    ] {
+        assert!(
+            !agent_runtime.contains_key(domain_field),
+            "/state agent runtime DTO must not expose {domain_field}"
+        );
+    }
 
     server.abort();
     Ok(())

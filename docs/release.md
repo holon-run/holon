@@ -65,3 +65,11 @@ cargo test --test openapi_snapshot
 The first command regenerates the file; the second verifies it matches. The
 generated output has no trailing newline — adding one manually causes the
 snapshot test to fail.
+
+The Web GUI transport types are generated from the same snapshot. Refresh both
+artifacts together and verify drift with:
+
+```bash
+make transport-types
+make transport-types-check
+```

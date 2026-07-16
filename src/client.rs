@@ -18,6 +18,7 @@ use crate::{
         RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
         SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
     },
+    http_dto::AgentStateSnapshotDto,
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
     types::{
@@ -445,7 +446,7 @@ impl LocalClient {
         self.get_json(&format!("/agents/{agent_id}/status")).await
     }
 
-    pub async fn agent_state_snapshot(&self, agent_id: &str) -> Result<AgentStateSnapshot> {
+    pub async fn agent_state_snapshot(&self, agent_id: &str) -> Result<AgentStateSnapshotDto> {
         self.get_json(&format!("/agents/{agent_id}/state")).await
     }
 

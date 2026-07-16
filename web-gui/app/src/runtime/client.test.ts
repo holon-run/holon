@@ -1,6 +1,61 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createRuntimeClient, projectModelOptions } from "./client";
+import type { components } from "./generated/openapi";
+
+function agentStateFixture(agentId: string): components["schemas"]["AgentStateSnapshotDto"] {
+  return {
+    agent: {
+      identity: {
+        agent_id: agentId,
+        kind: "named",
+        visibility: "public",
+        ownership: "self_owned",
+        profile_preset: "public_named",
+        status: "active",
+        is_default_agent: false,
+      },
+      agent: {
+        id: agentId,
+        status: "awake_idle",
+        current_run_id: null,
+        pending: 0,
+        attached_workspaces: [],
+        turn_index: 0,
+      },
+      scheduling_posture: {
+        posture: "idle",
+        reason: "idle",
+      },
+      active_task_count: 0,
+      lifecycle: {
+        accepts_external_messages: true,
+      },
+      model: {
+        source: "runtime_default",
+        runtime_default_model: "openai-codex@default/gpt-5.6",
+        effective_model: "openai-codex@default/gpt-5.6",
+        fallback_active: false,
+      },
+      closure: {
+        outcome: "completed",
+        runtime_posture: "awake",
+      },
+    },
+    session: {
+      current_run_id: null,
+      pending_count: 0,
+      last_turn: null,
+    },
+    tasks: [],
+    timers: [],
+    work_items: [],
+    external_triggers: [],
+    workspace: {
+      workspaces: [],
+    },
+  };
+}
 
 describe("projectModelOptions", () => {
   it("detects reasoning effort support from runtime available model capabilities", () => {
@@ -690,7 +745,7 @@ describe("createRuntimeClient", () => {
         return Response.json([{ identity: { agent_id: "agent-one" } }]);
       }
       if (url.endsWith("/agents/agent-one/state")) {
-        return Response.json({});
+        return Response.json(agentStateFixture("agent-one"));
       }
       if (url.includes("/agents/agent-one/events?")) {
         return Response.json({

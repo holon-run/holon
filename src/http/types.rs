@@ -283,37 +283,6 @@ pub(crate) struct EventReplayProvenance {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct StateSessionSnapshot {
-    pub(crate) current_run_id: Option<String>,
-    pub(crate) pending_count: usize,
-    pub(crate) last_turn: Option<TurnTerminalRecord>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct StateWorkspaceSnapshot {
-    pub(crate) workspaces: Vec<crate::types::AgentWorkspaceInfo>,
-}
-
-impl Default for StateWorkspaceSnapshot {
-    fn default() -> Self {
-        Self {
-            workspaces: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct AgentStateSnapshot {
-    pub(crate) agent: AgentSummary,
-    pub(crate) session: StateSessionSnapshot,
-    pub(crate) tasks: Vec<TaskRecord>,
-    pub(crate) timers: Vec<TimerRecord>,
-    pub(crate) work_items: Vec<crate::work_item_scheduling::WorkItemSchedulingProjection>,
-    pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
-    pub(crate) workspace: StateWorkspaceSnapshot,
-}
-
-#[derive(Debug, Serialize)]
 pub(crate) struct StreamEventEnvelope {
     pub(crate) id: String,
     pub(crate) event_seq: u64,

@@ -18,6 +18,7 @@ use crate::{
         AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StateWorkspaceSnapshot,
         StreamEventEnvelope,
     },
+    http_dto::{AgentStateSnapshotDto, SlimWorkItemDto},
     operator_event::{
         is_activity_reset_event_kind, is_durable_operator_event_kind,
         is_operator_event_in_display_mode, present_operator_event, OperatorEventCategory,
@@ -104,6 +105,10 @@ pub(crate) struct TuiProjection {
 }
 
 impl TuiProjection {
+    pub(crate) fn from_bootstrap_dto(snapshot: AgentStateSnapshotDto) -> Self {
+        Self::from_snapshot(tui_snapshot_from_dto(snapshot))
+    }
+
     pub(crate) fn from_snapshot(snapshot: AgentStateSnapshot) -> Self {
         let presentation_reducer = crate::presentation::PresentationReducer::new();
         let external_triggers = snapshot.external_triggers;
@@ -136,6 +141,13 @@ impl TuiProjection {
 
     pub(crate) fn reset_from_snapshot(&mut self, snapshot: AgentStateSnapshot) {
         *self = Self::from_snapshot(snapshot);
+    }
+
+    pub(crate) fn reset_from_bootstrap_dto_preserving_event_history(
+        &mut self,
+        snapshot: AgentStateSnapshotDto,
+    ) {
+        self.reset_from_snapshot_preserving_event_history(tui_snapshot_from_dto(snapshot));
     }
 
     pub(crate) fn reset_from_snapshot_preserving_event_history(
@@ -1336,6 +1348,74 @@ impl TuiProjection {
         self.agent.agent.active_workspace_entry = None;
         self.agent.active_workspace_occupancy = None;
         self.agent.agent.worktree_session = None;
+    }
+}
+
+fn tui_snapshot_from_dto(snapshot: AgentStateSnapshotDto) -> AgentStateSnapshot {
+    AgentStateSnapshot {
+        agent: snapshot.agent.into_agent_summary(),
+        session: StateSessionSnapshot {
+            current_run_id: snapshot.session.current_run_id,
+            pending_count: snapshot.session.pending_count,
+            last_turn: snapshot.session.last_turn,
+        },
+        tasks: snapshot.tasks.into_iter().map(Into::into).collect(),
+        timers: snapshot.timers,
+        work_items: snapshot
+            .work_items
+            .into_iter()
+            .map(tui_work_item_from_dto)
+            .collect(),
+        external_triggers: snapshot.external_triggers,
+        operator_notifications: Vec::new(),
+        workspace: StateWorkspaceSnapshot {
+            workspaces: snapshot
+                .workspace
+                .workspaces
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        },
+        execution: None,
+    }
+}
+
+fn tui_work_item_from_dto(item: SlimWorkItemDto) -> WorkItemSchedulingProjection {
+    WorkItemSchedulingProjection {
+        work_item: WorkItemRecord {
+            id: item.id,
+            agent_id: item.agent_id,
+            workspace_id: item.workspace_id,
+            revision: item.revision,
+            objective: item.objective,
+            state: item.state,
+            plan_status: item.plan_status,
+            plan_artifact: None,
+            todo_list: Vec::new(),
+            work_refs: Vec::new(),
+            blocked_by: item.blocked_by,
+            recheck_at: item.recheck_at,
+            recheck_consumed_at: None,
+            result_brief_id: item.result_brief_id,
+            result_summary: item.result_summary,
+            created_at: item.created_at,
+            updated_at: item.updated_at,
+            turn_id: item.turn_id,
+        },
+        scheduling_state: item.scheduling_state,
+        readiness: item.readiness,
+        candidate_class: item.candidate_class,
+        focus: item.focus,
+        is_current: item.is_current,
+        is_runnable: item.is_runnable,
+        has_active_waits: false,
+        has_active_task_waits: false,
+        has_triggered_waits: false,
+        last_triggered_at: None,
+        current_todo: item.current_todo,
+        active_wait_conditions: Vec::new(),
+        reason_code: item.reason_code,
+        diagnostics: Vec::new(),
     }
 }
 

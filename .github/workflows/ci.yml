@@ -11,6 +11,7 @@ on:
       - "tests/**"
       - "agent_templates/**"
       - "builtin_templates/**"
+      - "docs/website/reference/openapi.json"
       - "web-gui/**"
       - "Makefile"
       - "build.rs"
@@ -24,6 +25,7 @@ on:
       - "tests/**"
       - "agent_templates/**"
       - "builtin_templates/**"
+      - "docs/website/reference/openapi.json"
       - "web-gui/**"
       - "Makefile"
       - "build.rs"
@@ -45,7 +47,9 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: web-gui/app/package-lock.json
+          cache-dependency-path: |
+            web-gui/app/package-lock.json
+            web-gui/openapi-tools/package-lock.json
 
       - name: Test and build web GUI
         run: make web-ci

@@ -1,4 +1,5 @@
 use clap::ValueEnum;
+use schemars::JsonSchema;
 use std::{ffi::OsString, fmt, path::PathBuf, process::ExitStatus, time::Duration};
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -113,14 +114,14 @@ pub struct ExecutionPolicySnapshot {
     pub process_execution: ProcessExecutionCapabilitySnapshot,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceProjectionKind {
     CanonicalRoot,
     GitWorktreeRoot,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceAccessMode {
     SharedRead,

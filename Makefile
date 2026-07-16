@@ -1,6 +1,7 @@
-.PHONY: help web web-ci build all test test-concurrent test-concurrent-repeat test-live fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci transport-types transport-types-check build all test test-concurrent test-concurrent-repeat test-live fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
+OPENAPI_TOOLS_DIR := web-gui/openapi-tools
 CONCURRENT_REPEATS ?= 3
 CONCURRENT_LIFECYCLE_TESTS := \
 	runtime_tasks \
@@ -20,7 +21,18 @@ web: ## Build the web GUI (requires Node.js 24). Produces web-gui/app/dist
 
 web-ci: ## Test and build the web GUI with one clean dependency install
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
-	cd $(WEB_DIR) && npm ci && npm test && npm run build
+	cd $(OPENAPI_TOOLS_DIR) && npm ci && npm run check && \
+	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
+
+transport-types: ## Refresh OpenAPI and generated TypeScript transport types
+	cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored
+	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
+	cd $(OPENAPI_TOOLS_DIR) && npm ci && npm run generate
+
+transport-types-check: ## Check OpenAPI and generated TypeScript transport type drift
+	cargo test --test openapi_snapshot
+	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
+	cd $(OPENAPI_TOOLS_DIR) && npm ci && npm run check
 
 build: ## Build all Rust targets (cargo build --all-targets)
 	cargo build --all-targets
