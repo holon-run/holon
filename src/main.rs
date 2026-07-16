@@ -1473,9 +1473,6 @@ mod tests {
         let agent_id = "default";
         let host = RuntimeHost::new(config.clone()).unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        let mut agent = holon::types::AgentState::new("default");
-        agent.current_work_item_id = Some("work-1".into());
-        storage.write_agent(&agent).unwrap();
         let mut work_item = holon::types::WorkItemRecord::new(
             "default",
             "fixture work",
@@ -1483,6 +1480,9 @@ mod tests {
         );
         work_item.id = "work-1".into();
         storage.insert_work_item(&work_item).unwrap();
+        let mut agent = holon::types::AgentState::new("default");
+        agent.current_work_item_id = Some(work_item.id.clone());
+        storage.write_agent(&agent).unwrap();
         work_item.revision = 2;
         storage.update_work_item_expected(&work_item, 1).unwrap();
 
@@ -1511,8 +1511,15 @@ mod tests {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
                 .unwrap();
+        let mut work_item = holon::types::WorkItemRecord::new(
+            "default",
+            "fixture work",
+            holon::types::WorkItemState::Open,
+        );
+        work_item.id = "work-db".into();
+        runtime_db.work_items().insert_new(&work_item).unwrap();
         let mut agent = holon::types::AgentState::new("default");
-        agent.current_work_item_id = Some("work-db".into());
+        agent.current_work_item_id = Some(work_item.id);
         runtime_db.agent_states().upsert(&agent).unwrap();
 
         let output = tempfile::tempdir().unwrap();

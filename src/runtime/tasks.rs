@@ -2759,6 +2759,8 @@ impl RuntimeHandle {
                 }),
             ));
         }
+        // Pick atomically cancels conflicting active frames, so this lookup has
+        // at most one resumable continuation for the completed WorkItem.
         if let Some(frame) = self
             .inner
             .storage
