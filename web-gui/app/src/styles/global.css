@@ -3962,6 +3962,16 @@ code {
   line-height: 1;
 }
 
+.file-browser-download-btn {
+  background: none;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  line-height: 1;
+}
+
 .file-browser-md-toggle button {
   background: none;
   border: none;
