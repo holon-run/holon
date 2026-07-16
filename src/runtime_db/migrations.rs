@@ -1132,6 +1132,18 @@ END;
 DROP INDEX IF EXISTS idx_work_items_readiness;
 "#,
     },
+    Migration {
+        version: 29,
+        name: "runtime_metadata",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS runtime_metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

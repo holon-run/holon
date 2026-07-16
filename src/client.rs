@@ -167,6 +167,8 @@ pub struct EventPageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventPageResponse {
     pub events: Vec<StreamEventEnvelope>,
+    #[serde(default)]
+    pub event_log_epoch: String,
     pub oldest_seq: Option<u64>,
     pub newest_seq: Option<u64>,
     #[serde(default)]
@@ -181,10 +183,18 @@ pub struct EventPageResponse {
 pub struct StreamEventEnvelope {
     pub id: String,
     pub event_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_log_epoch: Option<String>,
+    #[serde(default = "crate::runtime_event::legacy_contract_version")]
+    pub contract_version: u32,
     pub ts: chrono::DateTime<Utc>,
     pub agent_id: String,
     #[serde(rename = "type")]
     pub event_type: String,
+    #[serde(default = "crate::runtime_event::legacy_payload_schema")]
+    pub payload_schema: String,
+    #[serde(default = "crate::runtime_event::legacy_payload_schema_version")]
+    pub payload_schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Value>,
     pub payload: Value,
@@ -1890,6 +1900,10 @@ mod tests {
     #[tokio::test]
     async fn sse_comment_heartbeat_does_not_emit_event_and_preserves_liveness() {
         let event = StreamEventEnvelope {
+            event_log_epoch: Some("epoch-test".into()),
+            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+            payload_schema_version: 1,
             id: "evt-1".into(),
             event_seq: 1,
             ts: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")

@@ -76,10 +76,10 @@ impl RuntimeHandle {
         scheduler_decision: &scheduler::SchedulerDecision,
     ) -> Result<()> {
         message.normalize_admission_fields();
-        self.inner.storage.append_event(&AuditEvent::new(
-            "message_processing_started",
-            to_json_value(&MessageLifecycleAuditEvent::from_message(&message)),
-        ))?;
+        self.inner.storage.append_event(&AuditEvent::typed(
+            RuntimeEventKind::MessageProcessingStarted,
+            &MessageLifecycleAuditEvent::from_message(&message),
+        )?)?;
         let MessageDispatchPlan {
             prior_closure,
             task,
@@ -194,7 +194,7 @@ impl RuntimeHandle {
                 guard.persist_state(&self.inner.storage)?;
             }
         }
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "closure_decided",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
@@ -253,7 +253,7 @@ impl RuntimeHandle {
                     expected_revision: record.revision - 1,
                 },
                 agent_state: None,
-                audit_events: vec![AuditEvent::new(
+                audit_events: vec![AuditEvent::legacy(
                     "work_item_refs_updated",
                     serde_json::json!({
                         "agent_id": agent.id,

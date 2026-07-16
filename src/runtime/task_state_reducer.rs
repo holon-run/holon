@@ -92,12 +92,16 @@ impl RuntimeHandle {
             index_changes.extend(self.inner.storage.index_changes_for_task(task)?);
         }
         if emit_event {
-            let mut event = AuditEvent::new(
-                transition.event_kind,
-                to_json_value(&TaskLifecycleAuditEvent::from_task(task)),
-            );
+            let payload = TaskLifecycleAuditEvent::from_task(task);
+            let mut event =
+                if let Some(kind) = RuntimeEventKind::from_wire_name(transition.event_kind) {
+                    AuditEvent::typed(kind, &payload)?
+                } else {
+                    AuditEvent::legacy(transition.event_kind, to_json_value(&payload))
+                };
             if is_terminal_task_status(&task.status) {
                 event.id = stable_terminal_task_event_id(transition.event_kind, task);
+                event.created_at = task.updated_at;
             }
             audit_events.push(event);
         }
@@ -176,7 +180,7 @@ impl RuntimeHandle {
                 }
             }
             if !resolved_ids.is_empty() {
-                audit_events.push(AuditEvent::new(
+                audit_events.push(AuditEvent::legacy(
                     "wait_conditions_resolved",
                     serde_json::json!({
                         "agent_id": agent_id,

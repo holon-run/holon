@@ -24,6 +24,7 @@ export interface AgentSessionState {
   liveStatus: AgentLiveStatus;
   sendingPrompt: boolean;
   detail: AgentDetail | null;
+  eventLogEpoch?: string;
   eventsBySeq: Record<number, unknown>;
   eventSeqs: number[];
   messagesById: Record<string, RuntimeMessageEnvelope>;

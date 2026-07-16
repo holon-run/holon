@@ -25,6 +25,7 @@ use crate::{
         OperatorEventPresentation, OperatorPresentationContext,
     },
     presentation::render_live_working_activity_text,
+    runtime_event::{RuntimeEventKind, RUNTIME_EVENT_CONTRACT_VERSION},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentModelOverrideAuditEvent, AgentState, AgentStateChangedEvent,
@@ -92,12 +93,14 @@ pub(crate) struct TuiProjection {
     pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
     pub(crate) operator_notifications: Vec<crate::types::OperatorNotificationRecord>,
     pub(crate) workspace: StateWorkspaceSnapshot,
+    pub(crate) event_log_epoch: Option<String>,
     pub(crate) cursor: Option<u64>,
     pub(crate) history_oldest_cursor: Option<u64>,
     pub(crate) history_has_older: bool,
     history_paging_active: bool,
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
     event_log: Vec<ProjectionEventRecord>,
+    event_fingerprints: BTreeMap<u64, String>,
     durable_conversation_log: Vec<ProjectionEventRecord>,
     live_working_activity_events: Vec<LiveWorkingActivityRecord>,
     message_cache: BTreeMap<String, MessageEnvelope>,
@@ -125,12 +128,14 @@ impl TuiProjection {
             external_triggers,
             operator_notifications,
             workspace: snapshot.workspace,
+            event_log_epoch: None,
             cursor: None,
             history_oldest_cursor: None,
             history_has_older: false,
             history_paging_active: false,
             stale_slices: BTreeSet::new(),
             event_log: Vec::new(),
+            event_fingerprints: BTreeMap::new(),
             durable_conversation_log: Vec::new(),
             live_working_activity_events: Vec::new(),
             message_cache: BTreeMap::new(),
@@ -155,11 +160,13 @@ impl TuiProjection {
         snapshot: AgentStateSnapshot,
     ) {
         let mut refreshed = Self::from_snapshot(snapshot);
+        refreshed.event_log_epoch = self.event_log_epoch.take();
         refreshed.cursor = self.cursor.take();
         refreshed.history_oldest_cursor = self.history_oldest_cursor.take();
         refreshed.history_has_older = self.history_has_older;
         refreshed.history_paging_active = self.history_paging_active;
         refreshed.event_log = mem::take(&mut self.event_log);
+        refreshed.event_fingerprints = mem::take(&mut self.event_fingerprints);
         refreshed.durable_conversation_log = mem::take(&mut self.durable_conversation_log);
         refreshed.message_cache = mem::take(&mut self.message_cache);
         refreshed.brief_text_cache = mem::take(&mut self.brief_text_cache);
@@ -171,6 +178,7 @@ impl TuiProjection {
         events_tail: Vec<StreamEventEnvelope>,
         cursor: Option<u64>,
     ) {
+        self.adopt_event_log_epoch(event_log_epoch(&events_tail));
         self.event_log.clear();
         self.durable_conversation_log.clear();
         self.cursor = cursor;
@@ -179,10 +187,15 @@ impl TuiProjection {
 
     pub(crate) fn clear_event_history(&mut self) {
         self.event_log.clear();
+        self.event_fingerprints.clear();
         self.durable_conversation_log.clear();
         self.history_oldest_cursor = None;
         self.history_has_older = false;
         self.history_paging_active = false;
+    }
+
+    pub(crate) fn set_event_log_epoch(&mut self, event_log_epoch: &str) {
+        self.adopt_event_log_epoch(Some(event_log_epoch));
     }
 
     pub(crate) fn merge_event_tail(
@@ -190,6 +203,7 @@ impl TuiProjection {
         events_tail: Vec<StreamEventEnvelope>,
         cursor: Option<u64>,
     ) {
+        self.adopt_event_log_epoch(event_log_epoch(&events_tail));
         self.cursor = cursor.or_else(|| self.cursor.clone());
         let event_log_limit = if self.history_paging_active {
             EVENT_HISTORY_LOG_LIMIT
@@ -210,6 +224,9 @@ impl TuiProjection {
             })
             .collect::<BTreeSet<_>>();
         for envelope in events_tail {
+            if !self.accept_event_identity(&envelope) {
+                return;
+            }
             if !envelope.id.is_empty() && !existing_ids.insert(envelope.id.clone()) {
                 continue;
             }
@@ -232,6 +249,7 @@ impl TuiProjection {
             self.event_log
                 .drain(0..(self.event_log.len() - event_log_limit));
         }
+        self.prune_event_fingerprints();
         self.rebuild_durable_conversation_log();
         if self.cursor.is_none() {
             self.cursor = self.event_log.last().map(|event| event.event_seq);
@@ -261,6 +279,7 @@ impl TuiProjection {
         oldest_cursor: Option<u64>,
         has_older: bool,
     ) -> usize {
+        self.adopt_event_log_epoch(event_log_epoch(&events));
         self.history_paging_active = true;
         let available = EVENT_HISTORY_LOG_LIMIT.saturating_sub(self.event_log.len());
         if available == 0 {
@@ -290,6 +309,9 @@ impl TuiProjection {
 
         let mut prepended = Vec::new();
         for envelope in events {
+            if !self.accept_event_identity(&envelope) {
+                return 0;
+            }
             if !envelope.id.is_empty() && !existing_ids.insert(envelope.id.clone()) {
                 continue;
             }
@@ -319,6 +341,7 @@ impl TuiProjection {
             && self.event_log.len().saturating_add(added) < EVENT_HISTORY_LOG_LIMIT;
         prepended.extend(mem::take(&mut self.event_log));
         self.event_log = prepended;
+        self.prune_event_fingerprints();
         self.rebuild_durable_conversation_log();
         added
     }
@@ -342,6 +365,10 @@ impl TuiProjection {
         log_writer: &TuiLogWriter,
         display_mode: Option<OperatorDisplayMode>,
     ) {
+        self.adopt_event_log_epoch(event.data.event_log_epoch.as_deref());
+        if !self.accept_event_identity(&event.data) {
+            return;
+        }
         if self.has_event_identity(effective_stream_event_id(&event), event.data.event_seq) {
             return;
         }
@@ -398,7 +425,11 @@ impl TuiProjection {
             }
         }
         self.cursor = Some(event.data.event_seq);
+        self.prune_event_fingerprints();
 
+        if !can_apply_runtime_event(&event.data) {
+            return;
+        }
         match event.data.event_type.as_str() {
             "agent_state_changed" => {
                 if let Some(state) = decode_payload::<AgentState>(&event.data.payload) {
@@ -639,10 +670,72 @@ impl TuiProjection {
                 .any(|event| event.id.is_empty() && event.event_seq == event_seq)
     }
 
+    fn adopt_event_log_epoch(&mut self, incoming: Option<&str>) {
+        let Some(incoming) = incoming.filter(|epoch| !epoch.is_empty()) else {
+            return;
+        };
+        if self
+            .event_log_epoch
+            .as_deref()
+            .is_some_and(|epoch| epoch != incoming)
+        {
+            self.cursor = None;
+            self.clear_event_history();
+            self.live_working_activity_events.clear();
+            self.message_cache.clear();
+            self.brief_text_cache.clear();
+            self.presentation_reducer = crate::presentation::PresentationReducer::new();
+        }
+        self.event_log_epoch = Some(incoming.to_string());
+    }
+
+    fn accept_event_identity(&mut self, event: &StreamEventEnvelope) -> bool {
+        if event.event_seq == 0 {
+            return true;
+        }
+        let fingerprint = event_content_fingerprint(event);
+        if let Some(existing) = self.event_fingerprints.get(&event.event_seq) {
+            if existing == &fingerprint {
+                return true;
+            }
+            self.cursor = None;
+            self.clear_event_history();
+            self.live_working_activity_events.clear();
+            self.message_cache.clear();
+            self.brief_text_cache.clear();
+            self.presentation_reducer = crate::presentation::PresentationReducer::new();
+            self.mark_stale([
+                ProjectionSlice::Agent,
+                ProjectionSlice::Session,
+                ProjectionSlice::Tasks,
+                ProjectionSlice::Timers,
+                ProjectionSlice::WorkItems,
+                ProjectionSlice::ExternalTriggers,
+                ProjectionSlice::OperatorNotifications,
+                ProjectionSlice::Workspace,
+            ]);
+            return false;
+        }
+        self.event_fingerprints.insert(event.event_seq, fingerprint);
+        true
+    }
+
+    fn prune_event_fingerprints(&mut self) {
+        while self.event_fingerprints.len() > EVENT_HISTORY_LOG_LIMIT {
+            let Some(oldest) = self.event_fingerprints.keys().next().copied() else {
+                break;
+            };
+            self.event_fingerprints.remove(&oldest);
+        }
+    }
+
     fn seed_event_log(&mut self, events_tail: Vec<StreamEventEnvelope>) {
         let mut seen_ids = BTreeSet::new();
         let mut seen_seqs_without_ids = BTreeSet::new();
         for envelope in events_tail {
+            if !self.accept_event_identity(&envelope) {
+                return;
+            }
             if !envelope.id.is_empty() && !seen_ids.insert(envelope.id.clone()) {
                 continue;
             }
@@ -655,6 +748,7 @@ impl TuiProjection {
             let record = self.projection_event_record_from_envelope(envelope);
             push_limited(&mut self.event_log, record, EVENT_LOG_LIMIT);
         }
+        self.prune_event_fingerprints();
         self.rebuild_durable_conversation_log();
         if let Some(last_event) = self.event_log.last() {
             if self.cursor.is_none() {
@@ -1619,6 +1713,42 @@ fn effective_stream_event_id(event: &AgentStreamEvent) -> &str {
     }
 }
 
+fn event_log_epoch(events: &[StreamEventEnvelope]) -> Option<&str> {
+    events
+        .iter()
+        .find_map(|event| event.event_log_epoch.as_deref())
+        .filter(|epoch| !epoch.is_empty())
+}
+
+fn event_content_fingerprint(event: &StreamEventEnvelope) -> String {
+    serde_json::to_string(&serde_json::json!({
+        "id": event.id,
+        "ts": event.ts,
+        "type": event.event_type,
+        "contract_version": event.contract_version,
+        "payload_schema": event.payload_schema,
+        "payload_schema_version": event.payload_schema_version,
+        "provenance": event.provenance,
+        "payload": event.payload,
+    }))
+    .expect("runtime event envelope fingerprint must serialize")
+}
+
+fn can_apply_runtime_event(event: &StreamEventEnvelope) -> bool {
+    if event.contract_version < RUNTIME_EVENT_CONTRACT_VERSION {
+        return true;
+    }
+    if event.contract_version != RUNTIME_EVENT_CONTRACT_VERSION {
+        return false;
+    }
+    let Some(kind) = RuntimeEventKind::from_wire_name(&event.event_type) else {
+        return false;
+    };
+    let descriptor = kind.descriptor();
+    event.payload_schema == descriptor.payload_schema
+        && event.payload_schema_version == descriptor.payload_schema_version
+}
+
 fn summarize_event(event: &AgentStreamEvent) -> String {
     match event.data.event_type.as_str() {
         "message_enqueued" => decode_payload::<MessageEnvelope>(&event.data.payload)
@@ -1859,7 +1989,12 @@ mod tests {
     };
     use chrono::Utc;
     use serde_json::{json, Value};
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_SAMPLE_EVENT_SEQ: AtomicU64 = AtomicU64::new(1_000_000);
 
     fn test_log_writer() -> crate::tui::logging::TuiLogWriter {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap()
@@ -1899,6 +2034,10 @@ mod tests {
     fn projection_bootstrap_seeds_raw_event_log_from_snapshot_tail() {
         let snapshot = sample_snapshot();
         let events_tail = vec![StreamEventEnvelope {
+            event_log_epoch: Some("epoch-test".into()),
+            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+            payload_schema_version: 1,
             id: "evt-tail-1".into(),
             event_seq: 0,
             ts: Utc::now(),
@@ -2106,6 +2245,84 @@ mod tests {
     }
 
     #[test]
+    fn projection_resets_event_history_when_epoch_changes() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let mut old_event = sample_event_envelope("evt-old-epoch", 7);
+        old_event.event_log_epoch = Some("epoch-old".into());
+        projection.replace_event_window(vec![old_event], Some(7));
+        projection.set_event_history_state(Some(7), true);
+
+        let mut new_event = sample_event_envelope("evt-new-epoch", 1);
+        new_event.event_log_epoch = Some("epoch-new".into());
+        projection.merge_event_tail(vec![new_event], Some(1));
+
+        assert_eq!(projection.event_log_epoch.as_deref(), Some("epoch-new"));
+        assert_eq!(projection.cursor, Some(1));
+        assert_eq!(projection.history_oldest_cursor, None);
+        assert!(!projection.history_has_older);
+        assert_eq!(
+            projection
+                .event_log()
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt-new-epoch"]
+        );
+    }
+
+    #[test]
+    fn projection_rejects_conflicting_content_for_same_event_identity() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let old_event = sample_event_envelope_with_payload(
+            "evt-old",
+            7,
+            "tool_executed",
+            json!({ "tool_name": "ExecCommand", "summary": "old" }),
+        );
+        projection.replace_event_window(vec![old_event], Some(7));
+
+        let conflicting = sample_event_envelope_with_payload(
+            "evt-new",
+            7,
+            "tool_executed",
+            json!({ "tool_name": "ExecCommand", "summary": "new" }),
+        );
+        projection.merge_event_tail(vec![conflicting], Some(7));
+
+        assert_eq!(projection.cursor, None);
+        assert!(projection.event_log().is_empty());
+        assert!(projection.stale_slices.contains(&ProjectionSlice::Agent));
+        assert!(projection.stale_slices.contains(&ProjectionSlice::Tasks));
+        assert!(projection
+            .stale_slices
+            .contains(&ProjectionSlice::Workspace));
+    }
+
+    #[test]
+    fn projection_preserves_unknown_schema_without_applying_domain_transition() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let original_pending = projection.session.pending_count;
+        let mut event = sample_event(
+            "agent_state_changed",
+            json!({
+                "agent_id": "default",
+                "status": "awake_running",
+                "pending": original_pending + 10,
+                "turn_index": 99,
+                "attached_workspace_ids": [],
+                "worktree_active": false
+            }),
+        );
+        event.data.contract_version = crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
+        event.data.payload_schema = "holon.runtime_event.future_agent_state".into();
+
+        projection.apply_event(event, &test_log_writer());
+
+        assert_eq!(projection.session.pending_count, original_pending);
+        assert_eq!(projection.event_log().len(), 1);
+    }
+
+    #[test]
     fn projection_merges_tail_refresh_truncates_after_chronological_sort() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let events_tail = (0..EVENT_LOG_LIMIT)
@@ -2145,7 +2362,7 @@ mod tests {
             },
             &test_log_writer(),
         );
-        projection.merge_event_tail(vec![sample_event_envelope("evt-old-refresh", 1)], None);
+        projection.merge_event_tail(vec![sample_event_envelope("evt-existing-1", 1)], None);
 
         let ids = projection
             .event_log()
@@ -2161,9 +2378,9 @@ mod tests {
     #[test]
     fn projection_caps_prepended_history_and_keeps_cursor_on_retained_oldest() {
         let snapshot = sample_snapshot();
-        let events_tail = vec![sample_event_envelope("evt-live", 5000)];
+        let events_tail = vec![sample_event_envelope("evt-live", 20_000)];
         let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some(5000));
+        projection.replace_event_window(events_tail, Some(20_000));
 
         let first_page = (0..16_378)
             .rev()
@@ -2699,6 +2916,11 @@ mod tests {
                     id: format!("evt-callback-{index}"),
                     event: "callback_delivered".into(),
                     data: StreamEventEnvelope {
+                        event_log_epoch: Some("epoch-test".into()),
+                        contract_version:
+                            crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                        payload_schema_version: 1,
                         id: format!("evt-callback-{index}"),
                         event_seq: (index + 3) as u64,
                         ts: Utc::now(),
@@ -2776,6 +2998,11 @@ mod tests {
                     id: format!("evt-debug-{index}"),
                     event: "provider_round_completed".into(),
                     data: StreamEventEnvelope {
+                        event_log_epoch: Some("epoch-test".into()),
+                        contract_version:
+                            crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                        payload_schema_version: 1,
                         id: format!("evt-debug-{index}"),
                         event_seq: (index + 2) as u64,
                         ts: Utc::now(),
@@ -3358,10 +3585,11 @@ mod tests {
     }
 
     fn sample_event_with_id(id: &str, kind: &str, payload: Value) -> AgentStreamEvent {
+        let event_seq = NEXT_SAMPLE_EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
         AgentStreamEvent {
             id: id.to_string(),
             event: kind.to_string(),
-            data: sample_event_envelope_with_payload(id, 1, kind, payload),
+            data: sample_event_envelope_with_payload(id, event_seq, kind, payload),
         }
     }
 
@@ -3381,9 +3609,14 @@ mod tests {
         payload: Value,
     ) -> StreamEventEnvelope {
         StreamEventEnvelope {
+            event_log_epoch: Some("epoch-test".into()),
+            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+            payload_schema_version: 1,
             id: id.into(),
             event_seq,
-            ts: Utc::now(),
+            ts: chrono::DateTime::<Utc>::from_timestamp(event_seq as i64, 0)
+                .expect("sample event sequence must produce a valid timestamp"),
             agent_id: "default".into(),
             event_type: kind.into(),
             provenance: None,

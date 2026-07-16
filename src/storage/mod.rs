@@ -1140,6 +1140,10 @@ impl AppStorage {
             .latest_event_seq(self.current_agent_id()?.as_deref());
     }
 
+    pub fn event_log_epoch(&self) -> Result<String> {
+        self.runtime_db.event_log_epoch()
+    }
+
     pub(crate) fn read_event_page_matching<F>(
         &self,
         before_seq: Option<u64>,
@@ -2220,13 +2224,13 @@ mod tests {
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
         storage
-            .append_event(&AuditEvent::new(
+            .append_event(&AuditEvent::legacy(
                 "test_event",
                 serde_json::json!({ "n": 1 }),
             ))
             .unwrap();
         storage
-            .append_event(&AuditEvent::new(
+            .append_event(&AuditEvent::legacy(
                 "test_event",
                 serde_json::json!({ "n": 2 }),
             ))
@@ -2243,7 +2247,7 @@ mod tests {
 
         let reopened = AppStorage::new_for_test(dir.path()).unwrap();
         reopened
-            .append_event(&AuditEvent::new(
+            .append_event(&AuditEvent::legacy(
                 "test_event",
                 serde_json::json!({ "n": 3 }),
             ))
@@ -2260,7 +2264,7 @@ mod tests {
         let mut receiver = storage.subscribe_events().unwrap().unwrap();
 
         storage
-            .append_event(&AuditEvent::new(
+            .append_event(&AuditEvent::legacy(
                 "durable_before_publish",
                 serde_json::json!({}),
             ))
@@ -2306,7 +2310,7 @@ mod tests {
         let mut receiver = storage.subscribe_events().unwrap().unwrap();
 
         let error = storage
-            .append_event(&AuditEvent::new("rejected_event", serde_json::json!({})))
+            .append_event(&AuditEvent::legacy("rejected_event", serde_json::json!({})))
             .unwrap_err();
         assert!(error.to_string().contains("rejected audit event"));
         assert!(matches!(
@@ -2315,7 +2319,7 @@ mod tests {
         ));
 
         storage
-            .append_event(&AuditEvent::new("accepted_event", serde_json::json!({})))
+            .append_event(&AuditEvent::legacy("accepted_event", serde_json::json!({})))
             .unwrap();
 
         let published = receiver.try_recv().unwrap();
@@ -2351,7 +2355,7 @@ mod tests {
             .unwrap();
 
         storage
-            .append_event(&AuditEvent::new(
+            .append_event(&AuditEvent::legacy(
                 "live_event",
                 serde_json::json!({ "source": "storage" }),
             ))
@@ -2396,7 +2400,7 @@ mod tests {
             .unwrap();
 
         storage
-            .append_event(&AuditEvent::new(
+            .append_event(&AuditEvent::legacy(
                 "db_canonical_event",
                 serde_json::json!({ "source": "runtime_db" }),
             ))
@@ -2428,7 +2432,7 @@ mod tests {
             .unwrap();
 
         storage
-            .append_event(&AuditEvent::new(
+            .append_event(&AuditEvent::legacy(
                 "db_canonical_bootstrap_event",
                 serde_json::json!({ "source": "bootstrap_gap" }),
             ))
@@ -3865,10 +3869,10 @@ mod tests {
         let second = AppStorage::new_for_test(dir.path()).unwrap();
 
         first
-            .append_event(&AuditEvent::new("first", serde_json::json!({})))
+            .append_event(&AuditEvent::legacy("first", serde_json::json!({})))
             .unwrap();
         second
-            .append_event(&AuditEvent::new("second", serde_json::json!({})))
+            .append_event(&AuditEvent::legacy("second", serde_json::json!({})))
             .unwrap();
         first
             .append_message(&MessageEnvelope::new(

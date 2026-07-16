@@ -219,7 +219,7 @@ impl RuntimeHandle {
         record.terminal = Some(TurnTerminalSummary::from_terminal(terminal));
 
         self.inner.storage.append_turn(&record)?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "turn_record",
             serde_json::json!({
                 "turn_id": record.turn_id,
@@ -269,11 +269,11 @@ impl RuntimeHandle {
             record
         };
         self.persist_turn_record(&record).await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "turn_terminal",
             serde_json::to_value(&record)?,
         ))?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "turn_terminal_aborted",
             serde_json::json!({
                 "run_id": run_id,

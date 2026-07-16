@@ -98,6 +98,10 @@ pub fn audit_event_id() -> String {
     runtime_id("event")
 }
 
+pub(crate) fn event_log_epoch_id() -> String {
+    runtime_id("epoch")
+}
+
 pub fn work_item_delegation_id() -> String {
     runtime_id("delegation")
 }

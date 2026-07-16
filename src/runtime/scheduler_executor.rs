@@ -414,7 +414,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         record: Box::new(running_state.clone()),
                     }),
                     transcript_entries: Vec::new(),
-                    audit_events: vec![AuditEvent::new(
+                    audit_events: vec![AuditEvent::legacy(
                         "queue_entry_claimed",
                         serde_json::json!({
                             "message_id": queue_record.message_id,
@@ -467,7 +467,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         next_status: &AgentStatus,
         evidence: Vec<String>,
     ) -> Result<()> {
-        self.runtime.inner.storage.append_event(&AuditEvent::new(
+        self.runtime.inner.storage.append_event(&AuditEvent::legacy(
             "scheduler_posture_decision",
             serde_json::json!({
                 "boundary": boundary,

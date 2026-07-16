@@ -117,7 +117,7 @@ impl RuntimeHandle {
             return Err(anyhow!("git worktree add failed: {stderr}"));
         }
 
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "worktree_created_for_task",
             serde_json::json!({
                 "task_id": task_id,

@@ -69,7 +69,7 @@ impl RuntimeHandle {
         trigger: &ContinuationTrigger,
         prior_closure: &ClosureDecision,
     ) -> Result<()> {
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "continuation_trigger_received",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
@@ -90,7 +90,7 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         continuation_resolution: &ContinuationResolution,
     ) -> Result<()> {
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "continuation_resolved",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
@@ -174,7 +174,7 @@ impl RuntimeHandle {
                         result_brief_id,
                     )) = duplicate
                     {
-                        self.inner.storage.append_event(&AuditEvent::new(
+                        self.inner.storage.append_event(&AuditEvent::legacy(
                             "system_tick_suppressed",
                             serde_json::json!({
                                 "subsystem": "work_queue",
@@ -216,7 +216,7 @@ impl RuntimeHandle {
                         message_id,
                     )) = duplicate
                     {
-                        self.inner.storage.append_event(&AuditEvent::new(
+                        self.inner.storage.append_event(&AuditEvent::legacy(
                             "system_tick_suppressed",
                             serde_json::json!({
                                 "subsystem": "work_queue",
@@ -612,7 +612,7 @@ impl RuntimeHandle {
         message.work_item_id = work_item_id;
         message.correlation_id = correlation_id;
         message.causation_id = causation_id;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "wake_hint",
@@ -665,7 +665,7 @@ impl RuntimeHandle {
             }
         }));
         message.work_item_id = Some(work_item.id.clone());
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "work_queue",
@@ -729,7 +729,7 @@ impl RuntimeHandle {
                 "items": items
             }
         }));
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "work_item_recheck",
@@ -791,7 +791,7 @@ impl RuntimeHandle {
                 "items": items
             }
         }));
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "task_restart",

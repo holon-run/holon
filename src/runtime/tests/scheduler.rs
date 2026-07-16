@@ -386,7 +386,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
     }
     for event in events {
         storage
-            .append_event(&AuditEvent::new(event.kind, event.data))
+            .append_event(&AuditEvent::legacy(event.kind, event.data))
             .unwrap();
     }
     for brief in briefs {
@@ -575,7 +575,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
 
     let before = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     storage
-        .append_event(&AuditEvent::new(
+        .append_event(&AuditEvent::legacy(
             "turn_local_compaction_completed",
             serde_json::json!({
                 "agent_id": "default",
@@ -585,7 +585,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
         ))
         .unwrap();
     storage
-        .append_event(&AuditEvent::new(
+        .append_event(&AuditEvent::legacy(
             "turn_local_baseline_over_budget",
             serde_json::json!({
                 "agent_id": "default",

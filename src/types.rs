@@ -4676,25 +4676,68 @@ impl BriefRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuditEvent {
     pub id: String,
     #[serde(default)]
     pub event_seq: u64,
+    #[serde(default)]
+    pub event_log_epoch: String,
     pub created_at: DateTime<Utc>,
     pub kind: String,
+    #[serde(default = "crate::runtime_event::legacy_contract_version")]
+    pub contract_version: u32,
+    #[serde(default = "crate::runtime_event::legacy_payload_schema")]
+    pub payload_schema: String,
+    #[serde(default = "crate::runtime_event::legacy_payload_schema_version")]
+    pub payload_schema_version: u32,
     pub data: Value,
 }
 
 impl AuditEvent {
-    pub fn new(kind: impl Into<String>, data: Value) -> Self {
+    pub fn legacy(kind: impl Into<String>, data: Value) -> Self {
         Self {
             id: ids::audit_event_id(),
             event_seq: 0,
+            event_log_epoch: String::new(),
             created_at: Utc::now(),
             kind: kind.into(),
+            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
+            payload_schema_version: 1,
             data,
         }
+    }
+
+    pub fn typed<P>(
+        kind: crate::runtime_event::RuntimeEventKind,
+        payload: &P,
+    ) -> anyhow::Result<Self>
+    where
+        P: crate::runtime_event::RuntimeEventPayload,
+    {
+        let descriptor = kind.descriptor();
+        anyhow::ensure!(
+            descriptor.payload_schema == P::SCHEMA_ID
+                && descriptor.payload_schema_version == P::SCHEMA_VERSION,
+            "runtime event kind {} requires payload schema {}@{}, got {}@{}",
+            descriptor.wire_name,
+            descriptor.payload_schema,
+            descriptor.payload_schema_version,
+            P::SCHEMA_ID,
+            P::SCHEMA_VERSION
+        );
+        Ok(Self {
+            id: ids::audit_event_id(),
+            event_seq: 0,
+            event_log_epoch: String::new(),
+            created_at: Utc::now(),
+            kind: descriptor.wire_name.to_string(),
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: descriptor.payload_schema.to_string(),
+            payload_schema_version: descriptor.payload_schema_version,
+            data: serde_json::to_value(payload)?,
+        })
     }
 }
 

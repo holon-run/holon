@@ -188,7 +188,7 @@ mod tests {
             insert_audit_event_tx(
                 tx,
                 Some("agent-a"),
-                &AuditEvent::new("runtime_db_retry_body", serde_json::json!({})),
+                &AuditEvent::legacy("runtime_db_retry_body", serde_json::json!({})),
             )
         })?;
 
@@ -301,6 +301,7 @@ mod tests {
         for table in [
             "schema_migrations",
             "storage_domains",
+            "runtime_metadata",
             "agents",
             "audit_events",
             "runtime_sequences",
@@ -352,6 +353,107 @@ mod tests {
         )?;
         assert_eq!(readiness_index_count, 0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn event_log_epoch_is_stable_across_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let first_epoch = first.event_log_epoch()?;
+        assert!(first_epoch.starts_with("epoch_"));
+        drop(first);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(reopened.event_log_epoch()?, first_epoch);
+        Ok(())
+    }
+
+    #[test]
+    fn audit_event_identity_rejects_conflicting_content() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let event = AuditEvent::legacy("fixture", serde_json::json!({ "value": 1 }));
+        let first = db.audit_events().append(Some("agent-a"), &event)?;
+        let repeated = db.audit_events().append(Some("agent-a"), &event)?;
+        assert_eq!(repeated, first);
+
+        let mut conflicting_id = event.clone();
+        conflicting_id.data = serde_json::json!({ "value": 2 });
+        let error = db
+            .audit_events()
+            .append(Some("agent-a"), &conflicting_id)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("conflicting audit event content"));
+
+        let error = db
+            .audit_events()
+            .append(Some("agent-b"), &event)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("conflicting audit event agent identity"));
+
+        let mut conflicting_sequence =
+            AuditEvent::legacy("fixture", serde_json::json!({ "value": 3 }));
+        conflicting_sequence.event_seq = first.event_seq;
+        conflicting_sequence.event_log_epoch = first.event_log_epoch.clone();
+        let error = db
+            .transaction(|tx| {
+                crate::runtime_db::evidence::import_audit_event_tx(
+                    tx,
+                    Some("agent-a"),
+                    &conflicting_sequence,
+                )
+            })
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("conflicting audit event identity"));
+
+        let mut foreign_epoch = AuditEvent::legacy("fixture", serde_json::json!({ "value": 4 }));
+        foreign_epoch.id = "event-foreign-epoch".into();
+        foreign_epoch.event_seq = first.event_seq + 1;
+        foreign_epoch.event_log_epoch = "epoch-from-another-runtime".into();
+        let error = db
+            .transaction(|tx| {
+                crate::runtime_db::evidence::import_audit_event_tx(
+                    tx,
+                    Some("agent-a"),
+                    &foreign_epoch,
+                )
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("does not match runtime epoch"));
+
+        let mut imported = AuditEvent::legacy("fixture", serde_json::json!({ "value": 4 }));
+        imported.id = "event-imported".into();
+        imported.event_seq = first.event_seq + 1;
+        db.transaction(|tx| {
+            crate::runtime_db::evidence::import_audit_event_tx(tx, Some("agent-a"), &imported)
+        })?;
+        let persisted = db
+            .audit_events()
+            .page_after(Some("agent-a"), first.event_seq, 10)?;
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].event_log_epoch, first.event_log_epoch);
+
+        let mut conflicting_import_id = imported.clone();
+        conflicting_import_id.event_seq += 1;
+        let error = db
+            .transaction(|tx| {
+                crate::runtime_db::evidence::import_audit_event_tx(
+                    tx,
+                    Some("agent-a"),
+                    &conflicting_import_id,
+                )
+            })
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("conflicting audit event sequence"));
         Ok(())
     }
 
@@ -793,7 +895,7 @@ INSERT INTO queue_entries (
                 insert_audit_event_tx(
                     tx,
                     Some("agent-a"),
-                    &AuditEvent::new(
+                    &AuditEvent::legacy(
                         "runtime_db_locked_retry",
                         serde_json::json!({ "source": "test" }),
                     ),
@@ -831,7 +933,7 @@ INSERT INTO queue_entries (
             handles.push(std::thread::spawn(move || -> Result<()> {
                 writer.audit_events().append(
                     Some("agent-a"),
-                    &AuditEvent::new(
+                    &AuditEvent::legacy(
                         format!("runtime_db_concurrent_write_{index}"),
                         serde_json::json!({ "index": index }),
                     ),
@@ -881,7 +983,7 @@ INSERT INTO queue_entries (
                 insert_audit_event_tx(
                     tx,
                     Some("agent-a"),
-                    &AuditEvent::new("runtime_db_queue_first", serde_json::json!({})),
+                    &AuditEvent::legacy("runtime_db_queue_first", serde_json::json!({})),
                 )
             })
         });
@@ -897,7 +999,7 @@ INSERT INTO queue_entries (
                 insert_audit_event_tx(
                     tx,
                     Some("agent-a"),
-                    &AuditEvent::new("runtime_db_queue_second", serde_json::json!({})),
+                    &AuditEvent::legacy("runtime_db_queue_second", serde_json::json!({})),
                 )
             })?;
             done_tx
@@ -941,15 +1043,16 @@ INSERT INTO queue_entries (
 
         let event_a = first.audit_events().append(
             Some("agent-a"),
-            &AuditEvent::new("event-a", serde_json::json!({})),
+            &AuditEvent::legacy("event-a", serde_json::json!({})),
         )?;
         let event_b = second.audit_events().append(
             Some("agent-a"),
-            &AuditEvent::new("event-b", serde_json::json!({})),
+            &AuditEvent::legacy("event-b", serde_json::json!({})),
         )?;
-        let host_event = second
-            .audit_events()
-            .append(None, &AuditEvent::new("host-event", serde_json::json!({})))?;
+        let host_event = second.audit_events().append(
+            None,
+            &AuditEvent::legacy("host-event", serde_json::json!({})),
+        )?;
         assert_eq!((event_a.event_seq, event_b.event_seq), (1, 2));
         assert_eq!(host_event.event_seq, 1);
 
@@ -1028,7 +1131,7 @@ INSERT INTO queue_entries (
                 insert_audit_event_tx(
                     tx,
                     Some("agent-a"),
-                    &AuditEvent::new("runtime_db_append_blocker", serde_json::json!({})),
+                    &AuditEvent::legacy("runtime_db_append_blocker", serde_json::json!({})),
                 )
             })
         });
@@ -1040,7 +1143,7 @@ INSERT INTO queue_entries (
             insert_audit_event_tx(
                 tx,
                 Some("agent-a"),
-                &AuditEvent::new("runtime_db_append_async", serde_json::json!({})),
+                &AuditEvent::legacy("runtime_db_append_async", serde_json::json!({})),
             )
         })?;
         assert_eq!(db.audit_events().recent(Some("agent-a"), 10)?.len(), 0);
@@ -1990,7 +2093,7 @@ CREATE TABLE working_memory_deltas (
     fn audit_event_import_failure_is_retryable_and_idempotent() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let mut invalid = AuditEvent::new("legacy_audit", serde_json::json!({ "n": 1 }));
+        let mut invalid = AuditEvent::legacy("legacy_audit", serde_json::json!({ "n": 1 }));
         invalid.id = "audit-1".into();
         invalid.event_seq = u64::MAX;
 
@@ -2006,7 +2109,7 @@ CREATE TABLE working_memory_deltas (
             .expect("failed storage domain row");
         assert_eq!(failed.import_status, "failed");
 
-        let mut valid = AuditEvent::new("legacy_audit", serde_json::json!({ "n": 1 }));
+        let mut valid = AuditEvent::legacy("legacy_audit", serde_json::json!({ "n": 1 }));
         valid.id = "audit-1".into();
         valid.event_seq = 7;
         db.audit_events()

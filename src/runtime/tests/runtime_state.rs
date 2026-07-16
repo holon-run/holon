@@ -3613,7 +3613,7 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
                     record: record.clone(),
                 },
                 agent_state: None,
-                audit_events: vec![AuditEvent::new(
+                audit_events: vec![AuditEvent::legacy(
                     "post_commit_fault_test",
                     serde_json::json!({}),
                 )],

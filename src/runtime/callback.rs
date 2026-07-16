@@ -64,7 +64,7 @@ impl RuntimeHandle {
         }
 
         self.cache_external_trigger_projection(&descriptor).await;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "external_trigger_created",
             serde_json::json!({
                 "external_trigger_id": &descriptor.external_trigger_id,
@@ -134,7 +134,7 @@ impl RuntimeHandle {
         let descriptor_delivery_mode = updated_descriptor.delivery_mode.clone();
         let deprecated_enqueue_message_mapped_to_wake_hint =
             descriptor_delivery_mode == CallbackDeliveryMode::EnqueueMessage;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "callback_delivered",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -181,7 +181,7 @@ impl RuntimeHandle {
         revoked.revoked_at = Some(Utc::now());
         self.inner.runtime_db.external_triggers().upsert(&revoked)?;
         self.cache_external_trigger_projection(&revoked).await;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "external_trigger_revoked",
             serde_json::json!({
                 "external_trigger_id": revoked.external_trigger_id,
@@ -215,7 +215,7 @@ impl RuntimeHandle {
 
         if let Some(revoked) = revoked {
             self.cache_external_trigger_projection(&revoked).await;
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "external_trigger_revoked",
                 serde_json::json!({
                     "external_trigger_id": revoked.external_trigger_id,
@@ -227,7 +227,7 @@ impl RuntimeHandle {
         }
 
         self.cache_external_trigger_projection(&descriptor).await;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "external_trigger_created",
             serde_json::json!({
                 "external_trigger_id": &descriptor.external_trigger_id,

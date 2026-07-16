@@ -23,6 +23,10 @@ pub async fn events(
         .storage()
         .latest_event_seq()
         .map_err(error_response)?;
+    let event_log_epoch = runtime
+        .storage()
+        .event_log_epoch()
+        .map_err(error_response)?;
     let max_level = query.max_level;
     let filter_context = match max_level {
         Some(_) => Some(
@@ -56,10 +60,11 @@ pub async fn events(
     let events = page
         .events
         .iter()
-        .map(|event| stream_event_envelope(&agent_id, event))
+        .map(|event| stream_event_envelope(&agent_id, &event_log_epoch, event))
         .collect();
     Ok(Json(EventsPageResponse {
         events,
+        event_log_epoch,
         oldest_seq,
         newest_seq,
         cursor_seq,
@@ -152,6 +157,10 @@ pub async fn events_stream(
         .subscribe_events()
         .map_err(error_response)?
         .ok_or_else(|| error_response(anyhow!("event bus unavailable")))?;
+    let event_log_epoch = runtime
+        .storage()
+        .event_log_epoch()
+        .map_err(error_response)?;
     let events = runtime
         .storage()
         .read_recent_events(event_window_limit.saturating_add(1))
@@ -162,7 +171,10 @@ pub async fn events_stream(
     tokio::spawn(async move {
         let mut last_sent_seq = after_seq.unwrap_or(0);
         for event in buffered {
-            if send_stream_event(&tx, &runtime_id, &event).await.is_err() {
+            if send_stream_event(&tx, &runtime_id, &event_log_epoch, &event)
+                .await
+                .is_err()
+            {
                 return;
             }
             last_sent_seq = last_sent_seq.max(event.event_seq);
@@ -173,7 +185,7 @@ pub async fn events_stream(
                     if published.event.event_seq <= last_sent_seq {
                         continue;
                     }
-                    if send_stream_event(&tx, &runtime_id, &published.event)
+                    if send_stream_event(&tx, &runtime_id, &event_log_epoch, &published.event)
                         .await
                         .is_err()
                     {
@@ -213,9 +225,14 @@ pub async fn global_events_stream(
                     let Some(agent_id) = published.agent_id.as_deref() else {
                         continue;
                     };
-                    if send_stream_event(&tx, agent_id, &published.event)
-                        .await
-                        .is_err()
+                    if send_stream_event(
+                        &tx,
+                        agent_id,
+                        &published.event.event_log_epoch,
+                        &published.event,
+                    )
+                    .await
+                    .is_err()
                     {
                         break;
                     }
@@ -270,13 +287,25 @@ fn newest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
     .map(|event| event.event_seq)
 }
 
-fn stream_event_envelope(agent_id: &str, event: &AuditEvent) -> StreamEventEnvelope {
+fn stream_event_envelope(
+    agent_id: &str,
+    event_log_epoch: &str,
+    event: &AuditEvent,
+) -> StreamEventEnvelope {
     StreamEventEnvelope {
         id: event.id.clone(),
         event_seq: event.event_seq,
+        event_log_epoch: if event.event_log_epoch.is_empty() {
+            event_log_epoch.to_string()
+        } else {
+            event.event_log_epoch.clone()
+        },
+        contract_version: event.contract_version,
         ts: event.created_at,
         agent_id: agent_id.to_string(),
         event_type: event.kind.clone(),
+        payload_schema: event.payload_schema.clone(),
+        payload_schema_version: event.payload_schema_version,
         provenance: event_replay_provenance(&event.data),
         payload: event.data.clone(),
     }
@@ -285,12 +314,13 @@ fn stream_event_envelope(agent_id: &str, event: &AuditEvent) -> StreamEventEnvel
 async fn send_stream_event(
     tx: &tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>,
     agent_id: &str,
+    event_log_epoch: &str,
     event: &AuditEvent,
 ) -> std::result::Result<
     (),
     tokio::sync::mpsc::error::SendError<Result<Event, std::convert::Infallible>>,
 > {
-    let envelope = stream_event_envelope(agent_id, event);
+    let envelope = stream_event_envelope(agent_id, event_log_epoch, event);
     let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
     tx.send(Ok(Event::default()
         .id(envelope.event_seq.to_string())

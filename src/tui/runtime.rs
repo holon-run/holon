@@ -77,6 +77,7 @@ pub(super) enum TuiRuntimeMessage {
 type SnapshotBootstrapResult = (
     AgentStateSnapshotDto,
     Vec<StreamEventEnvelope>,
+    String,
     Option<u64>,
     Option<u64>,
     bool,
@@ -478,6 +479,7 @@ impl TuiApp {
                     anyhow::Ok((
                         snapshot,
                         events_page.events,
+                        events_page.event_log_epoch,
                         cursor_seq,
                         oldest_seq,
                         has_older,
@@ -508,20 +510,21 @@ impl TuiApp {
             return;
         }
         self.snapshot_refresh_in_flight = false;
-        let (snapshot, events_tail, newest_seq, oldest_seq, has_older) = match result {
-            Ok(result) => result,
-            Err(err) => {
-                if let Some(checkpoint) = checkpoint {
-                    self.restore_runtime_checkpoint(checkpoint);
-                    self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
-                } else {
-                    let reason = format!("failed to bootstrap {agent_id} from /state: {err}");
-                    self.schedule_refresh(reason);
-                    self.status_line = format!("Snapshot refresh failed for {agent_id}: {err}");
+        let (snapshot, events_tail, event_log_epoch, newest_seq, oldest_seq, has_older) =
+            match result {
+                Ok(result) => result,
+                Err(err) => {
+                    if let Some(checkpoint) = checkpoint {
+                        self.restore_runtime_checkpoint(checkpoint);
+                        self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
+                    } else {
+                        let reason = format!("failed to bootstrap {agent_id} from /state: {err}");
+                        self.schedule_refresh(reason);
+                        self.status_line = format!("Snapshot refresh failed for {agent_id}: {err}");
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         let same_agent = self
             .projection
             .as_ref()
@@ -538,6 +541,7 @@ impl TuiApp {
         } else {
             TuiProjection::from_bootstrap_dto(snapshot)
         };
+        projection.set_event_log_epoch(&event_log_epoch);
         projection.merge_event_tail(events_tail, newest_seq);
         projection.set_event_history_state_from_tail(oldest_seq, has_older);
         let cursor = projection.cursor.clone();
@@ -914,6 +918,7 @@ impl TuiApp {
             if projection.agent.identity.agent_id != agent_id {
                 return;
             }
+            projection.set_event_log_epoch(&page.event_log_epoch);
             let added =
                 projection.prepend_event_history_page(page.events, page.oldest_seq, page.has_older);
             (added, projection.history_has_older)

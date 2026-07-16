@@ -3,7 +3,7 @@ use crate::types::{AuditEvent, BriefKind, BriefRecord, MessageEnvelope};
 pub const QUEUED_WORK_ACK_PREFIX: &str = "Queued work: ";
 
 pub fn make_acknowledgement_event(message: &MessageEnvelope) -> AuditEvent {
-    AuditEvent::new(
+    AuditEvent::legacy(
         "message_acknowledged",
         serde_json::json!({
             "agent_id": &message.agent_id,

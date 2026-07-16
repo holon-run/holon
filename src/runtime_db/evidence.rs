@@ -636,17 +636,25 @@ pub(crate) fn append_audit_event_tx(
     agent_id: Option<&str>,
     event: &AuditEvent,
 ) -> Result<(AuditEvent, bool)> {
-    if let Some(payload) = tx
+    if let Some((existing_agent_id, payload)) = tx
         .query_row(
-            "SELECT data_json FROM audit_events WHERE audit_event_id = ?1",
+            "SELECT agent_id, data_json FROM audit_events WHERE audit_event_id = ?1",
             [&event.id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?
     {
-        return Ok((serde_json::from_str(&payload)?, false));
+        anyhow::ensure!(
+            existing_agent_id.as_deref() == agent_id,
+            "conflicting audit event agent identity for audit_event_id {}",
+            event.id
+        );
+        let existing: AuditEvent = serde_json::from_str(&payload)?;
+        ensure_same_audit_event_content(&existing, event, "audit_event_id")?;
+        return Ok((existing, false));
     }
     let mut event = event.clone();
+    event.event_log_epoch = event_log_epoch_tx(tx)?;
     event.event_seq = allocate_runtime_sequence_tx(
         tx,
         AUDIT_EVENT_SEQUENCE_DOMAIN,
@@ -661,17 +669,108 @@ pub(crate) fn import_audit_event_tx(
     agent_id: Option<&str>,
     event: &AuditEvent,
 ) -> Result<()> {
+    let current_epoch = event_log_epoch_tx(tx)?;
+    let mut event = event.clone();
+    if event.event_log_epoch.is_empty() {
+        event.event_log_epoch = current_epoch;
+    } else {
+        anyhow::ensure!(
+            event.event_log_epoch == current_epoch,
+            "audit event event-log epoch {} does not match runtime epoch {}",
+            event.event_log_epoch,
+            current_epoch
+        );
+    }
     if event.event_seq == 0 {
-        append_audit_event_tx(tx, agent_id, event)?;
+        append_audit_event_tx(tx, agent_id, &event)?;
         return Ok(());
     }
-    insert_audit_event_with_sequence_tx(tx, agent_id, event)?;
+    if let Some((existing_agent_id, payload)) = tx
+        .query_row(
+            "SELECT agent_id, data_json FROM audit_events WHERE audit_event_id = ?1",
+            [&event.id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+    {
+        anyhow::ensure!(
+            existing_agent_id.as_deref() == agent_id,
+            "conflicting audit event agent identity for audit_event_id {}",
+            event.id
+        );
+        let existing: AuditEvent = serde_json::from_str(&payload)?;
+        anyhow::ensure!(
+            existing.event_seq == event.event_seq,
+            "conflicting audit event sequence for audit_event_id {}",
+            event.id
+        );
+        ensure_same_audit_event_identity_content(&existing, &event)?;
+        return Ok(());
+    }
+    let event_seq = i64::try_from(event.event_seq)
+        .context("audit event sequence exceeds SQLite integer range")?;
+    if let Some(payload) = tx
+        .query_row(
+            "SELECT data_json FROM audit_events
+             WHERE agent_id IS ?1 AND event_seq = ?2",
+            params![agent_id, event_seq],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        let existing: AuditEvent = serde_json::from_str(&payload)?;
+        ensure_same_audit_event_identity_content(&existing, &event)?;
+        return Ok(());
+    }
+    insert_audit_event_with_sequence_tx(tx, agent_id, &event)?;
     observe_runtime_sequence_tx(
         tx,
         AUDIT_EVENT_SEQUENCE_DOMAIN,
         &audit_event_sequence_scope(agent_id),
         event.event_seq,
     )
+}
+
+fn event_log_epoch_tx(tx: &Transaction<'_>) -> Result<String> {
+    tx.query_row(
+        "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
+        [],
+        |row| row.get(0),
+    )
+    .context("runtime event-log epoch is missing")
+}
+
+fn ensure_same_audit_event_content(
+    existing: &AuditEvent,
+    incoming: &AuditEvent,
+    identity: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        existing.created_at == incoming.created_at
+            && existing.kind == incoming.kind
+            && existing.contract_version == incoming.contract_version
+            && existing.payload_schema == incoming.payload_schema
+            && existing.payload_schema_version == incoming.payload_schema_version
+            && existing.data == incoming.data,
+        "conflicting audit event content for {identity} {}",
+        existing.id
+    );
+    Ok(())
+}
+
+fn ensure_same_audit_event_identity_content(
+    existing: &AuditEvent,
+    incoming: &AuditEvent,
+) -> Result<()> {
+    anyhow::ensure!(
+        existing.id == incoming.id
+            && existing.created_at == incoming.created_at
+            && existing.event_log_epoch == incoming.event_log_epoch,
+        "conflicting audit event identity ({}, agent sequence {})",
+        existing.event_log_epoch,
+        existing.event_seq
+    );
+    ensure_same_audit_event_content(existing, incoming, "event identity")
 }
 
 fn insert_audit_event_with_sequence_tx(
@@ -681,11 +780,10 @@ fn insert_audit_event_with_sequence_tx(
 ) -> Result<()> {
     let event_seq = i64::try_from(event.event_seq)
         .context("audit event sequence exceeds SQLite integer range")?;
-    tx.execute(
+    let inserted = tx.execute(
         "INSERT INTO audit_events (
             audit_event_id, event_seq, agent_id, kind, created_at, data_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(audit_event_id) DO NOTHING",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             event.id,
             event_seq,
@@ -695,6 +793,12 @@ fn insert_audit_event_with_sequence_tx(
             serde_json::to_string(event)?,
         ],
     )?;
+    anyhow::ensure!(
+        inserted == 1,
+        "failed to insert audit event {} at sequence {}",
+        event.id,
+        event.event_seq
+    );
     Ok(())
 }
 

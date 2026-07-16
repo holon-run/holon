@@ -646,7 +646,7 @@ impl RuntimeHandle {
                 let _ = runtime
                     .inner
                     .storage
-                    .append_event(&crate::types::AuditEvent::new(
+                    .append_event(&crate::types::AuditEvent::legacy(
                         "command_task_runner_failed",
                         serde_json::json!({
                             "task_id": task_id,
@@ -800,7 +800,7 @@ impl RuntimeHandle {
         if let Err(err) = enqueue_result {
             self.inner
                 .storage
-                .append_event(&crate::types::AuditEvent::new(
+                .append_event(&crate::types::AuditEvent::legacy(
                     "command_task_result_enqueue_failed",
                     serde_json::json!({
                         "task_id": task_record.id,

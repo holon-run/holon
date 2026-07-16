@@ -2025,8 +2025,12 @@ mod tests {
         let event = |kind: &str, created_at, data| AuditEvent {
             id: holon::ids::audit_event_id(),
             event_seq: 0,
+            event_log_epoch: String::new(),
             created_at,
             kind: kind.into(),
+            contract_version: holon::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: holon::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+            payload_schema_version: 1,
             data,
         };
         let events = vec![

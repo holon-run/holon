@@ -3,12 +3,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agentBriefPatchFromEvents,
   canUseRemoteRuntimeConnections,
+  hasEventIdentityConflict,
   isLoopbackWebHostname,
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
   readStoredRuntimeConnectionConfig,
+  sessionForEventLogEpoch,
+  streamEventFromBackfill,
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
+import type { StreamEventEnvelopeDto } from "./client";
 import type { AgentSessionState } from "./runtime-store";
 
 class MemoryStorage implements Storage {
@@ -38,6 +42,111 @@ class MemoryStorage implements Storage {
     this.items.set(key, value);
   }
 }
+
+function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionState {
+  return {
+    loading: false,
+    loadingOlder: false,
+    liveStatus: "idle",
+    sendingPrompt: false,
+    detail: null,
+    eventsBySeq: {},
+    eventSeqs: [],
+    messagesById: {},
+    missingMessageIds: {},
+    transcriptEntriesById: {},
+    missingTranscriptEntryIds: {},
+    briefRecordsById: {},
+    missingBriefIds: {},
+    workItemDetailsById: {},
+    taskDetailsById: {},
+    toolExecutionDetailsById: {},
+    ...overrides,
+  };
+}
+
+describe("runtime event epoch", () => {
+  it("drops seq-indexed history and hydration caches when the epoch changes", () => {
+    const current = sessionState({
+      eventLogEpoch: "epoch-old",
+      eventsBySeq: { 7: { id: "evt-old" } },
+      eventSeqs: [7],
+      messagesById: { msg: { id: "msg" } },
+      newestSeq: 7,
+      oldestSeq: 7,
+    });
+
+    const reset = sessionForEventLogEpoch(current, "epoch-new");
+
+    expect(reset.eventLogEpoch).toBe("epoch-new");
+    expect(reset.eventsBySeq).toEqual({});
+    expect(reset.eventSeqs).toEqual([]);
+    expect(reset.messagesById).toEqual({});
+    expect(reset.newestSeq).toBeUndefined();
+    expect(reset.oldestSeq).toBeUndefined();
+  });
+
+  it("detects conflicting immutable content for the same epoch and sequence", () => {
+    const existing: StreamEventEnvelopeDto = {
+      id: "evt-1",
+      event_seq: 7,
+      event_log_epoch: "epoch-1",
+      contract_version: 1,
+      ts: "2026-07-16T00:00:00Z",
+      agent_id: "agent-1",
+      type: "legacy_event",
+      payload_schema: "holon.runtime_event.legacy",
+      payload_schema_version: 1,
+      provenance: {},
+      payload: { value: 1 },
+    };
+    const current = sessionState({
+      eventLogEpoch: "epoch-1",
+      eventsBySeq: { 7: existing },
+      eventSeqs: [7],
+    });
+
+    expect(hasEventIdentityConflict(current, [{ ...existing }])).toBe(false);
+    expect(
+      hasEventIdentityConflict(current, [
+        { ...existing, id: "evt-conflict", payload: { value: 2 } },
+      ]),
+    ).toBe(true);
+  });
+
+  it("preserves typed contract metadata when rebuilding gap backfill events", () => {
+    const provenance = {
+      source: "runtime",
+      correlation_id: "correlation-1",
+    };
+    const event = streamEventFromBackfill(
+      {
+        id: "evt-1",
+        event_seq: 7,
+        event_log_epoch: "",
+        contract_version: 2,
+        ts: "2026-07-16T00:00:00Z",
+        agent_id: "page-agent",
+        type: "brief_created",
+        payload_schema: "holon.runtime_event.brief_created",
+        payload_schema_version: 1,
+        provenance,
+        payload: { brief_id: "brief-1" },
+      },
+      "subscribed-agent",
+      "epoch-1",
+    );
+
+    expect(event).toMatchObject({
+      event_log_epoch: "epoch-1",
+      agent_id: "subscribed-agent",
+      contract_version: 2,
+      payload_schema: "holon.runtime_event.brief_created",
+      payload_schema_version: 1,
+      provenance,
+    });
+  });
+});
 
 function installWindow(localStorage: Storage, sessionStorage: Storage, hostname = "localhost") {
   vi.stubGlobal("window", {

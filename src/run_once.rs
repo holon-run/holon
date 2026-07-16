@@ -1377,11 +1377,12 @@ mod tests {
 
         runtime
             .storage()
-            .append_event(&AuditEvent::new("runtime_error", json!({})))?;
+            .append_event(&AuditEvent::legacy("runtime_error", json!({})))?;
         for index in 0..129 {
-            runtime
-                .storage()
-                .append_event(&AuditEvent::new("state_changed", json!({ "index": index })))?;
+            runtime.storage().append_event(&AuditEvent::legacy(
+                "state_changed",
+                json!({ "index": index }),
+            ))?;
         }
 
         let view = collect_run_poll_view(
@@ -1549,7 +1550,7 @@ mod tests {
 
     #[test]
     fn exec_command_event_task_id_reads_tool_executed_task_handle() {
-        let event = AuditEvent::new(
+        let event = AuditEvent::legacy(
             "tool_executed",
             json!({
                 "tool_name": "ExecCommand",
@@ -1604,7 +1605,7 @@ mod tests {
     #[test]
     fn aggregate_provider_cache_usage_sums_round_cache_tokens() {
         let events = vec![
-            AuditEvent::new(
+            AuditEvent::legacy(
                 "provider_round_completed",
                 json!({
                     "provider_cache_usage": {
@@ -1613,7 +1614,7 @@ mod tests {
                     }
                 }),
             ),
-            AuditEvent::new(
+            AuditEvent::legacy(
                 "provider_round_completed",
                 json!({
                     "provider_cache_usage": {
@@ -1622,7 +1623,7 @@ mod tests {
                     }
                 }),
             ),
-            AuditEvent::new("state_changed", json!({})),
+            AuditEvent::legacy("state_changed", json!({})),
         ];
 
         let usage = aggregate_provider_cache_usage(&events).expect("cache usage");

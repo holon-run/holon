@@ -101,7 +101,7 @@ impl RuntimeHandle {
                 }
             }
             update_tool_result_block_content(index, tool_results, &tool_result_envelopes[index])?;
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "work_item_completion_report_candidate_promoted",
                 serde_json::json!({
                     "agent_id": agent_id,
