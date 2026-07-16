@@ -132,7 +132,7 @@ async fn collect_sse_until_eof(response: reqwest::Response) -> Result<Vec<Parsed
 fn append_lag_events(runtime: &holon::runtime::RuntimeHandle, count: usize) -> Result<()> {
     let padding = "x".repeat(64 * 1024);
     for n in 0..count {
-        runtime.storage().append_event(&AuditEvent::new(
+        runtime.storage().append_event(&AuditEvent::legacy(
             "lag_test_event",
             serde_json::json!({ "n": n, "padding": padding }),
         ))?;
@@ -189,15 +189,15 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "test_event",
         serde_json::json!({ "n": 1 }),
     ))?;
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "test_event",
         serde_json::json!({ "n": 2 }),
     ))?;
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "test_event",
         serde_json::json!({ "n": 3 }),
     ))?;
@@ -386,6 +386,15 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
         replayed.data["ts"].as_str().expect("ts should be a string")
     )
     .is_ok());
+    assert!(replayed.data["event_log_epoch"]
+        .as_str()
+        .is_some_and(|epoch| epoch.starts_with("epoch_")));
+    assert_eq!(replayed.data["contract_version"].as_u64(), Some(1));
+    assert_eq!(
+        replayed.data["payload_schema"].as_str(),
+        Some("holon.runtime_event.legacy")
+    );
+    assert_eq!(replayed.data["payload_schema_version"].as_u64(), Some(1));
 
     server.abort();
     Ok(())
@@ -400,7 +409,7 @@ pub async fn events_stream_receives_live_events_without_polling_replay() -> Resu
         .get(format!("{base}/api/agents/default/events/stream"))
         .send()
         .await?;
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "live_test_event",
         serde_json::json!({ "live": true }),
     ))?;
@@ -422,7 +431,7 @@ pub async fn global_events_stream_receives_live_agent_events() -> Result<()> {
         .get(format!("{base}/api/events/stream"))
         .send()
         .await?;
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "global_live_test_event",
         serde_json::json!({ "global": true }),
     ))?;
@@ -531,7 +540,7 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "message_admitted",
         serde_json::json!({
             "agent_id": "default",
@@ -554,11 +563,11 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
     );
     brief.work_item_id = Some("work-stable".into());
     let brief_id = brief.id.clone();
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "brief_created",
         serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
     ))?;
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "task_status_updated",
         serde_json::json!({
             "agent_id": "default",
@@ -645,12 +654,12 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
             text: "visible operator input".into(),
         },
     );
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "message_enqueued",
         serde_json::to_value(operator_message)?,
     ))?;
     for index in 0..150 {
-        runtime.storage().append_event(&AuditEvent::new(
+        runtime.storage().append_event(&AuditEvent::legacy(
             "callback_delivered",
             serde_json::json!({
                 "waiting_intent_id": format!("wait-{index}"),
@@ -665,7 +674,7 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
         None,
         None,
     );
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "brief_created",
         serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
     ))?;
@@ -721,7 +730,7 @@ pub async fn events_stream_includes_tool_payload() -> Result<()> {
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "tool_executed",
         serde_json::json!({
             "agent_id": "default",
@@ -931,7 +940,7 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "assistant_round_recorded",
         serde_json::json!({
             "agent_id": "default",
@@ -1016,7 +1025,7 @@ pub async fn events_stream_preserves_raw_payload_with_control_auth() -> Result<(
 
     let after_seq = newest_event_seq(&base, &client, Some(&token)).await?;
 
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "workspace_used",
         serde_json::json!({
             "agent_id": "default",
@@ -1057,7 +1066,7 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "assistant_round_recorded",
         serde_json::json!({
             "agent_id": "default",
@@ -1099,7 +1108,7 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
         serde_json::json!(["ExecCommand"])
     );
 
-    runtime.storage().append_event(&AuditEvent::new(
+    runtime.storage().append_event(&AuditEvent::legacy(
         "tool_executed",
         serde_json::json!({
             "agent_id": "default",

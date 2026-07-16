@@ -137,10 +137,7 @@ async function fetchAgentDetail(
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
-    fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch((): EventPageResponseDto => ({
-      events: [],
-      has_older: false,
-    })),
+    fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch(emptyEventPage),
     // Return undefined on failure so projectAgent falls back to state.work_items.
     // Returning [] would shadow the state endpoint's work_items (empty array is not nullish).
     fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch(() => undefined),
@@ -160,11 +157,12 @@ async function fetchAgentDetail(
     agent,
     source: "http",
     timeline,
+    eventLogEpoch: events.event_log_epoch,
     events: events.events ?? [],
     briefRecordsById,
-    eventCursorSeq: events.cursor_seq,
-    newestEventSeq: events.newest_seq,
-    oldestEventSeq: events.oldest_seq,
+    eventCursorSeq: events.cursor_seq ?? undefined,
+    newestEventSeq: events.newest_seq ?? undefined,
+    oldestEventSeq: events.oldest_seq ?? undefined,
     hasOlderEvents: events.has_older,
   };
 }
@@ -231,30 +229,20 @@ type WorkItemTransportDto = SlimWorkItemDto | WorkItemDto;
 
 type BriefRecordDto = RuntimeBriefRecord;
 
-export interface EventPageResponseDto {
-  events?: EventEnvelopeDto[];
-  oldest_seq?: number;
-  newest_seq?: number;
-  cursor_seq?: number;
-  has_older?: boolean;
-}
+export type EventPageResponseDto = components["schemas"]["EventsPageResponse"];
+type GeneratedStreamEventEnvelopeDto = components["schemas"]["StreamEventEnvelope"];
+export type StreamEventEnvelopeDto = Partial<GeneratedStreamEventEnvelopeDto>;
+type EventEnvelopeDto = StreamEventEnvelopeDto;
 
-interface EventEnvelopeDto {
-  id?: string;
-  event_seq?: number;
-  ts?: string;
-  type?: string;
-  payload?: unknown;
-}
-
-export interface StreamEventEnvelopeDto {
-  id?: string;
-  event_seq?: number;
-  ts?: string;
-  agent_id?: string;
-  type?: string;
-  provenance?: unknown;
-  payload?: unknown;
+function emptyEventPage(): EventPageResponseDto {
+  return {
+    events: [],
+    event_log_epoch: "",
+    has_older: false,
+    has_newer: false,
+    order: "desc",
+    limit: 0,
+  };
 }
 
 export interface AgentEventStreamSubscription {
@@ -693,7 +681,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
     },
     async getAgentEvents(agentId: string, options: AgentEventPageOptions = {}): Promise<EventPageResponseDto> {
       if (!baseUrl) {
-        return { events: [], has_older: false };
+        return emptyEventPage();
       }
       return fetchAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
@@ -1177,7 +1165,13 @@ async function fetchAgentEvents(
   if (options.displayLevel) query.set("max_level", options.displayLevel);
   const queryString = query.toString();
   const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
-  return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
+  const response = await getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
+  return {
+    ...response,
+    events: response.events
+      .map((event) => decodeStreamEventEnvelope(event))
+      .filter((event): event is EventPageResponseDto["events"][number] => event != null),
+  };
 }
 
 async function fetchAgentWorkItems(
@@ -1405,7 +1399,32 @@ function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
     }
   }
   if (dataLines.length === 0) return undefined;
-  return JSON.parse(dataLines.join("\n")) as StreamEventEnvelopeDto;
+  return decodeStreamEventEnvelope(JSON.parse(dataLines.join("\n")));
+}
+
+function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const id = stringValue(record.id);
+  const eventSeq = typeof record.event_seq === "number" ? record.event_seq : undefined;
+  const timestamp = stringValue(record.ts);
+  const agentId = stringValue(record.agent_id);
+  const eventType = stringValue(record.type);
+  if (!id || eventSeq == null || !timestamp || !agentId || !eventType) return undefined;
+  return {
+    id,
+    event_seq: eventSeq,
+    event_log_epoch: stringValue(record.event_log_epoch) ?? "",
+    contract_version: typeof record.contract_version === "number" ? record.contract_version : 1,
+    ts: timestamp,
+    agent_id: agentId,
+    type: eventType,
+    payload_schema: stringValue(record.payload_schema) ?? "holon.runtime_event.legacy",
+    payload_schema_version:
+      typeof record.payload_schema_version === "number" ? record.payload_schema_version : 1,
+    provenance: record.provenance ?? {},
+    payload: record.payload,
+  };
 }
 
 async function fetchRuntimeBootstrap(

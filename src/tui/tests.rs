@@ -526,6 +526,10 @@ fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
             id: event_id.clone(),
             event: "brief_created".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: event_id,
                 event_seq: 0,
                 ts: brief.created_at,
@@ -549,6 +553,10 @@ fn apply_event(app: &mut TuiApp, event_type: &str, payload: serde_json::Value) {
             id: event_id.clone(),
             event: event_type.into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: event_id,
                 event_seq: 0,
                 ts: Utc::now(),
@@ -602,6 +610,10 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
     let mut app = TuiApp::new(client, log_writer);
     let snapshot = sample_snapshot("default", "evt-assistant");
     let events_tail = vec![StreamEventEnvelope {
+        event_log_epoch: Some("epoch-test".into()),
+        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+        payload_schema_version: 1,
         id: "evt-assistant".into(),
         event_seq: 1,
         ts: Utc::now(),
@@ -1150,6 +1162,10 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
         related_task_id: None,
     };
     let brief_event = StreamEventEnvelope {
+        event_log_epoch: Some("epoch-test".into()),
+        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+        payload_schema_version: 1,
         id: "evt-brief".into(),
         event_seq: 4,
         ts,
@@ -2874,6 +2890,10 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
             id: "evt-work".into(),
             event: "work_item_written".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-work".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -2903,6 +2923,10 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
             id: "evt-assistant".into(),
             event: "assistant_round_recorded".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-assistant".into(),
                 event_seq: 3,
                 ts: Utc::now(),
@@ -2944,6 +2968,10 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -2963,6 +2991,10 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
             id: "evt-state".into(),
             event: "agent_state_changed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-state".into(),
                 event_seq: 3,
                 ts: Utc::now(),
@@ -3009,6 +3041,10 @@ fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3051,6 +3087,10 @@ fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
             id: "evt-work-item-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-work-item-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3095,6 +3135,10 @@ fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
             id: "evt-list-work-items".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-list-work-items".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3153,6 +3197,10 @@ fn chat_display_mode_verbose_keeps_working_marker_without_activity_body() {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3195,6 +3243,10 @@ fn chat_text_omits_task_system_events() {
             id: "evt-task".into(),
             event: "task_result_received".into(),
             data: StreamEventEnvelope {
+            event_log_epoch: Some("epoch-test".into()),
+            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+            payload_schema_version: 1,
                 id: "evt-task".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3248,6 +3300,10 @@ fn chat_text_keeps_active_activity_after_brief_event() {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3267,6 +3323,10 @@ fn chat_text_keeps_active_activity_after_brief_event() {
             id: "evt-brief".into(),
             event: "brief_created".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-brief".into(),
                 event_seq: 3,
                 ts: Utc::now(),
@@ -3322,6 +3382,10 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3363,6 +3427,10 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
             id: "evt-a-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-a-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3389,6 +3457,10 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     let mut switched_snapshot = sample_snapshot("agent-b", "evt-b-tool");
     switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
     let events_tail = vec![StreamEventEnvelope {
+        event_log_epoch: Some("epoch-test".into()),
+        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+        payload_schema_version: 1,
         id: "evt-b-tool".into(),
         event_seq: 0,
         ts: Utc::now(),
@@ -3433,6 +3505,10 @@ fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -3517,6 +3593,10 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts,
@@ -4315,6 +4395,10 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
             id: "evt-old".into(),
             event: "provider_round_completed".into(),
             data: StreamEventEnvelope {
+                event_log_epoch: Some("epoch-test".into()),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                payload_schema_version: 1,
                 id: "evt-old".into(),
                 event_seq: 2,
                 ts: Utc::now(),
@@ -4338,6 +4422,10 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
                 id: "evt-new".into(),
                 event: "provider_round_completed".into(),
                 data: StreamEventEnvelope {
+                    event_log_epoch: Some("epoch-test".into()),
+                    contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                    payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+                    payload_schema_version: 1,
                     id: "evt-new".into(),
                     event_seq: 3,
                     ts: Utc::now(),
@@ -4704,6 +4792,10 @@ fn stale_projection_event_schedules_refresh() {
         id: "evt-stale".into(),
         event: "callback_delivered".into(),
         data: StreamEventEnvelope {
+            event_log_epoch: Some("epoch-test".into()),
+            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+            payload_schema_version: 1,
             id: "evt-stale".into(),
             event_seq: 2,
             ts: Utc::now(),
@@ -4985,6 +5077,10 @@ fn pipeline_event_envelope(
     payload: serde_json::Value,
 ) -> StreamEventEnvelope {
     StreamEventEnvelope {
+        event_log_epoch: Some("epoch-test".into()),
+        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
+        payload_schema_version: 1,
         id: id.into(),
         event_seq,
         ts: Utc::now(),

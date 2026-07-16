@@ -85,7 +85,7 @@ impl RuntimeHandle {
         record: &OperatorNotificationRecord,
     ) -> Result<()> {
         self.inner.storage.append_operator_notification(record)?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "operator_notification_requested",
             to_json_value(record),
         ))?;

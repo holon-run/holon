@@ -77,7 +77,7 @@ impl RuntimeHandle {
             let guard = self.inner.agent.lock().await;
             (guard.state.turn_index, guard.state.current_run_id.clone())
         };
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "turn_context_built",
             serde_json::json!({
                 "agent_id": message.agent_id.clone(),

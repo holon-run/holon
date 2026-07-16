@@ -643,6 +643,7 @@ export interface AgentDetail {
   timeline: AgentTimelineItem[];
   source: "http" | "fixture";
   error?: string;
+  eventLogEpoch?: string;
   events?: Array<{
     id?: string;
     event_seq?: number;

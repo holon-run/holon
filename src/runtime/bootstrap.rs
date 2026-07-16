@@ -923,7 +923,7 @@ fn prepare_runtime_storage(
         {
             storage.append_workspace_entry(&workspace)?;
         }
-        storage.append_event(&AuditEvent::new(
+        storage.append_event(&AuditEvent::legacy(
             "agent_home_workspace_bindings_migrated",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -938,7 +938,7 @@ fn prepare_runtime_storage(
         .as_ref()
         .is_some_and(|worktree| !worktree.worktree_path.exists())
     {
-        storage.append_event(&AuditEvent::new(
+        storage.append_event(&AuditEvent::legacy(
             "recovery_cleared_missing_worktree_session",
             serde_json::json!({
                 "agent_id": agent_id,

@@ -1346,7 +1346,7 @@ impl RuntimeHost {
                     }
                 }
                 if !cancelled_ids.is_empty() {
-                    let _ = storage.append_event(&crate::types::AuditEvent::new(
+                    let _ = storage.append_event(&crate::types::AuditEvent::legacy(
                         "wait_conditions_cancelled",
                         serde_json::json!({
                             "agent_id": agent_id,

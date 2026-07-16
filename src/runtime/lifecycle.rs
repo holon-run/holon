@@ -75,7 +75,7 @@ impl RuntimeHandle {
 
         let closure = self.current_closure_decision().await?;
         let Some(latest) = self.inner.runtime_db.work_items().latest(&work_item_id)? else {
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "work_item_turn_end_commit_skipped",
                 serde_json::json!({
                     "agent_id": self.agent_id().await?,
@@ -143,7 +143,7 @@ impl RuntimeHandle {
             latest
         };
 
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "work_item_turn_end_committed",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
@@ -234,10 +234,10 @@ impl RuntimeHandle {
 
     pub(super) fn append_state_changed_events(&self, state: &AgentState) -> Result<()> {
         let state_payload = AgentStateChangedEvent::from_state(state);
-        self.inner.storage.append_event(&AuditEvent::new(
-            "agent_state_changed",
-            to_json_value(&state_payload),
-        ))?;
+        self.inner.storage.append_event(&AuditEvent::typed(
+            RuntimeEventKind::AgentStateChanged,
+            &state_payload,
+        )?)?;
         Ok(())
     }
 
@@ -299,7 +299,7 @@ impl RuntimeHandle {
                 }
             }
         }
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "control_applied",
             serde_json::json!({
                 "requested_action": outcome.requested_action,
@@ -310,7 +310,7 @@ impl RuntimeHandle {
             }),
         ))?;
         if let Some(run_id) = outcome.aborted_run_id {
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "current_run_aborted",
                 serde_json::json!({
                     "agent_id": self.agent_id().await?,
@@ -331,7 +331,7 @@ impl RuntimeHandle {
         let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .request_shutdown(super::scheduler_executor::ShutdownReason::DaemonShutdown)
             .await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "runtime_service_shutdown_requested",
             serde_json::json!({
                 "aborted_run_id": &outcome.aborted_run_id,
@@ -340,7 +340,7 @@ impl RuntimeHandle {
             }),
         ))?;
         if let Some(run_id) = outcome.aborted_run_id {
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "current_run_aborted",
                 serde_json::json!({
                     "agent_id": self.agent_id().await?,
@@ -412,7 +412,7 @@ impl RuntimeHandle {
         let closure = self
             .current_closure_decision_with_runtime_error(runtime_error_override)
             .await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "closure_decided",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
@@ -908,7 +908,7 @@ impl RuntimeHandle {
         guard.persist_state(&self.inner.storage)?;
         let state = guard.state.clone();
         drop(guard);
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "workspace_attached",
             serde_json::json!({
                 "workspace_id": workspace.workspace_id,
@@ -975,7 +975,7 @@ impl RuntimeHandle {
             guard.state.id.clone()
         };
 
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "workspace_detached",
             serde_json::json!({
                 "agent_id": detached_agent_id,
@@ -1062,7 +1062,7 @@ impl RuntimeHandle {
         }
 
         for ws_id in &stale_ids {
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "workspace_detached",
                 serde_json::json!({
                     "agent_id": &agent_id,
@@ -1230,7 +1230,7 @@ impl RuntimeHandle {
         }
         let state = self.agent_state().await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "workspace_used",
             serde_json::json!({
                 "workspace_id": workspace.workspace_id,
@@ -1396,7 +1396,7 @@ impl RuntimeHandle {
         }
         let state = self.agent_state().await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "workspace_entered",
             serde_json::json!({
                 "workspace_id": workspace.workspace_id,
@@ -1539,7 +1539,7 @@ impl RuntimeHandle {
         }
         let state = self.agent_state().await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "workspace_entered",
             serde_json::json!({
                 "workspace_id": workspace.workspace_id,
@@ -1570,7 +1570,7 @@ impl RuntimeHandle {
 
         self.activate_agent_home(WorkspaceAccessMode::SharedRead, None)
             .await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "workspace_exited",
             serde_json::json!({
                 "workspace_id": active_entry.workspace_id,
@@ -1606,7 +1606,7 @@ impl RuntimeHandle {
             if let Some((work_item, reason)) = self.indefinite_sleep_runnable_work()? {
                 let state = {
                     let guard = self.inner.agent.lock().await;
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    self.inner.storage.append_event(&AuditEvent::legacy(
                         "scheduler_posture_decision",
                         serde_json::json!({
                             "boundary": "lifecycle_sleep",
@@ -1699,7 +1699,7 @@ impl RuntimeHandle {
                     "sleeping_until": sleeping_until,
                 }
             }));
-            let _ = runtime.inner.storage.append_event(&AuditEvent::new(
+            let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
                 "system_tick_emitted",
                 serde_json::json!({
                     "subsystem": "sleep_duration",

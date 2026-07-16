@@ -200,7 +200,7 @@ pub struct EventStreamQuery {
     pub(crate) limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EventPageOrder {
     Asc,
@@ -216,9 +216,10 @@ impl From<EventPageOrder> for EventLogPageOrder {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct EventsPageResponse {
     pub(crate) events: Vec<StreamEventEnvelope>,
+    pub(crate) event_log_epoch: String,
     pub(crate) oldest_seq: Option<u64>,
     pub(crate) newest_seq: Option<u64>,
     pub(crate) cursor_seq: Option<u64>,
@@ -254,7 +255,7 @@ pub struct BatchGetTranscriptEntriesResponse {
     pub missing_entry_ids: Vec<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, JsonSchema)]
 pub(crate) struct EventReplayProvenance {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) origin: Option<Value>,
@@ -282,14 +283,18 @@ pub(crate) struct EventReplayProvenance {
     pub(crate) causation_id: Option<Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct StreamEventEnvelope {
     pub(crate) id: String,
     pub(crate) event_seq: u64,
+    pub(crate) event_log_epoch: String,
+    pub(crate) contract_version: u32,
     pub(crate) ts: chrono::DateTime<Utc>,
     pub(crate) agent_id: String,
     #[serde(rename = "type")]
     pub(crate) event_type: String,
+    pub(crate) payload_schema: String,
+    pub(crate) payload_schema_version: u32,
     pub(crate) provenance: EventReplayProvenance,
     pub(crate) payload: Value,
 }

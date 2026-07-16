@@ -1225,7 +1225,7 @@ impl RuntimeHandle {
                 ..delegation.clone()
             };
             self.inner.storage.append_work_item_delegation(&completed)?;
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "work_item_delegation_completed",
                 serde_json::to_value(&completed)?,
             ))?;
@@ -1348,7 +1348,7 @@ impl RuntimeHandle {
             {
                 Ok(()) => reattached.push(task),
                 Err(error) => {
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    self.inner.storage.append_event(&AuditEvent::legacy(
                         "supervised_child_task_recovery_failed",
                         serde_json::json!({
                             "task_id": task.id,
@@ -2031,7 +2031,7 @@ impl RuntimeHandle {
             .as_ref()
             .and_then(|value| value.input_target.clone())
             .unwrap_or_else(|| "stdin".into());
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "task_input_delivered",
             serde_json::json!({
                 "task_id": task.id,
@@ -2098,7 +2098,7 @@ impl RuntimeHandle {
 
         let bytes_written = input.len() as u64;
         let input_target = "child_followup";
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "task_input_delivered",
             serde_json::json!({
                 "task_id": task.id,
@@ -2297,7 +2297,7 @@ impl RuntimeHandle {
         if let Some(frame) = target_yielded_frame {
             let resolved = frame.resume("explicit_pick");
             continuation_resolved = Some(continuation_summary(&resolved, "explicit_pick"));
-            audit_events.push(AuditEvent::new(
+            audit_events.push(AuditEvent::legacy(
                 "work_item_continuation_resumed",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -2313,7 +2313,7 @@ impl RuntimeHandle {
                 .latest_active_work_item_continuation_for_suspended(&agent_id, id)?
             {
                 let cancelled = frame.cancel("current_focus_reselected");
-                audit_events.push(AuditEvent::new(
+                audit_events.push(AuditEvent::legacy(
                     "work_item_continuation_cancelled",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -2350,7 +2350,7 @@ impl RuntimeHandle {
                     state.current_turn_id.clone(),
                 );
                 continuation_created = Some(continuation_summary(&frame, "pick_work_item"));
-                audit_events.push(AuditEvent::new(
+                audit_events.push(AuditEvent::legacy(
                     "work_item_continuation_created",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -2399,7 +2399,7 @@ impl RuntimeHandle {
             cancelled_wait_condition_ids,
             warnings,
         };
-        audit_events.push(AuditEvent::new(
+        audit_events.push(AuditEvent::legacy(
             "work_item_picked",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -2572,7 +2572,7 @@ impl RuntimeHandle {
                     state.current_turn_work_item_id = None;
                 }
                 if release_current || release_turn {
-                    audit_events.push(AuditEvent::new(
+                    audit_events.push(AuditEvent::legacy(
                         "work_item_focus_released",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -2645,7 +2645,7 @@ impl RuntimeHandle {
                 audit_events.push(event);
             }
         }
-        audit_events.push(AuditEvent::new(
+        audit_events.push(AuditEvent::legacy(
             "work_item_recheck_consumed",
             serde_json::json!({
                 "work_item_id": record.id.clone(),
@@ -2748,7 +2748,7 @@ impl RuntimeHandle {
             state.current_turn_work_item_id = None;
         }
         if release_current || release_turn {
-            audit_events.push(AuditEvent::new(
+            audit_events.push(AuditEvent::legacy(
                 "work_item_focus_released",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -2779,7 +2779,7 @@ impl RuntimeHandle {
                     let summary = continuation_summary(&resumed, "active_work_item_completed");
                     state.current_work_item_id = Some(suspended.id.clone());
                     state.current_turn_work_item_id = Some(suspended.id.clone());
-                    audit_events.push(AuditEvent::new(
+                    audit_events.push(AuditEvent::legacy(
                         "work_item_continuation_resumed",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -2788,7 +2788,7 @@ impl RuntimeHandle {
                             "resumed_work_item_id": suspended.id,
                         }),
                     ));
-                    audit_events.push(AuditEvent::new(
+                    audit_events.push(AuditEvent::legacy(
                         "work_item_continuation_scheduler_evidence",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -2808,7 +2808,7 @@ impl RuntimeHandle {
                         "suspended_work_item_missing"
                     };
                     let cancelled = frame.cancel(reason);
-                    audit_events.push(AuditEvent::new(
+                    audit_events.push(AuditEvent::legacy(
                         "work_item_continuation_cancelled",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -2821,7 +2821,7 @@ impl RuntimeHandle {
             }
         }
         if !cancelled_wait_condition_ids.is_empty() {
-            audit_events.push(AuditEvent::new(
+            audit_events.push(AuditEvent::legacy(
                 "wait_conditions_cancelled",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -2941,7 +2941,7 @@ impl RuntimeHandle {
                     expected_revision: record.revision - 1,
                 },
                 agent_state: None,
-                audit_events: vec![AuditEvent::new(
+                audit_events: vec![AuditEvent::legacy(
                     "work_item_completion_report_promoted",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -2978,7 +2978,7 @@ impl RuntimeHandle {
         source_round: Option<usize>,
     ) -> Result<()> {
         let agent_id = self.agent_id().await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "work_item_completion_warning",
             serde_json::json!({
                 "agent_id": agent_id,

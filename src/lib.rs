@@ -37,6 +37,7 @@ pub mod queue;
 pub mod run_once;
 pub mod runtime;
 pub mod runtime_db;
+pub mod runtime_event;
 pub mod skills;
 pub mod solve;
 pub mod storage;

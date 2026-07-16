@@ -71,7 +71,7 @@ impl RuntimeHandle {
             return Ok(None);
         }
 
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "turn_context_length_exceeded",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -139,7 +139,7 @@ impl RuntimeHandle {
             guard.persist_state(&self.inner.storage)?;
             record
         };
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "turn_terminal",
             serde_json::to_value(&record)?,
         ))?;
@@ -180,7 +180,7 @@ impl RuntimeHandle {
             side_effect_boundary_crossed,
             &provider_failure_text,
         );
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "lineage_retry_exhausted",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -210,7 +210,7 @@ impl RuntimeHandle {
         } else {
             "deferred_to_fallback"
         };
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             event_kind,
             serde_json::json!({
                 "agent_id": agent_id,
@@ -248,7 +248,7 @@ impl RuntimeHandle {
             "side_effect_boundary_crossed": side_effect_boundary_crossed,
         }));
         let queued = self.enqueue(message).await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "recovery_turn_started",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -378,7 +378,7 @@ impl RuntimeHandle {
                     created_at: message.created_at,
                     updated_at: chrono::Utc::now(),
                 };
-                let audit_event = AuditEvent::new(
+                let audit_event = AuditEvent::legacy(
                     "operator_interjection_admitted",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -634,7 +634,7 @@ impl TurnExecution<'_> {
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
-        runtime.inner.storage.append_event(&AuditEvent::new(
+        runtime.inner.storage.append_event(&AuditEvent::legacy(
             "lineage_selected",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -645,7 +645,7 @@ impl TurnExecution<'_> {
             }),
         ))?;
         if let Some(pending) = turn_pending_fallback_model.as_ref() {
-            runtime.inner.storage.append_event(&AuditEvent::new(
+            runtime.inner.storage.append_event(&AuditEvent::legacy(
                 "pending_model_promoted",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -839,7 +839,7 @@ impl TurnExecution<'_> {
                     ) {
                         Some((work_item, reminder))
                     } else {
-                        let event = AuditEvent::new(
+                        let event = AuditEvent::legacy(
                             "work_item_stale_reminder_skipped",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -858,7 +858,7 @@ impl TurnExecution<'_> {
                     None
                 };
                 if let Some((work_item, reminder)) = stale_work_item_reminder.as_ref() {
-                    runtime.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "work_item_stale_reminder_injected",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -880,7 +880,7 @@ impl TurnExecution<'_> {
 
                     if turns_elapsed >= budget.max_turns.saturating_sub(1) {
                         let warning = build_turn_budget_warning(budget.max_turns, turns_elapsed);
-                        runtime.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "turn_budget_warning_injected",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -949,7 +949,7 @@ impl TurnExecution<'_> {
                                 continue;
                             };
                             recent_turns_retry_attempts += 1;
-                            runtime.inner.storage.append_event(&AuditEvent::new(
+                            runtime.inner.storage.append_event(&AuditEvent::legacy(
                                 "turn_local_recent_turns_retry",
                                 serde_json::json!({
                                     "agent_id": agent_id,
@@ -967,7 +967,7 @@ impl TurnExecution<'_> {
                             recent_turns_budget = Some(next_budget);
                         }
                         TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
-                            runtime.inner.storage.append_event(&AuditEvent::new(
+                            runtime.inner.storage.append_event(&AuditEvent::legacy(
                                 "turn_local_baseline_over_budget",
                                 serde_json::json!({
                                     "agent_id": agent_id,
@@ -1015,7 +1015,7 @@ impl TurnExecution<'_> {
                     }
                 };
                 if let Some(compaction) = projection.compaction.as_ref() {
-                    runtime.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "turn_local_compaction_applied",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -1048,7 +1048,7 @@ impl TurnExecution<'_> {
                             base_round: compaction.checkpoint_base_round,
                             text_fragments: Vec::new(),
                         });
-                        runtime.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "turn_local_checkpoint_requested",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -1261,7 +1261,7 @@ impl TurnExecution<'_> {
                 .as_ref()
                 .map(|(_, _, requested_at_round)| *requested_at_round);
 
-            runtime.inner.storage.append_event(&AuditEvent::new(
+            runtime.inner.storage.append_event(&AuditEvent::legacy(
                 "provider_round_completed",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -1348,7 +1348,7 @@ impl TurnExecution<'_> {
                     });
                     checkpoint_state.mark_operator_delivery_pending();
                 }
-                runtime.inner.storage.append_event(&AuditEvent::new(
+                runtime.inner.storage.append_event(&AuditEvent::legacy(
                     "turn_local_checkpoint_recorded",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -1409,7 +1409,7 @@ impl TurnExecution<'_> {
             if round_purpose == AssistantRoundPurpose::AgentResponse {
                 last_assistant_round_id = Some(assistant_round_id.clone());
             }
-            runtime.inner.storage.append_event(&AuditEvent::new(
+            runtime.inner.storage.append_event(&AuditEvent::legacy(
                 "assistant_round_recorded",
                 serde_json::json!({
                     "assistant_round_id": assistant_round_id,
@@ -1440,7 +1440,7 @@ impl TurnExecution<'_> {
             ))?;
 
             if tool_calls.is_empty() {
-                runtime.inner.storage.append_event(&AuditEvent::new(
+                runtime.inner.storage.append_event(&AuditEvent::legacy(
                     "text_only_round_observed",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -1539,7 +1539,7 @@ impl TurnExecution<'_> {
                             "reason": "max_output_tokens",
                         }),
                     ))?;
-                    runtime.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "max_output_tokens_recovery",
                         serde_json::json!({
                             "agent_id": agent_id,
@@ -1566,7 +1566,7 @@ impl TurnExecution<'_> {
                         "reason": "turn_local_checkpoint",
                     }),
                 ))?;
-                runtime.inner.storage.append_event(&AuditEvent::new(
+                runtime.inner.storage.append_event(&AuditEvent::legacy(
                     "turn_local_checkpoint_resume_requested",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -1594,7 +1594,7 @@ impl TurnExecution<'_> {
                                 "reason": "checkpoint_operator_delivery_pending",
                             }),
                         ))?;
-                        runtime.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "checkpoint_operator_delivery_retry",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -1698,7 +1698,7 @@ impl TurnExecution<'_> {
                     };
                     runtime.persist_tool_execution_evidence(&failed_record)?;
                     tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
-                    runtime.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "tool_execution_failed",
                         to_json_value(&ToolExecutionAuditEvent {
                             tool_call_id: tool_call_id.clone(),
@@ -1765,7 +1765,7 @@ impl TurnExecution<'_> {
                     .with_retryable(true);
                     let result = crate::tool::ToolResult::error(&tool_name, error.clone());
                     let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
-                    runtime.inner.storage.append_event(&AuditEvent::new(
+                    runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "truncated_mutation_tool_call_rejected",
                         serde_json::json!({
                             "tool_call_id": tool_call_id.clone(),
@@ -1856,7 +1856,7 @@ impl TurnExecution<'_> {
                                 .await?;
                         }
 
-                        runtime.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "tool_executed",
                             to_json_value(&ToolExecutionAuditEvent {
                                 tool_call_id: tool_call_id.clone(),
@@ -1961,7 +1961,7 @@ impl TurnExecution<'_> {
                         };
                         runtime.persist_tool_execution_evidence(&failed_record)?;
                         tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
-                        runtime.inner.storage.append_event(&AuditEvent::new(
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "tool_execution_failed",
                             to_json_value(&ToolExecutionAuditEvent {
                                 tool_call_id: tool_call_id.clone(),

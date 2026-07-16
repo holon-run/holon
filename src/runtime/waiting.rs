@@ -114,7 +114,7 @@ impl RuntimeHandle {
         let mut index_changes = Vec::new();
         let mut committed_agent_state = None;
         if !cancelled_wait_condition_ids.is_empty() {
-            audit_events.push(AuditEvent::new(
+            audit_events.push(AuditEvent::legacy(
                 "wait_conditions_cancelled",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -167,7 +167,7 @@ impl RuntimeHandle {
             }
             if state.current_turn_work_item_id.as_deref() == Some(updated.id.as_str()) {
                 state.current_turn_work_item_id = None;
-                audit_events.push(AuditEvent::new(
+                audit_events.push(AuditEvent::legacy(
                     "work_item_turn_binding_released",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -183,7 +183,7 @@ impl RuntimeHandle {
                 && state.current_work_item_id.as_deref() == Some(updated.id.as_str())
             {
                 state.current_work_item_id = None;
-                audit_events.push(AuditEvent::new(
+                audit_events.push(AuditEvent::legacy(
                     "work_item_focus_released",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -233,7 +233,7 @@ impl RuntimeHandle {
                 .storage
                 .wait_condition_auxiliary_events(&condition),
         );
-        audit_events.push(AuditEvent::new(
+        audit_events.push(AuditEvent::legacy(
             "wait_condition_registered",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -313,7 +313,7 @@ impl RuntimeHandle {
 
         let mut audit_events = Vec::new();
         if !cancelled_wait_condition_ids.is_empty() {
-            audit_events.push(AuditEvent::new(
+            audit_events.push(AuditEvent::legacy(
                 "wait_conditions_cancelled",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -414,7 +414,7 @@ impl RuntimeHandle {
             WakeDisposition::Coalesced => "wake_hint_coalesced",
             WakeDisposition::Ignored => "wake_hint_ignored",
         };
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             event_kind,
             serde_json::json!({
                 "agent_id": runtime_agent_id,
@@ -489,7 +489,7 @@ impl RuntimeHandle {
         self.record_timer_projection(&timer).await?;
         self.inner
             .storage
-            .append_event(&AuditEvent::new("timer_created", to_json_value(&timer)))?;
+            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)))?;
         self.spawn_timer_loop(timer.clone());
 
         Ok(timer)
@@ -515,7 +515,7 @@ impl RuntimeHandle {
         timer.status = TimerStatus::Cancelled;
         timer.next_fire_at = None;
         self.record_timer_projection(&timer).await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "timer_cancelled",
             serde_json::json!({
                 "timer_id": timer.id,
@@ -550,7 +550,7 @@ impl RuntimeHandle {
                     tokio::time::sleep(wait).await;
                 }
                 if let Err(err) = runtime.fire_timer_record(&mut timer).await {
-                    let _ = runtime.inner.storage.append_event(&AuditEvent::new(
+                    let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "timer_fire_failed",
                         serde_json::json!({
                             "timer_id": timer.id,
@@ -627,7 +627,7 @@ impl RuntimeHandle {
             timer.next_fire_at = None;
         }
         self.record_timer_projection(timer).await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "timer_fired",
             serde_json::json!({
                 "timer_id": timer.id,
@@ -770,7 +770,7 @@ impl RuntimeHandle {
             }
             self.inner
                 .storage
-                .append_event(&AuditEvent::new("wait_reconciliation_requested", signal))?;
+                .append_event(&AuditEvent::legacy("wait_reconciliation_requested", signal))?;
         }
         Ok(())
     }

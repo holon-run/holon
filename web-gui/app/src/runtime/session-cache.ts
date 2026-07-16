@@ -65,6 +65,7 @@ export function extractCacheableSession(
     remoteKey,
     agentId,
     schemaVersion: CACHE_SCHEMA_VERSION,
+    eventLogEpoch: session.eventLogEpoch,
     eventsBySeq,
     eventSeqs,
     messagesById: session.messagesById as Record<string, unknown>,
@@ -82,6 +83,7 @@ export function extractCacheableSession(
  */
 export function hydrateSessionFromCache(cached: CachedAgentSession): Partial<AgentSessionState> {
   return {
+    eventLogEpoch: cached.eventLogEpoch,
     eventsBySeq: cached.eventsBySeq,
     eventSeqs: cached.eventSeqs,
     messagesById: cached.messagesById as Record<string, RuntimeMessageEnvelope>,

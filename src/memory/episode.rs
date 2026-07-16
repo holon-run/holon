@@ -215,7 +215,7 @@ fn finalize_active_episode_before_merge(
 
     let record = finalize_episode(agent, builder, boundary_reason);
     storage.append_context_episode(&record)?;
-    storage.append_event(&crate::types::AuditEvent::new(
+    storage.append_event(&crate::types::AuditEvent::legacy(
         "episode_memory_finalized",
         serde_json::json!({
             "agent_id": agent.id,

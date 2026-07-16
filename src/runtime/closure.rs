@@ -472,7 +472,7 @@ mod tests {
         let base = Utc::now();
         let older_error = AuditEvent {
             created_at: base,
-            ..AuditEvent::new("runtime_error", serde_json::json!({}))
+            ..AuditEvent::legacy("runtime_error", serde_json::json!({}))
         };
         let newer_success = BriefRecord {
             created_at: base + Duration::milliseconds(1),
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn runtime_error_active_stays_true_without_later_success_brief() {
-        let error = AuditEvent::new("runtime_error", serde_json::json!({}));
+        let error = AuditEvent::legacy("runtime_error", serde_json::json!({}));
 
         assert!(runtime_error_active(&[error], &[]));
     }

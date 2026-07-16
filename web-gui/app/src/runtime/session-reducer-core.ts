@@ -37,7 +37,7 @@ import type {
   RuntimeBriefRecord,
   RuntimeTranscriptEntry,
 } from "./types";
-import type { SessionEventEnvelope } from "./session-events";
+import { canApplySessionEvent, type SessionEventEnvelope } from "./session-events";
 import { createSessionState, getObject, upsertObject } from "./session-state-reducer";
 import type { SessionState } from "./session-state-reducer";
 import type {
@@ -152,6 +152,7 @@ interface ApplyContext {
  */
 function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: ApplyContext): void {
   if (!event.id && event.event_seq == null) return;
+  if (!canApplySessionEvent(event)) return;
 
   const eventId = event.id ?? `event-${event.event_seq}`;
   const eventType = event.type ?? "runtime_event";

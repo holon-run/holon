@@ -1,9 +1,16 @@
 export interface SequencedEvent {
   event_seq?: number;
+  event_log_epoch?: string;
+}
+
+export interface SequencedEventPage<T extends SequencedEvent> {
+  events: T[];
+  eventLogEpoch?: string;
 }
 
 interface AgentRecoveryState {
   generation: number;
+  eventLogEpoch?: string;
   contiguousSeq: number;
   highestObservedSeq: number;
   observationVersion: number;
@@ -30,10 +37,11 @@ export class EventGapRecoveryTracker {
     this.states.clear();
   }
 
-  register(agentId: string, baselineSeq?: number): void {
+  register(agentId: string, baselineSeq?: number, eventLogEpoch?: string): void {
     if (baselineSeq == null || this.states.has(agentId)) return;
     this.states.set(agentId, {
       generation: this.nextGeneration++,
+      eventLogEpoch: normalizeEpoch(eventLogEpoch),
       contiguousSeq: baselineSeq,
       highestObservedSeq: baselineSeq,
       observationVersion: 0,
@@ -45,11 +53,13 @@ export class EventGapRecoveryTracker {
     this.states.delete(agentId);
   }
 
-  observe(agentId: string, seq: number): AgentRecoverySnapshot {
+  observe(agentId: string, seq: number, eventLogEpoch?: string): AgentRecoverySnapshot {
+    this.adoptEpoch(agentId, eventLogEpoch);
     let state = this.states.get(agentId);
     if (!state) {
       state = {
         generation: this.nextGeneration++,
+        eventLogEpoch: normalizeEpoch(eventLogEpoch),
         contiguousSeq: seq,
         highestObservedSeq: seq,
         observationVersion: 0,
@@ -65,6 +75,26 @@ export class EventGapRecoveryTracker {
       state.contiguousSeq = seq;
     }
     return this.snapshot(state);
+  }
+
+  adoptEpoch(agentId: string, eventLogEpoch?: string): boolean {
+    const incomingEpoch = normalizeEpoch(eventLogEpoch);
+    const state = this.states.get(agentId);
+    if (!incomingEpoch || !state) return false;
+    if (!state.eventLogEpoch) {
+      state.eventLogEpoch = incomingEpoch;
+      return false;
+    }
+    if (state.eventLogEpoch === incomingEpoch) return false;
+    this.states.set(agentId, {
+      generation: this.nextGeneration++,
+      eventLogEpoch: incomingEpoch,
+      contiguousSeq: 0,
+      highestObservedSeq: 0,
+      observationVersion: 0,
+      backfillInFlight: false,
+    });
+    return true;
   }
 
   snapshotFor(agentId: string): AgentRecoverySnapshot | undefined {
@@ -141,20 +171,29 @@ export async function recoverEventGap<T extends SequencedEvent>(
   options: {
     force?: boolean;
     limit: number;
-    fetchPage: (afterSeq: number) => Promise<T[]>;
+    fetchPage: (afterSeq: number) => Promise<SequencedEventPage<T>>;
     applyEvents: (events: T[]) => void;
   },
 ): Promise<void> {
   let cycle = tracker.beginBackfill(agentId, options.force ?? false);
   if (!cycle) return;
-  const initialCycle = cycle;
+  let cleanupCycle = cycle;
 
   try {
     while (cycle) {
       let cursor = cycle.afterSeq;
       let hasMore = true;
       while (hasMore) {
-        const events = (await options.fetchPage(cursor)).filter((event) => event.event_seq != null);
+        const page = await options.fetchPage(cursor);
+        if (tracker.adoptEpoch(agentId, page.eventLogEpoch)) {
+          const restartedCycle = tracker.beginBackfill(agentId, true);
+          if (!restartedCycle) return;
+          cycle = restartedCycle;
+          cleanupCycle = restartedCycle;
+          cursor = restartedCycle.afterSeq;
+          continue;
+        }
+        const events = page.events.filter((event) => event.event_seq != null);
         if (!events.length) break;
 
         const snapshot = tracker.acceptBackfill(
@@ -171,6 +210,10 @@ export async function recoverEventGap<T extends SequencedEvent>(
       cycle = tracker.nextCycle(agentId, cycle);
     }
   } finally {
-    tracker.endBackfill(agentId, initialCycle);
+    tracker.endBackfill(agentId, cleanupCycle);
   }
+}
+
+function normalizeEpoch(eventLogEpoch?: string): string | undefined {
+  return eventLogEpoch || undefined;
 }

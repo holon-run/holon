@@ -76,7 +76,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/agents/{agent_id}/briefs/{brief_id}", "agentBrief", "agents", "Brief detail", "Return a persisted user-facing delivery brief by id.", None, "BriefRecord", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the lightweight bootstrap snapshot for an agent. Heavy task, work-item, operator notification, and execution details are available through dedicated routes and events.", None, "AgentStateSnapshotDto", AuthKind::RemoteAccess),
     event_stream_route("get", "/events/stream", "eventsStream", "events", "Global event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor. If the receiver lags, the server closes the stream; clients must backfill each agent from its last contiguous event_seq before reconnecting.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/events", "agentEvents", "events", "Agent event page", "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/events", "agentEvents", "events", "Agent event page", "Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload.", None, "EventsPageResponse", AuthKind::RemoteAccess),
     event_stream_route("get", "/agents/{agent_id}/events/stream", "agentEventsStream", "events", "Agent event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/messages/{message_id}", "agentMessage", "messages", "Message detail", "Return a persisted message envelope by id for the selected agent.", None, AuthKind::RemoteAccess),
     route_with_response("post", "/agents/{agent_id}/messages:batchGet", "agentMessagesBatchGet", "messages", "Batch get messages", "Return persisted message envelopes for the selected agent. Missing or cross-agent ids are reported in missing_message_ids.", Some("BatchGetMessagesRequest"), "BatchGetMessagesResponse", AuthKind::RemoteAccess),
@@ -589,6 +589,14 @@ fn component_schemas() -> Value {
         "AgentStateSnapshotDto".into(),
         component_schema::<AgentStateSnapshotDto>(),
     );
+    schemas.insert(
+        "StreamEventEnvelope".into(),
+        component_schema::<crate::http::StreamEventEnvelope>(),
+    );
+    schemas.insert(
+        "EventsPageResponse".into(),
+        component_schema::<crate::http::EventsPageResponse>(),
+    );
     schemas.insert("SlimTaskDto".into(), component_schema::<SlimTaskDto>());
     schemas.insert(
         "SlimWorkItemDto".into(),
@@ -813,6 +821,20 @@ mod tests {
         assert!(operation_count >= 40, "expected baseline coverage");
         assert!(paths["/api/events/stream"]["get"].is_object());
         assert!(paths["/api/agents/{agent_id}/events/stream"]["get"].is_object());
+        assert_eq!(
+            paths["/api/agents/{agent_id}/events"]["get"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/EventsPageResponse"
+        );
+        let envelope = &api["components"]["schemas"]["StreamEventEnvelope"];
+        for field in [
+            "event_log_epoch",
+            "contract_version",
+            "payload_schema",
+            "payload_schema_version",
+        ] {
+            assert!(envelope["properties"][field].is_object(), "{field}");
+        }
         assert!(paths["/api/callbacks/wake/{callback_token}"]["post"].is_object());
         assert_eq!(
             paths["/api/agents/{agent_id}/status"]["get"]["x-holon-openapi-source"],

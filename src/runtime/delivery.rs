@@ -95,10 +95,10 @@ impl RuntimeHandle {
         let event_payload = BriefCreatedAuditEvent::from_brief(&bound_brief);
         let evidence_brief = bound_brief.clone();
         self.persist_brief_evidence(&evidence_brief)?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "brief_created",
-            to_json_value(&event_payload),
-        ))?;
+        self.inner.storage.append_event(&AuditEvent::typed(
+            RuntimeEventKind::BriefCreated,
+            &event_payload,
+        )?)?;
         let mut guard = self.inner.agent.lock().await;
         guard.state.last_brief_at = Some(bound_brief.created_at);
         guard.persist_state(&self.inner.storage)?;

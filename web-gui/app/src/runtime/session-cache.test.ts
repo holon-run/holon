@@ -51,6 +51,7 @@ describe("currentRemoteKey", () => {
 describe("extractCacheableSession", () => {
   it("extracts core data fields with correct metadata", () => {
     const session = makeSession({
+      eventLogEpoch: "epoch-1",
       eventsBySeq: { 1: { id: "e1" }, 2: { id: "e2" } },
       eventSeqs: [1, 2],
       messagesById: { m1: { id: "m1" } },
@@ -63,6 +64,7 @@ describe("extractCacheableSession", () => {
     expect(result.remoteKey).toBe("local");
     expect(result.agentId).toBe("agent-1");
     expect(result.schemaVersion).toBe(CACHE_SCHEMA_VERSION);
+    expect(result.eventLogEpoch).toBe("epoch-1");
     expect(result.eventsBySeq).toEqual(session.eventsBySeq);
     expect(result.eventSeqs).toEqual(session.eventSeqs);
     expect(result.messagesById).toEqual(session.messagesById);
@@ -109,6 +111,7 @@ describe("hydrateSessionFromCache", () => {
       remoteKey: "local",
       agentId: "agent-1",
       schemaVersion: CACHE_SCHEMA_VERSION,
+      eventLogEpoch: "epoch-1",
       eventsBySeq: { 1: { id: "e1" } },
       eventSeqs: [1],
       messagesById: { m1: { id: "m1" } },
@@ -122,6 +125,7 @@ describe("hydrateSessionFromCache", () => {
     const result = hydrateSessionFromCache(cached);
 
     expect(result.eventsBySeq).toEqual({ 1: { id: "e1" } });
+    expect(result.eventLogEpoch).toBe("epoch-1");
     expect(result.eventSeqs).toEqual([1]);
     expect(result.newestSeq).toBe(1);
     expect(result.oldestSeq).toBe(1);

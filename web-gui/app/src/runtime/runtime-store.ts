@@ -22,6 +22,7 @@ import {
   briefIdForPayload,
   transcriptEntryIdForPayload,
 } from "./session-reducer";
+import { canApplySessionEvent } from "./session-events";
 import type {
   AddSkillInput,
   AgentDetail,
@@ -1985,7 +1986,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         displayLevel,
       });
 
-      set((state) => mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel));
+      set((state) =>
+        mergeEventPageIntoSession(
+          state,
+          agentId,
+          page.events ?? [],
+          page.oldest_seq ?? undefined,
+          page.has_older,
+          displayLevel,
+          { eventLogEpoch: page.event_log_epoch },
+        ),
+      );
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
@@ -2216,6 +2227,99 @@ function emptyAgentSession(): AgentSessionState {
   };
 }
 
+function eventLogEpochFromEvents(events: StreamEventEnvelopeDto[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const epoch = events[index]?.event_log_epoch;
+    if (epoch) return epoch;
+  }
+  return undefined;
+}
+
+function shouldResetForEventLogEpoch(
+  current: AgentSessionState,
+  incomingEpoch: string | undefined,
+): boolean {
+  if (!incomingEpoch) return false;
+  return (
+    (current.eventLogEpoch != null || current.eventSeqs.length > 0) &&
+    current.eventLogEpoch !== incomingEpoch
+  );
+}
+
+export function sessionForEventLogEpoch(
+  current: AgentSessionState,
+  incomingEpoch: string | undefined,
+): AgentSessionState {
+  if (!incomingEpoch) return current;
+  if (!shouldResetForEventLogEpoch(current, incomingEpoch)) {
+    return current.eventLogEpoch === incomingEpoch
+      ? current
+      : { ...current, eventLogEpoch: incomingEpoch };
+  }
+  return {
+    ...emptyAgentSession(),
+    loading: current.loading,
+    loadingOlder: current.loadingOlder,
+    liveStatus: current.liveStatus,
+    sendingPrompt: current.sendingPrompt,
+    detail: current.detail
+      ? {
+          ...current.detail,
+          timeline: [],
+          events: [],
+          eventLogEpoch: incomingEpoch,
+          eventCursorSeq: undefined,
+          newestEventSeq: undefined,
+          oldestEventSeq: undefined,
+          hasOlderEvents: undefined,
+        }
+      : null,
+    eventLogEpoch: incomingEpoch,
+  };
+}
+
+function eventIdentityFingerprint(event: StreamEventEnvelopeDto): string {
+  return JSON.stringify({
+    id: event.id,
+    ts: event.ts,
+    type: event.type,
+    contract_version: event.contract_version,
+    payload_schema: event.payload_schema,
+    payload_schema_version: event.payload_schema_version,
+    provenance: event.provenance,
+    payload: event.payload,
+  });
+}
+
+export function hasEventIdentityConflict(
+  current: AgentSessionState,
+  incomingEvents: StreamEventEnvelopeDto[],
+): boolean {
+  return incomingEvents.some((event) => {
+    if (event.event_seq == null) return false;
+    const existing = current.eventsBySeq[event.event_seq];
+    return (
+      isStreamEventEnvelope(existing) &&
+      eventIdentityFingerprint(existing) !== eventIdentityFingerprint(event)
+    );
+  });
+}
+
+function resetSessionForEventConflict(
+  current: AgentSessionState,
+  eventLogEpoch?: string,
+): AgentSessionState {
+  return {
+    ...emptyAgentSession(),
+    loading: current.loading,
+    loadingOlder: current.loadingOlder,
+    liveStatus: "stale",
+    sendingPrompt: current.sendingPrompt,
+    eventLogEpoch: eventLogEpoch ?? current.eventLogEpoch,
+    error: "runtime event identity conflict; refreshing projection",
+  };
+}
+
 type StoreSet = (
   partial:
     | Partial<RuntimeStoreState>
@@ -2288,7 +2392,7 @@ function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, age
   const session = wasSubscribed ? undefined : get().sessionsByAgentId[agentId];
   if (session && !globalEventRecovery.snapshotFor(agentId)) {
     const lastSeq = highestSeq(session.eventSeqs) ?? session.newestSeq;
-    globalEventRecovery.register(agentId, lastSeq);
+    globalEventRecovery.register(agentId, lastSeq, session.eventLogEpoch);
   }
   // Start global stream if not running.
   startGlobalEventStream(get, set);
@@ -2315,9 +2419,14 @@ function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto)
   const agentId = event.agent_id;
   if (!agentId || !globalStreamSubscribedAgents.has(agentId)) return;
 
+  const incomingEpoch = event.event_log_epoch || undefined;
+  const session = useRuntimeStore.getState().sessionsByAgentId[agentId];
+  if (session && shouldResetForEventLogEpoch(session, incomingEpoch)) {
+    pendingStreamEvents.delete(agentId);
+  }
   const seq = event.event_seq;
   if (seq != null) {
-    const recovery = globalEventRecovery.observe(agentId, seq);
+    const recovery = globalEventRecovery.observe(agentId, seq, incomingEpoch);
     if (recovery.recovering) {
       setAgentLiveStatus(set, agentId, "recovering");
       void backfillAgentEvents(set, agentId);
@@ -2339,22 +2448,30 @@ async function backfillAgentEvents(set: StoreSet, agentId: string, force = false
           order: "asc",
           limit: GLOBAL_BACKFILL_LIMIT,
         });
-        return (page.events ?? [])
-          .filter((event) => event.event_seq != null)
-          .map((event) => ({
-            id: event.id,
-            event_seq: event.event_seq,
-            ts: event.ts,
-            agent_id: agentId,
-            type: event.type,
-            payload: event.payload,
-          }));
+        return {
+          eventLogEpoch: page.event_log_epoch,
+          events: (page.events ?? [])
+            .filter((event) => event.event_seq != null)
+            .map((event) => streamEventFromBackfill(event, agentId, page.event_log_epoch)),
+        };
       },
       applyEvents: (events) => applyStreamEvents(set, agentId, events),
     });
   } catch {
     // Silently ignore backfill errors; the stream will retry.
   }
+}
+
+export function streamEventFromBackfill(
+  event: StreamEventEnvelopeDto,
+  agentId: string,
+  pageEventLogEpoch: string,
+): StreamEventEnvelopeDto {
+  return {
+    ...event,
+    event_log_epoch: event.event_log_epoch || pageEventLogEpoch,
+    agent_id: agentId,
+  };
 }
 
 function scheduleGlobalStaleWatchdog(get: () => RuntimeStoreState, set: StoreSet): void {
@@ -2591,6 +2708,12 @@ function firstStringField(record: Record<string, unknown> | undefined, keys: str
 
 function enqueueStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnvelopeDto): void {
   const pending = pendingStreamEvents.get(agentId);
+  const incomingEpoch = event.event_log_epoch || undefined;
+  const pendingEpoch = pending ? eventLogEpochFromEvents(pending) : undefined;
+  if (pending && incomingEpoch && pendingEpoch && incomingEpoch !== pendingEpoch) {
+    pendingStreamEvents.set(agentId, [event]);
+    return;
+  }
   if (pending) {
     pending.push(event);
   } else {
@@ -2991,6 +3114,7 @@ export function touchRosterActivityFromEvent(
   event: StreamEventEnvelopeDto,
   selectedAgentId: string,
 ): Record<string, AgentRosterActivity> {
+  if (!canApplySessionEvent(event)) return current;
   let next = current;
   if (event.type === "brief_created") {
     next = touchRosterActivity(next, agentId, "brief", eventTimestamp(event));
@@ -3101,8 +3225,15 @@ function updateAgentModelInState(
 }
 
 function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, detail: AgentDetail): Partial<RuntimeStoreState> {
-  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const epochSession = sessionForEventLogEpoch(
+    state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
+    detail.eventLogEpoch,
+  );
   const pageEvents = detail.events ?? [];
+  const current = hasEventIdentityConflict(epochSession, pageEvents)
+    ? resetSessionForEventConflict(epochSession, detail.eventLogEpoch)
+    : epochSession;
+  const projectionEvents = pageEvents.filter(canApplySessionEvent);
   const eventsBySeq = {
     ...current.eventsBySeq,
     ...eventsBySeqFromPage(pageEvents),
@@ -3118,7 +3249,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const pageTimeline = reduceAgentSessionTimeline({
-    events: { events: pageEvents },
+    events: { events: projectionEvents },
     eventDisplayLevel: "debug",
     messagesById: current.messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
@@ -3176,9 +3307,10 @@ async function catchUpAgentEvents(
     order: "asc",
   });
   set((state) =>
-    mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, "debug", {
-      newestSeq: page.cursor_seq ?? page.newest_seq,
+    mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq ?? undefined, page.has_older, "debug", {
+      newestSeq: page.cursor_seq ?? page.newest_seq ?? undefined,
       append: true,
+      eventLogEpoch: page.event_log_epoch,
     }),
   );
   if ((page.events ?? []).some(isWorkItemCacheInvalidationEvent)) {
@@ -3193,12 +3325,36 @@ async function catchUpAgentEvents(
 }
 
 function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
-  const incomingEvents = events.filter((event) => event.event_seq != null);
+  const incomingEpoch = eventLogEpochFromEvents(events);
+  const incomingEvents = events.filter(
+    (event) =>
+      event.event_seq != null &&
+      (!incomingEpoch || !event.event_log_epoch || event.event_log_epoch === incomingEpoch),
+  );
   if (!incomingEvents.length) return;
+  const currentSnapshot = useRuntimeStore.getState().sessionsByAgentId[agentId];
+  if (currentSnapshot && hasEventIdentityConflict(currentSnapshot, incomingEvents)) {
+    pendingStreamEvents.delete(agentId);
+    globalEventRecovery.unregister(agentId);
+    set((state) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: resetSessionForEventConflict(
+          state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
+          incomingEpoch,
+        ),
+      },
+    }));
+    void useRuntimeStore.getState().refreshAgentDetail(agentId, useRuntimeStore.getState().displayLevel);
+    return;
+  }
   const liveStatus = globalEventRecovery.snapshotFor(agentId)?.recovering ? "recovering" : "streaming";
 
   set((state) => {
-    const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const current = sessionForEventLogEpoch(
+      state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
+      incomingEpoch,
+    );
     const uniqueEvents = incomingEvents.filter((event) => !current.eventsBySeq[event.event_seq as number]);
     if (!uniqueEvents.length) {
       return {
@@ -3212,7 +3368,8 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
         },
       };
     }
-    const rosterActivityByAgentId = uniqueEvents.reduce(
+    const projectionEvents = uniqueEvents.filter(canApplySessionEvent);
+    const rosterActivityByAgentId = projectionEvents.reduce(
       (activityByAgentId, event) =>
         touchRosterActivityFromEvent(activityByAgentId, agentId, event, state.route === "agent" ? state.selectedAgentId : ""),
       state.rosterActivityByAgentId,
@@ -3226,7 +3383,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     };
     const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(uniqueEvents)])).sort((left, right) => left - right);
     const liveTimelineDelta = reduceAgentSessionTimeline({
-      events: { events: uniqueEvents },
+      events: { events: projectionEvents },
       eventDisplayLevel: "debug",
       messagesById: current.messagesById,
       transcriptEntriesById: current.transcriptEntriesById,
@@ -3235,8 +3392,8 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     const detailEvents = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
     const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
-    const runPatch = agentRunPatchFromEvents(uniqueEvents);
-    const briefPatch = agentBriefPatchFromEvents(uniqueEvents, current.briefRecordsById);
+    const runPatch = agentRunPatchFromEvents(projectionEvents);
+    const briefPatch = agentBriefPatchFromEvents(projectionEvents, current.briefRecordsById);
     const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
     const detail = patchedBaseDetail
       ? {
@@ -3261,6 +3418,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
           detail,
           eventsBySeq,
           eventSeqs,
+          eventLogEpoch: incomingEpoch ?? current.eventLogEpoch,
           newestSeq: Math.max(highestIncomingSeq, current.newestSeq ?? 0),
           oldestSeq: current.oldestSeq ?? eventSeqs[0],
           liveStatus,
@@ -3273,10 +3431,10 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
   scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleCacheWrite(useRuntimeStore.getState, agentId);
-  if (events.some(isWorkItemCacheInvalidationEvent)) {
+  if (events.some((event) => canApplySessionEvent(event) && isWorkItemCacheInvalidationEvent(event))) {
     void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
   }
-  if (events.some(isAgentStateCacheInvalidationEvent)) {
+  if (events.some((event) => canApplySessionEvent(event) && isAgentStateCacheInvalidationEvent(event))) {
     void useRuntimeStore.getState().refreshAgentState(agentId);
   }
 }
@@ -3449,6 +3607,7 @@ export function agentBriefPatchFromEvents(
 ): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
   let patch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined;
   for (const event of events) {
+    if (!canApplySessionEvent(event)) continue;
     if (event.type !== "brief_created") continue;
     const payload = asRecord(event.payload);
     const briefId = briefIdForPayload(payload);
@@ -3469,7 +3628,11 @@ function missingMessageIdsForHydration(session: AgentSessionState | undefined): 
   const missing: string[] = [];
   for (const eventSeq of session.eventSeqs) {
     const event = session.eventsBySeq[eventSeq];
-    if (!isStreamEventEnvelope(event) || event.type !== "message_enqueued") continue;
+    if (
+      !isStreamEventEnvelope(event) ||
+      !canApplySessionEvent(event) ||
+      event.type !== "message_enqueued"
+    ) continue;
     const messageId = messageIdFromEventPayload(event.payload);
     if (!messageId || seen.has(messageId) || session.messagesById[messageId] || session.missingMessageIds[messageId]) continue;
     seen.add(messageId);
@@ -3484,7 +3647,7 @@ function missingTranscriptEntryIdsForHydration(session: AgentSessionState | unde
   const missing: string[] = [];
   for (const eventSeq of session.eventSeqs) {
     const event = session.eventsBySeq[eventSeq];
-    if (!isStreamEventEnvelope(event)) continue;
+    if (!isStreamEventEnvelope(event) || !canApplySessionEvent(event)) continue;
     const entryId = transcriptEntryIdForPayload(asRecord(event.payload));
     if (
       !entryId ||
@@ -3506,7 +3669,11 @@ export function missingBriefIdsForHydration(session: AgentSessionState | undefin
   const missing: string[] = [];
   for (const eventSeq of session.eventSeqs) {
     const event = session.eventsBySeq[eventSeq];
-    if (!isStreamEventEnvelope(event) || event.type !== "brief_created") continue;
+    if (
+      !isStreamEventEnvelope(event) ||
+      !canApplySessionEvent(event) ||
+      event.type !== "brief_created"
+    ) continue;
     const payload = asRecord(event.payload);
     const briefId = briefIdForPayload(payload);
     if (!briefId || seen.has(briefId) || session.briefRecordsById[briefId] || session.missingBriefIds[briefId]) {
@@ -3699,6 +3866,7 @@ function mergeHydratedBriefRecordsIntoSession(
 function agentRunPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined {
   let patch: Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined;
   for (const event of events) {
+    if (!canApplySessionEvent(event)) continue;
     if (event.type === "message_processing_started") {
       patch = {
         currentRunId: runIdFromPayload(event.payload) ?? `event:${event.event_seq ?? event.id ?? "message_processing_started"}`,
@@ -3762,16 +3930,23 @@ function mergeEventPageIntoSession(
   pageOldestSeq: number | undefined,
   pageHasOlder: boolean | undefined,
   displayLevel: DisplayLevel,
-  options: { newestSeq?: number; append?: boolean } = {},
+  options: { newestSeq?: number; append?: boolean; eventLogEpoch?: string } = {},
 ): Partial<RuntimeStoreState> {
-  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const epochSession = sessionForEventLogEpoch(
+    state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
+    options.eventLogEpoch,
+  );
+  const current = hasEventIdentityConflict(epochSession, pageEvents)
+    ? resetSessionForEventConflict(epochSession, options.eventLogEpoch)
+    : epochSession;
+  const projectionEvents = pageEvents.filter(canApplySessionEvent);
   const eventsBySeq = {
     ...current.eventsBySeq,
     ...eventsBySeqFromPage(pageEvents),
   };
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const pageTimeline = reduceAgentSessionTimeline({
-    events: { events: pageEvents },
+    events: { events: projectionEvents },
     eventDisplayLevel: displayLevel,
     messagesById: current.messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
@@ -3797,6 +3972,7 @@ function mergeEventPageIntoSession(
         detail,
         eventsBySeq,
         eventSeqs,
+        eventLogEpoch: options.eventLogEpoch || current.eventLogEpoch,
         newestSeq: Math.max(options.newestSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0) || undefined,
         oldestSeq: pageOldestSeq ?? eventSeqs[0] ?? current.oldestSeq,
         hasOlder: pageHasOlder,
@@ -3837,10 +4013,19 @@ async function loadTargetAgentEventWindow(
       displayLevel,
     });
     set((state) =>
-      mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel, {
-        newestSeq: page.cursor_seq ?? page.newest_seq,
-        append: true,
-      }),
+      mergeEventPageIntoSession(
+        state,
+        agentId,
+        page.events ?? [],
+        page.oldest_seq ?? undefined,
+        page.has_older,
+        displayLevel,
+        {
+          newestSeq: page.cursor_seq ?? page.newest_seq ?? undefined,
+          append: true,
+          eventLogEpoch: page.event_log_epoch,
+        },
+      ),
     );
   } catch (error) {
     set((state) => ({

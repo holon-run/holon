@@ -19,7 +19,7 @@ pub(crate) fn external_wait_recoverability_event(
     record: &WaitConditionRecord,
 ) -> Option<AuditEvent> {
     match record.external_recoverability()? {
-        ExternalWaitRecoverability::Weak => Some(AuditEvent::new(
+        ExternalWaitRecoverability::Weak => Some(AuditEvent::legacy(
             "external_wait_without_recovery",
             serde_json::json!({
                 "wait_condition_id": record.id,
@@ -31,7 +31,7 @@ pub(crate) fn external_wait_recoverability_event(
                 "wake_sources": record.wake_sources,
             }),
         )),
-        ExternalWaitRecoverability::ExplicitNoFallback => Some(AuditEvent::new(
+        ExternalWaitRecoverability::ExplicitNoFallback => Some(AuditEvent::legacy(
             "external_wait_without_recovery",
             serde_json::json!({
                 "wait_condition_id": record.id,

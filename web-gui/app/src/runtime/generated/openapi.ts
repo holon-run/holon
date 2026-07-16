@@ -110,7 +110,7 @@ export interface paths {
         };
         /**
          * Agent event page
-         * @description Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.
+         * @description Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload.
          */
         get: operations["agentEvents"];
         put?: never;
@@ -2451,6 +2451,52 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** EventsPageResponse */
+        EventsPageResponse: {
+            /** Format: uint64 */
+            cursor_seq?: number | null;
+            event_log_epoch: string;
+            events: {
+                agent_id: string;
+                /** Format: uint32 */
+                contract_version: number;
+                event_log_epoch: string;
+                /** Format: uint64 */
+                event_seq: number;
+                id: string;
+                payload: unknown;
+                payload_schema: string;
+                /** Format: uint32 */
+                payload_schema_version: number;
+                provenance: {
+                    admission_context?: unknown;
+                    authority_class?: unknown;
+                    causation_id?: unknown;
+                    correlation_id?: unknown;
+                    delivery_surface?: unknown;
+                    message_id?: unknown;
+                    origin?: unknown;
+                    reply_route?: unknown;
+                    source?: unknown;
+                    task_id?: unknown;
+                    transport?: unknown;
+                    work_item_id?: unknown;
+                };
+                /** Format: date-time */
+                ts: string;
+                type: string;
+            }[];
+            has_newer: boolean;
+            has_older: boolean;
+            /** Format: uint */
+            limit: number;
+            /** Format: uint64 */
+            newest_seq?: number | null;
+            /** Format: uint64 */
+            oldest_seq?: number | null;
+            /** @enum {string} */
+            order: "asc" | "desc";
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         ExitWorkspaceRequest: {
             [key: string]: unknown;
@@ -3106,6 +3152,37 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             workspace_id: string;
+        };
+        /** StreamEventEnvelope */
+        StreamEventEnvelope: {
+            agent_id: string;
+            /** Format: uint32 */
+            contract_version: number;
+            event_log_epoch: string;
+            /** Format: uint64 */
+            event_seq: number;
+            id: string;
+            payload: unknown;
+            payload_schema: string;
+            /** Format: uint32 */
+            payload_schema_version: number;
+            provenance: {
+                admission_context?: unknown;
+                authority_class?: unknown;
+                causation_id?: unknown;
+                correlation_id?: unknown;
+                delivery_surface?: unknown;
+                message_id?: unknown;
+                origin?: unknown;
+                reply_route?: unknown;
+                source?: unknown;
+                task_id?: unknown;
+                transport?: unknown;
+                work_item_id?: unknown;
+            };
+            /** Format: date-time */
+            ts: string;
+            type: string;
         };
         /** SyncTemplateRemoteSourcesRequest */
         SyncTemplateRemoteSourcesRequest: {
@@ -3897,13 +3974,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            /** @description Successful JSON response using a stable DTO schema. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonValue"];
+                    "application/json": components["schemas"]["EventsPageResponse"];
                 };
             };
             /** @description Client error JSON response. */

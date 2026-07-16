@@ -11,6 +11,30 @@ import {
 } from "./session-reducer";
 
 describe("reduceAgentSessionTimeline", () => {
+  it("preserves unknown v2 schemas outside the domain projection", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          {
+            id: "event-unknown-schema",
+            event_seq: 1,
+            contract_version: 2,
+            payload_schema: "holon.runtime_event.future_message",
+            payload_schema_version: 1,
+            ts: "2026-07-16T10:00:00Z",
+            type: "message_enqueued",
+            payload: {
+              origin: { kind: "operator" },
+              body: { text: "must not project" },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(timeline).toEqual([]);
+  });
+
   it("projects operator input events into the timeline", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {

@@ -1973,6 +1973,138 @@
         ],
         "type": "object"
       },
+      "EventsPageResponse": {
+        "properties": {
+          "cursor_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "event_log_epoch": {
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "contract_version": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "event_log_epoch": {
+                  "type": "string"
+                },
+                "event_seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "payload": true,
+                "payload_schema": {
+                  "type": "string"
+                },
+                "payload_schema_version": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "provenance": {
+                  "properties": {
+                    "admission_context": true,
+                    "authority_class": true,
+                    "causation_id": true,
+                    "correlation_id": true,
+                    "delivery_surface": true,
+                    "message_id": true,
+                    "origin": true,
+                    "reply_route": true,
+                    "source": true,
+                    "task_id": true,
+                    "transport": true,
+                    "work_item_id": true
+                  },
+                  "type": "object"
+                },
+                "ts": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "event_seq",
+                "event_log_epoch",
+                "contract_version",
+                "ts",
+                "agent_id",
+                "type",
+                "payload_schema",
+                "payload_schema_version",
+                "provenance",
+                "payload"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "has_newer": {
+            "type": "boolean"
+          },
+          "has_older": {
+            "type": "boolean"
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "newest_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "oldest_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "order": {
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "events",
+          "event_log_epoch",
+          "has_older",
+          "has_newer",
+          "order",
+          "limit"
+        ],
+        "title": "EventsPageResponse",
+        "type": "object"
+      },
       "ExitWorkspaceRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -4400,6 +4532,77 @@
           "reason_code"
         ],
         "title": "SlimWorkItemDto",
+        "type": "object"
+      },
+      "StreamEventEnvelope": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "contract_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "event_log_epoch": {
+            "type": "string"
+          },
+          "event_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "payload": true,
+          "payload_schema": {
+            "type": "string"
+          },
+          "payload_schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provenance": {
+            "properties": {
+              "admission_context": true,
+              "authority_class": true,
+              "causation_id": true,
+              "correlation_id": true,
+              "delivery_surface": true,
+              "message_id": true,
+              "origin": true,
+              "reply_route": true,
+              "source": true,
+              "task_id": true,
+              "transport": true,
+              "work_item_id": true
+            },
+            "type": "object"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event_seq",
+          "event_log_epoch",
+          "contract_version",
+          "ts",
+          "agent_id",
+          "type",
+          "payload_schema",
+          "payload_schema_version",
+          "provenance",
+          "payload"
+        ],
+        "title": "StreamEventEnvelope",
         "type": "object"
       },
       "SyncTemplateRemoteSourcesRequest": {
@@ -7055,7 +7258,7 @@
     },
     "/api/agents/{agent_id}/events": {
       "get": {
-        "description": "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
+        "description": "Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload.",
         "operationId": "agentEvents",
         "parameters": [
           {
@@ -7073,11 +7276,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/EventsPageResponse"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {

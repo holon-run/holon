@@ -220,7 +220,7 @@ impl RuntimeHandle {
             Some(WorkspaceAccessMode::ExclusiveWrite),
             Some(execution_root_id),
         );
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "worktree_entered",
             serde_json::json!({
                 "worktree": to_json_value(&worktree_session),
@@ -364,7 +364,7 @@ impl RuntimeHandle {
             }
         }
 
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "worktree_exited",
             serde_json::json!({
                 "worktree_path": worktree_session.as_ref().map(|w| &w.worktree_path),
@@ -414,7 +414,7 @@ impl RuntimeHandle {
             "task_status_updated",
         ))
         .await?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "task_worktree_metadata_recorded",
             serde_json::json!({
                 "task_id": task_id,
@@ -453,7 +453,7 @@ impl RuntimeHandle {
                 worktree["cleanup_status"] =
                     serde_json::json!(TaskOwnedWorktreeCleanupStatus::Failed.label());
                 worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "task_worktree_cleanup_failed",
                     serde_json::json!({
                         "task_id": task_id,
@@ -473,7 +473,7 @@ impl RuntimeHandle {
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::AlreadyRemoved.label());
             worktree["cleanup_reason"] = serde_json::json!("worktree_path_missing");
             worktree["auto_cleaned_up"] = serde_json::json!(true);
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "task_worktree_cleanup_already_removed",
                 serde_json::json!({
                     "task_id": task_id,
@@ -495,7 +495,7 @@ impl RuntimeHandle {
                     serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
                 worktree["cleanup_reason"] = serde_json::json!("branch_mismatch");
                 worktree["actual_branch"] = serde_json::json!(actual_branch);
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "task_worktree_cleanup_retained",
                     serde_json::json!({
                         "task_id": task_id,
@@ -517,7 +517,7 @@ impl RuntimeHandle {
                     serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
                 worktree["cleanup_reason"] = serde_json::json!("branch_inspection_failed");
                 worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "task_worktree_cleanup_retained",
                     serde_json::json!({
                         "task_id": task_id,
@@ -547,7 +547,7 @@ impl RuntimeHandle {
                     serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
                 worktree["cleanup_reason"] = serde_json::json!("change_detection_failed");
                 worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "task_worktree_cleanup_retained",
                     serde_json::json!({
                         "task_id": task_id,
@@ -571,7 +571,7 @@ impl RuntimeHandle {
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
             worktree["cleanup_reason"] = serde_json::json!("changed_files");
             worktree["retained_for_review"] = serde_json::json!(true);
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "worktree_retained_for_review",
                 serde_json::json!({
                     "task_id": task_id,
@@ -604,7 +604,7 @@ impl RuntimeHandle {
                     });
                 if let Some(error) = remove_outcome.branch_delete_error.as_ref() {
                     worktree["branch_cleanup_error"] = serde_json::json!(error);
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    self.inner.storage.append_event(&AuditEvent::legacy(
                         "task_worktree_branch_cleanup_retained",
                         serde_json::json!({
                             "task_id": task_id,
@@ -615,7 +615,7 @@ impl RuntimeHandle {
                         }),
                     ))?;
                 }
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "worktree_auto_cleaned_up",
                     serde_json::json!({
                         "task_id": task_id,
@@ -636,7 +636,7 @@ impl RuntimeHandle {
                 worktree["cleanup_reason"] =
                     serde_json::json!("worktree_path_missing_after_remove");
                 worktree["auto_cleaned_up"] = serde_json::json!(true);
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "task_worktree_cleanup_already_removed",
                     serde_json::json!({
                         "task_id": task_id,
@@ -656,7 +656,7 @@ impl RuntimeHandle {
                 worktree["cleanup_status"] =
                     serde_json::json!(TaskOwnedWorktreeCleanupStatus::Failed.label());
                 worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "worktree_auto_cleanup_failed",
                     serde_json::json!({
                         "task_id": task_id,

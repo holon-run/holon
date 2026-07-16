@@ -81,6 +81,7 @@ use crate::{
         },
         RuntimeDb,
     },
+    runtime_event::RuntimeEventKind,
     skills::{
         effective_skill_root_registrations, find_skill_by_entrypoint, find_skill_by_script_path,
         skills_runtime_view_from_catalog, SkillVisibility,
@@ -700,14 +701,15 @@ impl RuntimeHandle {
         record: &crate::types::WorkItemRecord,
         extra: Value,
     ) -> AuditEvent {
-        let mut payload =
-            to_json_value(&WorkItemLifecycleAuditEvent::from_work_item(action, record));
-        if let (Some(payload), Some(extra)) = (payload.as_object_mut(), extra.as_object()) {
+        let payload = WorkItemLifecycleAuditEvent::from_work_item(action, record);
+        let mut event = AuditEvent::typed(RuntimeEventKind::WorkItemWritten, &payload)
+            .expect("work item lifecycle payload must serialize");
+        if let (Some(payload), Some(extra)) = (event.data.as_object_mut(), extra.as_object()) {
             for (key, value) in extra {
                 payload.insert(key.clone(), value.clone());
             }
         }
-        AuditEvent::new("work_item_written", payload)
+        event
     }
 
     pub(crate) fn work_item_plan_artifact_refreshed_event(
@@ -717,7 +719,7 @@ impl RuntimeHandle {
         let Some(artifact) = record.plan_artifact.as_ref() else {
             return None;
         };
-        Some(AuditEvent::new(
+        Some(AuditEvent::legacy(
             "work_item_plan_artifact_refreshed",
             serde_json::json!({
                 "work_item_id": record.id,
@@ -794,7 +796,7 @@ impl RuntimeHandle {
         guard.persist_state(&self.inner.storage)?;
         drop(guard);
 
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "current_run_aborted",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -1260,7 +1262,7 @@ impl RuntimeHandle {
         };
         self.append_state_changed_events(&state)?;
         if let Some(message) = message {
-            self.inner.storage.append_event(&AuditEvent::new(
+            self.inner.storage.append_event(&AuditEvent::legacy(
                 "turn_started",
                 serde_json::json!({
                     "agent_id": message.agent_id.clone(),
@@ -1411,7 +1413,7 @@ impl RuntimeHandle {
             false
         };
         guard.persist_state(&self.inner.storage)?;
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "skill_activated",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -1483,7 +1485,7 @@ impl RuntimeHandle {
             .admit_message_wake(&message)
             .await?;
 
-        self.inner.storage.append_event(&AuditEvent::new(
+        self.inner.storage.append_event(&AuditEvent::legacy(
             "message_admitted",
             serde_json::json!({
                 "message_id": message.id.clone(),
@@ -1501,10 +1503,10 @@ impl RuntimeHandle {
                 "causation_id": message.causation_id.clone(),
             }),
         ))?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "message_enqueued",
-            to_json_value(&MessageLifecycleAuditEvent::from_message(&message)),
-        ))?;
+        self.inner.storage.append_event(&AuditEvent::typed(
+            RuntimeEventKind::MessageEnqueued,
+            &MessageLifecycleAuditEvent::from_message(&message),
+        )?)?;
         self.inner.notify.notify_one();
         Ok(message)
     }
@@ -1512,7 +1514,7 @@ impl RuntimeHandle {
     pub(crate) fn append_audit_event(&self, kind: &str, data: serde_json::Value) -> Result<()> {
         self.inner
             .storage
-            .append_event(&AuditEvent::new(kind, data))
+            .append_event(&AuditEvent::legacy(kind, data))
     }
 
     pub(crate) async fn commit_queue_settlement(
@@ -1663,7 +1665,7 @@ impl RuntimeHandle {
                             created_at: message.created_at,
                             updated_at: Utc::now(),
                         },
-                        vec![AuditEvent::new(
+                        vec![AuditEvent::legacy(
                             "message_processing_aborted",
                             serde_json::json!({
                                 "message_id": message.id,
@@ -1678,7 +1680,7 @@ impl RuntimeHandle {
                 } else {
                     error!("failed to process message {}: {err:#}", message.id);
                     self.ensure_runtime_failure_terminal(None, 0).await?;
-                    self.inner.storage.append_event(&AuditEvent::new(
+                    self.inner.storage.append_event(&AuditEvent::legacy(
                         "runtime_error",
                         serde_json::json!({
                             "message_id": message.id,
@@ -1700,7 +1702,7 @@ impl RuntimeHandle {
                             created_at: message.created_at,
                             updated_at: Utc::now(),
                         },
-                        vec![AuditEvent::new(
+                        vec![AuditEvent::legacy(
                             "queue_entry_settled",
                             serde_json::json!({
                                 "message_id": message.id,
@@ -1754,7 +1756,7 @@ impl RuntimeHandle {
                         created_at: message.created_at,
                         updated_at: Utc::now(),
                     },
-                    vec![AuditEvent::new(
+                    vec![AuditEvent::legacy(
                         "queue_entry_settled",
                         serde_json::json!({
                             "message_id": message.id,
@@ -1775,7 +1777,7 @@ impl RuntimeHandle {
                 self.recover_supervised_child_tasks(tasks).await?;
             let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
             if !reattached.is_empty() {
-                self.inner.storage.append_event(&AuditEvent::new(
+                self.inner.storage.append_event(&AuditEvent::legacy(
                     "supervised_child_task_monitor_reattached",
                     serde_json::json!({
                         "agent_id": self.agent_id().await?,

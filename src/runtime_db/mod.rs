@@ -637,10 +637,32 @@ impl RuntimeDb {
         for migration in MIGRATIONS {
             apply_migration(&mut connection, migration)?;
         }
+        ensure_event_log_epoch(&connection)?;
         backfill_wait_condition_payload_columns(&connection)?;
         backfill_work_item_recheck_columns(&connection)?;
         Ok(())
     }
+
+    pub fn event_log_epoch(&self) -> Result<String> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
+                [],
+                |row| row.get(0),
+            )
+            .context("runtime event-log epoch is missing")
+    }
+}
+
+fn ensure_event_log_epoch(connection: &Connection) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('event_log_epoch', ?1, ?2, ?2)",
+        rusqlite::params![crate::ids::event_log_epoch_id(), now],
+    )?;
+    Ok(())
 }
 
 impl RuntimeDbLock {

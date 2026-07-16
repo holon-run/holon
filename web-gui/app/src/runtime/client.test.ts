@@ -468,14 +468,23 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
   });
 
-  it("fetches an agent event window with pagination parameters", async () => {
+  it("fetches an agent event window and decodes legacy envelopes with pagination parameters", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {
       const url = String(input);
       seen.push(url);
       if (url.endsWith("/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info")) {
         return Response.json({
-          events: [{ agent_id: "agent/one", event_seq: 740, ts: "2026-06-22T00:00:00Z", type: "message_enqueued" }],
+          events: [
+            {
+              id: "event-740",
+              agent_id: "agent/one",
+              event_seq: 740,
+              ts: "2026-06-22T00:00:00Z",
+              type: "message_enqueued",
+              payload: { message_id: "message-740" },
+            },
+          ],
           has_older: true,
           cursor_seq: 819,
         });
@@ -498,7 +507,15 @@ describe("createRuntimeClient", () => {
       }),
     ).resolves.toEqual(
       expect.objectContaining({
-        events: [expect.objectContaining({ event_seq: 740 })],
+        events: [
+          expect.objectContaining({
+            event_seq: 740,
+            event_log_epoch: "",
+            contract_version: 1,
+            payload_schema: "holon.runtime_event.legacy",
+            payload_schema_version: 1,
+          }),
+        ],
         cursor_seq: 819,
       }),
     );

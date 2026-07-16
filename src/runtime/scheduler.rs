@@ -380,7 +380,7 @@ pub(crate) fn scheduling_diagnostics_for_facts(
 }
 
 pub(crate) fn scheduler_diagnostic_event(diagnostic: &SchedulerDiagnostic) -> AuditEvent {
-    AuditEvent::new(
+    AuditEvent::legacy(
         "scheduler_diagnostic",
         serde_json::json!({
             "kind": &diagnostic.kind,
@@ -733,7 +733,7 @@ fn decide_idle_signal_action(
 }
 
 pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEvent {
-    AuditEvent::new(
+    AuditEvent::legacy(
         "scheduler_decision",
         serde_json::json!({
             "decision": decision.kind.as_str(),
