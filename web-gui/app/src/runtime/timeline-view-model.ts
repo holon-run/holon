@@ -1,4 +1,5 @@
 import type { AgentTimelineItem, DisplayLevel, RuntimeMessageEnvelope, RuntimeBriefRecord, RuntimeTranscriptEntry } from "./types";
+import type { SessionEventEnvelope } from "./session-events";
 import type { SessionState } from "./session-state-reducer";
 import type { DomainObject, InsertionEntry } from "./session-object-types";
 import { compactAgentTimelineItems } from "./timeline-display";
@@ -13,6 +14,7 @@ export interface RenderContext {
   eventDisplayLevel: DisplayLevel;
   includeDebug: boolean;
   activitiesById?: SessionState["activitiesById"];
+  eventsById: Record<string, SessionEventEnvelope>;
   messagesById?: Record<string, RuntimeMessageEnvelope>;
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
   briefRecordsById?: Record<string, RuntimeBriefRecord>;
@@ -35,9 +37,13 @@ export function deriveTimelineView(state: SessionState, ctx: RenderContext): Age
     const item = renderObject(obj, ctx);
     if (item) items.push(item);
   }
-  const sorted = items.sort(
-    (left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp),
-  );
+  const sorted = items.sort((left, right) => {
+    const timeOrder = sortableTime(left.timestamp) - sortableTime(right.timestamp);
+    if (timeOrder !== 0) return timeOrder;
+    const leftSeq = rawEventSeq(left.rawEvent);
+    const rightSeq = rawEventSeq(right.rawEvent);
+    return leftSeq != null && rightSeq != null ? leftSeq - rightSeq : 0;
+  });
   return compactAgentTimelineItems(sorted);
 }
 
@@ -73,12 +79,17 @@ function renderObject(obj: DomainObject, ctx: RenderContext): AgentTimelineItem 
     // source event id for objects without a stable identity.
     id: item.stateObjectRef || obj.id.startsWith("message:")
       ? obj.id
-      : (obj.sourceEventIds[obj.sourceEventIds.length - 1] ?? obj.render.eventId),
-    timestamp: item.timestamp || obj.render.timestamp,
+      : obj.primaryEventId,
   };
 }
 
 function sortableTime(value: string): number {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function rawEventSeq(rawEvent: unknown): number | undefined {
+  if (!rawEvent || typeof rawEvent !== "object" || Array.isArray(rawEvent)) return undefined;
+  const value = (rawEvent as Record<string, unknown>).event_seq;
+  return typeof value === "number" ? value : undefined;
 }

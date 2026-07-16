@@ -17,11 +17,20 @@ import {
 import type { AgentSessionState as AgentSessionStateBase } from "./runtime-store-helpers";
 import {
   compactAgentTimelineItems,
-  mergeAgentTimelineItems,
-  reduceAgentSessionTimeline,
   briefIdForPayload,
-  transcriptEntryIdForPayload,
 } from "./session-reducer";
+import {
+  briefIdsForProjectionHydration,
+  createSessionProjectionState,
+  deriveSessionTimeline,
+  eventIdentityConflicts,
+  messageIdsForProjectionHydration,
+  projectionEvents,
+  reduceSessionProjection,
+  transcriptEntryIdsForProjectionHydration,
+  type SessionProjectionAction,
+  type SessionProjectionState,
+} from "./session-projection";
 import { canApplySessionEvent } from "./session-events";
 import type {
   AddSkillInput,
@@ -146,18 +155,11 @@ function rebuildProvisionalDetailsWithAgents(
       .map((seq) => session.eventsBySeq[seq])
       .filter(isStreamEventEnvelope);
     if (events.length === 0) continue;
-    const timeline = reduceAgentSessionTimeline({
-      events: { events },
-      eventDisplayLevel: "debug",
-      messagesById: session.messagesById,
-      transcriptEntriesById: session.transcriptEntriesById,
-      briefRecordsById: session.briefRecordsById,
-    });
     updated[agentId] = {
       ...session,
       detail: {
         agent,
-        timeline,
+        timeline: deriveSessionTimeline(session, "debug"),
         source: "http",
         events,
         newestEventSeq: highestSeq(session.eventSeqs),
@@ -770,13 +772,15 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
     const cached = await hydrateAllSessions(remoteKey);
     if (Object.keys(cached).length === 0) return;
 
+    const restoredAgentIds: string[] = [];
     set((state) => {
       const sessionsByAgentId = { ...state.sessionsByAgentId };
       for (const [agentId, partial] of Object.entries(cached)) {
-        sessionsByAgentId[agentId] = {
-          ...emptyAgentSession(),
-          ...partial,
-        };
+        const current = sessionsByAgentId[agentId] ?? emptyAgentSession();
+        const restored = mergeCachedSessionIntoCurrent(current, partial);
+        if (restored === current) continue;
+        sessionsByAgentId[agentId] = restored;
+        restoredAgentIds.push(agentId);
       }
       const withProvisional = rebuildProvisionalDetailsWithAgents(
         state.bootstrap.agents,
@@ -787,13 +791,36 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
 
     if (get) {
       const displayLevel = get().displayLevel;
-      for (const agentId of Object.keys(cached)) {
+      for (const agentId of restoredAgentIds) {
         scheduleMessageHydration(get, set, agentId, displayLevel);
         scheduleTranscriptHydration(get, set, agentId, displayLevel);
         scheduleBriefHydration(get, set, agentId, displayLevel);
       }
     }
   })();
+}
+
+export function mergeCachedSessionIntoCurrent(
+  current: AgentSessionState,
+  cached: Partial<AgentSessionState>,
+): AgentSessionState {
+  if (
+    current.detail ||
+    current.eventSeqs.length > 0 ||
+    Object.keys(current.messagesById).length > 0 ||
+    Object.keys(current.transcriptEntriesById).length > 0 ||
+    Object.keys(current.briefRecordsById).length > 0
+  ) {
+    return current;
+  }
+  return {
+    ...current,
+    ...cached,
+    loading: current.loading,
+    loadingOlder: current.loadingOlder,
+    liveStatus: current.liveStatus,
+    sendingPrompt: current.sendingPrompt,
+  };
 }
 
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
@@ -2208,22 +2235,51 @@ if (typeof window !== "undefined") {
 
 function emptyAgentSession(): AgentSessionState {
   return {
+    ...createSessionProjectionState(),
     loading: false,
     loadingOlder: false,
     liveStatus: "idle",
     sendingPrompt: false,
     detail: null,
-    eventsBySeq: {},
-    eventSeqs: [],
-    messagesById: {},
-    missingMessageIds: {},
-    transcriptEntriesById: {},
-    missingTranscriptEntryIds: {},
-    briefRecordsById: {},
-    missingBriefIds: {},
     workItemDetailsById: {},
     taskDetailsById: {},
     toolExecutionDetailsById: {},
+  };
+}
+
+function applyProjectionAction(
+  current: AgentSessionState,
+  action: SessionProjectionAction,
+  displayLevel: DisplayLevel = "debug",
+  detailBase: AgentDetail | null = current.detail,
+): AgentSessionState {
+  const projection = reduceSessionProjection(current, action);
+  return {
+    ...current,
+    ...projection,
+    detail: materializeProjectionDetail(detailBase, projection, displayLevel),
+  };
+}
+
+function materializeProjectionDetail(
+  detail: AgentDetail | null,
+  projection: SessionProjectionState,
+  displayLevel: DisplayLevel,
+): AgentDetail | null {
+  if (!detail) return null;
+  const optimisticItems = detail.timeline.filter((item) => item.sourceIds.includes("pending-operator-prompt"));
+  const timeline = compactAgentTimelineItems([
+    ...deriveSessionTimeline(projection, displayLevel),
+    ...optimisticItems,
+  ]).sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+  return {
+    ...detail,
+    timeline,
+    events: projectionEvents(projection),
+    eventLogEpoch: projection.eventLogEpoch,
+    newestEventSeq: projection.newestSeq,
+    oldestEventSeq: projection.oldestSeq,
+    briefRecordsById: projection.briefRecordsById,
   };
 }
 
@@ -2256,53 +2312,25 @@ export function sessionForEventLogEpoch(
       ? current
       : { ...current, eventLogEpoch: incomingEpoch };
   }
+  const reset = applyProjectionAction(current, { type: "reset", eventLogEpoch: incomingEpoch });
   return {
-    ...emptyAgentSession(),
-    loading: current.loading,
-    loadingOlder: current.loadingOlder,
-    liveStatus: current.liveStatus,
-    sendingPrompt: current.sendingPrompt,
-    detail: current.detail
+    ...reset,
+    hasOlder: undefined,
+    detail: reset.detail
       ? {
-          ...current.detail,
-          timeline: [],
-          events: [],
-          eventLogEpoch: incomingEpoch,
+          ...reset.detail,
           eventCursorSeq: undefined,
-          newestEventSeq: undefined,
-          oldestEventSeq: undefined,
           hasOlderEvents: undefined,
         }
       : null,
-    eventLogEpoch: incomingEpoch,
   };
-}
-
-function eventIdentityFingerprint(event: StreamEventEnvelopeDto): string {
-  return JSON.stringify({
-    id: event.id,
-    ts: event.ts,
-    type: event.type,
-    contract_version: event.contract_version,
-    payload_schema: event.payload_schema,
-    payload_schema_version: event.payload_schema_version,
-    provenance: event.provenance,
-    payload: event.payload,
-  });
 }
 
 export function hasEventIdentityConflict(
   current: AgentSessionState,
   incomingEvents: StreamEventEnvelopeDto[],
 ): boolean {
-  return incomingEvents.some((event) => {
-    if (event.event_seq == null) return false;
-    const existing = current.eventsBySeq[event.event_seq];
-    return (
-      isStreamEventEnvelope(existing) &&
-      eventIdentityFingerprint(existing) !== eventIdentityFingerprint(event)
-    );
-  });
+  return eventIdentityConflicts(current, incomingEvents);
 }
 
 function resetSessionForEventConflict(
@@ -2310,12 +2338,13 @@ function resetSessionForEventConflict(
   eventLogEpoch?: string,
 ): AgentSessionState {
   return {
-    ...emptyAgentSession(),
-    loading: current.loading,
-    loadingOlder: current.loadingOlder,
+    ...applyProjectionAction(current, {
+      type: "reset",
+      eventLogEpoch: eventLogEpoch ?? current.eventLogEpoch,
+      reason: "event_identity_conflict",
+    }),
     liveStatus: "stale",
-    sendingPrompt: current.sendingPrompt,
-    eventLogEpoch: eventLogEpoch ?? current.eventLogEpoch,
+    hasOlder: undefined,
     error: "runtime event identity conflict; refreshing projection",
   };
 }
@@ -3162,10 +3191,6 @@ function messageOrigin(payload: unknown): string | undefined {
   return stringField(origin, "kind") ?? stringField(origin, "role") ?? stringField(asRecord(payload), "origin");
 }
 
-function messageIdFromEventPayload(payload: unknown): string | undefined {
-  return stringField(asRecord(payload), "message_id");
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
@@ -3233,40 +3258,34 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
   const current = hasEventIdentityConflict(epochSession, pageEvents)
     ? resetSessionForEventConflict(epochSession, detail.eventLogEpoch)
     : epochSession;
-  const projectionEvents = pageEvents.filter(canApplySessionEvent);
-  const eventsBySeq = {
-    ...current.eventsBySeq,
-    ...eventsBySeqFromPage(pageEvents),
-  };
-  const briefRecordsById = {
-    ...current.briefRecordsById,
-    ...(detail.briefRecordsById ?? {}),
-  };
-  const missingBriefIds = { ...current.missingBriefIds };
-  for (const briefId of Object.keys(briefRecordsById)) {
-    delete missingBriefIds[briefId];
-  }
-  const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
-  const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
-  const pageTimeline = reduceAgentSessionTimeline({
-    events: { events: projectionEvents },
-    eventDisplayLevel: "debug",
-    messagesById: current.messagesById,
-    transcriptEntriesById: current.transcriptEntriesById,
-    briefRecordsById,
-  });
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
   const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
-  const mergedDetail: AgentDetail = {
+  const detailBase: AgentDetail = {
     ...detail,
     agent,
-    timeline: mergeTimeline(pageTimeline, current.detail?.timeline ?? []),
-    events,
-    newestEventSeq: Math.max(detail.newestEventSeq ?? 0, current.detail?.newestEventSeq ?? 0, highestSeq(eventSeqs) ?? 0),
-    oldestEventSeq: detail.oldestEventSeq ?? current.detail?.oldestEventSeq ?? eventSeqs[0],
+    timeline: current.detail?.timeline ?? detail.timeline,
     hasOlderEvents: detail.hasOlderEvents,
   };
-  const newestSeq = Math.max(detail.newestEventSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0);
+  let projected = applyProjectionAction(current, {
+    type: "events_received",
+    events: pageEvents,
+    eventLogEpoch: detail.eventLogEpoch,
+  }, "debug", detailBase);
+  if (detail.transcriptEntriesById) {
+    projected = applyProjectionAction(projected, {
+      type: "transcripts_hydrated",
+      entries: Object.values(detail.transcriptEntriesById),
+      missingIds: [],
+    }, "debug", projected.detail);
+  }
+  if (detail.briefRecordsById) {
+    projected = applyProjectionAction(projected, {
+      type: "briefs_hydrated",
+      recordsById: detail.briefRecordsById,
+      missingIds: [],
+    }, "debug", projected.detail);
+  }
+  const newestSeq = Math.max(detail.newestEventSeq ?? 0, projected.newestSeq ?? 0);
 
   return {
     bootstrap:
@@ -3276,17 +3295,11 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
       [agentId]: {
-        ...emptyAgentSession(),
-        ...current,
-        detail: mergedDetail,
+        ...projected,
         loading: false,
         liveStatus: detail.error ? "error" : current.liveStatus,
-        eventsBySeq,
-        eventSeqs,
-        briefRecordsById,
-        missingBriefIds,
         newestSeq: newestSeq || undefined,
-        oldestSeq: detail.oldestEventSeq ?? current.oldestSeq ?? eventSeqs[0],
+        oldestSeq: detail.oldestEventSeq ?? projected.oldestSeq,
         hasOlder: detail.hasOlderEvents,
         error: detail.error,
       },
@@ -3377,33 +3390,15 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
       writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
     }
-    const eventsBySeq = {
-      ...current.eventsBySeq,
-      ...eventsBySeqFromPage(uniqueEvents),
-    };
-    const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(uniqueEvents)])).sort((left, right) => left - right);
-    const liveTimelineDelta = reduceAgentSessionTimeline({
-      events: { events: projectionEvents },
-      eventDisplayLevel: "debug",
-      messagesById: current.messagesById,
-      transcriptEntriesById: current.transcriptEntriesById,
-      briefRecordsById: current.briefRecordsById,
-    });
-    const detailEvents = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
-    const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
     const runPatch = agentRunPatchFromEvents(projectionEvents);
     const briefPatch = agentBriefPatchFromEvents(projectionEvents, current.briefRecordsById);
     const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
-    const detail = patchedBaseDetail
-      ? {
-          ...patchedBaseDetail,
-          timeline: mergeTimeline(patchedBaseDetail.timeline, liveTimelineDelta),
-          events: detailEvents,
-          newestEventSeq: Math.max(highestIncomingSeq, patchedBaseDetail.newestEventSeq ?? 0),
-          oldestEventSeq: patchedBaseDetail.oldestEventSeq ?? eventSeqs[0],
-        }
-      : patchedBaseDetail;
+    const projected = applyProjectionAction(current, {
+      type: "events_received",
+      events: uniqueEvents,
+      eventLogEpoch: incomingEpoch,
+    }, "debug", patchedBaseDetail);
 
     return {
       bootstrap: sortBootstrapAgents(
@@ -3414,13 +3409,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
         [agentId]: {
-          ...current,
-          detail,
-          eventsBySeq,
-          eventSeqs,
-          eventLogEpoch: incomingEpoch ?? current.eventLogEpoch,
-          newestSeq: Math.max(highestIncomingSeq, current.newestSeq ?? 0),
-          oldestSeq: current.oldestSeq ?? eventSeqs[0],
+          ...projected,
           liveStatus,
           error: undefined,
         },
@@ -3623,67 +3612,15 @@ export function agentBriefPatchFromEvents(
 }
 
 function missingMessageIdsForHydration(session: AgentSessionState | undefined): string[] {
-  if (!session) return [];
-  const seen = new Set<string>();
-  const missing: string[] = [];
-  for (const eventSeq of session.eventSeqs) {
-    const event = session.eventsBySeq[eventSeq];
-    if (
-      !isStreamEventEnvelope(event) ||
-      !canApplySessionEvent(event) ||
-      event.type !== "message_enqueued"
-    ) continue;
-    const messageId = messageIdFromEventPayload(event.payload);
-    if (!messageId || seen.has(messageId) || session.messagesById[messageId] || session.missingMessageIds[messageId]) continue;
-    seen.add(messageId);
-    missing.push(messageId);
-  }
-  return missing;
+  return session ? messageIdsForProjectionHydration(session) : [];
 }
 
 function missingTranscriptEntryIdsForHydration(session: AgentSessionState | undefined): string[] {
-  if (!session) return [];
-  const seen = new Set<string>();
-  const missing: string[] = [];
-  for (const eventSeq of session.eventSeqs) {
-    const event = session.eventsBySeq[eventSeq];
-    if (!isStreamEventEnvelope(event) || !canApplySessionEvent(event)) continue;
-    const entryId = transcriptEntryIdForPayload(asRecord(event.payload));
-    if (
-      !entryId ||
-      seen.has(entryId) ||
-      session.transcriptEntriesById[entryId] ||
-      session.missingTranscriptEntryIds[entryId]
-    ) {
-      continue;
-    }
-    seen.add(entryId);
-    missing.push(entryId);
-  }
-  return missing;
+  return session ? transcriptEntryIdsForProjectionHydration(session) : [];
 }
 
 export function missingBriefIdsForHydration(session: AgentSessionState | undefined): string[] {
-  if (!session) return [];
-  const seen = new Set<string>();
-  const missing: string[] = [];
-  for (const eventSeq of session.eventSeqs) {
-    const event = session.eventsBySeq[eventSeq];
-    if (
-      !isStreamEventEnvelope(event) ||
-      !canApplySessionEvent(event) ||
-      event.type !== "brief_created"
-    ) continue;
-    const payload = asRecord(event.payload);
-    const briefId = briefIdForPayload(payload);
-    if (!briefId || seen.has(briefId) || session.briefRecordsById[briefId] || session.missingBriefIds[briefId]) {
-      continue;
-    }
-    if (stringField(payload, "text")) continue;
-    seen.add(briefId);
-    missing.push(briefId);
-  }
-  return missing;
+  return session ? briefIdsForProjectionHydration(session) : [];
 }
 
 function mergeHydratedMessagesIntoSession(
@@ -3694,47 +3631,17 @@ function mergeHydratedMessagesIntoSession(
   displayLevel: DisplayLevel,
 ): Partial<RuntimeStoreState> {
   const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  const messagesById = { ...current.messagesById };
-  let changed = false;
-  for (const message of messages) {
-    const messageId = typeof message.id === "string" && message.id.trim() ? message.id : undefined;
-    if (!messageId) continue;
-    messagesById[messageId] = message;
-    changed = true;
-  }
-
-  const missingById = { ...current.missingMessageIds };
-  for (const messageId of missingMessageIds) {
-    if (!messageId) continue;
-    missingById[messageId] = true;
-    changed = true;
-  }
-  if (!changed) return {};
-
-  const events = current.eventSeqs.map((eventSeq) => current.eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
-  const timeline = reduceAgentSessionTimeline({
-    events: { events },
-    eventDisplayLevel: displayLevel,
-    messagesById,
-    transcriptEntriesById: current.transcriptEntriesById,
-    briefRecordsById: current.briefRecordsById,
-  });
-  const detail = current.detail
-    ? {
-        ...current.detail,
-        timeline,
-      }
-    : current.detail;
+  if (!messages.length && !missingMessageIds.length) return {};
+  const projected = applyProjectionAction(current, {
+    type: "messages_hydrated",
+    messages,
+    missingIds: missingMessageIds,
+  }, displayLevel);
 
   return {
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
-      [agentId]: {
-        ...current,
-        detail,
-        messagesById,
-        missingMessageIds: missingById,
-      },
+      [agentId]: projected,
     },
   };
 }
@@ -3747,53 +3654,20 @@ function mergeHydratedTranscriptEntriesIntoSession(
   displayLevel: DisplayLevel,
 ): Partial<RuntimeStoreState> {
   const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  const transcriptEntriesById = { ...current.transcriptEntriesById };
-  let changed = false;
-  for (const entry of entries) {
-    const entryId = typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined;
-    if (!entryId) continue;
-    transcriptEntriesById[entryId] = entry;
-    changed = true;
-  }
-
-  const missingById = { ...current.missingTranscriptEntryIds };
-  for (const entryId of missingEntryIds) {
-    if (!entryId) continue;
-    missingById[entryId] = true;
-    changed = true;
-  }
-  if (!changed) return {};
-
-  const events = current.eventSeqs.map((eventSeq) => current.eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
-  const timeline = reduceAgentSessionTimeline({
-    events: { events },
-    eventDisplayLevel: displayLevel,
-    messagesById: current.messagesById,
-    transcriptEntriesById,
-    briefRecordsById: current.briefRecordsById,
-  });
-  const briefPatch = agentBriefPatchFromEvents(events, current.briefRecordsById);
-  const detail = current.detail
-    ? patchAgentDetail(
-        {
-          ...current.detail,
-          timeline,
-        },
-        undefined,
-        briefPatch,
-      )
-    : current.detail;
+  if (!entries.length && !missingEntryIds.length) return {};
+  let projected = applyProjectionAction(current, {
+    type: "transcripts_hydrated",
+    entries,
+    missingIds: missingEntryIds,
+  }, displayLevel);
+  const briefPatch = agentBriefPatchFromEvents(projectionEvents(projected), projected.briefRecordsById);
+  projected = { ...projected, detail: patchAgentDetail(projected.detail, undefined, briefPatch) };
 
   return {
     bootstrap: patchBootstrapAgent(state.bootstrap, agentId, undefined, briefPatch),
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
-      [agentId]: {
-        ...current,
-        detail,
-        transcriptEntriesById,
-        missingTranscriptEntryIds: missingById,
-      },
+      [agentId]: projected,
     },
   };
 }
@@ -3806,59 +3680,20 @@ function mergeHydratedBriefRecordsIntoSession(
   displayLevel: DisplayLevel,
 ): Partial<RuntimeStoreState> {
   const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  const briefRecordsById = { ...current.briefRecordsById };
-  let changed = false;
-  for (const [briefId, record] of Object.entries(recordsById)) {
-    if (!briefId || !record?.text) continue;
-    briefRecordsById[briefId] = record;
-    changed = true;
-  }
-
-  const missingById = { ...current.missingBriefIds };
-  for (const briefId of Object.keys(recordsById)) {
-    if (missingById[briefId]) {
-      delete missingById[briefId];
-      changed = true;
-    }
-  }
-  for (const briefId of notFoundBriefIds) {
-    if (!briefId || recordsById[briefId]) continue;
-    missingById[briefId] = true;
-    changed = true;
-  }
-  if (!changed) return {};
-
-  const events = current.eventSeqs.map((eventSeq) => current.eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
-  const timeline = reduceAgentSessionTimeline({
-    events: { events },
-    eventDisplayLevel: displayLevel,
-    messagesById: current.messagesById,
-    transcriptEntriesById: current.transcriptEntriesById,
-    briefRecordsById,
-  });
-  const briefPatch = agentBriefPatchFromEvents(events, briefRecordsById);
-  const detail = current.detail
-    ? patchAgentDetail(
-        {
-          ...current.detail,
-          timeline,
-          briefRecordsById,
-        },
-        undefined,
-        briefPatch,
-      )
-    : current.detail;
+  if (!Object.keys(recordsById).length && !notFoundBriefIds.length) return {};
+  let projected = applyProjectionAction(current, {
+    type: "briefs_hydrated",
+    recordsById,
+    missingIds: notFoundBriefIds,
+  }, displayLevel);
+  const briefPatch = agentBriefPatchFromEvents(projectionEvents(projected), projected.briefRecordsById);
+  projected = { ...projected, detail: patchAgentDetail(projected.detail, undefined, briefPatch) };
 
   return {
     bootstrap: patchBootstrapAgent(state.bootstrap, agentId, undefined, briefPatch),
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
-      [agentId]: {
-        ...current,
-        detail,
-        briefRecordsById,
-        missingBriefIds: missingById,
-      },
+      [agentId]: projected,
     },
   };
 }
@@ -3939,42 +3774,25 @@ function mergeEventPageIntoSession(
   const current = hasEventIdentityConflict(epochSession, pageEvents)
     ? resetSessionForEventConflict(epochSession, options.eventLogEpoch)
     : epochSession;
-  const projectionEvents = pageEvents.filter(canApplySessionEvent);
-  const eventsBySeq = {
-    ...current.eventsBySeq,
-    ...eventsBySeqFromPage(pageEvents),
-  };
-  const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
-  const pageTimeline = reduceAgentSessionTimeline({
-    events: { events: projectionEvents },
-    eventDisplayLevel: displayLevel,
-    messagesById: current.messagesById,
-    transcriptEntriesById: current.transcriptEntriesById,
-    briefRecordsById: current.briefRecordsById,
-  });
-  const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
-  const detail = current.detail
+  const detailBase = current.detail
     ? {
         ...current.detail,
-        timeline: options.append ? mergeTimeline(current.detail.timeline, pageTimeline) : mergeTimeline(pageTimeline, current.detail.timeline),
-        events,
-        newestEventSeq: Math.max(options.newestSeq ?? 0, current.detail.newestEventSeq ?? 0, highestSeq(eventSeqs) ?? 0),
-        oldestEventSeq: pageOldestSeq ?? eventSeqs[0] ?? current.detail.oldestEventSeq,
         hasOlderEvents: pageHasOlder,
       }
     : current.detail;
+  const projected = applyProjectionAction(current, {
+    type: "events_received",
+    events: pageEvents,
+    eventLogEpoch: options.eventLogEpoch,
+  }, displayLevel, detailBase);
 
   return {
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
       [agentId]: {
-        ...current,
-        detail,
-        eventsBySeq,
-        eventSeqs,
-        eventLogEpoch: options.eventLogEpoch || current.eventLogEpoch,
-        newestSeq: Math.max(options.newestSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0) || undefined,
-        oldestSeq: pageOldestSeq ?? eventSeqs[0] ?? current.oldestSeq,
+        ...projected,
+        newestSeq: Math.max(options.newestSeq ?? 0, projected.newestSeq ?? 0) || undefined,
+        oldestSeq: pageOldestSeq ?? projected.oldestSeq,
         hasOlder: pageHasOlder,
         loadingOlder: false,
         historyError: undefined,
@@ -4067,13 +3885,6 @@ function highestSeq(eventSeqs: number[]): number | undefined {
 
 function isStreamEventEnvelope(event: unknown): event is StreamEventEnvelopeDto {
   return typeof event === "object" && event !== null;
-}
-
-function mergeTimeline(existing: AgentTimelineItem[], incoming: AgentTimelineItem[]): AgentTimelineItem[] {
-  const sorted = mergeAgentTimelineItems(existing, incoming).sort(
-    (left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp),
-  );
-  return compactAgentTimelineItems(sorted);
 }
 
 function sortableTime(value: string): number {

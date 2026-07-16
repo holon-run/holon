@@ -9,8 +9,6 @@ import type {
   ToolExecutionObject,
   WorkItemObject,
 } from "./session-object-types";
-import { mergeSourceIds } from "./timeline-display";
-
 /**
  * Normalized session state built by applying events incrementally.
  *
@@ -43,12 +41,23 @@ export function createSessionState(): SessionState {
   };
 }
 
+export function cloneSessionState(state: SessionState): SessionState {
+  return {
+    messages: cloneObjectMap(state.messages),
+    toolExecutions: cloneObjectMap(state.toolExecutions),
+    tasks: cloneObjectMap(state.tasks),
+    workItems: cloneObjectMap(state.workItems),
+    rounds: cloneObjectMap(state.rounds),
+    activitiesById: cloneObjectMap(state.activitiesById),
+    insertionOrder: state.insertionOrder.map((entry) => ({ ...entry })),
+  };
+}
+
 /**
  * Insert or update a domain object in the state.
  *
  * If an object with the same key already exists in its typed map, the two
- * are merged using priority logic: the winning event's render data and
- * domain fields are kept; sourceEventIds are accumulated.
+ * are merged by canonical event order and sourceEventIds are accumulated.
  */
 export function upsertObject(
   state: SessionState,
@@ -85,31 +94,88 @@ function objectMap(state: SessionState, objectType: SessionObjectType): Map<stri
 }
 
 /**
- * Merge a new object into an existing one. The higher-priority event's render
- * data and domain fields win; sourceEventIds are accumulated in insertion order.
- *
- * Priority mirrors the original `timelineItemPriority` logic:
- * - `operator-prompt:pending:*` ids or `pending-operator-prompt` sourceIds → 0
- * - fallback `event-*` ids or meta containing `event #` → 1
- * - everything else → 2
+ * Merge a new object into an existing one. The latest semantic event owns
+ * lifecycle fields, while older events can still fill missing context.
  */
 function mergeObjectFields(existing: DomainObject, incoming: DomainObject): void {
-  const existingPriority = objectPriority(existing);
-  const incomingPriority = objectPriority(incoming);
-
-  const winner = incomingPriority >= existingPriority ? incoming : existing;
-  const loser = incomingPriority >= existingPriority ? existing : incoming;
+  const incomingIsNewer = compareObjectOrder(incoming, existing) >= 0;
+  const newer = incomingIsNewer ? incoming : existing;
+  const older = incomingIsNewer ? existing : incoming;
+  const olderInitialStatus = "initialStatus" in older ? older.initialStatus : undefined;
+  const olderRole = "role" in older ? older.role : undefined;
+  const olderStatus = older.status;
+  const olderPrimaryEventId = older.primaryEventId;
+  const olderPrimaryEventSeq = older.primaryEventSeq;
   const activityIds = mergeActivityIds(existing, incoming);
-
-  // Copy all render and domain fields from the winner, preserving
-  // earliest createdAt and accumulating sourceEventIds.
-  const { id: _id, createdAt: _createdAt, sourceEventIds: _sourceIds, ...winnerFields } = winner;
-  Object.assign(existing, winnerFields, {
-    sourceEventIds: mergeSourceIds([...loser.sourceEventIds, ...winner.sourceEventIds]),
+  const sourceEventIds = Array.from(new Set([...existing.sourceEventIds, ...incoming.sourceEventIds]));
+  const merged = mergeDefinedFields(older, newer);
+  Object.assign(existing, merged, {
+    id: existing.id,
+    sourceEventIds,
+    primaryEventId: newer.primaryEventId,
+    primaryEventSeq: newer.primaryEventSeq,
+    createdAt: compareObjectOrder(existing, incoming) <= 0 ? existing.createdAt : incoming.createdAt,
+    updatedAt: newer.updatedAt,
   });
+  if ("initialStatus" in existing && olderInitialStatus) {
+    existing.initialStatus = olderInitialStatus;
+  }
+  if ("role" in existing && existing.role === "unknown" && olderRole && olderRole !== "unknown") {
+    existing.role = olderRole;
+  }
+  if ("role" in existing && olderStatus === "enqueued") {
+    existing.primaryEventId = olderPrimaryEventId;
+    existing.primaryEventSeq = olderPrimaryEventSeq;
+  }
+  if ("objective" in existing && existing.status === "unknown" && olderStatus !== "unknown") {
+    existing.status = olderStatus as WorkItemObject["status"];
+  }
   if (activityIds.length) {
     (existing as { activityIds?: string[] }).activityIds = activityIds;
   }
+}
+
+function cloneObjectMap<T extends DomainObject>(map: Map<string, T>): Map<string, T> {
+  return new Map(
+    Array.from(map, ([id, object]) => [
+      id,
+      {
+        ...object,
+        sourceEventIds: [...object.sourceEventIds],
+        ...("activityIds" in object && object.activityIds
+          ? { activityIds: [...object.activityIds] }
+          : {}),
+      } as T,
+    ]),
+  );
+}
+
+function mergeDefinedFields(older: DomainObject, newer: DomainObject): DomainObject {
+  const merged = { ...older } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(newer)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  return merged as unknown as DomainObject;
+}
+
+function compareObjectOrder(left: DomainObject, right: DomainObject): number {
+  if (left.primaryEventSeq != null && right.primaryEventSeq != null) {
+    if (left.primaryEventSeq !== right.primaryEventSeq) {
+      return left.primaryEventSeq - right.primaryEventSeq;
+    }
+  } else if (left.primaryEventSeq != null) {
+    return 1;
+  } else if (right.primaryEventSeq != null) {
+    return -1;
+  }
+  const timeOrder = sortableTime(left.updatedAt) - sortableTime(right.updatedAt);
+  if (timeOrder !== 0) return timeOrder;
+  return left.primaryEventId.localeCompare(right.primaryEventId);
+}
+
+function sortableTime(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function mergeActivityIds(existing: DomainObject, incoming: DomainObject): string[] {
@@ -118,12 +184,4 @@ function mergeActivityIds(existing: DomainObject, incoming: DomainObject): strin
     ...("activityIds" in incoming ? (incoming.activityIds ?? []) : []),
   ];
   return Array.from(new Set(ids));
-}
-
-function objectPriority(obj: DomainObject): number {
-  const eventId = obj.render.eventId;
-  if (eventId.startsWith("operator-prompt:pending:")) return 0;
-  if (obj.sourceEventIds.includes("pending-operator-prompt")) return 0;
-  if (eventId.startsWith("event-") || obj.render.meta.includes("event #")) return 1;
-  return 2;
 }

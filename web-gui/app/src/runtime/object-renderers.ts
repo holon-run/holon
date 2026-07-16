@@ -11,7 +11,7 @@
 import type { AgentTimelineActivity, AgentTimelineItem, TimelineStateObjectRef } from "./types";
 import type { DomainObject, RuntimeActivityObject, TaskObject, ToolExecutionObject, WorkItemObject } from "./session-object-types";
 import type { RenderContext } from "./timeline-view-model";
-import { projectRuntimeEvent, projectToolExecution } from "./session-reducer-core";
+import { eventMeta, projectRuntimeEvent, projectToolExecution } from "./session-reducer-core";
 
 /**
  * Render any domain object into a display-ready timeline item.
@@ -26,6 +26,11 @@ export function renderDomainObject(
   obj: DomainObject,
   ctx: RenderContext,
 ): AgentTimelineItem | undefined {
+  const event = ctx.eventsById[obj.primaryEventId];
+  if (!event) return undefined;
+  const eventType = event.type ?? "runtime_event";
+  const payload = asRecord(event.payload);
+
   // Specialized renderers: objects with stable identity that aggregate
   // multiple events render from their own fields, producing one stable card
   // with lifecycle events shown as activities underneath.
@@ -36,12 +41,12 @@ export function renderDomainObject(
     return renderTaskObject(obj, ctx);
   }
   if (isToolExecutionObject(obj)) {
-    return renderToolExecutionObject(obj);
+    return renderToolExecutionObject(obj, ctx);
   }
 
   const projection = projectRuntimeEvent(
-    obj.render.eventType,
-    obj.render.payload,
+    eventType,
+    payload,
     ctx.messagesById,
     ctx.transcriptEntriesById,
     ctx.briefRecordsById,
@@ -53,27 +58,30 @@ export function renderDomainObject(
     kind: projection.kind,
     label: projection.label,
     body: projection.body,
-    timestamp: projection.timestamp || obj.render.timestamp,
-    meta: obj.render.meta,
+    timestamp: projection.timestamp || event.ts || obj.updatedAt,
+    meta: eventMeta(eventType, payload, event.event_seq),
     minDisplayLevel: projection.minDisplayLevel,
-    sourceIds: obj.sourceEventIds,
+    sourceIds: orderedSourceEventIds(obj, ctx),
     relatedStateObjectRef: relatedStateObjectRefFor(obj),
     detail: projection.detail,
-    rawEvent: obj.render.rawEvent,
-    debug: obj.render.debug,
+    rawEvent: event,
+    debug: ctx.includeDebug ? JSON.stringify(event, null, 2) : undefined,
   };
 }
 
 function renderWorkItemObject(obj: WorkItemObject, ctx: RenderContext): AgentTimelineItem {
+  const event = ctx.eventsById[obj.primaryEventId];
+  const eventType = event?.type ?? "runtime_event";
+  const payload = asRecord(event?.payload);
   return {
     id: obj.id,
     kind: "system" as const,
     label: "Work item",
     body: obj.objective || "Work item",
-    timestamp: obj.render.timestamp,
-    meta: obj.render.meta,
+    timestamp: event?.ts ?? obj.updatedAt,
+    meta: eventMeta(eventType, payload, event?.event_seq),
     minDisplayLevel: "verbose" as const,
-    sourceIds: obj.sourceEventIds,
+    sourceIds: orderedSourceEventIds(obj, ctx),
     stateObjectRef: {
       kind: "work_item",
       id: obj.id,
@@ -81,15 +89,19 @@ function renderWorkItemObject(obj: WorkItemObject, ctx: RenderContext): AgentTim
       state: obj.state,
     },
     activities: renderWorkItemActivities(obj, ctx),
-    rawEvent: obj.render.rawEvent,
-    debug: obj.render.debug,
+    rawEvent: event,
+    debug: ctx.includeDebug && event ? JSON.stringify(event, null, 2) : undefined,
   };
 }
 
-function renderToolExecutionObject(obj: ToolExecutionObject): AgentTimelineItem | undefined {
+function renderToolExecutionObject(obj: ToolExecutionObject, ctx: RenderContext): AgentTimelineItem | undefined {
+  const event = ctx.eventsById[obj.primaryEventId];
+  if (!event) return undefined;
+  const eventType = event.type ?? "runtime_event";
+  const payload = asRecord(event.payload);
   const projection = projectToolExecution(
-    obj.render.eventType,
-    obj.render.payload,
+    eventType,
+    payload,
   );
   if (!projection) return undefined;
 
@@ -98,10 +110,10 @@ function renderToolExecutionObject(obj: ToolExecutionObject): AgentTimelineItem 
     kind: projection.kind,
     label: projection.label,
     body: projection.body,
-    timestamp: obj.render.timestamp,
-    meta: obj.render.meta,
+    timestamp: event.ts ?? obj.updatedAt,
+    meta: eventMeta(eventType, payload, event.event_seq),
     minDisplayLevel: projection.minDisplayLevel,
-    sourceIds: obj.sourceEventIds,
+    sourceIds: orderedSourceEventIds(obj, ctx),
     stateObjectRef: {
       kind: "tool_execution",
       id: obj.id,
@@ -110,22 +122,25 @@ function renderToolExecutionObject(obj: ToolExecutionObject): AgentTimelineItem 
     },
     relatedStateObjectRef: obj.relatedStateObjectRef,
     detail: projection.detail,
-    rawEvent: obj.render.rawEvent,
-    debug: obj.render.debug,
+    rawEvent: event,
+    debug: ctx.includeDebug ? JSON.stringify(event, null, 2) : undefined,
   };
 }
 
 function renderTaskObject(obj: TaskObject, ctx: RenderContext): AgentTimelineItem {
+  const event = ctx.eventsById[obj.primaryEventId];
+  const eventType = event?.type ?? "runtime_event";
+  const payload = asRecord(event?.payload);
   const summary = obj.summary || "Task";
   return {
     id: obj.id,
     kind: "tool" as const,
     label: taskStatusLabel(obj.initialStatus ?? obj.status),
     body: summary,
-    timestamp: obj.render.timestamp,
-    meta: obj.render.meta,
+    timestamp: event?.ts ?? obj.updatedAt,
+    meta: eventMeta(eventType, payload, event?.event_seq),
     minDisplayLevel: isFailedTaskStatus(obj.status) ? ("info" as const) : ("verbose" as const),
-    sourceIds: obj.sourceEventIds,
+    sourceIds: orderedSourceEventIds(obj, ctx),
     stateObjectRef: {
       kind: "task",
       id: obj.id,
@@ -133,8 +148,8 @@ function renderTaskObject(obj: TaskObject, ctx: RenderContext): AgentTimelineIte
       summary: obj.summary,
     },
     activities: renderTaskActivities(obj, ctx),
-    rawEvent: obj.render.rawEvent,
-    debug: obj.render.debug,
+    rawEvent: event,
+    debug: ctx.includeDebug && event ? JSON.stringify(event, null, 2) : undefined,
   };
 }
 
@@ -168,17 +183,15 @@ function renderTaskActivities(obj: TaskObject, ctx: RenderContext): AgentTimelin
 }
 
 function isWorkItemObject(obj: DomainObject): obj is WorkItemObject {
-  // RuntimeActivityObject also carries work_item_ event types but has its own
-  // `eventType` field; exclude it so only true WorkItemObjects match.
-  return obj.render.eventType.startsWith("work_item_") && !("eventType" in obj);
+  return "objective" in obj && !("eventType" in obj);
 }
 
 function isTaskObject(obj: DomainObject): obj is TaskObject {
-  return obj.render.eventType === "task_created" || obj.render.eventType === "task_status_updated" || obj.render.eventType === "task_result_received";
+  return "initialStatus" in obj;
 }
 
 function isToolExecutionObject(obj: DomainObject): obj is ToolExecutionObject {
-  return obj.render.eventType === "tool_executed" || obj.render.eventType === "tool_execution_failed";
+  return "toolName" in obj;
 }
 
 function relatedStateObjectRefFor(obj: DomainObject): TimelineStateObjectRef | undefined {
@@ -198,9 +211,12 @@ function renderWorkItemActivities(obj: WorkItemObject, ctx: RenderContext): Agen
 }
 
 function renderRuntimeActivity(activity: RuntimeActivityObject, ctx: RenderContext): AgentTimelineActivity | undefined {
+  const event = ctx.eventsById[activity.primaryEventId];
+  if (!event) return undefined;
+  const payload = asRecord(event.payload);
   const projection = projectRuntimeEvent(
-    activity.render.eventType,
-    activity.render.payload,
+    activity.eventType,
+    payload,
     ctx.messagesById,
     ctx.transcriptEntriesById,
     ctx.briefRecordsById,
@@ -212,17 +228,34 @@ function renderRuntimeActivity(activity: RuntimeActivityObject, ctx: RenderConte
     kind: projection.kind,
     label: projection.label,
     body: projection.body,
-    timestamp: projection.timestamp || activity.render.timestamp,
-    meta: activity.render.meta,
+    timestamp: projection.timestamp || event.ts || activity.updatedAt,
+    meta: eventMeta(activity.eventType, payload, event.event_seq),
     minDisplayLevel: projection.minDisplayLevel,
-    sourceIds: activity.sourceEventIds,
+    sourceIds: orderedSourceEventIds(activity, ctx),
     relatedStateObjectRef: activity.relatedStateObjectRef,
     detail: projection.detail,
-    rawEvent: activity.render.rawEvent,
-    debug: activity.render.debug,
+    rawEvent: event,
+    debug: ctx.includeDebug ? JSON.stringify(event, null, 2) : undefined,
   };
 }
 
 function isRuntimeActivityObject(obj: DomainObject): obj is RuntimeActivityObject {
   return "eventType" in obj;
+}
+
+function orderedSourceEventIds(obj: DomainObject, ctx: RenderContext): string[] {
+  return [...obj.sourceEventIds].sort((leftId, rightId) => {
+    const left = ctx.eventsById[leftId];
+    const right = ctx.eventsById[rightId];
+    const leftSeq = left?.event_seq;
+    const rightSeq = right?.event_seq;
+    if (leftSeq != null && rightSeq != null && leftSeq !== rightSeq) return leftSeq - rightSeq;
+    return leftId.localeCompare(rightId);
+  });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

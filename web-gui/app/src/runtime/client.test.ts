@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createRuntimeClient, projectModelOptions } from "./client";
 import type { components } from "./generated/openapi";
+import {
+  createSessionProjectionState,
+  deriveSessionTimeline,
+  reduceSessionProjection,
+} from "./session-projection";
 
 function agentStateFixture(agentId: string): components["schemas"]["AgentStateSnapshotDto"] {
   return {
@@ -820,9 +825,25 @@ describe("createRuntimeClient", () => {
     });
 
     const detail = await client.getAgentDetail("agent-one");
+    let projection = reduceSessionProjection(createSessionProjectionState(), {
+      type: "events_received",
+      events: detail.events ?? [],
+      eventLogEpoch: detail.eventLogEpoch,
+    });
+    projection = reduceSessionProjection(projection, {
+      type: "transcripts_hydrated",
+      entries: Object.values(detail.transcriptEntriesById ?? {}),
+      missingIds: [],
+    });
+    projection = reduceSessionProjection(projection, {
+      type: "briefs_hydrated",
+      recordsById: detail.briefRecordsById ?? {},
+      missingIds: [],
+    });
 
     expect(detail.agent.lastBrief).toBe("Canonical persisted brief.");
-    expect(detail.timeline[0]).toEqual(
+    expect(detail.timeline).toEqual([]);
+    expect(deriveSessionTimeline(projection)[0]).toEqual(
       expect.objectContaining({
         id: "brief-event",
         body: "Canonical persisted brief.",

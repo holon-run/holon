@@ -14,6 +14,12 @@ import {
   type CachedAgentSession,
 } from "./idb-cache";
 import type { AgentSessionState } from "./runtime-store-helpers";
+import {
+  SESSION_PROJECTION_GENERATION,
+  createSessionProjectionState,
+  reduceSessionProjection,
+  type ProjectionEvent,
+} from "./session-projection";
 import type {
   RuntimeBriefRecord,
   RuntimeMessageEnvelope,
@@ -65,14 +71,15 @@ export function extractCacheableSession(
     remoteKey,
     agentId,
     schemaVersion: CACHE_SCHEMA_VERSION,
+    projectionGeneration: session.generation,
     eventLogEpoch: session.eventLogEpoch,
     eventsBySeq,
     eventSeqs,
     messagesById: session.messagesById as Record<string, unknown>,
     transcriptEntriesById: session.transcriptEntriesById as Record<string, unknown>,
     briefRecordsById: session.briefRecordsById as Record<string, unknown>,
-    newestSeq: session.newestSeq,
-    oldestSeq: session.oldestSeq,
+    newestSeq: eventSeqs.at(-1) ?? session.newestSeq,
+    oldestSeq: eventSeqs[0] ?? session.oldestSeq,
     cachedAt: Date.now(),
   };
 }
@@ -82,16 +89,18 @@ export function extractCacheableSession(
  * The caller merges this into an emptyAgentSession() base.
  */
 export function hydrateSessionFromCache(cached: CachedAgentSession): Partial<AgentSessionState> {
-  return {
+  return reduceSessionProjection(createSessionProjectionState(), {
+    type: "cache_restored",
+    generation: cached.projectionGeneration ?? SESSION_PROJECTION_GENERATION - 1,
     eventLogEpoch: cached.eventLogEpoch,
-    eventsBySeq: cached.eventsBySeq,
+    eventsBySeq: cached.eventsBySeq as Record<number, ProjectionEvent>,
     eventSeqs: cached.eventSeqs,
     messagesById: cached.messagesById as Record<string, RuntimeMessageEnvelope>,
     transcriptEntriesById: cached.transcriptEntriesById as Record<string, RuntimeTranscriptEntry>,
     briefRecordsById: cached.briefRecordsById as Record<string, RuntimeBriefRecord>,
     newestSeq: cached.newestSeq,
     oldestSeq: cached.oldestSeq,
-  };
+  });
 }
 
 /**
