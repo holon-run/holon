@@ -379,6 +379,115 @@
                       "null"
                     ]
                   },
+                  "last_runtime_failure": {
+                    "properties": {
+                      "detail_hint": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "failure_artifact": {
+                        "properties": {
+                          "category": {
+                            "enum": [
+                              "transport",
+                              "protocol",
+                              "runtime",
+                              "task",
+                              "unknown"
+                            ],
+                            "type": "string"
+                          },
+                          "exit_status": {
+                            "format": "int32",
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "metadata": {
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "type": "object"
+                          },
+                          "model_ref": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "provider": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "source_chain": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "status": {
+                            "format": "uint16",
+                            "maximum": 65535,
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "summary": {
+                            "type": "string"
+                          },
+                          "task_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "category",
+                          "kind",
+                          "summary"
+                        ],
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "occurred_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "phase": {
+                        "enum": [
+                          "startup",
+                          "shutdown",
+                          "runtime_turn"
+                        ],
+                        "type": "string"
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "occurred_at",
+                      "summary",
+                      "phase"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
                   "last_turn_terminal": {
                     "properties": {
                       "checkpoint": {

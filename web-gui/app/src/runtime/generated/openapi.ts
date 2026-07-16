@@ -1996,6 +1996,31 @@ export interface components {
                     id: string;
                     /** Format: date-time */
                     last_brief_at?: string | null;
+                    last_runtime_failure?: {
+                        detail_hint?: string | null;
+                        failure_artifact?: {
+                            /** @enum {string} */
+                            category: "transport" | "protocol" | "runtime" | "task" | "unknown";
+                            /** Format: int32 */
+                            exit_status?: number | null;
+                            kind: string;
+                            metadata?: {
+                                [key: string]: string;
+                            };
+                            model_ref?: string | null;
+                            provider?: string | null;
+                            source_chain?: string[];
+                            /** Format: uint16 */
+                            status?: number | null;
+                            summary: string;
+                            task_id?: string | null;
+                        } | null;
+                        /** Format: date-time */
+                        occurred_at: string;
+                        /** @enum {string} */
+                        phase: "startup" | "shutdown" | "runtime_turn";
+                        summary: string;
+                    } | null;
                     last_turn_terminal?: {
                         checkpoint?: {
                             /** Format: uint64 */

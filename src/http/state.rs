@@ -256,6 +256,11 @@ pub async fn agent_state(
         .last_turn_terminal
         .clone()
         .map(slim_state_turn_terminal_record);
+    agent_dto.agent.last_runtime_failure = agent
+        .agent
+        .last_runtime_failure
+        .clone()
+        .map(slim_state_runtime_failure);
     let session = crate::http_dto::StateSessionSnapshotDto {
         current_run_id: agent.agent.current_run_id.clone(),
         pending_count: agent.agent.pending,
@@ -310,6 +315,17 @@ fn slim_state_turn_terminal_record(mut record: TurnTerminalRecord) -> TurnTermin
         checkpoint
     });
     record
+}
+
+fn slim_state_runtime_failure(
+    mut failure: crate::types::RuntimeFailureSummary,
+) -> crate::types::RuntimeFailureSummary {
+    failure.summary =
+        truncate_state_bootstrap_string(&failure.summary, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    failure.detail_hint = failure
+        .detail_hint
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    failure
 }
 
 #[cfg(test)]
@@ -498,8 +514,8 @@ mod tests {
         STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
     };
     use crate::types::{
-        TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
-        TranscriptEntryKind, WorkItemRecord, WorkItemState,
+        RuntimeFailurePhase, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus, TodoItem,
+        TodoItemState, TranscriptEntry, TranscriptEntryKind, WorkItemRecord, WorkItemState,
     };
     use serde_json::json;
 
@@ -597,6 +613,30 @@ mod tests {
                 .result_summary
                 .as_deref()
                 .expect("result")
+                .chars()
+                .count()
+                <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
+        );
+    }
+
+    #[test]
+    fn state_bootstrap_preserves_and_slims_last_runtime_failure() {
+        let failure = RuntimeFailureSummary {
+            occurred_at: chrono::Utc::now(),
+            summary: "s".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64),
+            phase: RuntimeFailurePhase::RuntimeTurn,
+            detail_hint: Some("d".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64)),
+            failure_artifact: None,
+        };
+
+        let slimmed = super::slim_state_runtime_failure(failure);
+
+        assert!(slimmed.summary.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+        assert!(
+            slimmed
+                .detail_hint
+                .as_deref()
+                .expect("detail hint")
                 .chars()
                 .count()
                 <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT

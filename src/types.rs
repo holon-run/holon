@@ -1466,7 +1466,7 @@ pub enum AgentStatus {
     Stopped,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeFailurePhase {
     Startup,
@@ -1505,7 +1505,7 @@ pub struct FailureArtifact {
     pub metadata: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeFailureSummary {
     pub occurred_at: DateTime<Utc>,
     pub summary: String,
