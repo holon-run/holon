@@ -2,9 +2,10 @@ use super::projection::ProjectionSlice;
 use super::state::TuiClientState;
 use super::*;
 use crate::client::{
-    AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest,
-    LocalEventStream, LocalHttpError, StreamEventEnvelope,
+    AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest, LocalEventStream,
+    LocalHttpError, StreamEventEnvelope,
 };
+use crate::http_dto::AgentStateSnapshotDto;
 use crate::types::{BriefRecord, MessageEnvelope, TranscriptEntry};
 use tokio::sync::mpsc;
 
@@ -74,7 +75,7 @@ pub(super) enum TuiRuntimeMessage {
 }
 
 type SnapshotBootstrapResult = (
-    AgentStateSnapshot,
+    AgentStateSnapshotDto,
     Vec<StreamEventEnvelope>,
     Option<u64>,
     Option<u64>,
@@ -529,13 +530,13 @@ impl TuiApp {
             self.chat_scroll
                 .preserve_across_refresh(self.chat_max_scroll);
             if let Some(mut projection) = self.projection.take() {
-                projection.reset_from_snapshot_preserving_event_history(snapshot);
+                projection.reset_from_bootstrap_dto_preserving_event_history(snapshot);
                 projection
             } else {
-                TuiProjection::from_snapshot(snapshot)
+                TuiProjection::from_bootstrap_dto(snapshot)
             }
         } else {
-            TuiProjection::from_snapshot(snapshot)
+            TuiProjection::from_bootstrap_dto(snapshot)
         };
         projection.merge_event_tail(events_tail, newest_seq);
         projection.set_event_history_state_from_tail(oldest_seq, has_older);

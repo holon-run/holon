@@ -83,8 +83,8 @@ pub(crate) use crate::{
         ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
         MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
         OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskRecord, TaskStatus, TaskStatusSnapshot,
-        TaskStopResult, TimerRecord, TodoItem, TranscriptEntry, TurnTerminalRecord, WaitingReason,
+        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TaskStatusSnapshot,
+        TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord, WaitingReason,
         WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };

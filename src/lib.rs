@@ -16,6 +16,7 @@ pub mod fd_limit;
 pub mod host;
 mod host_registry;
 pub mod http;
+pub mod http_dto;
 pub mod ingress;
 pub mod memory;
 pub mod model_catalog;

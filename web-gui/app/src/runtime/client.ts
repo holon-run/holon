@@ -1,4 +1,5 @@
 import { agentDetailFixtures } from "./fixtures";
+import type { components } from "./generated/openapi";
 import { briefIdForPayload, reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
   AddSkillInput,
@@ -223,99 +224,10 @@ interface AgentListEntryDto {
   } | null;
 }
 
-interface AgentStateDto {
-  agent?: {
-    identity?: AgentListEntryDto["identity"];
-    agent?: {
-      id?: string;
-      status?: string;
-      pending?: number;
-      last_brief_at?: string | null;
-      current_work_item_id?: string | null;
-    };
-    scheduling_posture?: AgentListEntryDto["scheduling_posture"];
-    active_task_count?: number;
-    lifecycle?: string | Record<string, unknown>;
-    model?: AgentListEntryDto["model"];
-    active_waiting_intents?: unknown[];
-  };
-  session?: {
-    pending_count?: number;
-    current_run_id?: string | null;
-  };
-  tasks?: Array<{
-    id?: string;
-    kind?: string;
-    status?: string;
-    summary?: string;
-    detail?: unknown;
-  }>;
-  work_items?: Array<{
-    id?: string;
-    objective?: string;
-    state?: string;
-    plan_status?: string;
-  }>;
-  waiting_intents?: unknown[];
-  workspace?: AgentWorkspaceDto;
-}
-
-interface WorkItemDto {
-  id?: string;
-  agent_id?: string;
-  revision?: number;
-  objective?: string;
-  state?: string;
-  plan_status?: string;
-  plan_artifact?: {
-    path?: string;
-    relative_path?: string;
-    workspace_id?: string;
-    workspace_alias?: string;
-    preview?: string;
-    preview_complete?: boolean;
-    updated_at?: string;
-  };
-  todo_list?: Array<{
-    text?: string;
-    state?: string;
-  }>;
-  work_refs?: Array<{
-    kind?: string;
-    ref?: string;
-    title?: string;
-    reason?: string;
-    status?: string;
-    last_seen_at?: string;
-  }>;
-  blocked_by?: string;
-  recheck_at?: string;
-  result_brief_id?: string;
-  result_summary?: string;
-  created_at?: string;
-  updated_at?: string;
-}
-
-interface AgentWorkspaceDto {
-    workspaces?: Array<{
-      workspace_id: string;
-      workspace_alias?: string | null;
-      workspace_anchor?: string | null;
-      repo_name?: string | null;
-      is_active?: boolean;
-      execution_root_id?: string | null;
-      execution_root?: string | null;
-      cwd?: string | null;
-      projection_kind?: string | null;
-      access_mode?: string | null;
-      worktree?: {
-        branch?: string | null;
-        path?: string | null;
-        original_branch?: string | null;
-        original_cwd?: string | null;
-      } | null;
-    }>;
-}
+type AgentStateDto = components["schemas"]["AgentStateSnapshotDto"];
+type SlimWorkItemDto = components["schemas"]["SlimWorkItemDto"];
+type WorkItemDto = components["schemas"]["WorkItemRecord"];
+type WorkItemTransportDto = SlimWorkItemDto | WorkItemDto;
 
 type BriefRecordDto = RuntimeBriefRecord;
 
@@ -1906,7 +1818,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const tasks = projectTasks(state?.tasks ?? []);
   const pending = state?.session?.pending_count ?? entry.pending ?? 0;
   const activeTaskCount = state?.tasks?.length ?? state?.agent?.active_task_count ?? 0;
-  const waitingCount = state?.waiting_intents?.length ?? state?.agent?.active_waiting_intents?.length ?? (entry.waiting_reason ? 1 : 0);
+  const waitingCount = state?.agent.closure.waiting_reason || entry.waiting_reason ? 1 : 0;
   const posture = state?.agent?.scheduling_posture?.posture ?? entry.scheduling_posture?.posture ?? "unknown";
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
   const focusSummary = currentWork?.objective ?? postureReason;
@@ -1946,7 +1858,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   };
 }
 
-function projectWorkspaceFromInfo(ws: NonNullable<AgentWorkspaceDto["workspaces"]>[number]): WorkspaceSummary {
+function projectWorkspaceFromInfo(ws: AgentStateDto["workspace"]["workspaces"][number]): WorkspaceSummary {
   const anchor = ws.workspace_anchor ?? ws.execution_root ?? ws.cwd ?? "—";
   const name = ws.workspace_alias ?? basename(anchor) ?? ws.workspace_id ?? "not bound";
   const wt = ws.worktree;
@@ -2003,19 +1915,12 @@ function basename(path: string): string | undefined {
 function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[] {
   return tasks
     .filter((task) => task.id)
-    .map((task) => {
-      const detail = asRecord(task.detail);
-      const cmd = stringValue(detail?.cmd);
-      const workdir = stringValue(detail?.workdir);
-      return {
-        id: task.id ?? "unknown-task",
-        kind: task.kind ?? "task",
-        status: task.status ?? "unknown",
-        summary: task.summary ?? cmd ?? task.id ?? "Task",
-        command: cmd,
-        workdir,
-      };
-    });
+    .map((task) => ({
+      id: task.id,
+      kind: task.kind,
+      status: task.status,
+      summary: task.summary ?? task.id,
+    }));
 }
 
 function newestBriefFromEvents(
@@ -2133,30 +2038,34 @@ function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption
 }
 
 function selectCurrentWork(
-  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
+  workItems: readonly WorkItemTransportDto[],
   currentWorkItemId?: string | null,
 ): WorkItemSummary | undefined {
   if (!currentWorkItemId) return undefined;
   const selected = workItems.find((item) => item.id === currentWorkItemId);
-  if (!selected?.id) return undefined;
+  if (!selected) return undefined;
   return {
     id: selected.id,
-    objective: selected.objective ?? selected.id,
-    state: selected.state ?? "unknown",
+    objective: selected.objective,
+    state: selected.state,
     planStatus: selected.plan_status,
     current: true,
   };
 }
 
 function projectWorkItems(
-  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
+  workItems: readonly WorkItemTransportDto[],
 ): WorkItemSummary[] {
   return selectWorkItems(workItems);
 }
 
-function projectWorkItem(workItem: WorkItemDto | undefined, currentWorkItemId?: string | null): WorkItemSummary | undefined {
+function projectWorkItem(workItem: WorkItemTransportDto | undefined, currentWorkItemId?: string | null): WorkItemSummary | undefined {
   if (!workItem?.id) return undefined;
-  const planArtifact = workItem.plan_artifact;
+  const detail = "plan_artifact" in workItem ? workItem : undefined;
+  const planArtifact = detail?.plan_artifact;
+  const todoList = detail?.todo_list ??
+    ("current_todo" in workItem && workItem.current_todo ? [workItem.current_todo] : []);
+  const workRefs = detail?.work_refs ?? [];
   return {
     id: workItem.id,
     objective: workItem.objective ?? workItem.id,
@@ -2166,33 +2075,33 @@ function projectWorkItem(workItem: WorkItemDto | undefined, currentWorkItemId?: 
     revision: workItem.revision,
     createdAt: workItem.created_at,
     updatedAt: workItem.updated_at,
-    blockedBy: workItem.blocked_by,
-    recheckAt: workItem.recheck_at,
-    resultBriefId: workItem.result_brief_id,
-    resultSummary: workItem.result_summary,
+    blockedBy: workItem.blocked_by ?? undefined,
+    recheckAt: workItem.recheck_at ?? undefined,
+    resultBriefId: workItem.result_brief_id ?? undefined,
+    resultSummary: workItem.result_summary ?? undefined,
     planArtifact: planArtifact
       ? {
           path: planArtifact.path,
           relativePath: planArtifact.relative_path,
-          workspaceAlias: planArtifact.workspace_alias,
+          workspaceAlias: planArtifact.workspace_alias ?? undefined,
           workspaceId: planArtifact.workspace_id,
           preview: planArtifact.preview,
           previewComplete: planArtifact.preview_complete,
           updatedAt: planArtifact.updated_at,
         }
       : undefined,
-    todoList: (workItem.todo_list ?? [])
+    todoList: todoList
       .filter((item) => item.text)
       .map((item) => ({
         text: item.text ?? "",
         state: item.state ?? "unknown",
       })),
-    workRefs: (workItem.work_refs ?? [])
+    workRefs: workRefs
       .filter((item) => item.ref)
       .map((item) => ({
         kind: item.kind ?? "other",
         ref: item.ref ?? "",
-        title: item.title,
+        title: item.title ?? undefined,
         reason: item.reason,
         status: item.status,
         lastSeenAt: item.last_seen_at,
@@ -2201,12 +2110,11 @@ function projectWorkItem(workItem: WorkItemDto | undefined, currentWorkItemId?: 
 }
 
 function selectWorkItems(
-  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
+  workItems: readonly WorkItemTransportDto[],
   currentWorkItemId?: string | null,
 ): WorkItemSummary[] {
   return workItems
-    .filter((item) => item.id)
-    .map((item) => projectWorkItem(item as WorkItemDto, currentWorkItemId))
+    .map((item) => projectWorkItem(item, currentWorkItemId))
     .filter((item): item is WorkItemSummary => Boolean(item))
     .sort((left, right) => {
       if (left.current !== right.current) return left.current ? -1 : 1;

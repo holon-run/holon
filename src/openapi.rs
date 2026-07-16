@@ -8,16 +8,19 @@ use serde_json::{json, Value};
 use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
-        BatchGetMessagesRequest, CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest,
-        MemoryGetRequest, ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
-        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
-        SearchRequest, SearchResponse, UpdateWorkItemRequest,
+        BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
+        CompleteWorkItemRequest, CreateTimerRequest, MemoryGetRequest, ModelConfigMigrationRequest,
+        PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
+        UpdateWorkItemRequest,
     },
+    http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
     model_config_migration::ModelConfigMigrationReport,
     types::{
-        AddSkillRequest, BriefRecord, TaskInputResult, TaskOutputResult, TaskStatusSnapshot,
-        TaskStopResult, TimerRecord, ToolExecutionRecord, WorkItemRecord,
+        AddSkillRequest, BriefRecord, CheckSkillRequest, ReconcileSkillRequest,
+        RefreshCatalogRequest, SyncTemplateRemoteSourcesRequest, TaskInputResult, TaskOutputResult,
+        TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord, WorkItemRecord,
     },
 };
 
@@ -71,7 +74,7 @@ const ROUTES: &[RouteSpec] = &[
     aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/briefs/{brief_id}", "agentBrief", "agents", "Brief detail", "Return a persisted user-facing delivery brief by id.", None, "BriefRecord", AuthKind::RemoteAccess),
-    aide_route("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the lightweight bootstrap snapshot for an agent. Heavy task, work-item, operator notification, and execution details are available through dedicated routes and events.", None, AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the lightweight bootstrap snapshot for an agent. Heavy task, work-item, operator notification, and execution details are available through dedicated routes and events.", None, "AgentStateSnapshotDto", AuthKind::RemoteAccess),
     event_stream_route("get", "/events/stream", "eventsStream", "events", "Global event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor. If the receiver lags, the server closes the stream; clients must backfill each agent from its last contiguous event_seq before reconnecting.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/events", "agentEvents", "events", "Agent event page", "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
     event_stream_route("get", "/agents/{agent_id}/events/stream", "agentEventsStream", "events", "Agent event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
@@ -157,7 +160,7 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/control/agents/{agent_id}/skills/uninstall", "uninstallSkill", "skills", "Uninstall skill compatibility alias", "Compatibility alias for disabling an agent skill.", Some("UninstallSkillRequest"), AuthKind::Control),
     aide_route("get", "/status", "defaultStatus", "compat", "Default agent status alias", "Compatibility alias for the default agent status route.", None, AuthKind::RemoteAccess),
     aide_route("get", "/briefs", "defaultBriefs", "compat", "Default agent briefs alias", "Compatibility alias for the default agent briefs route. Query parameter: limit.", None, AuthKind::RemoteAccess),
-    aide_route("get", "/state", "defaultState", "compat", "Default agent state alias", "Compatibility alias for the default agent state route.", None, AuthKind::RemoteAccess),
+    route_with_response("get", "/state", "defaultState", "compat", "Default agent state alias", "Compatibility alias for the default agent state route.", None, "AgentStateSnapshotDto", AuthKind::RemoteAccess),
     aide_route("get", "/transcript", "defaultTranscript", "compat", "Default agent transcript alias", "Compatibility alias for the default agent transcript route. Query parameter: limit.", None, AuthKind::RemoteAccess),
     aide_route("get", "/worktree-summary", "defaultWorktreeSummary", "compat", "Default agent worktree summary alias", "Compatibility alias for the default agent worktree summary route.", None, AuthKind::RemoteAccess),
 ];
@@ -583,6 +586,15 @@ fn component_schemas() -> Value {
         component_schema::<TaskStatusSnapshot>(),
     );
     schemas.insert(
+        "AgentStateSnapshotDto".into(),
+        component_schema::<AgentStateSnapshotDto>(),
+    );
+    schemas.insert("SlimTaskDto".into(), component_schema::<SlimTaskDto>());
+    schemas.insert(
+        "SlimWorkItemDto".into(),
+        component_schema::<SlimWorkItemDto>(),
+    );
+    schemas.insert(
         "TaskOutputResult".into(),
         component_schema::<TaskOutputResult>(),
     );
@@ -678,6 +690,10 @@ fn component_schemas() -> Value {
         component_schema::<BatchGetMessagesRequest>(),
     );
     schemas.insert(
+        "BatchGetTranscriptEntriesRequest".into(),
+        component_schema::<BatchGetTranscriptEntriesRequest>(),
+    );
+    schemas.insert(
         "BatchGetMessagesResponse".into(),
         json!({
             "type": "object",
@@ -694,6 +710,44 @@ fn component_schemas() -> Value {
             "required": ["messages"],
             "additionalProperties": false
         }),
+    );
+    schemas.insert(
+        "BatchGetTranscriptEntriesResponse".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/JsonValue" }
+                },
+                "missing_entry_ids": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            },
+            "required": ["entries"],
+            "additionalProperties": false
+        }),
+    );
+    schemas.insert(
+        "CheckSkillRequest".into(),
+        component_schema::<CheckSkillRequest>(),
+    );
+    schemas.insert(
+        "ReconcileSkillRequest".into(),
+        component_schema::<ReconcileSkillRequest>(),
+    );
+    schemas.insert(
+        "RefreshCatalogRequest".into(),
+        component_schema::<RefreshCatalogRequest>(),
+    );
+    schemas.insert(
+        "UpdateSkillRequest".into(),
+        component_schema::<ReconcileSkillRequest>(),
+    );
+    schemas.insert(
+        "SyncTemplateRemoteSourcesRequest".into(),
+        component_schema::<SyncTemplateRemoteSourcesRequest>(),
     );
     for name in [
         "EnqueueRequest",
@@ -767,6 +821,11 @@ mod tests {
         assert!(
             paths["/api/control/agents/{agent_id}/tasks"]["post"]["x-holon-openapi-source"]
                 .is_null()
+        );
+        assert_eq!(
+            paths["/api/agents/{agent_id}/state"]["get"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/AgentStateSnapshotDto"
         );
     }
 

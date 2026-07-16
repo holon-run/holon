@@ -237,7 +237,7 @@ pub struct ExecutionRootEntry {
     pub removed_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentKind {
     Default,
@@ -245,7 +245,7 @@ pub enum AgentKind {
     Child,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentVisibility {
     Public,
@@ -261,7 +261,7 @@ impl AgentVisibility {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentOwnership {
     ParentSupervised,
@@ -291,7 +291,7 @@ impl AgentOwnership {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentProfilePreset {
     PrivateChild,
@@ -368,7 +368,7 @@ pub enum AgentDurability {
     Ephemeral,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRegistryStatus {
     Active,
@@ -464,7 +464,7 @@ impl AgentIdentityRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentIdentityView {
     pub agent_id: String,
     pub kind: AgentKind,
@@ -845,7 +845,7 @@ pub enum SkillLoadReason {
     PromptInjection,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ClosureOutcome {
     Completed,
@@ -877,7 +877,7 @@ pub enum WaitingReason {
     AwaitingTimer,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimePosture {
     Awake,
@@ -1084,18 +1084,18 @@ pub struct RemoveSkillRequest {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ReconcileSkillRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RefreshCatalogRequest {}
 
 pub type UpdateSkillRequest = ReconcileSkillRequest;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct CheckSkillRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -1140,7 +1140,7 @@ pub struct RemoveTemplateRequest {
     pub template_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 pub struct SyncTemplateRemoteSourcesRequest {
     /// Optional configured source id. When omitted, all enabled remote sources
     /// are synchronized.
@@ -1454,7 +1454,7 @@ pub enum AdmissionContext {
     RuntimeOwned,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Booting,
@@ -1516,7 +1516,7 @@ pub struct RuntimeFailureSummary {
     pub failure_artifact: Option<FailureArtifact>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnTerminalKind {
     Completed,
@@ -1532,7 +1532,7 @@ impl TurnTerminalKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TurnTerminalRecord {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub turn_id: String,
@@ -1645,7 +1645,7 @@ impl TurnRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TurnTerminalCheckpointRecord {
     pub request_id: String,
     pub requested_at_round: usize,
@@ -2062,7 +2062,7 @@ pub struct PendingWakeHint {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CallbackDeliveryMode {
     EnqueueMessage,
@@ -2070,7 +2070,7 @@ pub enum CallbackDeliveryMode {
     WakeHint,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalTriggerScope {
     Agent,
@@ -2253,7 +2253,7 @@ fn json_truthy(value: &Value) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalTriggerStatus {
     Active,
@@ -2277,7 +2277,7 @@ pub struct ExternalTriggerRecord {
     pub delivery_count: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ExternalTriggerStateSnapshot {
     pub external_trigger_id: String,
     pub target_agent_id: String,
@@ -3605,7 +3605,7 @@ pub enum WorkItemReadiness {
     Completed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemSchedulingState {
     Runnable,
@@ -3619,7 +3619,7 @@ pub enum WorkItemSchedulingState {
     Completed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSchedulingPosture {
     Unknown,
@@ -3634,7 +3634,7 @@ pub enum AgentSchedulingPosture {
     Idle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentPostureProjection {
     pub posture: AgentSchedulingPosture,
     pub reason: String,
@@ -4715,7 +4715,7 @@ impl ControlAction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentModelSource {
     RuntimeDefault,
@@ -4835,7 +4835,7 @@ pub struct ProviderModelEntry {
     pub policy_notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentLifecycleHint {
     pub accepts_external_messages: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

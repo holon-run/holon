@@ -216,14 +216,14 @@ pub async fn agent_state(
         .await
         .map_err(agent_access_error)?;
     runtime.prune_stale_attached_workspaces().await.ok();
-    let mut agent = runtime.agent_summary().await.map_err(error_response)?;
+    let agent = runtime.agent_summary().await.map_err(error_response)?;
     let tasks_started = std::time::Instant::now();
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
         .await
         .map_err(error_response)?
         .into_iter()
-        .map(slim_state_task_record)
+        .map(crate::http_dto::SlimTaskDto::from)
         .collect();
     crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
     let timers_started = std::time::Instant::now();
@@ -237,7 +237,7 @@ pub async fn agent_state(
         .items
         .into_iter()
         .take(STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
-        .map(slim_state_work_item_projection)
+        .map(slim_state_work_item_dto)
         .collect::<Vec<_>>();
     crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
     let triggers_started = std::time::Instant::now();
@@ -250,8 +250,13 @@ pub async fn agent_state(
         .collect();
     crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
     let workspace = state_workspace_snapshot(&agent, &state);
-    slim_state_agent_summary(&mut agent);
-    let session = StateSessionSnapshot {
+    let mut agent_dto = crate::http_dto::SlimAgentDto::from(&agent);
+    agent_dto.agent.last_turn_terminal = agent
+        .agent
+        .last_turn_terminal
+        .clone()
+        .map(slim_state_turn_terminal_record);
+    let session = crate::http_dto::StateSessionSnapshotDto {
         current_run_id: agent.agent.current_run_id.clone(),
         pending_count: agent.agent.pending,
         last_turn: agent
@@ -263,8 +268,8 @@ pub async fn agent_state(
     traced_json(
         "/agents/{agent_id}/state",
         started_at,
-        AgentStateSnapshot {
-            agent,
+        crate::http_dto::AgentStateSnapshotDto {
+            agent: agent_dto,
             session,
             tasks,
             timers,
@@ -275,58 +280,21 @@ pub async fn agent_state(
     )
 }
 
-fn slim_state_task_record(mut task: TaskRecord) -> TaskRecord {
-    let _ = task.detail.take();
-    let _ = task.recovery.take();
-    task
-}
-
-fn slim_state_work_item_projection(
-    mut projection: crate::work_item_scheduling::WorkItemSchedulingProjection,
-) -> crate::work_item_scheduling::WorkItemSchedulingProjection {
-    projection.work_item.objective = truncate_state_bootstrap_string(
-        &projection.work_item.objective,
-        STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT,
-    );
-    projection.work_item.plan_artifact = None;
-    projection.work_item.todo_list.clear();
-    projection.work_item.work_refs.clear();
-    projection.work_item.blocked_by = projection
-        .work_item
+fn slim_state_work_item_dto(
+    projection: crate::work_item_scheduling::WorkItemSchedulingProjection,
+) -> crate::http_dto::SlimWorkItemDto {
+    let mut dto = crate::http_dto::SlimWorkItemDto::from(projection);
+    dto.objective =
+        truncate_state_bootstrap_string(&dto.objective, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    dto.blocked_by = dto
         .blocked_by
         .take()
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    projection.work_item.result_summary = projection
-        .work_item
+    dto.result_summary = dto
         .result_summary
         .take()
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    projection
-}
-
-fn slim_state_agent_summary(agent: &mut AgentSummary) {
-    agent.loaded_agents_md = Default::default();
-    agent.skills = Default::default();
-    agent.active_wait_conditions.clear();
-    agent.active_external_triggers.clear();
-    agent.recent_operator_notifications.clear();
-    agent.agent.tool_latency.clear();
-    agent.agent.working_memory.active_episode_builder = None;
-    agent.agent.active_skills.clear();
-    agent.agent.last_continuation = None;
-    agent.agent.last_turn_terminal = agent
-        .agent
-        .last_turn_terminal
-        .take()
-        .map(slim_state_turn_terminal_record);
-    if let Some(failure) = agent.agent.last_runtime_failure.as_mut() {
-        failure.summary =
-            truncate_state_bootstrap_string(&failure.summary, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
-        failure.detail_hint = failure
-            .detail_hint
-            .take()
-            .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    }
+    dto
 }
 
 fn slim_state_turn_terminal_record(mut record: TurnTerminalRecord) -> TurnTerminalRecord {
@@ -398,7 +366,10 @@ fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
     text.to_string()
 }
 
-fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWorkspaceSnapshot {
+fn state_workspace_snapshot(
+    agent: &AgentSummary,
+    state: &AppState,
+) -> crate::http_dto::StateWorkspaceSnapshotDto {
     let all_entries = state.host.workspace_entries().unwrap_or_default();
 
     use crate::types::AgentWorkspaceInfo;
@@ -474,7 +445,9 @@ fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWork
         }
     }
 
-    StateWorkspaceSnapshot { workspaces }
+    crate::http_dto::StateWorkspaceSnapshotDto {
+        workspaces: workspaces.into_iter().map(Into::into).collect(),
+    }
 }
 
 /// Merge projection_metadata and worktree_session into a unified WorktreeInfo.
@@ -551,9 +524,10 @@ mod tests {
             })),
             recovery: None,
         };
-        let slimmed = super::slim_state_task_record(task);
-        assert!(slimmed.detail.is_none());
-        assert!(slimmed.recovery.is_none());
+        let slimmed = crate::http_dto::SlimTaskDto::from(task);
+        let value = serde_json::to_value(slimmed).expect("serialize slim task");
+        assert!(value.get("detail").is_none());
+        assert!(value.get("recovery").is_none());
 
         let entry = TranscriptEntry {
             id: "entry-1".into(),
@@ -602,12 +576,13 @@ mod tests {
                 trigger_delivery_by_id: &std::collections::BTreeMap::new(),
             },
         );
-        let slimmed = super::slim_state_work_item_projection(projection);
+        let slimmed = super::slim_state_work_item_dto(projection);
 
         assert!(slimmed.objective.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
-        assert!(slimmed.todo_list.is_empty());
-        assert!(slimmed.work_refs.is_empty());
-        assert!(slimmed.plan_artifact.is_none());
+        let value = serde_json::to_value(&slimmed).expect("serialize slim work item");
+        assert!(value.get("todo_list").is_none());
+        assert!(value.get("work_refs").is_none());
+        assert!(value.get("plan_artifact").is_none());
         assert!(
             slimmed
                 .blocked_by

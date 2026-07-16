@@ -422,7 +422,6 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
     let snapshot = client.agent_state_snapshot("default").await?;
     assert_eq!(snapshot.agent.identity.agent_id, "default");
     assert!(snapshot.session.pending_count <= snapshot.agent.agent.pending);
-    assert!(snapshot.operator_notifications.is_empty());
     let events_page = client
         .agent_events_page(
             "default",
