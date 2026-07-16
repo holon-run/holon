@@ -67,7 +67,6 @@ pub(crate) async fn execute(
         args.include_todo_list,
         None,
         None,
-        None,
     )
     .await?;
     serialize_success(NAME, &GetWorkItemResult { context, work_item })

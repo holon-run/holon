@@ -98,15 +98,15 @@ pub(crate) async fn execute(
     };
     let mut work_items = Vec::with_capacity(selected.len());
     for projection in selected {
+        let record = projection.work_item.clone();
         work_items.push(
             view_for_record(
                 runtime,
                 &context,
-                projection.work_item,
+                record,
                 args.include_todo_list,
                 delivery_summaries.as_ref(),
-                None,
-                None,
+                Some(projection),
             )
             .await?,
         );

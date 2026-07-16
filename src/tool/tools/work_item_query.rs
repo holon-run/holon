@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -12,7 +12,10 @@ use crate::{
         WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemRef,
         WorkItemSchedulingState, WorkItemState,
     },
-    work_item_scheduling::{WorkItemCandidateClass, WorkItemFocus, WorkItemSchedulingReasonCode},
+    work_item_scheduling::{
+        WorkItemCandidateClass, WorkItemFocus, WorkItemSchedulingProjection,
+        WorkItemSchedulingReasonCode,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,8 +90,6 @@ pub(crate) struct WorkItemQueryContext {
 }
 
 pub(crate) type WorkItemDeliverySummaryMap = BTreeMap<String, DeliverySummaryRecord>;
-pub(crate) type WorkItemWaitConditionSummaryMap = BTreeMap<String, Vec<WaitConditionSummary>>;
-pub(crate) type WorkItemYieldedSet = BTreeSet<String>;
 
 pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
     let state = runtime.agent_state().await?;
@@ -111,26 +112,29 @@ pub(crate) async fn view_for_record(
     record: WorkItemRecord,
     include_todo_list: bool,
     delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
-    wait_conditions: Option<&WorkItemWaitConditionSummaryMap>,
-    yielded_ids: Option<&WorkItemYieldedSet>,
+    projection: Option<WorkItemSchedulingProjection>,
 ) -> Result<WorkItemView> {
-    let projection = runtime
-        .storage()
-        .work_queue_read_model()?
-        .items
-        .into_iter()
-        .find(|item| item.work_item.id == record.id)
-        .unwrap_or_else(|| {
-            crate::work_item_scheduling::derive_work_item_scheduling(
-                crate::work_item_scheduling::WorkItemSchedulingFacts {
-                    work_item: &record,
-                    is_current: context.current_work_item_id.as_deref() == Some(record.id.as_str()),
-                    is_yielded: false,
-                    active_wait_conditions: &[],
-                    trigger_delivery_by_id: &BTreeMap::new(),
-                },
-            )
-        });
+    let projection = match projection {
+        Some(projection) => projection,
+        None => runtime
+            .storage()
+            .work_queue_read_model()?
+            .items
+            .into_iter()
+            .find(|item| item.work_item.id == record.id)
+            .unwrap_or_else(|| {
+                crate::work_item_scheduling::derive_work_item_scheduling(
+                    crate::work_item_scheduling::WorkItemSchedulingFacts {
+                        work_item: &record,
+                        is_current: context.current_work_item_id.as_deref()
+                            == Some(record.id.as_str()),
+                        is_yielded: false,
+                        active_wait_conditions: &[],
+                        trigger_delivery_by_id: &BTreeMap::new(),
+                    },
+                )
+            }),
+    };
     let mut record = record;
     crate::work_item_plan::refresh_plan_artifact_metadata(
         runtime.agent_home().as_path(),
@@ -147,7 +151,6 @@ pub(crate) async fn view_for_record(
     };
     let state = lifecycle_view(&record.state);
     let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
-    let _ = (wait_conditions, yielded_ids);
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,

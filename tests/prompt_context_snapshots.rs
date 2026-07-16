@@ -620,7 +620,9 @@ Agent id: default
 Current work item:
 - Id: work_runtime_flow
 - State: Open
+- Scheduling state: Runnable
 - Readiness: Runnable
+- Reason: Runnable
 - Objective: Track
 runtime flow
 - Plan status: draft
@@ -736,7 +738,9 @@ Agent id: default
 Current work item:
 - Id: work_prompt
 - State: Open
+- Scheduling state: Blocked
 - Readiness: Blocked
+- Reason: ManualBlocker
 - Objective: Ship prompt snapshot coverage
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_prompt/plan.md
@@ -1139,7 +1143,9 @@ Agent id: default
 Current work item:
 - Id: work_active
 - State: Open
+- Scheduling state: Blocked
 - Readiness: Blocked
+- Reason: ManualBlocker
 - Objective: Complete snapshot coverage expansion
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_active/plan.md
@@ -1228,7 +1234,9 @@ Agent id: default
 Current work item:
 - Id: work_no_delta
 - State: Open
+- Scheduling state: Blocked
 - Readiness: Blocked
+- Reason: ManualBlocker
 - Objective: Test delta absence
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_no_delta/plan.md
@@ -1328,7 +1336,9 @@ Agent id: default
 Current work item:
 - Id: work_ci
 - State: Open
+- Scheduling state: Blocked
 - Readiness: Blocked
+- Reason: ManualBlocker
 - Objective: Handle CI callback
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_ci/plan.md
@@ -1444,7 +1454,9 @@ Agent id: default
 Current work item:
 - Id: work_waiting
 - State: Open
+- Scheduling state: Blocked
 - Readiness: Blocked
+- Reason: ManualBlocker
 - Objective: External service integration
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_waiting/plan.md
@@ -1562,7 +1574,9 @@ Agent id: default
 Current work item:
 - Id: work_compaction
 - State: Open
+- Scheduling state: Blocked
 - Readiness: Blocked
+- Reason: ManualBlocker
 - Objective: Long-running task with compaction
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_compaction/plan.md
@@ -1685,7 +1699,9 @@ Agent id: default
 Current work item:
 - Id: work_test
 - State: Open
+- Scheduling state: Blocked
 - Readiness: Blocked
+- Reason: ManualBlocker
 - Objective: Test execution and verification
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_test/plan.md
