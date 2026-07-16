@@ -47,6 +47,7 @@ implementation and tests.
 - [Runtime Ledger Sequences and Object Revisions](./runtime-ledger-sequences-and-revisions.md)
 - [Runtime Ledger Files and Relations](./runtime-ledger-files-and-relations.md)
 - [Runtime Transition Commit Contract](./runtime-transition-commit-contract.md)
+- [WorkItem Current Focus Canonical Fact](./work-item-current-focus.md)
 
 ## Provenance, Policy, And Execution
 

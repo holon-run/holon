@@ -546,15 +546,10 @@ impl AppStorage {
     pub fn insert_work_item(&self, record: &WorkItemRecord) -> Result<()> {
         self.ensure_writable()?;
         let runtime_db = self.runtime_db.clone();
-        let current_focus = self
-            .read_agent()?
-            .and_then(|agent| agent.current_work_item_id)
-            .as_deref()
-            == Some(record.id.as_str());
         let changes = self.index_changes_for_work_item(record)?;
         runtime_db
             .work_items()
-            .insert_new_with_index_changes(record, current_focus, &changes)?;
+            .insert_new_with_index_changes(record, &changes)?;
         self.enqueue_memory_index_work_item_best_effort(record)
     }
 
@@ -565,16 +560,10 @@ impl AppStorage {
     ) -> Result<()> {
         self.ensure_writable()?;
         let runtime_db = self.runtime_db.clone();
-        let current_focus = self
-            .read_agent()?
-            .and_then(|agent| agent.current_work_item_id)
-            .as_deref()
-            == Some(record.id.as_str());
         let changes = self.index_changes_for_work_item(record)?;
         runtime_db.work_items().update_expected_with_index_changes(
             record,
             expected_revision,
-            current_focus,
             &changes,
         )?;
         self.enqueue_memory_index_work_item_best_effort(record)
@@ -2651,10 +2640,7 @@ mod tests {
         )
         .unwrap();
         runtime_db.tasks().import_legacy(Vec::new()).unwrap();
-        runtime_db
-            .work_items()
-            .import_legacy(Vec::new(), None)
-            .unwrap();
+        runtime_db.work_items().import_legacy(Vec::new()).unwrap();
         runtime_db
             .wait_conditions()
             .import_legacy(Vec::new())
@@ -4727,8 +4713,8 @@ mod tests {
         agent.status = AgentStatus::Asleep;
         let runnable = WorkItemRecord::new("default", "current runnable", WorkItemState::Open);
         agent.current_work_item_id = Some(runnable.id.clone());
-        storage.write_agent(&agent).unwrap();
         storage.append_work_item(&runnable).unwrap();
+        storage.write_agent(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::HasRunnableWork
@@ -5218,10 +5204,7 @@ mod tests {
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        runtime_db
-            .work_items()
-            .import_legacy(Vec::new(), None)
-            .unwrap();
+        runtime_db.work_items().import_legacy(Vec::new()).unwrap();
         let mut current = WorkItemRecord::new("default", "current agent item", WorkItemState::Open);
         current.updated_at = Utc::now();
         let mut other_agent =

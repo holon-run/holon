@@ -3611,7 +3611,6 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
                 agent_id: "default".into(),
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
                     record: record.clone(),
-                    current_focus: false,
                 },
                 agent_state: None,
                 audit_events: vec![AuditEvent::new(

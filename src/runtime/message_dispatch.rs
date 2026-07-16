@@ -251,8 +251,6 @@ impl RuntimeHandle {
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
                     record: record.clone(),
                     expected_revision: record.revision - 1,
-                    current_focus: agent.current_work_item_id.as_deref()
-                        == Some(record.id.as_str()),
                 },
                 agent_state: None,
                 audit_events: vec![AuditEvent::new(

@@ -123,15 +123,12 @@ impl RuntimeHandle {
                 Value::Null,
             ));
             let agent_id = self.agent_id().await?;
-            let state = self.agent_state().await?;
             let commit = self.inner.runtime_db.transitions().commit_work_item(
                 &crate::runtime_db::transitions::WorkItemTransitionCommand {
                     agent_id,
                     mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
                         record: record.clone(),
                         expected_revision: latest.revision,
-                        current_focus: state.current_work_item_id.as_deref()
-                            == Some(record.id.as_str()),
                     },
                     agent_state: None,
                     audit_events,

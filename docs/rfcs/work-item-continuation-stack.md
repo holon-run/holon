@@ -190,7 +190,8 @@ fact is still an explicit continuation frame rather than a synthetic blocker.
 
 ### CompleteWorkItem
 
-When `CompleteWorkItem(B)` succeeds:
+When `CompleteWorkItem(B)` succeeds, the following steps are one durable
+transition transaction:
 
 1. Complete `B` using the existing completion rules.
 2. Cancel or resolve active wait conditions owned by `B` as today.

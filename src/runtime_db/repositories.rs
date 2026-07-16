@@ -18,11 +18,7 @@ use crate::runtime_db::{
 use crate::types::*;
 
 impl WorkItemRepository<'_> {
-    pub fn import_legacy(
-        &self,
-        records: Vec<WorkItemRecord>,
-        current_work_item_id: Option<&str>,
-    ) -> Result<()> {
+    pub fn import_legacy(&self, records: Vec<WorkItemRecord>) -> Result<()> {
         if self.db.storage_domain_is_complete("work_items", "db")? {
             return Ok(());
         }
@@ -38,29 +34,24 @@ impl WorkItemRepository<'_> {
                     }
                 }
                 for record in latest.values() {
-                    import_work_item_tx(
-                        tx,
-                        record,
-                        current_work_item_id == Some(record.id.as_str()),
-                    )?;
+                    import_work_item_tx(tx, record)?;
                 }
                 Ok(serde_json::json!({ "imported_records": latest.len() }))
             })
     }
 
-    pub fn insert_new(&self, record: &WorkItemRecord, current_focus: bool) -> Result<bool> {
+    pub fn insert_new(&self, record: &WorkItemRecord) -> Result<bool> {
         self.db
-            .transaction(|tx| insert_new_work_item_tx(tx, record, current_focus))
+            .transaction(|tx| insert_new_work_item_tx(tx, record))
     }
 
     pub fn insert_new_with_index_changes(
         &self,
         record: &WorkItemRecord,
-        current_focus: bool,
         changes: &[RuntimeIndexChange],
     ) -> Result<bool> {
         self.db.transaction(|tx| {
-            let inserted = insert_new_work_item_tx(tx, record, current_focus)?;
+            let inserted = insert_new_work_item_tx(tx, record)?;
             if inserted {
                 insert_runtime_index_changes_tx(tx, changes)?;
             }
@@ -68,47 +59,23 @@ impl WorkItemRepository<'_> {
         })
     }
 
-    pub fn update_expected(
-        &self,
-        record: &WorkItemRecord,
-        expected_revision: u64,
-        current_focus: bool,
-    ) -> Result<bool> {
-        self.db.transaction(|tx| {
-            update_expected_work_item_tx(tx, record, expected_revision, current_focus)
-        })
+    pub fn update_expected(&self, record: &WorkItemRecord, expected_revision: u64) -> Result<bool> {
+        self.db
+            .transaction(|tx| update_expected_work_item_tx(tx, record, expected_revision))
     }
 
     pub fn update_expected_with_index_changes(
         &self,
         record: &WorkItemRecord,
         expected_revision: u64,
-        current_focus: bool,
         changes: &[RuntimeIndexChange],
     ) -> Result<bool> {
         self.db.transaction(|tx| {
-            let updated =
-                update_expected_work_item_tx(tx, record, expected_revision, current_focus)?;
+            let updated = update_expected_work_item_tx(tx, record, expected_revision)?;
             if updated {
                 insert_runtime_index_changes_tx(tx, changes)?;
             }
             Ok(updated)
-        })
-    }
-
-    pub fn set_current_focus(&self, agent_id: &str, work_item_id: Option<&str>) -> Result<()> {
-        self.db.transaction(|tx| {
-            tx.execute(
-                "UPDATE work_items SET current_focus = 0 WHERE agent_id = ?1 AND current_focus != 0",
-                [agent_id],
-            )?;
-            if let Some(work_item_id) = work_item_id {
-                tx.execute(
-                    "UPDATE work_items SET current_focus = 1 WHERE agent_id = ?1 AND work_item_id = ?2",
-                    params![agent_id, work_item_id],
-                )?;
-            }
-            Ok(())
         })
     }
 
@@ -560,8 +527,10 @@ impl WorkItemContinuationRepository<'_> {
     }
 
     pub fn upsert(&self, record: &WorkItemContinuationFrame) -> Result<()> {
-        self.db
-            .transaction(|tx| upsert_work_item_continuation_tx(tx, record))
+        self.db.transaction(|tx| {
+            upsert_work_item_continuation_tx(tx, record)?;
+            Ok(())
+        })
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<WorkItemContinuationFrame>> {
@@ -2543,14 +2512,24 @@ fn upsert_work_item_delegation_tx(
     Ok(())
 }
 
-fn upsert_work_item_continuation_tx(
+pub(crate) fn upsert_work_item_continuation_tx(
     tx: &Transaction<'_>,
     record: &WorkItemContinuationFrame,
-) -> Result<()> {
+) -> Result<bool> {
     let payload_json = serde_json::to_string(record)?;
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM work_item_continuations WHERE continuation_id = ?1",
+            [&record.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if existing.as_deref() == Some(payload_json.as_str()) {
+        return Ok(false);
+    }
     let return_policy = enum_string(&record.return_policy)?;
     let state = enum_string(&record.state)?;
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO work_item_continuations (
             continuation_id, agent_id, suspended_work_item_id, active_work_item_id,
             return_policy, state, created_at, updated_at, resolved_at, cancelled_at,
@@ -2586,7 +2565,7 @@ fn upsert_work_item_continuation_tx(
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(changed != 0)
 }
 
 fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord) -> Result<()> {
@@ -2791,7 +2770,6 @@ fn upsert_operator_delivery_record_tx(
 pub(crate) fn insert_new_work_item_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
-    current_focus: bool,
 ) -> Result<bool> {
     if record.revision != 1 {
         return Err(RuntimeStateTransitionConflict::revision(
@@ -2822,7 +2800,7 @@ pub(crate) fn insert_new_work_item_tx(
         )
         .into());
     }
-    import_work_item_tx(tx, record, current_focus)?;
+    import_work_item_tx(tx, record)?;
     Ok(true)
 }
 
@@ -2830,7 +2808,6 @@ pub(crate) fn update_expected_work_item_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
     expected_revision: u64,
-    current_focus: bool,
 ) -> Result<bool> {
     let next_revision = expected_revision.checked_add(1).ok_or_else(|| {
         RuntimeStateTransitionConflict::revision(
@@ -2896,14 +2873,13 @@ pub(crate) fn update_expected_work_item_tx(
         .into());
     }
 
-    update_work_item_row_tx(tx, record, current_focus, &payload_json, expected_revision)?;
+    update_work_item_row_tx(tx, record, &payload_json, expected_revision)?;
     Ok(true)
 }
 
 fn update_work_item_row_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
-    current_focus: bool,
     payload_json: &str,
     expected_revision: u64,
 ) -> Result<()> {
@@ -2924,17 +2900,16 @@ fn update_work_item_row_tx(
             plan_status = ?4,
             readiness = ?5,
             revision = ?6,
-            current_focus = ?7,
-            created_at = ?8,
-            updated_at = ?9,
-            completed_at = ?10,
-            plan_artifact_path = ?11,
-            last_turn_id = ?12,
-            payload_json = ?13,
-            blocked_by = ?14,
-            recheck_at = ?15,
-            recheck_consumed_at = ?16
-         WHERE work_item_id = ?17 AND revision = ?18",
+            created_at = ?7,
+            updated_at = ?8,
+            completed_at = ?9,
+            plan_artifact_path = ?10,
+            last_turn_id = ?11,
+            payload_json = ?12,
+            blocked_by = ?13,
+            recheck_at = ?14,
+            recheck_consumed_at = ?15
+         WHERE work_item_id = ?16 AND revision = ?17",
         params![
             record.agent_id,
             state,
@@ -2942,7 +2917,6 @@ fn update_work_item_row_tx(
             plan_status,
             readiness,
             record.revision as i64,
-            i64::from(current_focus),
             timestamp(record.created_at),
             timestamp(record.updated_at),
             completed_at,
@@ -2969,11 +2943,7 @@ fn update_work_item_row_tx(
     Ok(())
 }
 
-fn import_work_item_tx(
-    tx: &Transaction<'_>,
-    record: &WorkItemRecord,
-    current_focus: bool,
-) -> Result<()> {
+fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<()> {
     let payload_json = serde_json::to_string(record)?;
     let state = enum_string(&record.state)?;
     let plan_status = enum_string(&record.plan_status)?;
@@ -3001,7 +2971,6 @@ fn import_work_item_tx(
             plan_status = excluded.plan_status,
             readiness = excluded.readiness,
             revision = excluded.revision,
-            current_focus = excluded.current_focus,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             completed_at = excluded.completed_at,
@@ -3020,7 +2989,7 @@ fn import_work_item_tx(
             plan_status,
             readiness,
             record.revision as i64,
-            i64::from(current_focus),
+            0_i64,
             timestamp(record.created_at),
             timestamp(record.updated_at),
             completed_at,

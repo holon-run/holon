@@ -4,12 +4,181 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::types::{WaitConditionRecord, WorkItemRecord};
+use crate::types::{AgentState, WaitConditionRecord, WorkItemRecord};
 
 pub struct Migration {
     pub version: i64,
     pub(crate) name: &'static str,
     pub(crate) sql: &'static str,
+}
+
+fn preflight_work_item_focus(connection: &Connection) -> Result<()> {
+    let invalid_agent_focus = connection
+        .query_row(
+            "SELECT a.agent_id, a.current_work_item_id,
+                    COALESCE(w.agent_id, '<missing>'), COALESCE(w.state, '<missing>')
+             FROM agent_states a
+             LEFT JOIN work_items w ON w.work_item_id = a.current_work_item_id
+             WHERE a.current_work_item_id IS NOT NULL
+               AND (
+                 w.work_item_id IS NULL
+                 OR w.agent_id != a.agent_id
+                 OR w.state != 'open'
+               )
+             LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((agent_id, work_item_id, owner_agent_id, state)) = invalid_agent_focus {
+        bail!(
+            "work item focus migration found invalid canonical focus: agent_id={agent_id}, work_item_id={work_item_id}, owner_agent_id={owner_agent_id}, state={state}"
+        );
+    }
+
+    let invalid_legacy_focus = connection
+        .query_row(
+            "SELECT work_item_id, agent_id, state
+             FROM work_items
+             WHERE current_focus != 0 AND state != 'open'
+             LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((work_item_id, agent_id, state)) = invalid_legacy_focus {
+        bail!(
+            "work item focus migration found invalid legacy focus: agent_id={agent_id}, work_item_id={work_item_id}, state={state}"
+        );
+    }
+
+    let duplicate_legacy_focus = connection
+        .query_row(
+            "SELECT agent_id, COUNT(*), GROUP_CONCAT(work_item_id, ',')
+             FROM work_items
+             WHERE current_focus != 0
+             GROUP BY agent_id
+             HAVING COUNT(*) > 1
+             LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((agent_id, count, work_item_ids)) = duplicate_legacy_focus {
+        bail!(
+            "work item focus migration found multiple legacy focuses: agent_id={agent_id}, count={count}, work_item_ids={work_item_ids}"
+        );
+    }
+
+    let conflicting_focus = connection
+        .query_row(
+            "SELECT a.agent_id, a.current_work_item_id, w.work_item_id
+             FROM agent_states a
+             JOIN work_items w
+               ON w.agent_id = a.agent_id
+              AND w.current_focus != 0
+             WHERE a.current_work_item_id IS NOT NULL
+               AND a.current_work_item_id != w.work_item_id
+             LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((agent_id, canonical_id, legacy_id)) = conflicting_focus {
+        bail!(
+            "work item focus migration found conflicting focus facts: agent_id={agent_id}, canonical_work_item_id={canonical_id}, legacy_work_item_id={legacy_id}"
+        );
+    }
+
+    let orphaned_legacy_focus = connection
+        .query_row(
+            "SELECT w.agent_id, w.work_item_id
+             FROM work_items w
+             LEFT JOIN agent_states a ON a.agent_id = w.agent_id
+             WHERE w.current_focus != 0 AND a.agent_id IS NULL
+             LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    if let Some((agent_id, work_item_id)) = orphaned_legacy_focus {
+        bail!(
+            "work item focus migration cannot backfill legacy focus without agent state: agent_id={agent_id}, work_item_id={work_item_id}"
+        );
+    }
+    Ok(())
+}
+
+fn migrate_work_item_focus(connection: &Connection) -> Result<()> {
+    let mut statement = connection.prepare(
+        "SELECT a.agent_id, a.current_work_item_id, a.payload_json,
+                (
+                  SELECT w.work_item_id
+                  FROM work_items w
+                  WHERE w.agent_id = a.agent_id AND w.current_focus != 0
+                  LIMIT 1
+                )
+         FROM agent_states a",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(statement);
+
+    for (agent_id, canonical_id, payload_json, legacy_id) in rows {
+        let selected_id = canonical_id.or(legacy_id);
+        let mut state: AgentState = serde_json::from_str(&payload_json)
+            .with_context(|| format!("decoding agent state {agent_id} for focus migration"))?;
+        if state.id != agent_id {
+            bail!(
+                "work item focus migration found agent payload identity mismatch: row_agent_id={agent_id}, payload_agent_id={}",
+                state.id
+            );
+        }
+        if state.current_work_item_id != selected_id {
+            state.current_work_item_id = selected_id.clone();
+            connection.execute(
+                "UPDATE agent_states
+                 SET current_work_item_id = ?1, payload_json = ?2
+                 WHERE agent_id = ?3",
+                params![selected_id, serde_json::to_string(&state)?, agent_id],
+            )?;
+        }
+    }
+    connection.execute("UPDATE work_items SET current_focus = 0", [])?;
+    Ok(())
 }
 
 pub(crate) const MIGRATIONS: &[Migration] = &[
@@ -897,6 +1066,65 @@ CREATE TABLE IF NOT EXISTS runtime_sequences (
 );
 "#,
     },
+    Migration {
+        version: 27,
+        name: "canonical_work_item_focus",
+        sql: r#"
+CREATE INDEX IF NOT EXISTS idx_agent_states_current_work_item
+  ON agent_states(current_work_item_id);
+
+DROP INDEX IF EXISTS idx_work_items_current_focus;
+
+CREATE TRIGGER IF NOT EXISTS trg_agent_states_focus_insert
+BEFORE INSERT ON agent_states
+WHEN NEW.current_work_item_id IS NOT NULL
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM work_items
+    WHERE work_item_id = NEW.current_work_item_id
+      AND agent_id = NEW.agent_id
+      AND state = 'open'
+  ) THEN RAISE(ABORT, 'current WorkItem focus must reference an owned open WorkItem') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_agent_states_focus_update
+BEFORE UPDATE OF current_work_item_id ON agent_states
+WHEN NEW.current_work_item_id IS NOT NULL
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM work_items
+    WHERE work_item_id = NEW.current_work_item_id
+      AND agent_id = NEW.agent_id
+      AND state = 'open'
+  ) THEN RAISE(ABORT, 'current WorkItem focus must reference an owned open WorkItem') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_work_items_preserve_focused_target
+BEFORE UPDATE OF agent_id, state ON work_items
+WHEN EXISTS (
+  SELECT 1
+  FROM agent_states
+  WHERE current_work_item_id = OLD.work_item_id
+    AND (agent_id != NEW.agent_id OR NEW.state != 'open')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'focused WorkItem must remain owned and open');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_work_items_preserve_focused_delete
+BEFORE DELETE ON work_items
+WHEN EXISTS (
+  SELECT 1
+  FROM agent_states
+  WHERE current_work_item_id = OLD.work_item_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'focused WorkItem cannot be deleted');
+END;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -935,6 +1163,10 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     let transaction = connection.transaction()?;
     if migration.name == "strict_runtime_sequences" {
         preflight_runtime_sequence_uniqueness(&transaction)?;
+    }
+    if migration.name == "canonical_work_item_focus" {
+        preflight_work_item_focus(&transaction)?;
+        migrate_work_item_focus(&transaction)?;
     }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "strict_runtime_sequences" {

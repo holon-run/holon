@@ -40,6 +40,10 @@ pub(crate) struct WaitForRegistration {
 #[derive(Debug, Clone)]
 pub(super) struct WorkItemBlockerClearance {
     pub(super) work_item: WorkItemRecord,
+    pub(super) expected_revision: Option<u64>,
+    pub(super) wait_conditions: Vec<WaitConditionRecord>,
+    pub(super) audit_events: Vec<AuditEvent>,
+    pub(super) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
     pub(super) blocker_cleared: bool,
     pub(super) cancelled_wait_condition_ids: Vec<String>,
 }
@@ -48,6 +52,10 @@ impl WorkItemBlockerClearance {
     pub(super) fn unchanged(work_item: WorkItemRecord) -> Self {
         Self {
             work_item,
+            expected_revision: None,
+            wait_conditions: Vec::new(),
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
             blocker_cleared: false,
             cancelled_wait_condition_ids: Vec::new(),
         }
@@ -155,8 +163,6 @@ impl RuntimeHandle {
                 work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
                     record: updated.clone(),
                     expected_revision: existing.revision,
-                    current_focus: state.current_work_item_id.as_deref()
-                        == Some(updated.id.as_str()),
                 });
             }
             if state.current_turn_work_item_id.as_deref() == Some(updated.id.as_str()) {
@@ -167,6 +173,22 @@ impl RuntimeHandle {
                         "agent_id": agent_id,
                         "work_item_id": updated.id.as_str(),
                         "reason": "work_item_waiting",
+                        "readiness": updated.readiness(),
+                        "revision": updated.revision,
+                    }),
+                ));
+                committed_agent_state = Some(state.clone());
+            }
+            if wake == WaitForWakeKind::OperatorInput
+                && state.current_work_item_id.as_deref() == Some(updated.id.as_str())
+            {
+                state.current_work_item_id = None;
+                audit_events.push(AuditEvent::new(
+                    "work_item_focus_released",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "work_item_id": updated.id.as_str(),
+                        "reason": "operator_input_wait",
                         "readiness": updated.readiness(),
                         "revision": updated.revision,
                     }),
@@ -302,7 +324,6 @@ impl RuntimeHandle {
             ));
         }
         let mut record = existing.clone();
-        let mut work_items = Vec::new();
         let mut index_changes = Vec::new();
         if needs_record_write {
             record = WorkItemRecord {
@@ -330,29 +351,14 @@ impl RuntimeHandle {
                     "cancelled_wait_condition_ids": cancelled_wait_condition_ids.clone(),
                 }),
             ));
-            let state = self.agent_state().await?;
-            work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
-                record: record.clone(),
-                expected_revision: existing.revision,
-                current_focus: state.current_work_item_id.as_deref() == Some(existing.id.as_str()),
-            });
             index_changes = self.inner.storage.index_changes_for_work_item(&record)?;
         }
-        let commit = self.inner.runtime_db.transitions().commit_wait(
-            &crate::runtime_db::transitions::WaitTransitionCommand {
-                agent_id: agent_id.to_string(),
-                work_items,
-                wait_conditions,
-                agent_state: None,
-                audit_events,
-                index_changes,
-                notify_scheduler: true,
-                fault: None,
-            },
-        )?;
-        self.apply_transition_commit(commit).await;
         Ok(WorkItemBlockerClearance {
             work_item: record,
+            expected_revision: needs_record_write.then_some(existing.revision),
+            wait_conditions,
+            audit_events,
+            index_changes,
             blocker_cleared: true,
             cancelled_wait_condition_ids,
         })

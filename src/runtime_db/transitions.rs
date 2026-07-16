@@ -12,13 +12,14 @@ use crate::{
         repositories::{
             insert_new_work_item_tx, queue_entry_transition, task_transition,
             try_claim_queued_message_tx, update_expected_work_item_tx, upsert_queue_entry_tx,
-            upsert_task_tx, upsert_wait_condition_tx, wait_condition_transition,
+            upsert_task_tx, upsert_wait_condition_tx, upsert_work_item_continuation_tx,
+            wait_condition_transition,
         },
         RuntimeDb, RuntimeIndexChange,
     },
     types::{
         AgentState, AuditEvent, QueueEntryRecord, TaskRecord, TranscriptEntry, WaitConditionRecord,
-        WorkItemRecord,
+        WorkItemContinuationFrame, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -54,12 +55,10 @@ pub(crate) struct PostCommitWarning {
 pub(crate) enum WorkItemMutation {
     Insert {
         record: WorkItemRecord,
-        current_focus: bool,
     },
     Update {
         record: WorkItemRecord,
         expected_revision: u64,
-        current_focus: bool,
     },
 }
 
@@ -130,6 +129,19 @@ pub(crate) struct WaitTransitionCommand {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct WorkItemFocusTransitionCommand {
+    pub agent_id: String,
+    pub work_items: Vec<WorkItemMutation>,
+    pub wait_conditions: Vec<WaitConditionRecord>,
+    pub continuations: Vec<WorkItemContinuationFrame>,
+    pub agent_state: AgentStateMutation,
+    pub audit_events: Vec<AuditEvent>,
+    pub index_changes: Vec<RuntimeIndexChange>,
+    pub notify_scheduler: bool,
+    pub fault: Option<TransitionFaultPoint>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct QueueTransitionCommand {
     pub agent_id: String,
     pub mutation: QueueMutation,
@@ -165,6 +177,63 @@ impl RuntimeDb {
 }
 
 impl RuntimeTransitionRepository<'_> {
+    pub fn commit_work_item_focus(
+        &self,
+        command: &WorkItemFocusTransitionCommand,
+    ) -> Result<TransitionCommit> {
+        self.db.transaction(|tx| {
+            for work_item in &command.work_items {
+                validate_work_item_mutation_tx(tx, work_item)?;
+            }
+            for condition in &command.wait_conditions {
+                validate_wait_condition_tx(tx, condition)?;
+            }
+            for continuation in &command.continuations {
+                validate_work_item_continuation_tx(tx, continuation)?;
+            }
+            validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            validate_focus_target_tx(tx, &command.agent_state.record)?;
+            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+
+            let agent_state_applied =
+                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            let mut applied = agent_state_applied;
+            let mut work_items = Vec::new();
+            for work_item in &command.work_items {
+                let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
+                applied |= work_item_applied;
+                if work_item_applied {
+                    work_items.push(work_item.record().clone());
+                }
+            }
+            for condition in &command.wait_conditions {
+                applied |= upsert_wait_condition_tx(tx, condition)?;
+            }
+            for continuation in &command.continuations {
+                applied |= upsert_work_item_continuation_tx(tx, continuation)?;
+            }
+            if !applied {
+                return Ok(TransitionCommit::default());
+            }
+            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+            finish_transition_tx(
+                tx,
+                applied,
+                &command.agent_id,
+                &command.audit_events,
+                &command.index_changes,
+                command.fault,
+                PostCommitEffects {
+                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
+                    work_items,
+                    notify_scheduler: command.notify_scheduler,
+                    ..PostCommitEffects::default()
+                },
+            )
+        })
+    }
+
     pub fn commit_work_item(
         &self,
         command: &WorkItemTransitionCommand,
@@ -409,6 +478,64 @@ fn validate_agent_state_mutation_tx(
     Ok(())
 }
 
+fn validate_focus_target_tx(tx: &Transaction<'_>, state: &AgentState) -> Result<()> {
+    let Some(work_item_id) = state.current_work_item_id.as_deref() else {
+        return Ok(());
+    };
+    let target = tx
+        .query_row(
+            "SELECT agent_id, payload_json FROM work_items WHERE work_item_id = ?1",
+            [work_item_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((owner_agent_id, payload_json)) = target else {
+        return Err(anyhow!(
+            "cannot focus missing work item {work_item_id} for agent {}",
+            state.id
+        ));
+    };
+    let record: WorkItemRecord = serde_json::from_str(&payload_json)?;
+    if owner_agent_id != state.id || record.agent_id != state.id {
+        return Err(anyhow!(
+            "cannot focus work item {work_item_id} owned by another agent"
+        ));
+    }
+    if record.state != WorkItemState::Open {
+        return Err(anyhow!("cannot focus completed work item {work_item_id}"));
+    }
+    Ok(())
+}
+
+fn validate_work_item_continuation_tx(
+    tx: &Transaction<'_>,
+    incoming: &WorkItemContinuationFrame,
+) -> Result<()> {
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM work_item_continuations WHERE continuation_id = ?1",
+            [&incoming.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<WorkItemContinuationFrame>(&payload))
+        .transpose()?;
+    if let Some(existing) = existing {
+        if existing.agent_id != incoming.agent_id
+            || existing.suspended_work_item_id != incoming.suspended_work_item_id
+            || existing.active_work_item_id != incoming.active_work_item_id
+            || existing.return_policy != incoming.return_policy
+            || incoming.updated_at < existing.updated_at
+        {
+            return Err(anyhow!(
+                "work item continuation {} changed before runtime transition commit",
+                incoming.id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn apply_agent_state_mutation_tx(
     tx: &Transaction<'_>,
     mutation: Option<&AgentStateMutation>,
@@ -425,7 +552,7 @@ fn apply_agent_state_mutation_tx(
 
 fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutation) -> Result<()> {
     match mutation {
-        WorkItemMutation::Insert { record, .. } => {
+        WorkItemMutation::Insert { record } => {
             if record.revision != 1 {
                 return Err(anyhow!(
                     "work item {} insert requires revision 1",
@@ -441,14 +568,13 @@ fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutat
                 .optional()?;
             if let Some(payload) = existing {
                 if payload != serde_json::to_string(record)? {
-                    insert_new_work_item_tx(tx, record, false)?;
+                    insert_new_work_item_tx(tx, record)?;
                 }
             }
         }
         WorkItemMutation::Update {
             record,
             expected_revision,
-            ..
         } => {
             let existing = tx
                 .query_row(
@@ -458,7 +584,7 @@ fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutat
                 )
                 .optional()?;
             let Some((actual_revision, payload)) = existing else {
-                update_expected_work_item_tx(tx, record, *expected_revision, false)?;
+                update_expected_work_item_tx(tx, record, *expected_revision)?;
                 return Ok(());
             };
             let actual_revision = u64::try_from(actual_revision)?;
@@ -466,7 +592,7 @@ fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutat
                 && !(actual_revision == record.revision
                     && payload == serde_json::to_string(record)?)
             {
-                update_expected_work_item_tx(tx, record, *expected_revision, false)?;
+                update_expected_work_item_tx(tx, record, *expected_revision)?;
             }
         }
     }
@@ -475,10 +601,7 @@ fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutat
 
 fn apply_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutation) -> Result<bool> {
     match mutation {
-        WorkItemMutation::Insert {
-            record,
-            current_focus,
-        } => {
+        WorkItemMutation::Insert { record } => {
             let existing = tx
                 .query_row(
                     "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
@@ -489,14 +612,13 @@ fn apply_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutation
             if existing.as_deref() == Some(serde_json::to_string(record)?.as_str()) {
                 Ok(false)
             } else {
-                insert_new_work_item_tx(tx, record, *current_focus)
+                insert_new_work_item_tx(tx, record)
             }
         }
         WorkItemMutation::Update {
             record,
             expected_revision,
-            current_focus,
-        } => update_expected_work_item_tx(tx, record, *expected_revision, *current_focus),
+        } => update_expected_work_item_tx(tx, record, *expected_revision),
     }
 }
 
@@ -568,7 +690,7 @@ mod tests {
         runtime_db::{RuntimeIndexChange, RuntimeIndexOperation},
         types::{
             Priority, QueueEntryStatus, TaskKind, TaskStatus, WaitConditionKind,
-            WaitConditionStatus, WakeSource, WorkItemState,
+            WaitConditionStatus, WakeSource, WorkItemContinuationState, WorkItemState,
         },
     };
     use chrono::Utc;
@@ -658,7 +780,6 @@ mod tests {
                     agent_id: "agent-a".into(),
                     mutation: WorkItemMutation::Insert {
                         record: record.clone(),
-                        current_focus: false,
                     },
                     agent_state: None,
                     audit_events: vec![AuditEvent::new("work_item_test", serde_json::json!({}))],
@@ -689,7 +810,6 @@ mod tests {
             agent_id: "agent-a".into(),
             mutation: WorkItemMutation::Insert {
                 record: record.clone(),
-                current_focus: false,
             },
             agent_state: None,
             audit_events: vec![AuditEvent::new("work_item_test", serde_json::json!({}))],
@@ -710,10 +830,164 @@ mod tests {
     }
 
     #[test]
+    fn work_item_focus_transition_faults_roll_back_focus_and_continuation() -> Result<()> {
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let first = work_item("work-first");
+            let second = work_item("work-second");
+            db.work_items().insert_new(&first)?;
+            db.work_items().insert_new(&second)?;
+            let mut initial_state = AgentState::new("agent-a");
+            initial_state.current_work_item_id = Some(first.id.clone());
+            db.agent_states().upsert(&initial_state)?;
+            let mut next_state = initial_state.clone();
+            next_state.current_work_item_id = Some(second.id.clone());
+            let continuation = WorkItemContinuationFrame::new_on_completed(
+                "agent-a",
+                first.id.clone(),
+                second.id.clone(),
+                None,
+            );
+
+            db.transitions()
+                .commit_work_item_focus(&WorkItemFocusTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    work_items: Vec::new(),
+                    wait_conditions: Vec::new(),
+                    continuations: vec![continuation],
+                    agent_state: AgentStateMutation {
+                        expected: Some(Box::new(initial_state.clone())),
+                        record: Box::new(next_state),
+                    },
+                    audit_events: vec![AuditEvent::new("work_item_picked", serde_json::json!({}))],
+                    index_changes: Vec::new(),
+                    notify_scheduler: true,
+                    fault: Some(fault),
+                })
+                .unwrap_err();
+
+            assert_eq!(db.agent_states().latest("agent-a")?, Some(initial_state));
+            assert!(db.work_item_continuations().latest_all()?.is_empty());
+            assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_focus_transition_restores_caller_atomically_with_completion() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let caller = work_item("work-caller");
+        let active = work_item("work-active");
+        db.work_items().insert_new(&caller)?;
+        db.work_items().insert_new(&active)?;
+        let frame = WorkItemContinuationFrame::new_on_completed(
+            "agent-a",
+            caller.id.clone(),
+            active.id.clone(),
+            None,
+        );
+        db.work_item_continuations().upsert(&frame)?;
+        let mut initial_state = AgentState::new("agent-a");
+        initial_state.current_work_item_id = Some(active.id.clone());
+        db.agent_states().upsert(&initial_state)?;
+        let mut next_state = initial_state.clone();
+        next_state.current_work_item_id = Some(caller.id.clone());
+        let mut completed = active.clone();
+        completed.revision = 2;
+        completed.state = WorkItemState::Completed;
+        completed.updated_at = Utc::now();
+        let resumed = frame.resume("active_work_item_completed");
+
+        db.transitions()
+            .commit_work_item_focus(&WorkItemFocusTransitionCommand {
+                agent_id: "agent-a".into(),
+                work_items: vec![WorkItemMutation::Update {
+                    record: completed.clone(),
+                    expected_revision: active.revision,
+                }],
+                wait_conditions: Vec::new(),
+                continuations: vec![resumed],
+                agent_state: AgentStateMutation {
+                    expected: Some(Box::new(initial_state)),
+                    record: Box::new(next_state.clone()),
+                },
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: true,
+                fault: None,
+            })?;
+
+        assert_eq!(db.agent_states().latest("agent-a")?, Some(next_state));
+        assert_eq!(
+            db.work_items().latest(&active.id)?.unwrap().state,
+            WorkItemState::Completed
+        );
+        assert_eq!(
+            db.work_item_continuations().latest_all()?[0].state,
+            WorkItemContinuationState::Resumed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_focus_commands_require_the_same_expected_agent_state() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let first = work_item("work-first");
+        let second = work_item("work-second");
+        db.work_items().insert_new(&first)?;
+        db.work_items().insert_new(&second)?;
+        let initial_state = AgentState::new("agent-a");
+        db.agent_states().upsert(&initial_state)?;
+        let command = |target: &WorkItemRecord| {
+            let mut next_state = initial_state.clone();
+            next_state.current_work_item_id = Some(target.id.clone());
+            WorkItemFocusTransitionCommand {
+                agent_id: "agent-a".into(),
+                work_items: Vec::new(),
+                wait_conditions: Vec::new(),
+                continuations: Vec::new(),
+                agent_state: AgentStateMutation {
+                    expected: Some(Box::new(initial_state.clone())),
+                    record: Box::new(next_state),
+                },
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: true,
+                fault: None,
+            }
+        };
+
+        assert!(
+            db.transitions()
+                .commit_work_item_focus(&command(&first))?
+                .applied
+        );
+        let error = db
+            .transitions()
+            .commit_work_item_focus(&command(&second))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("changed before runtime transition commit"));
+        assert_eq!(
+            db.agent_states()
+                .latest("agent-a")?
+                .and_then(|state| state.current_work_item_id),
+            Some(first.id)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn wait_transition_rolls_back_work_item_wait_audit_and_outbox_together() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let initial = work_item("work-wait");
-        db.work_items().insert_new(&initial, false)?;
+        db.work_items().insert_new(&initial)?;
         let mut blocked = initial.clone();
         blocked.revision = 2;
         blocked.blocked_by = Some("waiting for task".into());
@@ -726,7 +1000,6 @@ mod tests {
                 work_items: vec![WorkItemMutation::Update {
                     record: blocked,
                     expected_revision: 1,
-                    current_focus: false,
                 }],
                 wait_conditions: vec![wait],
                 agent_state: None,
@@ -812,7 +1085,7 @@ mod tests {
         let (_dir, db) = runtime_db()?;
         let mut initial_work = work_item("work-task");
         initial_work.blocked_by = Some("waiting for task".into());
-        db.work_items().insert_new(&initial_work, false)?;
+        db.work_items().insert_new(&initial_work)?;
         let active_wait = wait_condition("wait-task", &initial_work.id, "task-1");
         db.wait_conditions().upsert(&active_wait)?;
         let running = task("task-1", TaskStatus::Running);
@@ -835,7 +1108,6 @@ mod tests {
             work_items: vec![WorkItemMutation::Update {
                 record: cleared.clone(),
                 expected_revision: 1,
-                current_focus: false,
             }],
             wait_conditions: vec![resolved],
             agent_state: None,

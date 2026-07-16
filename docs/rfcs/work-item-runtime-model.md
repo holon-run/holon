@@ -430,8 +430,10 @@ The persisted record owns:
 - blocker text;
 - completion summary metadata.
 
-`current_work_item_id` is per-agent focus state. It should not be inferred from
-WorkItem lifecycle state.
+`agent_states.current_work_item_id` is the single canonical per-agent focus
+fact. It is not inferred from WorkItem lifecycle state, and
+`work_items.current_focus` is not an independent source. See
+[WorkItem Current Focus Canonical Fact](./work-item-current-focus.md).
 
 `AgentState` remains the home for:
 

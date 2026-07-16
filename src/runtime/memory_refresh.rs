@@ -918,29 +918,25 @@ mod tests {
     fn add_queued_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
         let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
         record.id = id.to_string();
-        persist_test_work_item(test_runtime, &record, false);
+        persist_test_work_item(test_runtime, &record);
         record
     }
 
-    fn persist_test_work_item(
-        test_runtime: &TestRuntime,
-        record: &WorkItemRecord,
-        current_focus: bool,
-    ) {
+    fn persist_test_work_item(test_runtime: &TestRuntime, record: &WorkItemRecord) {
         let repository = test_runtime.runtime.inner.runtime_db.work_items();
         if let Some(existing) = repository.latest(&record.id).unwrap() {
             repository
-                .update_expected(record, existing.revision, current_focus)
+                .update_expected(record, existing.revision)
                 .unwrap();
         } else {
-            repository.insert_new(record, current_focus).unwrap();
+            repository.insert_new(record).unwrap();
         }
     }
 
     fn add_current_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
         let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
         record.id = id.to_string();
-        persist_test_work_item(test_runtime, &record, true);
+        persist_test_work_item(test_runtime, &record);
         let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
         guard.state.current_work_item_id = Some(record.id.clone());
         guard
@@ -958,7 +954,7 @@ mod tests {
         updated.revision += 1;
         updated.blocked_by = Some(blocked_by.to_string());
         updated.updated_at = chrono::Utc::now();
-        persist_test_work_item(test_runtime, &updated, false);
+        persist_test_work_item(test_runtime, &updated);
         updated
     }
 
@@ -973,7 +969,7 @@ mod tests {
         updated.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
         updated.recheck_consumed_at = None;
         updated.updated_at = chrono::Utc::now();
-        persist_test_work_item(test_runtime, &updated, false);
+        persist_test_work_item(test_runtime, &updated);
         updated
     }
 
