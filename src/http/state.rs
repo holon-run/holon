@@ -1,5 +1,7 @@
 use super::*;
 
+const STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT: usize = 16;
+
 pub async fn enqueue_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -325,7 +327,44 @@ fn slim_state_runtime_failure(
     failure.detail_hint = failure
         .detail_hint
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    failure.failure_artifact = failure.failure_artifact.map(slim_state_failure_artifact);
     failure
+}
+
+fn slim_state_failure_artifact(
+    mut artifact: crate::types::FailureArtifact,
+) -> crate::types::FailureArtifact {
+    artifact.kind =
+        truncate_state_bootstrap_string(&artifact.kind, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    artifact.summary =
+        truncate_state_bootstrap_string(&artifact.summary, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    artifact.provider = artifact
+        .provider
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    artifact.model_ref = artifact
+        .model_ref
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    artifact.task_id = artifact
+        .task_id
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    artifact.source_chain = artifact
+        .source_chain
+        .into_iter()
+        .take(STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT)
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT))
+        .collect();
+    artifact.metadata = artifact
+        .metadata
+        .into_iter()
+        .take(STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT)
+        .map(|(key, value)| {
+            (
+                truncate_state_bootstrap_string(&key, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT),
+                truncate_state_bootstrap_string(&value, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT),
+            )
+        })
+        .collect();
+    artifact
 }
 
 #[cfg(test)]
@@ -510,12 +549,13 @@ fn build_worktree_info(
 #[cfg(test)]
 mod tests {
     use super::{
-        STATE_BOOTSTRAP_JSON_ARRAY_LIMIT, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT,
-        STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
+        STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
+        STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
     };
     use crate::types::{
-        RuntimeFailurePhase, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus, TodoItem,
-        TodoItemState, TranscriptEntry, TranscriptEntryKind, WorkItemRecord, WorkItemState,
+        FailureArtifact, FailureArtifactCategory, RuntimeFailurePhase, RuntimeFailureSummary,
+        TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
+        TranscriptEntryKind, WorkItemRecord, WorkItemState,
     };
     use serde_json::json;
 
@@ -621,12 +661,28 @@ mod tests {
 
     #[test]
     fn state_bootstrap_preserves_and_slims_last_runtime_failure() {
+        let long_text = "x".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64);
         let failure = RuntimeFailureSummary {
             occurred_at: chrono::Utc::now(),
             summary: "s".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64),
             phase: RuntimeFailurePhase::RuntimeTurn,
             detail_hint: Some("d".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64)),
-            failure_artifact: None,
+            failure_artifact: Some(FailureArtifact {
+                category: FailureArtifactCategory::Transport,
+                kind: long_text.clone(),
+                summary: long_text.clone(),
+                provider: Some(long_text.clone()),
+                model_ref: Some(long_text.clone()),
+                status: Some(500),
+                task_id: Some(long_text.clone()),
+                exit_status: None,
+                source_chain: (0..STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT + 4)
+                    .map(|_| long_text.clone())
+                    .collect(),
+                metadata: (0..STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT + 4)
+                    .map(|index| (format!("{index}-{long_text}"), long_text.clone()))
+                    .collect(),
+            }),
         };
 
         let slimmed = super::slim_state_runtime_failure(failure);
@@ -641,6 +697,32 @@ mod tests {
                 .count()
                 <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
         );
+        let artifact = slimmed.failure_artifact.expect("failure artifact");
+        for text in [
+            artifact.kind.as_str(),
+            artifact.summary.as_str(),
+            artifact.provider.as_deref().expect("provider"),
+            artifact.model_ref.as_deref().expect("model ref"),
+            artifact.task_id.as_deref().expect("task id"),
+        ] {
+            assert!(text.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+        }
+        assert_eq!(
+            artifact.source_chain.len(),
+            STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT
+        );
+        assert!(artifact
+            .source_chain
+            .iter()
+            .all(|text| text.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+        assert_eq!(
+            artifact.metadata.len(),
+            STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT
+        );
+        assert!(artifact.metadata.iter().all(|(key, value)| {
+            key.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
+                && value.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
+        }));
     }
 
     #[test]
