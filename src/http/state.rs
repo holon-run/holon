@@ -230,15 +230,16 @@ pub async fn agent_state(
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
     crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
     let work_items_started = std::time::Instant::now();
-    let mut work_items = runtime
-        .latest_work_items_for_agent(&agent_id, STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
-        .await
+    let work_items = runtime
+        .storage()
+        .work_queue_read_model()
         .map_err(error_response)?
+        .items
         .into_iter()
-        .map(slim_state_work_item_record)
+        .take(STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
+        .map(slim_state_work_item_projection)
         .collect::<Vec<_>>();
     crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
-    sort_state_work_items(&mut work_items);
     let triggers_started = std::time::Instant::now();
     let external_triggers = runtime
         .latest_external_triggers()
@@ -274,45 +275,33 @@ pub async fn agent_state(
     )
 }
 
-pub(crate) fn sort_state_work_items(work_items: &mut [WorkItemRecord]) {
-    work_items.sort_by(|left, right| {
-        state_work_item_rank(left)
-            .cmp(&state_work_item_rank(right))
-            .then_with(|| {
-                if left.state == WorkItemState::Open && right.state == WorkItemState::Open {
-                    left.created_at
-                        .cmp(&right.created_at)
-                        .then_with(|| left.updated_at.cmp(&right.updated_at))
-                } else {
-                    right
-                        .updated_at
-                        .cmp(&left.updated_at)
-                        .then_with(|| right.created_at.cmp(&left.created_at))
-                }
-            })
-            .then_with(|| left.id.cmp(&right.id))
-    });
-}
-
 fn slim_state_task_record(mut task: TaskRecord) -> TaskRecord {
     let _ = task.detail.take();
     let _ = task.recovery.take();
     task
 }
 
-fn slim_state_work_item_record(mut record: WorkItemRecord) -> WorkItemRecord {
-    record.objective =
-        truncate_state_bootstrap_string(&record.objective, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
-    record.plan_artifact = None;
-    record.todo_list.clear();
-    record.work_refs.clear();
-    record.blocked_by = record
+fn slim_state_work_item_projection(
+    mut projection: crate::work_item_scheduling::WorkItemSchedulingProjection,
+) -> crate::work_item_scheduling::WorkItemSchedulingProjection {
+    projection.work_item.objective = truncate_state_bootstrap_string(
+        &projection.work_item.objective,
+        STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT,
+    );
+    projection.work_item.plan_artifact = None;
+    projection.work_item.todo_list.clear();
+    projection.work_item.work_refs.clear();
+    projection.work_item.blocked_by = projection
+        .work_item
         .blocked_by
+        .take()
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    record.result_summary = record
+    projection.work_item.result_summary = projection
+        .work_item
         .result_summary
+        .take()
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    record
+    projection
 }
 
 fn slim_state_agent_summary(agent: &mut AgentSummary) {
@@ -407,14 +396,6 @@ fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
         }
     }
     text.to_string()
-}
-
-fn state_work_item_rank(item: &WorkItemRecord) -> u8 {
-    match item.state {
-        WorkItemState::Open if item.blocked_by.is_none() => 0,
-        WorkItemState::Open => 1,
-        WorkItemState::Completed => 2,
-    }
 }
 
 fn state_workspace_snapshot(agent: &AgentSummary, state: &AppState) -> StateWorkspaceSnapshot {
@@ -540,59 +521,14 @@ fn build_worktree_info(
 #[cfg(test)]
 mod tests {
     use super::{
-        sort_state_work_items, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
-        STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
+        STATE_BOOTSTRAP_JSON_ARRAY_LIMIT, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT,
+        STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
     };
     use crate::types::{
         TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
         TranscriptEntryKind, WorkItemRecord, WorkItemState,
     };
-    use chrono::{Duration, Utc};
     use serde_json::json;
-
-    #[test]
-    fn state_sort_preserves_queue_display_order() {
-        let mut active = WorkItemRecord::new("default", "active", WorkItemState::Open);
-        active.updated_at = Utc::now() + Duration::minutes(5);
-
-        let mut queued_early = WorkItemRecord::new("default", "queued first", WorkItemState::Open);
-        queued_early.created_at = Utc::now();
-        queued_early.updated_at = queued_early.created_at;
-
-        let mut queued_late = WorkItemRecord::new("default", "queued second", WorkItemState::Open);
-        queued_late.created_at = queued_early.created_at + Duration::minutes(1);
-        queued_late.updated_at = queued_late.created_at;
-
-        let mut waiting = WorkItemRecord::new("default", "waiting", WorkItemState::Open);
-        waiting.created_at = queued_late.created_at + Duration::minutes(1);
-        waiting.updated_at = waiting.created_at;
-
-        let completed = WorkItemRecord::new("default", "completed", WorkItemState::Completed);
-        let mut work_items = vec![
-            waiting.clone(),
-            completed,
-            queued_late.clone(),
-            active.clone(),
-            queued_early.clone(),
-        ];
-
-        sort_state_work_items(&mut work_items);
-
-        let ordered = work_items
-            .iter()
-            .map(|item| item.objective.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ordered,
-            vec![
-                active.objective.as_str(),
-                queued_early.objective.as_str(),
-                queued_late.objective.as_str(),
-                waiting.objective.as_str(),
-                "completed",
-            ]
-        );
-    }
 
     #[test]
     fn state_bootstrap_omits_task_detail_and_slims_transcript_data() {
@@ -657,7 +593,16 @@ mod tests {
         item.blocked_by = Some("b".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64));
         item.result_summary = Some("r".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64));
 
-        let slimmed = super::slim_state_work_item_record(item);
+        let projection = crate::work_item_scheduling::derive_work_item_scheduling(
+            crate::work_item_scheduling::WorkItemSchedulingFacts {
+                work_item: &item,
+                is_current: false,
+                is_yielded: false,
+                active_wait_conditions: &[],
+                trigger_delivery_by_id: &std::collections::BTreeMap::new(),
+            },
+        );
+        let slimmed = super::slim_state_work_item_projection(projection);
 
         assert!(slimmed.objective.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
         assert!(slimmed.todo_list.is_empty());

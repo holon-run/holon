@@ -2885,7 +2885,6 @@ fn update_work_item_row_tx(
 ) -> Result<()> {
     let state = enum_string(&record.state)?;
     let plan_status = enum_string(&record.plan_status)?;
-    let readiness = enum_string(&record.readiness())?;
     let completed_at =
         (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at));
     let plan_artifact_path = record
@@ -2898,24 +2897,22 @@ fn update_work_item_row_tx(
             state = ?2,
             objective = ?3,
             plan_status = ?4,
-            readiness = ?5,
-            revision = ?6,
-            created_at = ?7,
-            updated_at = ?8,
-            completed_at = ?9,
-            plan_artifact_path = ?10,
-            last_turn_id = ?11,
-            payload_json = ?12,
-            blocked_by = ?13,
-            recheck_at = ?14,
-            recheck_consumed_at = ?15
-         WHERE work_item_id = ?16 AND revision = ?17",
+            revision = ?5,
+            created_at = ?6,
+            updated_at = ?7,
+            completed_at = ?8,
+            plan_artifact_path = ?9,
+            last_turn_id = ?10,
+            payload_json = ?11,
+            blocked_by = ?12,
+            recheck_at = ?13,
+            recheck_consumed_at = ?14
+         WHERE work_item_id = ?15 AND revision = ?16",
         params![
             record.agent_id,
             state,
             record.objective,
             plan_status,
-            readiness,
             record.revision as i64,
             timestamp(record.created_at),
             timestamp(record.updated_at),
@@ -2947,7 +2944,6 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
     let payload_json = serde_json::to_string(record)?;
     let state = enum_string(&record.state)?;
     let plan_status = enum_string(&record.plan_status)?;
-    let readiness = enum_string(&record.readiness())?;
     let completed_at =
         (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at));
     let plan_artifact_path = record
@@ -2959,17 +2955,16 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
     let recheck_consumed_at = record.recheck_consumed_at.map(|t| timestamp(t));
     tx.execute(
         "INSERT INTO work_items (
-            work_item_id, agent_id, state, objective, plan_status, readiness,
+            work_item_id, agent_id, state, objective, plan_status,
             revision, current_focus, created_at, updated_at, completed_at,
             plan_artifact_path, last_turn_id, payload_json,
             blocked_by, recheck_at, recheck_consumed_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(work_item_id) DO UPDATE SET
             agent_id = excluded.agent_id,
             state = excluded.state,
             objective = excluded.objective,
             plan_status = excluded.plan_status,
-            readiness = excluded.readiness,
             revision = excluded.revision,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
@@ -2987,7 +2982,6 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
             state,
             record.objective,
             plan_status,
-            readiness,
             record.revision as i64,
             0_i64,
             timestamp(record.created_at),

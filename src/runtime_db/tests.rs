@@ -336,6 +336,21 @@ mod tests {
             !table_exists(&connection, "workspace_id_aliases")?,
             "retired workspace ID alias table should be removed"
         );
+        let work_item_columns = connection
+            .prepare("PRAGMA table_info(work_items)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert!(
+            !work_item_columns.iter().any(|column| column == "readiness"),
+            "derived WorkItem readiness must not be persisted"
+        );
+        let readiness_index_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_work_items_readiness'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(readiness_index_count, 0);
 
         Ok(())
     }

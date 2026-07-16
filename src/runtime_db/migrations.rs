@@ -1125,6 +1125,13 @@ BEGIN
 END;
 "#,
     },
+    Migration {
+        version: 28,
+        name: "drop_work_item_readiness",
+        sql: r#"
+DROP INDEX IF EXISTS idx_work_items_readiness;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -1169,6 +1176,9 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         migrate_work_item_focus(&transaction)?;
     }
     transaction.execute_batch(migration.sql)?;
+    if migration.name == "drop_work_item_readiness" {
+        drop_work_item_readiness(&transaction)?;
+    }
     if migration.name == "strict_runtime_sequences" {
         migrate_runtime_sequences(&transaction)?;
     }
@@ -1181,6 +1191,20 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         ),
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn drop_work_item_readiness(connection: &Connection) -> Result<()> {
+    if !table_exists_internal(connection, "work_items")? {
+        return Ok(());
+    }
+    let columns = connection
+        .prepare("PRAGMA table_info(work_items)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if columns.iter().any(|column| column == "readiness") {
+        connection.execute_batch("ALTER TABLE work_items DROP COLUMN readiness;")?;
+    }
     Ok(())
 }
 

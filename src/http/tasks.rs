@@ -525,11 +525,14 @@ pub async fn work_items(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let mut work_items = runtime
-        .latest_work_items_for_agent(&agent_id, query.limit.unwrap_or(50))
-        .await
-        .map_err(error_response)?;
-    sort_state_work_items(&mut work_items);
+    let work_items = runtime
+        .storage()
+        .work_queue_read_model()
+        .map_err(error_response)?
+        .items
+        .into_iter()
+        .take(query.limit.unwrap_or(50))
+        .collect::<Vec<_>>();
     Ok(Json(work_items))
 }
 
@@ -545,10 +548,12 @@ pub async fn work_item(
         .await
         .map_err(agent_access_error)?;
     let Some(work_item) = runtime
-        .latest_work_item(&work_item_id)
-        .await
+        .storage()
+        .work_queue_read_model()
         .map_err(error_response)?
-        .filter(|item| item.agent_id == agent_id)
+        .items
+        .into_iter()
+        .find(|item| item.id == work_item_id && item.agent_id == agent_id)
     else {
         return Err(not_found(format!("work item {work_item_id} not found")));
     };

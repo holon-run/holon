@@ -833,11 +833,22 @@ fn render_current_work_item(
     agent_home: &std::path::Path,
     active_wait_conditions: &[WaitConditionRecord],
 ) -> String {
+    let scheduling = crate::work_item_scheduling::derive_work_item_scheduling(
+        crate::work_item_scheduling::WorkItemSchedulingFacts {
+            work_item,
+            is_current: true,
+            is_yielded: false,
+            active_wait_conditions,
+            trigger_delivery_by_id: &BTreeMap::new(),
+        },
+    );
     let mut lines = vec![
         "Current work item:".to_string(),
         format!("- Id: {}", work_item.id),
         format!("- State: {:?}", work_item.state),
-        format!("- Readiness: {:?}", work_item.readiness()),
+        format!("- Scheduling state: {:?}", scheduling.scheduling_state),
+        format!("- Readiness: {:?}", scheduling.readiness),
+        format!("- Reason: {:?}", scheduling.reason_code),
         format!("- Objective: {}", work_item.objective),
         format!(
             "- Plan status: {}",
@@ -1018,7 +1029,7 @@ fn assistant_round_text_preview(entry: &TranscriptEntry) -> Option<String> {
 }
 
 fn render_work_item_candidates(
-    projection: &crate::storage::WorkQueuePromptProjection,
+    projection: &crate::storage::WorkQueueReadModel,
     storage: &AppStorage,
     agent_id: &str,
     agent_home: &std::path::Path,
@@ -1076,7 +1087,7 @@ fn render_work_item_candidates(
 fn append_candidate_group(
     lines: &mut Vec<String>,
     title: &str,
-    items: &[crate::storage::WorkItemReadinessProjection],
+    items: &[crate::storage::WorkItemSchedulingProjection],
     completion_reports: &BTreeMap<String, CompletionReportProjection>,
     agent_home: &std::path::Path,
 ) -> Result<()> {

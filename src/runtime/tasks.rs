@@ -2269,7 +2269,7 @@ impl RuntimeHandle {
         let work_queue = self.inner.storage.work_queue_prompt_projection()?;
         let previous_readiness = previous.as_ref().map(|record| {
             work_queue
-                .readiness
+                .items
                 .iter()
                 .find(|item| item.work_item.id == record.id)
                 .map(|item| item.readiness)
@@ -2279,7 +2279,7 @@ impl RuntimeHandle {
             record.readiness()
         } else {
             work_queue
-                .readiness
+                .items
                 .iter()
                 .find(|item| item.work_item.id == record.id)
                 .map(|item| item.readiness)
