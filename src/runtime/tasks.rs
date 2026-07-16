@@ -2188,7 +2188,6 @@ impl RuntimeHandle {
                 agent_id,
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
                     record: record.clone(),
-                    current_focus: false,
                 },
                 agent_state: None,
                 audit_events: vec![self.work_item_written_event("created", &record, Value::Null)],
@@ -2256,7 +2255,16 @@ impl RuntimeHandle {
         } else {
             WorkItemBlockerClearance::unchanged(record)
         };
-        record = blocker_clearance.work_item;
+        let WorkItemBlockerClearance {
+            work_item,
+            expected_revision,
+            wait_conditions,
+            mut audit_events,
+            index_changes,
+            blocker_cleared,
+            cancelled_wait_condition_ids,
+        } = blocker_clearance;
+        record = work_item;
         let switching = current_id.as_deref().is_some_and(|id| id != record.id);
         let work_queue = self.inner.storage.work_queue_prompt_projection()?;
         let previous_readiness = previous.as_ref().map(|record| {
@@ -2267,15 +2275,20 @@ impl RuntimeHandle {
                 .map(|item| item.readiness)
                 .unwrap_or_else(|| record.readiness())
         });
-        let current_readiness = work_queue
-            .readiness
-            .iter()
-            .find(|item| item.work_item.id == record.id)
-            .map(|item| item.readiness)
-            .unwrap_or_else(|| record.readiness());
+        let current_readiness = if blocker_cleared {
+            record.readiness()
+        } else {
+            work_queue
+                .readiness
+                .iter()
+                .find(|item| item.work_item.id == record.id)
+                .map(|item| item.readiness)
+                .unwrap_or_else(|| record.readiness())
+        };
         let mut warnings = Vec::new();
         let mut continuation_created = None;
         let mut continuation_resolved = None;
+        let mut continuation_records = Vec::new();
         let target_yielded_frame = self
             .inner
             .storage
@@ -2283,17 +2296,15 @@ impl RuntimeHandle {
         let target_was_yielded = target_yielded_frame.is_some();
         if let Some(frame) = target_yielded_frame {
             let resolved = frame.resume("explicit_pick");
-            self.inner
-                .storage
-                .append_work_item_continuation(&resolved)?;
             continuation_resolved = Some(continuation_summary(&resolved, "explicit_pick"));
-            self.inner.storage.append_event(&AuditEvent::new(
+            audit_events.push(AuditEvent::new(
                 "work_item_continuation_resumed",
                 serde_json::json!({
                     "agent_id": agent_id,
                     "continuation": continuation_summary(&resolved, "explicit_pick"),
                 }),
-            ))?;
+            ));
+            continuation_records.push(resolved);
         }
         if let Some(id) = current_id.as_deref() {
             if let Some(frame) = self
@@ -2302,16 +2313,14 @@ impl RuntimeHandle {
                 .latest_active_work_item_continuation_for_suspended(&agent_id, id)?
             {
                 let cancelled = frame.cancel("current_focus_reselected");
-                self.inner
-                    .storage
-                    .append_work_item_continuation(&cancelled)?;
-                self.inner.storage.append_event(&AuditEvent::new(
+                audit_events.push(AuditEvent::new(
                     "work_item_continuation_cancelled",
                     serde_json::json!({
                         "agent_id": agent_id,
                         "continuation": continuation_summary(&cancelled, "current_focus_reselected"),
                     }),
-                ))?;
+                ));
+                continuation_records.push(cancelled);
             }
         }
         let yield_current = switching
@@ -2340,15 +2349,15 @@ impl RuntimeHandle {
                     record.id.clone(),
                     state.current_turn_id.clone(),
                 );
-                self.inner.storage.append_work_item_continuation(&frame)?;
                 continuation_created = Some(continuation_summary(&frame, "pick_work_item"));
-                self.inner.storage.append_event(&AuditEvent::new(
+                audit_events.push(AuditEvent::new(
                     "work_item_continuation_created",
                     serde_json::json!({
                         "agent_id": agent_id,
                         "continuation": continuation_summary(&frame, "pick_work_item"),
                     }),
-                ))?;
+                ));
+                continuation_records.push(frame);
             }
         } else if switching
             && previous_readiness == Some(WorkItemReadiness::Runnable)
@@ -2378,16 +2387,6 @@ impl RuntimeHandle {
             "inspection"
         }
         .to_string();
-        {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.current_work_item_id = Some(record.id.clone());
-            guard.state.current_turn_work_item_id = Some(record.id.clone());
-            guard.persist_state(&self.inner.storage)?;
-        }
-        self.inner
-            .runtime_db
-            .work_items()
-            .set_current_focus(&agent_id, Some(&record.id))?;
         let transition = WorkItemFocusTransition {
             previous_work_item_id: current_id.clone(),
             current_work_item_id: record.id.clone(),
@@ -2396,11 +2395,11 @@ impl RuntimeHandle {
             current_readiness,
             switch_kind,
             current_focus_mode,
-            blocker_cleared: blocker_clearance.blocker_cleared,
-            cancelled_wait_condition_ids: blocker_clearance.cancelled_wait_condition_ids,
+            blocker_cleared,
+            cancelled_wait_condition_ids,
             warnings,
         };
-        self.inner.storage.append_event(&AuditEvent::new(
+        audit_events.push(AuditEvent::new(
             "work_item_picked",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -2417,7 +2416,35 @@ impl RuntimeHandle {
                 "continuation_created": continuation_created.clone(),
                 "continuation_resolved": continuation_resolved.clone(),
             }),
-        ))?;
+        ));
+        let mut next_state = state.clone();
+        next_state.current_work_item_id = Some(record.id.clone());
+        next_state.current_turn_work_item_id = Some(record.id.clone());
+        let work_items = expected_revision
+            .map(|expected_revision| {
+                vec![crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision,
+                }]
+            })
+            .unwrap_or_default();
+        let commit = self.inner.runtime_db.transitions().commit_work_item_focus(
+            &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
+                agent_id: agent_id.clone(),
+                work_items,
+                wait_conditions,
+                continuations: continuation_records,
+                agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(state)),
+                    record: Box::new(next_state),
+                },
+                audit_events,
+                index_changes,
+                notify_scheduler: true,
+                fault: None,
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
         Ok(PickedWorkItem {
             previous_work_item: previous,
             current_work_item: record,
@@ -2469,13 +2496,10 @@ impl RuntimeHandle {
         let mut record = existing.clone();
         let mut wrote_item = false;
         let previous_objective = record.objective.clone();
-        let focus_release_reason = if blocked_by.as_ref().is_some_and(Option::is_some) {
-            Some("work_item_blocked")
-        } else if plan_status == Some(WorkItemPlanStatus::NeedsInput) {
-            Some("work_item_needs_input")
-        } else {
-            None
-        };
+        let focus_release_reason = blocked_by
+            .as_ref()
+            .is_some_and(Option::is_some)
+            .then_some("work_item_blocked");
         if let Some(objective) = objective {
             record.objective = objective;
             record.updated_at = Utc::now();
@@ -2536,8 +2560,6 @@ impl RuntimeHandle {
             let mut state = self.agent_state().await?;
             let expected_state = state.clone();
             let mut agent_state = None;
-            let mut current_focus =
-                state.current_work_item_id.as_deref() == Some(record.id.as_str());
             if let Some(reason) = focus_release_reason {
                 let release_current =
                     state.current_work_item_id.as_deref() == Some(record.id.as_str());
@@ -2545,7 +2567,6 @@ impl RuntimeHandle {
                     state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
                 if release_current {
                     state.current_work_item_id = None;
-                    current_focus = false;
                 }
                 if release_turn {
                     state.current_turn_work_item_id = None;
@@ -2573,7 +2594,6 @@ impl RuntimeHandle {
                     mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
                         record: record.clone(),
                         expected_revision: existing.revision,
-                        current_focus,
                     },
                     agent_state,
                     audit_events,
@@ -2634,15 +2654,12 @@ impl RuntimeHandle {
                 "recheck_consumed_at": record.recheck_consumed_at,
             }),
         ));
-        let state = self.agent_state().await?;
         let commit = self.inner.runtime_db.transitions().commit_work_item(
             &crate::runtime_db::transitions::WorkItemTransitionCommand {
                 agent_id,
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
                     record: record.clone(),
                     expected_revision: existing.revision,
-                    current_focus: state.current_work_item_id.as_deref()
-                        == Some(record.id.as_str()),
                 },
                 agent_state: None,
                 audit_events,
@@ -2722,6 +2739,8 @@ impl RuntimeHandle {
         let expected_state = state.clone();
         let release_current = state.current_work_item_id.as_deref() == Some(record.id.as_str());
         let release_turn = state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
+        let mut continuation_records = Vec::new();
+        let mut continuation_resumed = None;
         if release_current {
             state.current_work_item_id = None;
         }
@@ -2740,6 +2759,67 @@ impl RuntimeHandle {
                 }),
             ));
         }
+        // Pick atomically cancels conflicting active frames, so this lookup has
+        // at most one resumable continuation for the completed WorkItem.
+        if let Some(frame) = self
+            .inner
+            .storage
+            .latest_active_work_item_continuation_for_active(&agent_id, &record.id)?
+        {
+            let suspended = self
+                .inner
+                .runtime_db
+                .work_items()
+                .latest(&frame.suspended_work_item_id)?;
+            match suspended {
+                Some(suspended)
+                    if suspended.agent_id == agent_id && suspended.state == WorkItemState::Open =>
+                {
+                    let resumed = frame.resume("active_work_item_completed");
+                    let summary = continuation_summary(&resumed, "active_work_item_completed");
+                    state.current_work_item_id = Some(suspended.id.clone());
+                    state.current_turn_work_item_id = Some(suspended.id.clone());
+                    audit_events.push(AuditEvent::new(
+                        "work_item_continuation_resumed",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "continuation": summary,
+                            "completed_work_item_id": record.id,
+                            "resumed_work_item_id": suspended.id,
+                        }),
+                    ));
+                    audit_events.push(AuditEvent::new(
+                        "work_item_continuation_scheduler_evidence",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "reason": "continuation_resumed",
+                            "work_item_id": suspended.id,
+                            "completed_work_item_id": record.id,
+                            "continuation_frame_id": summary.frame_id,
+                        }),
+                    ));
+                    continuation_resumed = Some(summary);
+                    continuation_records.push(resumed);
+                }
+                suspended => {
+                    let reason = if suspended.is_some() {
+                        "suspended_work_item_not_open"
+                    } else {
+                        "suspended_work_item_missing"
+                    };
+                    let cancelled = frame.cancel(reason);
+                    audit_events.push(AuditEvent::new(
+                        "work_item_continuation_cancelled",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "continuation": continuation_summary(&cancelled, reason),
+                            "suspended_work_item_state": suspended.map(|record| record.state),
+                        }),
+                    ));
+                    continuation_records.push(cancelled);
+                }
+            }
+        }
         if !cancelled_wait_condition_ids.is_empty() {
             audit_events.push(AuditEvent::new(
                 "wait_conditions_cancelled",
@@ -2756,24 +2836,22 @@ impl RuntimeHandle {
             &record,
             serde_json::json!({
                 "warning_count": warnings.len(),
-                "continuation_resumed": Value::Null,
+                "continuation_resumed": continuation_resumed,
             }),
         ));
-        let commit = self.inner.runtime_db.transitions().commit_wait(
-            &crate::runtime_db::transitions::WaitTransitionCommand {
+        let commit = self.inner.runtime_db.transitions().commit_work_item_focus(
+            &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
                 agent_id: agent_id.clone(),
                 work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
                     record: record.clone(),
                     expected_revision: existing.revision,
-                    current_focus: false,
                 }],
                 wait_conditions,
-                agent_state: (release_current || release_turn).then_some(
-                    crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(expected_state)),
-                        record: Box::new(state),
-                    },
-                ),
+                continuations: continuation_records,
+                agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(expected_state)),
+                    record: Box::new(state),
+                },
                 audit_events,
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: true,
@@ -2781,31 +2859,6 @@ impl RuntimeHandle {
             },
         )?;
         self.apply_transition_commit(commit).await;
-        let continuation_resumed = match self
-            .resume_direct_caller_after_work_item_completed(&agent_id, &record)
-            .await
-        {
-            Ok(continuation) => continuation,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    agent_id = %agent_id,
-                    work_item_id = %record.id,
-                    "work item completion committed but continuation post-commit adapter failed"
-                );
-                let _ = self.inner.storage.append_event(&AuditEvent::new(
-                    "runtime_transition_post_commit_warning",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "transition": "work_item_completed",
-                        "work_item_id": record.id,
-                        "effect": "resume_direct_caller",
-                        "error": error.to_string(),
-                    }),
-                ));
-                None
-            }
-        };
         Ok(CompletedWorkItem {
             work_item: record,
             continuation_resumed,
@@ -2880,15 +2933,12 @@ impl RuntimeHandle {
             updated_at: Utc::now(),
             ..existing
         };
-        let state = self.agent_state().await?;
         let commit = self.inner.runtime_db.transitions().commit_work_item(
             &crate::runtime_db::transitions::WorkItemTransitionCommand {
                 agent_id: agent_id.clone(),
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
                     record: record.clone(),
                     expected_revision: record.revision - 1,
-                    current_focus: state.current_work_item_id.as_deref()
-                        == Some(record.id.as_str()),
                 },
                 agent_state: None,
                 audit_events: vec![AuditEvent::new(
@@ -2940,88 +2990,6 @@ impl RuntimeHandle {
             }),
         ))?;
         Ok(())
-    }
-
-    async fn resume_direct_caller_after_work_item_completed(
-        &self,
-        agent_id: &str,
-        completed: &WorkItemRecord,
-    ) -> Result<Option<WorkItemContinuationSummary>> {
-        let Some(frame) = self
-            .inner
-            .storage
-            .latest_active_work_item_continuation_for_active(agent_id, &completed.id)?
-        else {
-            return Ok(None);
-        };
-        let Some(suspended) = self
-            .inner
-            .runtime_db
-            .work_items()
-            .latest(&frame.suspended_work_item_id)?
-        else {
-            let cancelled = frame.cancel("suspended_work_item_missing");
-            self.inner
-                .storage
-                .append_work_item_continuation(&cancelled)?;
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_continuation_cancelled",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "continuation": continuation_summary(&cancelled, "suspended_work_item_missing"),
-                }),
-            ))?;
-            return Ok(None);
-        };
-        if suspended.agent_id != agent_id || suspended.state != WorkItemState::Open {
-            let cancelled = frame.cancel("suspended_work_item_not_open");
-            self.inner
-                .storage
-                .append_work_item_continuation(&cancelled)?;
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_continuation_cancelled",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "continuation": continuation_summary(&cancelled, "suspended_work_item_not_open"),
-                    "suspended_work_item_state": suspended.state,
-                }),
-            ))?;
-            return Ok(None);
-        }
-
-        let resumed = frame.resume("active_work_item_completed");
-        self.inner.storage.append_work_item_continuation(&resumed)?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.current_work_item_id = Some(suspended.id.clone());
-            guard.state.current_turn_work_item_id = Some(suspended.id.clone());
-            guard.persist_state(&self.inner.storage)?;
-        }
-        self.inner
-            .runtime_db
-            .work_items()
-            .set_current_focus(agent_id, Some(&suspended.id))?;
-        let summary = continuation_summary(&resumed, "active_work_item_completed");
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_continuation_resumed",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "continuation": summary,
-                "completed_work_item_id": completed.id,
-                "resumed_work_item_id": suspended.id,
-            }),
-        ))?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_continuation_scheduler_evidence",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "reason": "continuation_resumed",
-                "work_item_id": suspended.id,
-                "completed_work_item_id": completed.id,
-                "continuation_frame_id": summary.frame_id,
-            }),
-        ))?;
-        Ok(Some(summary))
     }
 
     pub(super) fn validate_owned_work_item(

@@ -4178,7 +4178,7 @@ async fn wait_for_tool_result_keeps_blocked_focus_current() {
 }
 
 #[tokio::test]
-async fn needs_input_current_work_item_releases_focus() {
+async fn needs_input_current_work_item_keeps_focus_until_operator_wait() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4212,12 +4212,66 @@ async fn needs_input_current_work_item_releases_focus() {
 
     assert_eq!(waiting.readiness(), WorkItemReadiness::WaitingForOperator);
     let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
+    let events = runtime.storage().read_recent_events(10).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "work_item_focus_released"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn operator_input_wait_releases_execution_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("wait for operator".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "operator decision".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
     assert!(state.current_work_item_id.is_none());
     assert!(state.current_turn_work_item_id.is_none());
+    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
+    assert!(projection.current.is_none());
+    assert!(projection
+        .waiting_for_operator
+        .iter()
+        .any(|item| item.work_item.id == work.id));
     let events = runtime.storage().read_recent_events(10).unwrap();
     assert!(events.iter().any(|event| {
         event.kind == "work_item_focus_released"
-            && event.data["reason"] == "work_item_needs_input"
+            && event.data["reason"] == "operator_input_wait"
             && event.data["work_item_id"].as_str() == Some(work.id.as_str())
     }));
 }

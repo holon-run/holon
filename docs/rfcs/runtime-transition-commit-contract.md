@@ -66,8 +66,8 @@ the related durable facts need one transaction boundary.
 - do not make cache, event delivery, or scheduler notification authoritative;
 - do not introduce a general distributed transaction or plugin framework;
 - do not persist every process-local notification in a new generic outbox;
-- do not settle the final canonical WorkItem focus schema, which is handled by
-  the focused follow-up work;
+- do not redefine the canonical WorkItem focus schema, which is specified by
+  [WorkItem Current Focus Canonical Fact](./work-item-current-focus.md);
 - do not physically split all large runtime modules in the first change.
 
 ## Fact Layers
@@ -164,14 +164,12 @@ return the existing typed transition conflict.
 | --- | --- | --- | --- |
 | create | record absent, revision `1` | WorkItem, lifecycle audit, index outbox | cache WorkItem, publish audit, notify indexer and scheduler |
 | update/block/unblock/recheck | exact prior revision | WorkItem next revision, lifecycle audit, index outbox | cache WorkItem, publish audit, notify indexer and scheduler |
-| complete | exact prior revision and open state | completed WorkItem, related wait cancellation, agent binding release, lifecycle audits, index outbox | cache records, publish audits, notify indexer and scheduler; run the compatibility continuation adapter |
+| complete | exact prior revision and open state | completed WorkItem, related wait cancellation, optional continuation resolution and caller focus restore, lifecycle audits, index outbox | cache records, publish audits, notify indexer and scheduler |
 
-Focus-specific pick/resume and continuation-frame writes will use the same
-transaction primitive, but their final single-source focus schema and atomic
-write set are defined by the focused follow-up. Until that migration, the
-post-commit continuation adapter must not report the already committed
-WorkItem completion as failed; adapter failures are recorded as post-commit
-warnings.
+Focus-specific pick/resume and continuation-frame writes use the same
+transaction primitive. Their single-source schema and atomic write sets are
+defined by
+[WorkItem Current Focus Canonical Fact](./work-item-current-focus.md).
 
 ### Wait
 

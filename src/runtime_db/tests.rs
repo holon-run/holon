@@ -102,6 +102,22 @@ mod tests {
         }
     }
 
+    fn mark_migration_applied(connection: &rusqlite::Connection, name: &str) -> Result<()> {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.name == name)
+            .ok_or_else(|| anyhow!("missing migration {name}"))?;
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+            (
+                migration.version,
+                migration.name,
+                Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn runtime_db_retryable_error_classification_survives_context() -> Result<()> {
         let (_temp_dir, db_path, _lock_path) = temp_paths()?;
@@ -403,6 +419,7 @@ INSERT INTO storage_domains (
                     ),
                 )?;
             }
+            mark_migration_applied(&connection, "canonical_work_item_focus")?;
         }
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -543,6 +560,115 @@ INSERT INTO storage_domains (
     }
 
     #[test]
+    fn work_item_focus_migration_backfills_single_legacy_focus() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut work = WorkItemRecord::new("agent-a", "legacy focus", WorkItemState::Open);
+        work.id = "work-legacy-focus".into();
+        db.work_items().insert_new(&work)?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        {
+            let connection = open_connection(&db_path)?;
+            connection.execute_batch(
+                "DELETE FROM schema_migrations WHERE version = 27;
+                 DROP INDEX idx_agent_states_current_work_item;
+                 DROP TRIGGER trg_agent_states_focus_insert;
+                 DROP TRIGGER trg_agent_states_focus_update;
+                 DROP TRIGGER trg_work_items_preserve_focused_target;
+                 DROP TRIGGER trg_work_items_preserve_focused_delete;",
+            )?;
+            connection.execute(
+                "UPDATE work_items SET current_focus = 1 WHERE work_item_id = ?1",
+                [&work.id],
+            )?;
+        }
+
+        let migrated = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let state = migrated
+            .agent_states()
+            .latest("agent-a")?
+            .expect("agent state");
+        assert_eq!(
+            state.current_work_item_id.as_deref(),
+            Some(work.id.as_str())
+        );
+        let connection = migrated.connection()?;
+        let legacy_focus: i64 = connection.query_row(
+            "SELECT current_focus FROM work_items WHERE work_item_id = ?1",
+            [&work.id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(legacy_focus, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_focus_migration_rejects_conflicting_facts() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut canonical = WorkItemRecord::new("agent-a", "canonical", WorkItemState::Open);
+        canonical.id = "work-canonical".into();
+        let mut legacy = WorkItemRecord::new("agent-a", "legacy", WorkItemState::Open);
+        legacy.id = "work-legacy".into();
+        db.work_items().insert_new(&canonical)?;
+        db.work_items().insert_new(&legacy)?;
+        let mut state = AgentState::new("agent-a");
+        state.current_work_item_id = Some(canonical.id.clone());
+        db.agent_states().upsert(&state)?;
+        {
+            let connection = open_connection(&db_path)?;
+            connection.execute_batch(
+                "DELETE FROM schema_migrations WHERE version = 27;
+                 DROP INDEX idx_agent_states_current_work_item;
+                 DROP TRIGGER trg_agent_states_focus_insert;
+                 DROP TRIGGER trg_agent_states_focus_update;
+                 DROP TRIGGER trg_work_items_preserve_focused_target;
+                 DROP TRIGGER trg_work_items_preserve_focused_delete;",
+            )?;
+            connection.execute(
+                "UPDATE work_items SET current_focus = 1 WHERE work_item_id = ?1",
+                [&legacy.id],
+            )?;
+        }
+
+        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("conflicting focus facts"), "{text}");
+        assert!(text.contains(&canonical.id), "{text}");
+        assert!(text.contains(&legacy.id), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_focus_constraints_reject_invalid_targets_and_completion() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut own = WorkItemRecord::new("agent-a", "own", WorkItemState::Open);
+        own.id = "work-own".into();
+        let mut foreign = WorkItemRecord::new("agent-b", "foreign", WorkItemState::Open);
+        foreign.id = "work-foreign".into();
+        db.work_items().insert_new(&own)?;
+        db.work_items().insert_new(&foreign)?;
+        let mut state = AgentState::new("agent-a");
+        state.current_work_item_id = Some(foreign.id.clone());
+        assert!(db.agent_states().upsert(&state).is_err());
+        state.current_work_item_id = Some("work-missing".into());
+        assert!(db.agent_states().upsert(&state).is_err());
+        state.current_work_item_id = Some(own.id.clone());
+        db.agent_states().upsert(&state)?;
+
+        let mut completed = own.clone();
+        completed.revision = 2;
+        completed.state = WorkItemState::Completed;
+        completed.updated_at = Utc::now();
+        assert!(db
+            .work_items()
+            .update_expected(&completed, own.revision)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
     fn runtime_db_migration_compacts_queue_entries_to_current_view() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {
@@ -594,6 +720,7 @@ INSERT INTO queue_entries (
                     ),
                 )?;
             }
+            mark_migration_applied(&connection, "canonical_work_item_focus")?;
         }
 
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -1053,6 +1180,7 @@ CREATE TABLE working_memory_deltas (
                 "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
                 (15_i64, "message_search_index", Utc::now().to_rfc3339()),
             )?;
+            mark_migration_applied(&connection, "canonical_work_item_focus")?;
         }
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -1650,6 +1778,12 @@ CREATE TABLE working_memory_deltas (
     fn agent_state_repository_upserts_latest_turn_state() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut current_work = WorkItemRecord::new("agent-a", "current focus", WorkItemState::Open);
+        current_work.id = "work-current".into();
+        let mut stale_work = WorkItemRecord::new("agent-a", "stale focus", WorkItemState::Open);
+        stale_work.id = "work-stale".into();
+        db.work_items().insert_new(&current_work)?;
+        db.work_items().insert_new(&stale_work)?;
         let mut current = AgentState::new("agent-a");
         current.status = AgentStatus::AwakeIdle;
         current.turn_index = 3;
@@ -2146,9 +2280,9 @@ CREATE TABLE working_memory_deltas (
         newer.updated_at = older.updated_at + chrono::Duration::seconds(10);
 
         db.work_items()
-            .import_legacy(vec![older.clone(), newer.clone()], Some("work-test"))?;
+            .import_legacy(vec![older.clone(), newer.clone()])?;
         db.work_items()
-            .import_legacy(vec![older.clone(), newer.clone()], Some("work-test"))?;
+            .import_legacy(vec![older.clone(), newer.clone()])?;
 
         let imported = db
             .work_items()
@@ -2165,7 +2299,7 @@ CREATE TABLE working_memory_deltas (
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(current_focus, 1);
+        assert_eq!(current_focus, 0);
         Ok(())
     }
 
@@ -2173,22 +2307,19 @@ CREATE TABLE working_memory_deltas (
     fn work_item_upsert_rejects_revision_rollback() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.work_items().import_legacy(Vec::new(), None)?;
+        db.work_items().import_legacy(Vec::new())?;
         let mut current = WorkItemRecord::new("agent-a", "current", WorkItemState::Open);
         current.id = "work-revision".into();
-        db.work_items().insert_new(&current, false)?;
+        db.work_items().insert_new(&current)?;
         current.revision = 2;
         current.updated_at += chrono::Duration::seconds(1);
-        db.work_items().update_expected(&current, 1, false)?;
+        db.work_items().update_expected(&current, 1)?;
 
         let mut stale = current.clone();
         stale.objective = "stale".into();
         stale.revision = 1;
         stale.updated_at = current.updated_at + chrono::Duration::seconds(10);
-        let error = db
-            .work_items()
-            .update_expected(&stale, 0, false)
-            .unwrap_err();
+        let error = db.work_items().update_expected(&stale, 0).unwrap_err();
         let conflict = error
             .downcast_ref::<RuntimeStateTransitionConflict>()
             .expect("stale update should return typed conflict");
@@ -2213,20 +2344,20 @@ CREATE TABLE working_memory_deltas (
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let mut initial = WorkItemRecord::new("agent-a", "initial", WorkItemState::Open);
         initial.id = "work-cas".into();
-        db.work_items().insert_new(&initial, false)?;
+        db.work_items().insert_new(&initial)?;
 
         let mut updated = initial.clone();
         updated.revision = 2;
         updated.objective = "updated".into();
         updated.updated_at += chrono::Duration::seconds(1);
-        assert!(db.work_items().update_expected(&updated, 1, false)?);
-        assert!(!db.work_items().update_expected(&updated, 1, false)?);
+        assert!(db.work_items().update_expected(&updated, 1)?);
+        assert!(!db.work_items().update_expected(&updated, 1)?);
 
         let mut conflicting = updated.clone();
         conflicting.objective = "conflicting".into();
         let error = db
             .work_items()
-            .update_expected(&conflicting, 1, false)
+            .update_expected(&conflicting, 1)
             .unwrap_err();
         let conflict = error
             .downcast_ref::<RuntimeStateTransitionConflict>()
@@ -2246,7 +2377,7 @@ CREATE TABLE working_memory_deltas (
         let second = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let mut initial = WorkItemRecord::new("agent-a", "initial", WorkItemState::Open);
         initial.id = "work-concurrent-cas".into();
-        first.work_items().insert_new(&initial, false)?;
+        first.work_items().insert_new(&initial)?;
 
         let mut left = initial.clone();
         left.revision = 2;
@@ -2255,11 +2386,8 @@ CREATE TABLE working_memory_deltas (
         right.revision = 2;
         right.objective = "right".into();
 
-        assert!(first.work_items().update_expected(&left, 1, false)?);
-        let error = second
-            .work_items()
-            .update_expected(&right, 1, false)
-            .unwrap_err();
+        assert!(first.work_items().update_expected(&left, 1)?);
+        let error = second.work_items().update_expected(&right, 1).unwrap_err();
         let conflict = error
             .downcast_ref::<RuntimeStateTransitionConflict>()
             .expect("second writer should return typed conflict");
@@ -2279,13 +2407,13 @@ CREATE TABLE working_memory_deltas (
     fn work_item_listing_is_partitioned_by_agent() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.work_items().import_legacy(Vec::new(), None)?;
+        db.work_items().import_legacy(Vec::new())?;
         let mut first = WorkItemRecord::new("agent-a", "first", WorkItemState::Open);
         first.id = "work-first".into();
         let mut second = WorkItemRecord::new("agent-b", "second", WorkItemState::Open);
         second.id = "work-second".into();
-        db.work_items().insert_new(&first, false)?;
-        db.work_items().insert_new(&second, false)?;
+        db.work_items().insert_new(&first)?;
+        db.work_items().insert_new(&second)?;
 
         let agent_items = db.work_items().latest_for_agent("agent-a", 20)?;
         assert_eq!(agent_items.len(), 1);

@@ -503,6 +503,7 @@ async fn fresh_start_initializes_agent_state_with_default_status() {
 async fn restart_preserves_persisted_agent_state() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
+    let picked_work_item_id;
 
     // First start: create a work item and pick it
     {
@@ -520,6 +521,7 @@ async fn restart_preserves_persisted_agent_state() {
             .create_work_item("persistent work".into(), None, None, Vec::new())
             .await
             .unwrap();
+        picked_work_item_id = item.id.clone();
         runtime.pick_work_item(item.id.clone()).await.unwrap();
     }
 
@@ -536,9 +538,18 @@ async fn restart_preserves_persisted_agent_state() {
         )
         .unwrap();
         let state = runtime.inner.agent.lock().await.state.clone();
-        assert!(
-            state.current_work_item_id.is_some(),
-            "current_work_item_id should be recovered from storage across restart"
+        assert_eq!(
+            state.current_work_item_id.as_deref(),
+            Some(picked_work_item_id.as_str()),
+            "current_work_item_id should recover exactly from the canonical agent-state fact"
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .read_agent()
+                .unwrap()
+                .and_then(|agent| agent.current_work_item_id),
+            Some(picked_work_item_id.clone())
         );
     }
 }

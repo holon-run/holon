@@ -167,8 +167,6 @@ impl RuntimeHandle {
                                         crate::runtime_db::transitions::WorkItemMutation::Update {
                                             record,
                                             expected_revision: existing.revision,
-                                            current_focus: state.current_work_item_id.as_deref()
-                                                == Some(existing.id.as_str()),
                                         },
                                     );
                                 }

@@ -794,11 +794,6 @@ fn prepare_runtime_storage(
     }
 
     let recovered_agent_for_import = storage.read_legacy_agent_for_import()?;
-    if !storage_domain_complete(&runtime_db, "agent_states")? {
-        runtime_db
-            .agent_states()
-            .import_legacy(recovered_agent_for_import.clone())?;
-    }
     if !workspace_entries_complete {
         runtime_db
             .workspace_entries()
@@ -819,12 +814,12 @@ fn prepare_runtime_storage(
         for record in &mut legacy_work_items {
             crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
         }
-        runtime_db.work_items().import_legacy(
-            legacy_work_items,
-            recovered_agent_for_import
-                .as_ref()
-                .and_then(|agent| agent.current_work_item_id.as_deref()),
-        )?;
+        runtime_db.work_items().import_legacy(legacy_work_items)?;
+    }
+    if !storage_domain_complete(&runtime_db, "agent_states")? {
+        runtime_db
+            .agent_states()
+            .import_legacy(recovered_agent_for_import.clone())?;
     }
     if !storage_domain_complete(&runtime_db, "tasks")? {
         runtime_db
