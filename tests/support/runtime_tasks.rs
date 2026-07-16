@@ -916,6 +916,16 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
         .filter(|event| event.kind == "tool_execution_failed")
         .collect::<Vec<_>>();
     assert_eq!(failed_events.len(), 3);
+    assert!(failed_events.iter().all(|event| {
+        event.data["agent_id"].as_str() == Some("default")
+            && event.data["status"].as_str() == Some("error")
+            && event.data["duration_ms"].as_u64().is_some()
+            && event
+                .data
+                .get("summary")
+                .and_then(|value| value.as_str())
+                .is_some_and(|summary| summary.starts_with("Failed: "))
+    }));
     assert!(failed_events.iter().any(|event| {
         event.data.get("tool_name").and_then(|value| value.as_str()) == Some("ExecCommand")
             && event.data["tool_error"]["kind"].as_str() == Some("invalid_tool_input")

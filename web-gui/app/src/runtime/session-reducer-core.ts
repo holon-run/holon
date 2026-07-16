@@ -714,9 +714,6 @@ function genericToolDescription(toolName: string, payload: Record<string, unknow
   const objective = stringField(payload, "objective");
   if (objective) return objective;
 
-  const workItemId = stringField(payload, "work_item_id");
-  if (workItemId) return workItemId;
-
   const resource = stringField(payload, "resource");
   if (resource) return resource;
 

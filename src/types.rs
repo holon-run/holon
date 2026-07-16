@@ -4380,6 +4380,10 @@ pub struct ToolExecutionAuditEvent {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_error: Option<ToolError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5983,6 +5987,8 @@ mod tests {
             task_handle: None,
             error: None,
             error_kind: None,
+            tool_error: None,
+            reason: None,
         })
         .unwrap();
 
