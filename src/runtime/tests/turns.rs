@@ -329,6 +329,13 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
         failure_event.data["error_kind"].as_str(),
         Some("tool_not_exposed_for_round")
     );
+    assert_eq!(failure_event.data["agent_id"].as_str(), Some("default"));
+    assert_eq!(failure_event.data["status"].as_str(), Some("error"));
+    assert_eq!(failure_event.data["duration_ms"].as_u64(), Some(0));
+    assert_eq!(
+        failure_event.data["summary"].as_str(),
+        Some("Failed: CreateTask not exposed for round")
+    );
 
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
     assert_eq!(

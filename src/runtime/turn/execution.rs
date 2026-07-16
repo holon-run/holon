@@ -1700,18 +1700,23 @@ impl TurnExecution<'_> {
                     tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
                     runtime.inner.storage.append_event(&AuditEvent::new(
                         "tool_execution_failed",
-                        serde_json::json!({
-                            "tool_call_id": tool_call_id,
-                            "tool_execution_id": failed_id,
-                            "tool_name": tool_name,
-                            "turn_index": turn_index,
-                            "run_id": run_id,
-                            "work_item_id": work_item_id,
-                            "input": tool_audit_input_field(&call),
-                            "exec_command_cmd": command_preview_field(&call),
-                            "exec_command_display": command_display_field(&call),
-                            "exec_command_batch_items": command_batch_preview_field(&call),
-                            "exec_command_cost": command_cost_field(
+                        to_json_value(&ToolExecutionAuditEvent {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_execution_id: failed_id,
+                            agent_id: failed_record.agent_id.clone(),
+                            tool_name: tool_name.clone(),
+                            turn_index,
+                            turn_id,
+                            run_id,
+                            work_item_id,
+                            status: failed_record.status.clone(),
+                            duration_ms: failed_record.duration_ms,
+                            summary: failed_record.summary.clone(),
+                            input: tool_audit_input_field(&call),
+                            exec_command_cmd: command_preview_field(&call),
+                            exec_command_display: command_display_field(&call),
+                            exec_command_batch_items: command_batch_preview_field(&call),
+                            exec_command_cost: command_cost_field(
                                 &call,
                                 {
                                     let snap = runtime.inner.config_snapshot.load();
@@ -1722,10 +1727,13 @@ impl TurnExecution<'_> {
                                     snap.max_tool_output_tokens
                                 },
                             ),
-                            "error": audit_error,
-                            "error_kind": error.kind.clone(),
-                            "tool_error": error.clone(),
-                            "reason": "tool_not_exposed_for_round",
+                            exec_command_disposition: None,
+                            exit_status: None,
+                            task_handle: None,
+                            error: Some(audit_error),
+                            error_kind: Some(error.kind.clone()),
+                            tool_error: Some(error.clone()),
+                            reason: Some("tool_not_exposed_for_round".into()),
                         }),
                     ))?;
                     tool_results.push(ToolResultBlock {
@@ -1889,6 +1897,8 @@ impl TurnExecution<'_> {
                                 ),
                                 error: result.tool_error().map(|error| error.render()),
                                 error_kind: result.tool_error().map(|error| error.kind.clone()),
+                                tool_error: result.tool_error().cloned(),
+                                reason: None,
                             }),
                         ))?;
                         tool_result_envelopes.push(result.envelope.clone());
@@ -1953,24 +1963,38 @@ impl TurnExecution<'_> {
                         tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
                         runtime.inner.storage.append_event(&AuditEvent::new(
                             "tool_execution_failed",
-                            serde_json::json!({
-                                "tool_call_id": tool_call_id,
-                                "tool_execution_id": failed_id,
-                                "tool_name": tool_name,
-                                "turn_index": turn_index,
-                                "run_id": run_id,
-                                "work_item_id": work_item_id,
-                                "exec_command_cmd": command_preview_field(&call),
-                                "exec_command_display": command_display_field(&call),
-                                "exec_command_batch_items": command_batch_preview_field(&call),
-                                "exec_command_cost": command_cost_field(
+                            to_json_value(&ToolExecutionAuditEvent {
+                                tool_call_id: tool_call_id.clone(),
+                                tool_execution_id: failed_id,
+                                agent_id: failed_record.agent_id.clone(),
+                                tool_name: tool_name.clone(),
+                                turn_index,
+                                turn_id,
+                                run_id,
+                                work_item_id,
+                                status: failed_record.status.clone(),
+                                duration_ms: failed_record.duration_ms,
+                                summary: failed_record.summary.clone(),
+                                input: tool_audit_input_field(&call),
+                                exec_command_cmd: command_preview_field(&call),
+                                exec_command_display: command_display_field(&call),
+                                exec_command_batch_items: command_batch_preview_field(&call),
+                                exec_command_cost: command_cost_field(
                                     &call,
-                                    runtime.inner.config_snapshot.load().default_tool_output_tokens,
-                                    runtime.inner.config_snapshot.load().max_tool_output_tokens
+                                    runtime
+                                        .inner
+                                        .config_snapshot
+                                        .load()
+                                        .default_tool_output_tokens,
+                                    runtime.inner.config_snapshot.load().max_tool_output_tokens,
                                 ),
-                                "error": audit_error,
-                                "error_kind": error.kind.clone(),
-                                "tool_error": error.clone(),
+                                exec_command_disposition: None,
+                                exit_status: None,
+                                task_handle: None,
+                                error: Some(audit_error),
+                                error_kind: Some(error.kind.clone()),
+                                tool_error: Some(error.clone()),
+                                reason: None,
                             }),
                         ))?;
                         tool_results.push(ToolResultBlock {

@@ -463,6 +463,7 @@ describe("reduceAgentSessionTimeline", () => {
             type: "tool_execution_failed",
             payload: {
               tool_name: "ApplyPatch",
+              work_item_id: "work_665c0e258dd0de0",
               error: JSON.stringify({
                 kind: "ambiguous_context",
                 message: "hunk context matches 8 locations in web-gui/app/src/runtime/session-reducer.ts",
