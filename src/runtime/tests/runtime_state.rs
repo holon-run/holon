@@ -794,7 +794,7 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
     assert_eq!(latest.recheck_at, None);
     let projection = runtime.storage().work_queue_prompt_projection().unwrap();
     let projected = projection
-        .readiness
+        .items
         .iter()
         .find(|item| item.work_item.id == work.id)
         .expect("work item should be projected");

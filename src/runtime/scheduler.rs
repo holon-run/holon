@@ -1,6 +1,6 @@
 use super::*;
 use crate::runtime::closure::runtime_error_active;
-use crate::storage::{AppStorage, WorkQueuePromptProjection};
+use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
     ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
@@ -86,7 +86,7 @@ impl SchedulerProjection {
     pub(crate) fn from_state_with_work_queue(
         storage: &AppStorage,
         state: &AgentState,
-        work_queue: WorkQueuePromptProjection,
+        work_queue: WorkQueueReadModel,
     ) -> Result<Self> {
         let snapshot = SchedulerAgentSnapshot::from_state(state);
         Self::from_snapshot_with_queue_len_and_work_queue(
@@ -101,7 +101,7 @@ impl SchedulerProjection {
         storage: &AppStorage,
         snapshot: &SchedulerAgentSnapshot,
         queue_len: usize,
-        work_queue: WorkQueuePromptProjection,
+        work_queue: WorkQueueReadModel,
     ) -> Result<Self> {
         let active_tasks =
             storage.latest_active_task_records_for_agent(&snapshot.id, usize::MAX)?;
@@ -112,11 +112,11 @@ impl SchedulerProjection {
             .map(|item| item.work_item.clone())
             .collect::<Vec<_>>();
         let current_work_item_scheduling_state = work_queue
-            .readiness
+            .items
             .iter()
             .find(|item| item.is_current)
             .map(|item| item.scheduling_state);
-        let waiting_work_item_projection = work_queue.readiness.iter().find(|item| {
+        let waiting_work_item_projection = work_queue.items.iter().find(|item| {
             (item.is_current || item.has_active_waits || item.has_active_task_waits)
                 && matches!(
                     item.scheduling_state,
@@ -293,7 +293,7 @@ pub(crate) fn scheduling_diagnostics_for_facts(
     agent: &AgentState,
     projection: &SchedulerProjection,
     posture: &AgentPostureProjection,
-    work_queue: &WorkQueuePromptProjection,
+    work_queue: &WorkQueueReadModel,
     wait_conditions: &[WaitConditionRecord],
 ) -> Vec<SchedulerDiagnostic> {
     let mut diagnostics = Vec::new();
@@ -355,7 +355,7 @@ pub(crate) fn scheduling_diagnostics_for_facts(
         }
     }
 
-    for item in work_queue.readiness.iter().filter(|item| {
+    for item in work_queue.items.iter().filter(|item| {
         item.scheduling_state == WorkItemSchedulingState::Blocked
             && item.work_item.agent_id == agent.id
             && item.work_item.blocked_by.is_some()

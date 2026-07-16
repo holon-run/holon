@@ -8,26 +8,17 @@ use crate::{
     object_resolver::RuntimeObjectResolver,
     runtime::RuntimeHandle,
     types::{
-        DeliverySummaryRecord, TodoItem, WaitConditionKind, WaitConditionSummary,
-        WorkItemPlanArtifact, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemRef,
-        WorkItemState,
+        DeliverySummaryRecord, TodoItem, WaitConditionSummary, WorkItemPlanArtifact,
+        WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemRef,
+        WorkItemSchedulingState, WorkItemState,
     },
+    work_item_scheduling::{WorkItemCandidateClass, WorkItemFocus, WorkItemSchedulingReasonCode},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkItemLifecycleView {
     Open,
-    Completed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum WorkItemFocusView {
-    Current,
-    Queued,
-    Yielded,
-    Blocked,
     Completed,
 }
 
@@ -60,8 +51,11 @@ pub(crate) struct WorkItemView {
     pub(crate) workspace_id: String,
     pub(crate) objective: String,
     pub(crate) state: WorkItemLifecycleView,
-    pub(crate) focus: WorkItemFocusView,
+    pub(crate) focus: WorkItemFocus,
+    pub(crate) scheduling_state: WorkItemSchedulingState,
     pub(crate) readiness: WorkItemReadiness,
+    pub(crate) candidate_class: WorkItemCandidateClass,
+    pub(crate) reason_code: WorkItemSchedulingReasonCode,
     pub(crate) is_current: bool,
     pub(crate) is_runnable: bool,
     pub(crate) plan_status: WorkItemPlanStatus,
@@ -80,6 +74,8 @@ pub(crate) struct WorkItemView {
     pub(crate) completion_report: Option<WorkItemCompletionReportView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) active_wait_conditions: Vec<WaitConditionSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) diagnostics: Vec<String>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
 }
@@ -96,15 +92,6 @@ pub(crate) type WorkItemYieldedSet = BTreeSet<String>;
 
 pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
     let state = runtime.agent_state().await?;
-    if let Some(bound_id) = state.current_turn_work_item_id.as_deref() {
-        if let Some(record) = runtime.latest_work_item(bound_id).await? {
-            if record.state == WorkItemState::Open {
-                return Ok(WorkItemQueryContext {
-                    current_work_item_id: Some(record.id),
-                });
-            }
-        }
-    }
     let current_work_item_id = match state.current_work_item_id.as_deref() {
         Some(current_id) => runtime
             .latest_work_item(current_id)
@@ -127,8 +114,23 @@ pub(crate) async fn view_for_record(
     wait_conditions: Option<&WorkItemWaitConditionSummaryMap>,
     yielded_ids: Option<&WorkItemYieldedSet>,
 ) -> Result<WorkItemView> {
-    let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
-        && record.state == WorkItemState::Open;
+    let projection = runtime
+        .storage()
+        .work_queue_read_model()?
+        .items
+        .into_iter()
+        .find(|item| item.work_item.id == record.id)
+        .unwrap_or_else(|| {
+            crate::work_item_scheduling::derive_work_item_scheduling(
+                crate::work_item_scheduling::WorkItemSchedulingFacts {
+                    work_item: &record,
+                    is_current: context.current_work_item_id.as_deref() == Some(record.id.as_str()),
+                    is_yielded: false,
+                    active_wait_conditions: &[],
+                    trigger_delivery_by_id: &BTreeMap::new(),
+                },
+            )
+        });
     let mut record = record;
     crate::work_item_plan::refresh_plan_artifact_metadata(
         runtime.agent_home().as_path(),
@@ -144,40 +146,21 @@ pub(crate) async fn view_for_record(
         Vec::new()
     };
     let state = lifecycle_view(&record.state);
-    let focus = focus_view(&record, is_current);
     let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
-    let active_wait_conditions = match wait_conditions {
-        Some(wait_conditions) => wait_conditions.get(&record.id).cloned().unwrap_or_default(),
-        None => runtime
-            .storage()
-            .active_wait_conditions_for_work_item(&record.agent_id, &record.id)?
-            .into_iter()
-            .map(WaitConditionSummary::from)
-            .collect(),
-    };
-    let is_yielded = match yielded_ids {
-        Some(yielded_ids) => yielded_ids.contains(&record.id),
-        None => runtime
-            .storage()
-            .latest_active_work_item_continuation_for_suspended(&record.agent_id, &record.id)?
-            .is_some(),
-    };
-    let readiness = readiness_for_view(&record, &active_wait_conditions, is_yielded);
-    let focus = if is_yielded && !is_current && record.state == WorkItemState::Open {
-        WorkItemFocusView::Yielded
-    } else {
-        focus
-    };
+    let _ = (wait_conditions, yielded_ids);
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
         workspace_id: record.workspace_id,
         objective: record.objective,
         state,
-        focus,
-        readiness,
-        is_current,
-        is_runnable: readiness == WorkItemReadiness::Runnable,
+        focus: projection.focus,
+        scheduling_state: projection.scheduling_state,
+        readiness: projection.readiness,
+        candidate_class: projection.candidate_class,
+        reason_code: projection.reason_code,
+        is_current: projection.is_current,
+        is_runnable: projection.is_runnable,
         plan_status: record.plan_status,
         plan_artifact,
         todo_list,
@@ -186,35 +169,11 @@ pub(crate) async fn view_for_record(
         recheck_at: record.recheck_at,
         recheck_consumed_at: record.recheck_consumed_at,
         completion_report,
-        active_wait_conditions,
+        active_wait_conditions: projection.active_wait_conditions,
+        diagnostics: projection.diagnostics,
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
-}
-
-pub(crate) fn active_wait_conditions_by_work_item(
-    runtime: &RuntimeHandle,
-    records: &[WorkItemRecord],
-) -> Result<WorkItemWaitConditionSummaryMap> {
-    let agent_ids = records
-        .iter()
-        .map(|record| record.agent_id.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut wait_conditions = BTreeMap::new();
-    for agent_id in agent_ids {
-        for condition in runtime
-            .storage()
-            .active_wait_conditions_for_agent(agent_id)?
-        {
-            if let Some(work_item_id) = condition.work_item_id.as_ref() {
-                wait_conditions
-                    .entry(work_item_id.clone())
-                    .or_insert_with(Vec::new)
-                    .push(WaitConditionSummary::from(condition));
-            }
-        }
-    }
-    Ok(wait_conditions)
 }
 
 pub(crate) fn latest_delivery_summaries_by_work_item(
@@ -326,52 +285,4 @@ pub(crate) fn lifecycle_view(state: &WorkItemState) -> WorkItemLifecycleView {
         WorkItemState::Open => WorkItemLifecycleView::Open,
         WorkItemState::Completed => WorkItemLifecycleView::Completed,
     }
-}
-
-pub(crate) fn focus_view(record: &WorkItemRecord, is_current: bool) -> WorkItemFocusView {
-    if record.state == WorkItemState::Completed {
-        return WorkItemFocusView::Completed;
-    }
-    if is_current {
-        return WorkItemFocusView::Current;
-    }
-    if record.blocked_by.is_some() {
-        WorkItemFocusView::Blocked
-    } else {
-        WorkItemFocusView::Queued
-    }
-}
-
-pub(crate) fn readiness_for_view(
-    record: &WorkItemRecord,
-    active_wait_conditions: &[WaitConditionSummary],
-    is_yielded: bool,
-) -> WorkItemReadiness {
-    if record.state == WorkItemState::Completed {
-        return WorkItemReadiness::Completed;
-    }
-    if is_yielded {
-        return WorkItemReadiness::Yielded;
-    }
-    if active_wait_conditions
-        .iter()
-        .any(|condition| condition.kind == WaitConditionKind::Task)
-    {
-        return WorkItemReadiness::Blocked;
-    }
-    if active_wait_conditions.iter().any(|condition| {
-        matches!(
-            condition.kind,
-            WaitConditionKind::External | WaitConditionKind::Timer | WaitConditionKind::System
-        )
-    }) {
-        return WorkItemReadiness::Blocked;
-    }
-    if active_wait_conditions
-        .iter()
-        .any(|condition| condition.kind == WaitConditionKind::Operator)
-    {
-        return WorkItemReadiness::WaitingForOperator;
-    }
-    record.readiness()
 }

@@ -3784,37 +3784,8 @@ impl WorkItemRecord {
         }
     }
 
-    pub fn scheduling_state(
-        &self,
-        active_wait_state: Option<WorkItemSchedulingState>,
-    ) -> WorkItemSchedulingState {
-        if self.state == WorkItemState::Completed {
-            return WorkItemSchedulingState::Completed;
-        }
-        if self.plan_status == WorkItemPlanStatus::NeedsInput {
-            return WorkItemSchedulingState::WaitingOperator;
-        }
-        if let Some(wait_state) = active_wait_state {
-            return wait_state;
-        }
-        if self.blocked_by.is_some() {
-            return WorkItemSchedulingState::Blocked;
-        }
-        WorkItemSchedulingState::Runnable
-    }
-
     pub fn readiness(&self) -> WorkItemReadiness {
-        match self.scheduling_state(None) {
-            WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
-            WorkItemSchedulingState::YieldedToWorkItem => WorkItemReadiness::Yielded,
-            WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
-            WorkItemSchedulingState::WaitingTask
-            | WorkItemSchedulingState::WaitingExternal
-            | WorkItemSchedulingState::WaitingTimer
-            | WorkItemSchedulingState::WaitingSystem
-            | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
-            WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
-        }
+        crate::work_item_scheduling::record_only_readiness(self)
     }
 
     pub fn is_runnable(&self) -> bool {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    storage::WorkQueuePromptProjection,
+    storage::WorkQueueReadModel,
     types::{BriefKind, TaskStatus, TodoItemState},
 };
 
@@ -16,7 +16,7 @@ enum IdleTickTrigger {
 
 fn idle_tick_trigger_from_state(
     pending_wake_hint: Option<PendingWakeHint>,
-    projection: WorkQueuePromptProjection,
+    projection: WorkQueueReadModel,
     due_rechecks: Vec<crate::types::WorkItemRecord>,
 ) -> Option<IdleTickTrigger> {
     if let Some(pending) = pending_wake_hint {

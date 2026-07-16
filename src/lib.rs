@@ -48,6 +48,7 @@ pub mod types;
 pub mod web;
 pub mod work_item_plan;
 pub mod work_item_refs;
+pub mod work_item_scheduling;
 pub mod x_search;
 
 #[cfg(test)]

@@ -44,9 +44,7 @@ mod work_queue;
 pub use activity::{FileActivityMarker, PollActivityMarker};
 pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
 pub use recovery::RecoverySnapshot;
-pub use work_queue::{
-    WorkItemCandidateClass, WorkItemReadinessProjection, WorkQueuePromptProjection,
-};
+pub use work_queue::{WorkItemCandidateClass, WorkItemSchedulingProjection, WorkQueueReadModel};
 
 // Re-import submodule functions so existing impl AppStorage method bodies compile unchanged.
 
@@ -64,12 +62,7 @@ fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
 
 use memory::memory_index_agent_key;
 use recovery::external_wait_recoverability_event;
-use work_queue::{
-    compare_queue_display_order, compare_readiness_projection_order, current_todo,
-    readiness_for_scheduling_state,
-};
-
-use work_queue::ActiveWaitConditionStates;
+use work_queue::{compare_queue_display_order, compare_scheduling_projection_order};
 
 #[derive(Debug, Clone)]
 pub struct AppStorage {
@@ -1563,7 +1556,7 @@ impl AppStorage {
         return runtime_db.work_items().latest_for_agent(agent_id, limit);
     }
 
-    pub fn work_queue_prompt_projection(&self) -> Result<WorkQueuePromptProjection> {
+    pub fn work_queue_read_model(&self) -> Result<WorkQueueReadModel> {
         let current_work_item_id = self
             .read_agent()?
             .and_then(|agent| agent.current_work_item_id);
@@ -1599,20 +1592,12 @@ impl AppStorage {
             .into_iter()
             .filter_map(|condition| condition.work_item_id.clone().map(|id| (id, condition)))
             .fold(
-                std::collections::BTreeMap::<String, ActiveWaitConditionStates>::new(),
+                std::collections::BTreeMap::<String, Vec<WaitConditionRecord>>::new(),
                 |mut acc, (id, condition)| {
-                    acc.entry(id)
-                        .or_default()
-                        .record(&condition, &trigger_delivery_by_id);
+                    acc.entry(id).or_default().push(condition);
                     acc
                 },
             );
-        let active_task_waits = self
-            .latest_active_task_records(usize::MAX)?
-            .into_iter()
-            .filter(|task| task.is_blocking())
-            .filter_map(|task| task.effective_work_item_id().map(str::to_string))
-            .collect::<std::collections::BTreeSet<_>>();
         let active_continuation_suspended_ids = self
             .latest_active_work_item_continuations_for_agent(
                 self.current_agent_id()?.as_deref().unwrap_or_default(),
@@ -1620,98 +1605,66 @@ impl AppStorage {
             .into_iter()
             .map(|frame| frame.suspended_work_item_id)
             .collect::<std::collections::BTreeSet<_>>();
-        let mut readiness = latest
+        let mut items = latest
             .values()
             .cloned()
             .map(|item| {
                 let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
                     && item.state == WorkItemState::Open;
-                let wait_condition = active_wait_conditions.get(&item.id);
-                let wait_condition_state =
-                    wait_condition.and_then(ActiveWaitConditionStates::scheduling_state);
-                let has_active_waits = wait_condition_state.is_some();
-                let has_active_task_waits = active_task_waits.contains(&item.id)
-                    || wait_condition.is_some_and(|states| states.task);
-                let last_triggered_at = wait_condition.and_then(|states| states.last_triggered_at);
-                let has_triggered_waits = last_triggered_at.is_some();
                 let yielded = item.state == WorkItemState::Open
                     && active_continuation_suspended_ids.contains(&item.id);
-                let scheduling_state = if yielded {
-                    WorkItemSchedulingState::YieldedToWorkItem
-                } else if has_active_task_waits {
-                    item.scheduling_state(Some(WorkItemSchedulingState::WaitingTask))
-                } else {
-                    item.scheduling_state(wait_condition_state)
-                };
-                let readiness = readiness_for_scheduling_state(scheduling_state);
-                let candidate_class =
-                    if is_current && scheduling_state == WorkItemSchedulingState::Runnable {
-                        WorkItemCandidateClass::CurrentRunnable
-                    } else if item.state == WorkItemState::Completed {
-                        WorkItemCandidateClass::CompletedRecent
-                    } else if has_triggered_waits && item.blocked_by.is_some() {
-                        WorkItemCandidateClass::TriggeredBlocked
-                    } else if scheduling_state == WorkItemSchedulingState::Runnable {
-                        WorkItemCandidateClass::QueuedRunnable
-                    } else if scheduling_state == WorkItemSchedulingState::YieldedToWorkItem {
-                        WorkItemCandidateClass::Yielded
-                    } else if scheduling_state == WorkItemSchedulingState::WaitingOperator {
-                        WorkItemCandidateClass::WaitingForOperator
-                    } else {
-                        WorkItemCandidateClass::Blocked
-                    };
-                WorkItemReadinessProjection {
-                    current_todo: current_todo(&item),
-                    work_item: item,
-                    scheduling_state,
-                    readiness,
-                    candidate_class,
-                    is_current,
-                    has_active_waits,
-                    has_active_task_waits,
-                    has_triggered_waits,
-                    last_triggered_at,
-                }
+                crate::work_item_scheduling::derive_work_item_scheduling(
+                    crate::work_item_scheduling::WorkItemSchedulingFacts {
+                        work_item: &item,
+                        is_current,
+                        is_yielded: yielded,
+                        active_wait_conditions: active_wait_conditions
+                            .get(&item.id)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        trigger_delivery_by_id: &trigger_delivery_by_id,
+                    },
+                )
             })
             .collect::<Vec<_>>();
 
-        readiness.sort_by(compare_readiness_projection_order);
-        let current_runnable = readiness
+        items.sort_by(compare_scheduling_projection_order);
+        let current_runnable = items
             .iter()
             .find(|item| item.candidate_class == WorkItemCandidateClass::CurrentRunnable)
             .cloned();
-        let triggered_blocked = readiness
+        let triggered_blocked = items
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::TriggeredBlocked)
             .take(3)
             .cloned()
             .collect::<Vec<_>>();
-        let queued_runnable = readiness
+        let queued_runnable = items
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::QueuedRunnable)
             .take(5)
             .cloned()
             .collect::<Vec<_>>();
-        let yielded = readiness
+        let yielded = items
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::Yielded)
             .take(5)
             .cloned()
             .collect::<Vec<_>>();
-        let waiting_for_operator = readiness
+        let waiting_for_operator = items
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
             .take(3)
             .cloned()
             .collect::<Vec<_>>();
-        let blocked = readiness
+        let blocked = items
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::Blocked)
             .filter(|item| item.scheduling_state != WorkItemSchedulingState::WaitingTask)
             .take(3)
             .cloned()
             .collect::<Vec<_>>();
-        let completed_recent = readiness
+        let completed_recent = items
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::CompletedRecent)
             .take(3)
@@ -1724,19 +1677,22 @@ impl AppStorage {
                 item.state == WorkItemState::Open
                     && Some(item.id.as_str()) != current_work_item_id.as_deref()
                     && !active_continuation_suspended_ids.contains(&item.id)
-                    && !active_task_waits.contains(&item.id)
                     && !active_wait_conditions
                         .get(&item.id)
-                        .is_some_and(|states| states.task)
+                        .is_some_and(|conditions| {
+                            conditions
+                                .iter()
+                                .any(|condition| condition.kind == WaitConditionKind::Task)
+                        })
             })
             .cloned()
             .collect::<Vec<_>>();
         queued_blocked.sort_by(compare_queue_display_order);
 
-        Ok(WorkQueuePromptProjection {
+        Ok(WorkQueueReadModel {
             current,
             queued_blocked,
-            readiness,
+            items,
             current_runnable,
             triggered_blocked,
             queued_runnable,
@@ -1745,6 +1701,10 @@ impl AppStorage {
             blocked,
             completed_recent,
         })
+    }
+
+    pub fn work_queue_prompt_projection(&self) -> Result<WorkQueueReadModel> {
+        self.work_queue_read_model()
     }
 
     pub fn agent_posture_projection(&self, agent: &AgentState) -> Result<AgentPostureProjection> {
@@ -1796,7 +1756,7 @@ impl AppStorage {
         }
 
         if let Some(item) = work_queue
-            .readiness
+            .items
             .iter()
             .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingTask)
         {
@@ -1819,7 +1779,7 @@ impl AppStorage {
         }
 
         if let Some(item) = work_queue
-            .readiness
+            .items
             .iter()
             .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingExternal)
         {
@@ -4476,7 +4436,7 @@ mod tests {
         let projection = storage.work_queue_prompt_projection().unwrap();
         let state_for = |id: &str| {
             projection
-                .readiness
+                .items
                 .iter()
                 .find(|item| item.work_item.id == id)
                 .map(|item| item.scheduling_state)

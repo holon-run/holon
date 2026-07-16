@@ -26,6 +26,7 @@ use crate::{
         TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult, TimerRecord,
         ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WorkItemRecord,
     },
+    work_item_scheduling::WorkItemSchedulingProjection,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +130,7 @@ pub struct AgentStateSnapshot {
     #[serde(default)]
     pub timers: Vec<TimerRecord>,
     #[serde(default)]
-    pub work_items: Vec<WorkItemRecord>,
+    pub work_items: Vec<WorkItemSchedulingProjection>,
     #[serde(default)]
     pub external_triggers: Vec<ExternalTriggerStateSnapshot>,
     #[serde(default)]

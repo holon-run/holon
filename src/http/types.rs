@@ -308,7 +308,7 @@ pub(crate) struct AgentStateSnapshot {
     pub(crate) session: StateSessionSnapshot,
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) timers: Vec<TimerRecord>,
-    pub(crate) work_items: Vec<WorkItemRecord>,
+    pub(crate) work_items: Vec<crate::work_item_scheduling::WorkItemSchedulingProjection>,
     pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
     pub(crate) workspace: StateWorkspaceSnapshot,
 }

@@ -163,7 +163,7 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
         for item in projection.work_items.iter().take(3) {
             lines.push(format!(
                 "  - [{:?}] {}",
-                item.state,
+                item.scheduling_state,
                 trim(&item.objective, 40)
             ));
         }
@@ -242,15 +242,18 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
 }
 
 fn todo_summary_work_item<'a>(
-    agent: &crate::types::AgentState,
-    work_items: &'a [crate::types::WorkItemRecord],
-) -> Option<&'a crate::types::WorkItemRecord> {
-    agent
-        .current_turn_work_item_id
-        .as_deref()
-        .or(agent.current_work_item_id.as_deref())
-        .and_then(|current_id| work_items.iter().find(|item| item.id == current_id))
-        .or_else(|| work_items.iter().find(|item| item.is_runnable()))
+    _agent: &crate::types::AgentState,
+    work_items: &'a [crate::work_item_scheduling::WorkItemSchedulingProjection],
+) -> Option<&'a crate::work_item_scheduling::WorkItemSchedulingProjection> {
+    work_items
+        .iter()
+        .find(|item| item.is_current)
+        .or_else(|| work_items.iter().find(|item| item.is_runnable))
+        .or_else(|| {
+            work_items
+                .iter()
+                .find(|item| item.state == crate::types::WorkItemState::Open)
+        })
 }
 
 fn prompt_pane_height(buffer: &str, slash_menu_rows: usize, pane_width: u16) -> u16 {
@@ -1301,7 +1304,26 @@ mod tests {
             state: TodoItemState::Pending,
         }];
 
-        let work_items = [first_open, current];
+        let work_items = [
+            crate::work_item_scheduling::derive_work_item_scheduling(
+                crate::work_item_scheduling::WorkItemSchedulingFacts {
+                    work_item: &first_open,
+                    is_current: false,
+                    is_yielded: false,
+                    active_wait_conditions: &[],
+                    trigger_delivery_by_id: &std::collections::BTreeMap::new(),
+                },
+            ),
+            crate::work_item_scheduling::derive_work_item_scheduling(
+                crate::work_item_scheduling::WorkItemSchedulingFacts {
+                    work_item: &current,
+                    is_current: true,
+                    is_yielded: false,
+                    active_wait_conditions: &[],
+                    trigger_delivery_by_id: &std::collections::BTreeMap::new(),
+                },
+            ),
+        ];
         let selected = todo_summary_work_item(&agent, &work_items)
             .expect("current work item should be selected");
         assert_eq!(selected.id, "work-current");

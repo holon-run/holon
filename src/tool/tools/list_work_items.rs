@@ -6,18 +6,14 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{
-        AuthorityClass, ToolCapabilityFamily, WaitConditionSummary, WorkItemReadiness,
-        WorkItemState,
-    },
+    types::{AuthorityClass, ToolCapabilityFamily, WorkItemReadiness, WorkItemState},
 };
 
 use super::{
     serialize_success,
     work_item_query::{
-        active_wait_conditions_by_work_item, latest_delivery_summaries_by_work_item,
-        lifecycle_view, query_context, readiness_for_view, view_for_record, WorkItemLifecycleView,
-        WorkItemQueryContext, WorkItemView,
+        latest_delivery_summaries_by_work_item, lifecycle_view, query_context, view_for_record,
+        WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -83,50 +79,34 @@ pub(crate) async fn execute(
     let filter = args.filter.unwrap_or(ListWorkItemsFilter::All);
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let context = query_context(runtime).await?;
-    let agent_id = runtime.agent_state().await?.id;
-    let mut records = runtime
-        .latest_work_items_for_agent(&agent_id, usize::MAX)
-        .await?;
-    records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    let all_wait_conditions = active_wait_conditions_by_work_item(runtime, &records)?;
-    let yielded_ids = runtime
+    let matching = runtime
         .storage()
-        .latest_active_work_item_continuations_for_agent(&agent_id)?
+        .work_queue_read_model()?
+        .items
         .into_iter()
-        .map(|frame| frame.suspended_work_item_id)
-        .collect::<std::collections::BTreeSet<_>>();
-    let matching = records
-        .into_iter()
-        .filter(|record| {
-            let waits = all_wait_conditions
-                .get(&record.id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            matches_filter(record, waits, &yielded_ids, &context, &filter)
-        })
+        .filter(|projection| matches_filter(projection, &filter))
         .collect::<Vec<_>>();
     let total_matching = matching.len();
     let selected = matching.into_iter().take(limit).collect::<Vec<_>>();
     let delivery_summaries = if selected
         .iter()
-        .any(|record| record.state == WorkItemState::Completed)
+        .any(|projection| projection.work_item.state == WorkItemState::Completed)
     {
         Some(latest_delivery_summaries_by_work_item(runtime)?)
     } else {
         None
     };
-    let wait_conditions = active_wait_conditions_by_work_item(runtime, &selected)?;
     let mut work_items = Vec::with_capacity(selected.len());
-    for record in selected {
+    for projection in selected {
         work_items.push(
             view_for_record(
                 runtime,
                 &context,
-                record,
+                projection.work_item,
                 args.include_todo_list,
                 delivery_summaries.as_ref(),
-                Some(&wait_conditions),
-                Some(&yielded_ids),
+                None,
+                None,
             )
             .await?,
         );
@@ -145,33 +125,30 @@ pub(crate) async fn execute(
 }
 
 fn matches_filter(
-    record: &crate::types::WorkItemRecord,
-    active_wait_conditions: &[WaitConditionSummary],
-    yielded_ids: &std::collections::BTreeSet<String>,
-    context: &WorkItemQueryContext,
+    projection: &crate::work_item_scheduling::WorkItemSchedulingProjection,
     filter: &ListWorkItemsFilter,
 ) -> bool {
-    let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
-        && record.state == WorkItemState::Open;
-    let is_yielded = record.state == WorkItemState::Open && yielded_ids.contains(&record.id);
-    let readiness = readiness_for_view(record, active_wait_conditions, is_yielded);
     match filter {
         ListWorkItemsFilter::All => true,
-        ListWorkItemsFilter::Open => lifecycle_view(&record.state) == WorkItemLifecycleView::Open,
+        ListWorkItemsFilter::Open => {
+            lifecycle_view(&projection.work_item.state) == WorkItemLifecycleView::Open
+        }
         ListWorkItemsFilter::Completed => {
-            lifecycle_view(&record.state) == WorkItemLifecycleView::Completed
+            lifecycle_view(&projection.work_item.state) == WorkItemLifecycleView::Completed
         }
-        ListWorkItemsFilter::Current => is_current,
+        ListWorkItemsFilter::Current => projection.is_current,
         ListWorkItemsFilter::Queued => {
-            !is_current
-                && record.state == WorkItemState::Open
-                && readiness == WorkItemReadiness::Runnable
+            !projection.is_current
+                && projection.work_item.state == WorkItemState::Open
+                && projection.readiness == WorkItemReadiness::Runnable
         }
-        ListWorkItemsFilter::Yielded => readiness == WorkItemReadiness::Yielded,
-        ListWorkItemsFilter::Blocked => !is_current && readiness == WorkItemReadiness::Blocked,
+        ListWorkItemsFilter::Yielded => projection.readiness == WorkItemReadiness::Yielded,
+        ListWorkItemsFilter::Blocked => {
+            !projection.is_current && projection.readiness == WorkItemReadiness::Blocked
+        }
         ListWorkItemsFilter::WaitingForOperator => {
-            readiness == WorkItemReadiness::WaitingForOperator
+            projection.readiness == WorkItemReadiness::WaitingForOperator
         }
-        ListWorkItemsFilter::Runnable => readiness == WorkItemReadiness::Runnable,
+        ListWorkItemsFilter::Runnable => projection.readiness == WorkItemReadiness::Runnable,
     }
 }

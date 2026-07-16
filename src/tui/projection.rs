@@ -32,6 +32,7 @@ use crate::{
         TaskRecord, TimerRecord, TimerStatus, TranscriptEntry, WorkItemLifecycleAuditEvent,
         WorkItemRecord, WorkItemState, WorktreeSession,
     },
+    work_item_scheduling::WorkItemSchedulingProjection,
 };
 
 const TASK_TAIL_LIMIT: usize = 50;
@@ -86,7 +87,7 @@ pub(crate) struct TuiProjection {
     pub(crate) presentation_reducer: crate::presentation::PresentationReducer,
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) timers: Vec<TimerRecord>,
-    pub(crate) work_items: Vec<WorkItemRecord>,
+    pub(crate) work_items: Vec<WorkItemSchedulingProjection>,
     pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
     pub(crate) operator_notifications: Vec<crate::types::OperatorNotificationRecord>,
     pub(crate) workspace: StateWorkspaceSnapshot,
@@ -449,18 +450,16 @@ impl TuiProjection {
                 }
             }
             "work_item_written" => {
-                if let Some(record) = event
-                    .data
-                    .payload
-                    .get("record")
-                    .cloned()
-                    .and_then(decode_value::<WorkItemRecord>)
-                {
-                    upsert_work_item(&mut self.work_items, record);
-                    self.stale_slices.remove(&ProjectionSlice::WorkItems);
-                } else {
-                    self.mark_stale([ProjectionSlice::WorkItems]);
-                }
+                self.mark_stale([ProjectionSlice::WorkItems]);
+            }
+            "wait_condition_registered"
+            | "wait_condition_resolved"
+            | "wait_condition_cancelled"
+            | "work_item_focus_released"
+            | "work_item_continuation_created"
+            | "work_item_continuation_resumed"
+            | "work_item_continuation_cancelled" => {
+                self.mark_stale([ProjectionSlice::WorkItems]);
             }
             "workspace_attached" => {
                 if let Some(workspace_id) = read_string(&event.data.payload, "workspace_id") {
@@ -1455,39 +1454,6 @@ fn active_tasks_for_projection(tasks: Vec<TaskRecord>) -> Vec<TaskRecord> {
     tasks
 }
 
-fn upsert_work_item(items: &mut Vec<WorkItemRecord>, item: WorkItemRecord) {
-    if let Some(index) = items.iter().position(|existing| existing.id == item.id) {
-        items[index] = item;
-    } else {
-        items.push(item);
-    }
-    items.sort_by(|left, right| {
-        work_item_rank(left)
-            .cmp(&work_item_rank(right))
-            .then_with(|| {
-                if left.state == WorkItemState::Open && right.state == WorkItemState::Open {
-                    left.created_at
-                        .cmp(&right.created_at)
-                        .then_with(|| left.updated_at.cmp(&right.updated_at))
-                } else {
-                    right
-                        .updated_at
-                        .cmp(&left.updated_at)
-                        .then_with(|| right.created_at.cmp(&left.created_at))
-                }
-            })
-            .then_with(|| left.id.cmp(&right.id))
-    });
-}
-
-fn work_item_rank(item: &WorkItemRecord) -> u8 {
-    match item.state {
-        WorkItemState::Open if item.blocked_by.is_none() => 0,
-        WorkItemState::Open => 1,
-        WorkItemState::Completed => 2,
-    }
-}
-
 pub(crate) fn is_presentation_reducer_event(event: &ProjectionEventRecord) -> bool {
     !matches!(
         event.presentation.category,
@@ -2358,7 +2324,15 @@ mod tests {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let mut completed = WorkItemRecord::new("default", "finish docs", WorkItemState::Completed);
         completed.id = "work-done".into();
-        projection.work_items = vec![completed];
+        projection.work_items = vec![crate::work_item_scheduling::derive_work_item_scheduling(
+            crate::work_item_scheduling::WorkItemSchedulingFacts {
+                work_item: &completed,
+                is_current: false,
+                is_yielded: false,
+                active_wait_conditions: &[],
+                trigger_delivery_by_id: &std::collections::BTreeMap::new(),
+            },
+        )];
         let mut work_brief =
             BriefRecord::new("default", BriefKind::Result, "Work done", None, None);
         work_brief.work_item_id = Some("work-done".into());
@@ -2976,10 +2950,13 @@ mod tests {
             projection.tasks.last().map(|record| record.id.as_str()),
             Some("task-stream")
         );
-        assert!(projection
+        assert!(!projection
             .work_items
             .iter()
-            .any(|record| record.id == "work-stream" && record.state == WorkItemState::Open));
+            .any(|record| record.id == "work-stream"));
+        assert!(projection
+            .stale_slices
+            .contains(&ProjectionSlice::WorkItems));
     }
 
     #[test]
@@ -3391,7 +3368,15 @@ mod tests {
                     text: "do it".into(),
                     state: TodoItemState::InProgress,
                 }];
-                vec![item]
+                vec![crate::work_item_scheduling::derive_work_item_scheduling(
+                    crate::work_item_scheduling::WorkItemSchedulingFacts {
+                        work_item: &item,
+                        is_current: true,
+                        is_yielded: false,
+                        active_wait_conditions: &[],
+                        trigger_delivery_by_id: &std::collections::BTreeMap::new(),
+                    },
+                )]
             },
             external_triggers: vec![ExternalTriggerStateSnapshot {
                 external_trigger_id: "cb-1".into(),

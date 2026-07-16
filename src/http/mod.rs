@@ -105,7 +105,7 @@ mod workspace_files;
 // Re-export shared helpers used across submodules.
 pub(crate) use state::{
     control_admission_context, current_boundary_metadata, enqueue_internal,
-    public_admission_context, sort_state_work_items, EnqueueIngress,
+    public_admission_context, EnqueueIngress,
 };
 pub(crate) use web::{accepts_html, web_asset_response};
 

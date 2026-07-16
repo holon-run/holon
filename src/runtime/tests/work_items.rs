@@ -421,7 +421,7 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
     let projection = runtime.storage().work_queue_prompt_projection().unwrap();
     let state_for = |id: &str| {
         projection
-            .readiness
+            .items
             .iter()
             .find(|item| item.work_item.id == id)
             .map(|item| item.scheduling_state)
