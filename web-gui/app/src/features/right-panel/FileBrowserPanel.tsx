@@ -472,9 +472,22 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                   </button>
                 </div>
               ) : null}
+              <button
+                type="button"
+                className="file-browser-download-btn"
+                disabled={downloadState?.path === selectedFile.path && downloadState.loading}
+                onClick={() => void downloadSelectedFile()}
+              >
+                {downloadState?.path === selectedFile.path && downloadState.loading
+                  ? t("fileBrowser.downloading")
+                  : t("fileBrowser.download")}
+              </button>
               <button type="button" className="file-browser-close-btn" aria-label="Close file" onClick={() => setSelectedFile(null)}>× Close</button>
             </div>
           </div>
+          {downloadState?.path === selectedFile.path && downloadState.error ? (
+            <p className="inspector-error">{downloadState.error}</p>
+          ) : null}
           {selectedFile.loading ? (
             <p className="inspector-muted">Loading file…</p>
           ) : selectedFile.error ? (
@@ -515,20 +528,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                 {selectedFile.mimeType
                   ? t("fileBrowser.binaryFile", { type: selectedFile.mimeType })
                   : t("fileBrowser.binaryFileUnknown")}
-                {" "}
-                <button
-                  type="button"
-                  disabled={downloadState?.path === selectedFile.path && downloadState.loading}
-                  onClick={() => void downloadSelectedFile()}
-                >
-                  {downloadState?.path === selectedFile.path && downloadState.loading
-                    ? t("fileBrowser.downloading")
-                    : t("fileBrowser.download")}
-                </button>
               </p>
-              {downloadState?.path === selectedFile.path && downloadState.error ? (
-                <p className="inspector-error">{downloadState.error}</p>
-              ) : null}
             </div>
           )}
         </div>
