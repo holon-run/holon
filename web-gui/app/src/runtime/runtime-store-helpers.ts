@@ -13,28 +13,18 @@ import type {
   TaskDetailState,
   ToolExecutionDetailState,
 } from "./types";
+import type { SessionProjectionState } from "./session-projection";
 
 export type { WorkItemDetailState, TaskDetailState, ToolExecutionDetailState };
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 
-export interface AgentSessionState {
+export interface AgentSessionState extends SessionProjectionState {
   loading: boolean;
   loadingOlder: boolean;
   liveStatus: AgentLiveStatus;
   sendingPrompt: boolean;
   detail: AgentDetail | null;
-  eventLogEpoch?: string;
-  eventsBySeq: Record<number, unknown>;
-  eventSeqs: number[];
-  messagesById: Record<string, RuntimeMessageEnvelope>;
-  missingMessageIds: Record<string, true>;
-  transcriptEntriesById: Record<string, RuntimeTranscriptEntry>;
-  missingTranscriptEntryIds: Record<string, true>;
-  briefRecordsById: Record<string, RuntimeBriefRecord>;
-  missingBriefIds: Record<string, true>;
-  newestSeq?: number;
-  oldestSeq?: number;
   hasOlder?: boolean;
   targetEventSeq?: number;
   lastStreamActivityAt?: string;

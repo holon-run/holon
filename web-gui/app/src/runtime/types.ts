@@ -656,6 +656,7 @@ export interface AgentDetail {
   oldestEventSeq?: number;
   hasOlderEvents?: boolean;
   briefRecordsById?: Record<string, RuntimeBriefRecord>;
+  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
 }
 
 export interface RuntimeBootstrap {

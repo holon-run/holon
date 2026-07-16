@@ -38,7 +38,7 @@ import type {
   RuntimeTranscriptEntry,
 } from "./types";
 import { canApplySessionEvent, type SessionEventEnvelope } from "./session-events";
-import { createSessionState, getObject, upsertObject } from "./session-state-reducer";
+import { createSessionState, upsertObject } from "./session-state-reducer";
 import type { SessionState } from "./session-state-reducer";
 import type {
   DomainObject,
@@ -47,7 +47,6 @@ import type {
   SessionObjectType,
   TaskObject,
   WorkItemObject,
-  RenderData,
 } from "./session-object-types";
 import { deriveTimelineView } from "./timeline-view-model";
 import type { RenderContext } from "./timeline-view-model";
@@ -112,34 +111,32 @@ const debugOnlyToolNames = new Set(["WaitFor"]);
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const state = createSessionState();
-  const applyCtx: ApplyContext = {
-    eventDisplayLevel: input.eventDisplayLevel ?? "debug",
-    includeDebug: input.includeDebug ?? false,
-    messagesById: input.messagesById,
-    transcriptEntriesById: input.transcriptEntriesById,
-    briefRecordsById: input.briefRecordsById,
-  };
+  const events = canonicalSessionEvents(input.events.events ?? []);
+  const eventsById: Record<string, SessionEventEnvelope> = {};
 
-  for (const event of input.events.events ?? []) {
-    applyEvent(state, event, applyCtx);
+  for (const event of events) {
+    const eventId = event.id ?? `event-${event.event_seq}`;
+    eventsById[eventId] = event;
+    applySessionEvent(state, event);
   }
 
   return deriveTimelineView(state, {
-    eventDisplayLevel: applyCtx.eventDisplayLevel,
-    includeDebug: applyCtx.includeDebug,
+    eventDisplayLevel: input.eventDisplayLevel ?? "debug",
+    includeDebug: input.includeDebug ?? false,
     activitiesById: state.activitiesById,
-    messagesById: applyCtx.messagesById,
-    transcriptEntriesById: applyCtx.transcriptEntriesById,
-    briefRecordsById: applyCtx.briefRecordsById,
+    eventsById,
+    messagesById: input.messagesById,
+    transcriptEntriesById: input.transcriptEntriesById,
+    briefRecordsById: input.briefRecordsById,
   });
 }
 
-interface ApplyContext {
-  eventDisplayLevel: DisplayLevel;
-  includeDebug: boolean;
-  messagesById?: Record<string, RuntimeMessageEnvelope>;
-  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
-  briefRecordsById?: Record<string, RuntimeBriefRecord>;
+export function buildSessionState(events: SessionEventEnvelope[]): SessionState {
+  const state = createSessionState();
+  for (const event of canonicalSessionEvents(events)) {
+    applySessionEvent(state, event);
+  }
+  return state;
 }
 
 /**
@@ -150,7 +147,7 @@ interface ApplyContext {
  * (`deriveTimelineView`). This function only handles object routing,
  * identity, and render-data storage.
  */
-function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: ApplyContext): void {
+export function applySessionEvent(state: SessionState, event: SessionEventEnvelope): void {
   if (!event.id && event.event_seq == null) return;
   if (!canApplySessionEvent(event)) return;
 
@@ -158,24 +155,12 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
   const eventType = event.type ?? "runtime_event";
   const payload = asRecord(event.payload);
   const ts = event.ts ?? "";
-  const meta = eventMeta(eventType, payload, event.event_seq);
-
-  const render: RenderData = {
-    eventType,
-    payload,
-    timestamp: ts,
-    eventId,
-    eventSeq: event.event_seq,
-    meta,
-    debug: ctx.includeDebug ? debugJson(event) : undefined,
-    rawEvent: event,
-  };
-
   const baseFields = {
     sourceEventIds: [eventId],
+    primaryEventId: eventId,
+    primaryEventSeq: event.event_seq,
     createdAt: ts,
     updatedAt: ts,
-    render,
   };
 
   // Route by event type to determine object type, identity key, and status
@@ -184,22 +169,6 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
     const originKind = stringField(origin, "kind")?.toLowerCase();
     const messageId = stringField(payload, "message_id");
     const objId = messageId ? `message:${messageId}` : eventId;
-
-    // For message_processing_started, if the message object already exists (from
-    // message_enqueued with the same message_id), only update the status and
-    // accumulate sourceEventIds without overwriting render data (which carries
-    // the message body text).
-    if (eventType === "message_processing_started") {
-      const existing = getObject(state, "message", objId);
-      if (existing) {
-        existing.status = "processing";
-        existing.updatedAt = ts;
-        if (!existing.sourceEventIds.includes(eventId)) {
-          existing.sourceEventIds.push(eventId);
-        }
-        return;
-      }
-    }
 
     upsertObject(state, "message", objId, {
       ...baseFields,
@@ -226,16 +195,15 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
   } else if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
     const taskId = stringField(payload, "task_id");
     const taskObjId = taskId ? `task:${taskId}` : eventId;
-    const existingTask = state.tasks.get(taskObjId);
     const taskStatus = firstStringField(payload, ["task_status", "status"]) as TaskObject["status"];
-    const summary = stringField(payload, "summary") ?? state.tasks.get(taskObjId)?.summary;
+    const summary = stringField(payload, "summary");
     const isActivity = eventType !== "task_created";
     const activityIds = isActivity ? [eventId] : undefined;
     upsertObject(state, "task", taskId ? `task:${taskId}` : eventId, {
       ...baseFields,
       id: taskObjId,
       status: taskStatus ?? (eventType === "task_created" ? "created" : "running"),
-      initialStatus: existingTask?.initialStatus ?? (taskStatus ?? "created"),
+      initialStatus: taskStatus ?? (eventType === "task_created" ? "created" : "running"),
       summary,
       activityIds,
     } as DomainObject);
@@ -262,14 +230,13 @@ function applyEvent(state: SessionState, event: SessionEventEnvelope, ctx: Apply
     } as DomainObject);
   } else if (eventType.startsWith("work_item_")) {
     const workItemId = workItemObjectId(payload) ?? eventId;
-    const previousWorkItem = state.workItems.get(workItemId);
-    const objective = workItemObjective(payload) ?? previousWorkItem?.objective;
-    const stateName = workItemState(payload) ?? previousWorkItem?.state;
+    const objective = workItemObjective(payload);
+    const stateName = workItemState(payload);
     const activityIds = isWorkItemActivityEvent(eventType) ? [eventId] : undefined;
     upsertObject(state, "work_item", workItemId, {
       ...baseFields,
       id: workItemId,
-      status: workItemStatus(eventType, stateName, previousWorkItem?.status),
+      status: workItemStatus(eventType, stateName),
       objective,
       state: stateName,
       activityIds,
@@ -356,7 +323,7 @@ function debugEventDetail(
   return undefined;
 }
 
-function eventMeta(eventType: string, payload: Record<string, unknown> | undefined, eventSeq: number | undefined): string {
+export function eventMeta(eventType: string, payload: Record<string, unknown> | undefined, eventSeq: number | undefined): string {
   const eventRef = eventSeq == null ? undefined : `event #${eventSeq}`;
   if (eventType === "message_enqueued" && messageEnvelopeProjection(payload)?.origin === "operator") {
     return compactJoin(["Sent", eventRef]);
@@ -758,13 +725,12 @@ function isDebugOnlyWorkItemEvent(eventType: string): boolean {
 function workItemStatus(
   eventType: string,
   stateName: string | undefined,
-  previousStatus: WorkItemObject["status"] | undefined,
 ): WorkItemObject["status"] {
   if (isKnownWorkItemStatus(stateName)) return stateName;
   if (eventType === "work_item_completed" || eventType === "work_item_completion_report_promoted") return "completed";
   if (eventType === "work_item_blocked") return "blocked";
-  if (eventType === "work_item_focus_released") return previousStatus ?? "yielded";
-  return previousStatus ?? "unknown";
+  if (eventType === "work_item_focus_released") return "yielded";
+  return "unknown";
 }
 
 function isKnownWorkItemStatus(value: string | undefined): value is WorkItemObject["status"] {
@@ -1817,6 +1783,19 @@ function normalizeTextKey(text: string): string {
 function sortableTime(value: string): number {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function canonicalSessionEvents(events: SessionEventEnvelope[]): SessionEventEnvelope[] {
+  return [...events].sort((left, right) => {
+    const leftSeq = left.event_seq;
+    const rightSeq = right.event_seq;
+    if (leftSeq != null && rightSeq != null && leftSeq !== rightSeq) return leftSeq - rightSeq;
+    if (leftSeq != null && rightSeq == null) return -1;
+    if (leftSeq == null && rightSeq != null) return 1;
+    const timeOrder = sortableTime(left.ts ?? "") - sortableTime(right.ts ?? "");
+    if (timeOrder !== 0) return timeOrder;
+    return 0;
+  });
 }
 
 function debugJson(value: unknown): string {

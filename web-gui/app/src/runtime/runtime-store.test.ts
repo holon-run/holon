@@ -5,6 +5,7 @@ import {
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
   isLoopbackWebHostname,
+  mergeCachedSessionIntoCurrent,
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
   readStoredRuntimeConnectionConfig,
@@ -14,6 +15,7 @@ import {
 } from "./runtime-store";
 import type { StreamEventEnvelopeDto } from "./client";
 import type { AgentSessionState } from "./runtime-store";
+import { createSessionProjectionState } from "./session-projection";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -45,19 +47,12 @@ class MemoryStorage implements Storage {
 
 function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionState {
   return {
+    ...createSessionProjectionState(),
     loading: false,
     loadingOlder: false,
     liveStatus: "idle",
     sendingPrompt: false,
     detail: null,
-    eventsBySeq: {},
-    eventSeqs: [],
-    messagesById: {},
-    missingMessageIds: {},
-    transcriptEntriesById: {},
-    missingTranscriptEntryIds: {},
-    briefRecordsById: {},
-    missingBriefIds: {},
     workItemDetailsById: {},
     taskDetailsById: {},
     toolExecutionDetailsById: {},
@@ -74,6 +69,15 @@ describe("runtime event epoch", () => {
       messagesById: { msg: { id: "msg" } },
       newestSeq: 7,
       oldestSeq: 7,
+      hasOlder: true,
+      detail: {
+        agent: { id: "agent-1" } as NonNullable<AgentSessionState["detail"]>["agent"],
+        source: "http",
+        timeline: [],
+        events: [],
+        eventCursorSeq: 7,
+        hasOlderEvents: true,
+      },
     });
 
     const reset = sessionForEventLogEpoch(current, "epoch-new");
@@ -84,6 +88,9 @@ describe("runtime event epoch", () => {
     expect(reset.messagesById).toEqual({});
     expect(reset.newestSeq).toBeUndefined();
     expect(reset.oldestSeq).toBeUndefined();
+    expect(reset.hasOlder).toBeUndefined();
+    expect(reset.detail?.eventCursorSeq).toBeUndefined();
+    expect(reset.detail?.hasOlderEvents).toBeUndefined();
   });
 
   it("detects conflicting immutable content for the same epoch and sequence", () => {
@@ -145,6 +152,45 @@ describe("runtime event epoch", () => {
       payload_schema_version: 1,
       provenance,
     });
+  });
+});
+
+describe("session cache restoration", () => {
+  it("does not overwrite HTTP or SSE state that arrived while cache was loading", () => {
+    const current = sessionState({
+      eventLogEpoch: "epoch-live",
+      eventsBySeq: { 9: { id: "live-event", event_seq: 9 } },
+      eventSeqs: [9],
+      newestSeq: 9,
+      oldestSeq: 9,
+      liveStatus: "streaming",
+    });
+    const cached = {
+      ...createSessionProjectionState("epoch-cache"),
+      eventsBySeq: { 1: { id: "cached-event", event_seq: 1 } },
+      eventSeqs: [1],
+      newestSeq: 1,
+      oldestSeq: 1,
+    };
+
+    expect(mergeCachedSessionIntoCurrent(current, cached)).toBe(current);
+  });
+
+  it("restores cached projection into an empty session without changing UI state", () => {
+    const current = sessionState({ loading: true, liveStatus: "connecting" });
+    const cached = {
+      ...createSessionProjectionState("epoch-cache"),
+      eventsBySeq: { 1: { id: "cached-event", event_seq: 1 } },
+      eventSeqs: [1],
+      newestSeq: 1,
+      oldestSeq: 1,
+    };
+
+    const restored = mergeCachedSessionIntoCurrent(current, cached);
+
+    expect(restored.eventSeqs).toEqual([1]);
+    expect(restored.loading).toBe(true);
+    expect(restored.liveStatus).toBe("connecting");
   });
 });
 
@@ -371,6 +417,7 @@ describe("brief projection and hydration", () => {
 
   it("hydrates a missing brief even when its associated transcript is loaded", () => {
     const session: AgentSessionState = {
+      ...createSessionProjectionState(),
       loading: false,
       loadingOlder: false,
       liveStatus: "idle",
@@ -389,8 +436,7 @@ describe("brief projection and hydration", () => {
         },
       },
       eventSeqs: [23],
-      messagesById: {},
-      missingMessageIds: {},
+      referencedBriefIds: { "brief-123": true },
       transcriptEntriesById: {
         "round-123": {
           id: "round-123",
@@ -402,9 +448,6 @@ describe("brief projection and hydration", () => {
           },
         },
       },
-      missingTranscriptEntryIds: {},
-      briefRecordsById: {},
-      missingBriefIds: {},
       workItemDetailsById: {},
       taskDetailsById: {},
       toolExecutionDetailsById: {},

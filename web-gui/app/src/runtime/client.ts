@@ -1,6 +1,6 @@
 import { agentDetailFixtures } from "./fixtures";
 import type { components } from "./generated/openapi";
-import { briefIdForPayload, reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
+import { briefIdForPayload, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
   AddSkillInput,
   AgentDetail,
@@ -131,13 +131,12 @@ async function fetchAgentDetail(
   displayLevel: DisplayLevel,
 ): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
-  const eventDisplayLevel = displayLevel;
   const [entry, state, events, workItems] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
-    fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch(emptyEventPage),
+    fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel }).catch(emptyEventPage),
     // Return undefined on failure so projectAgent falls back to state.work_items.
     // Returning [] would shadow the state endpoint's work_items (empty array is not nullish).
     fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch(() => undefined),
@@ -151,15 +150,14 @@ async function fetchAgentDetail(
     newestBriefFromEvents(events.events ?? [], briefRecordsById),
     workItems,
   );
-  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById, briefRecordsById });
-
   return {
     agent,
     source: "http",
-    timeline,
+    timeline: [],
     eventLogEpoch: events.event_log_epoch,
     events: events.events ?? [],
     briefRecordsById,
+    transcriptEntriesById,
     eventCursorSeq: events.cursor_seq ?? undefined,
     newestEventSeq: events.newest_seq ?? undefined,
     oldestEventSeq: events.oldest_seq ?? undefined,

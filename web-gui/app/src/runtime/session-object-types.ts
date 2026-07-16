@@ -5,9 +5,9 @@
  * execution, task, work item, assistant round, or runtime activity) with an
  * explicit status field and lifecycle semantics.
  *
- * Each object also carries render data from the winning event. The renderer
- * layer (`deriveTimelineView`) uses this to produce display-ready items,
- * keeping domain state separate from display formatting.
+ * Domain objects retain only event references and lifecycle fields. The
+ * renderer resolves the referenced canonical event from SessionProjectionState
+ * when deriving display-ready items.
  */
 
 import type { TimelineStateObjectRef } from "./types";
@@ -20,28 +20,14 @@ export type SessionObjectType =
   | "assistant_round"
   | "activity";
 
-/**
- * Rendering data carried by each domain object from the winning event.
- * The renderer reads these fields to produce display output.
- */
-export interface RenderData {
-  eventType: string;
-  payload: Record<string, unknown> | undefined;
-  timestamp: string;
-  eventId: string;
-  eventSeq: number | undefined;
-  meta: string;
-  debug?: string;
-  rawEvent?: unknown;
-}
-
 interface BaseObject {
   id: string;
   status: string;
   sourceEventIds: string[];
+  primaryEventId: string;
+  primaryEventSeq?: number;
   createdAt: string;
   updatedAt: string;
-  render: RenderData;
 }
 
 export type MessageStatus = "enqueued" | "processing" | "delivered";

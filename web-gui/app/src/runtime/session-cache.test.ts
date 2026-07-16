@@ -9,22 +9,20 @@ import {
 } from "./session-cache";
 import type { AgentSessionState } from "./runtime-store-helpers";
 import { CACHE_SCHEMA_VERSION } from "./idb-cache";
+import {
+  SESSION_PROJECTION_GENERATION,
+  createSessionProjectionState,
+  type ProjectionEvent,
+} from "./session-projection";
 
 function makeSession(overrides: Partial<AgentSessionState> = {}): AgentSessionState {
   return {
+    ...createSessionProjectionState(),
     loading: false,
     loadingOlder: false,
     liveStatus: "idle",
     sendingPrompt: false,
     detail: null,
-    eventsBySeq: {},
-    eventSeqs: [],
-    messagesById: {},
-    missingMessageIds: {},
-    transcriptEntriesById: {},
-    missingTranscriptEntryIds: {},
-    briefRecordsById: {},
-    missingBriefIds: {},
     workItemDetailsById: {},
     taskDetailsById: {},
     toolExecutionDetailsById: {},
@@ -92,7 +90,7 @@ describe("extractCacheableSession", () => {
   it("trims events exceeding MAX_EVENTS_PER_AGENT", () => {
     const MAX = 5000;
     const eventSeqs = Array.from({ length: MAX + 100 }, (_, i) => i + 1);
-    const eventsBySeq: Record<number, unknown> = {};
+    const eventsBySeq: Record<number, ProjectionEvent> = {};
     for (const seq of eventSeqs) eventsBySeq[seq] = { id: `e${seq}` };
 
     const session = makeSession({ eventsBySeq, eventSeqs });
@@ -102,6 +100,8 @@ describe("extractCacheableSession", () => {
     expect(result.eventSeqs.length).toBe(MAX);
     expect(result.eventSeqs[0]).toBe(101); // First 100 trimmed
     expect(result.eventSeqs[MAX - 1]).toBe(MAX + 100);
+    expect(result.oldestSeq).toBe(101);
+    expect(result.newestSeq).toBe(MAX + 100);
   });
 });
 
@@ -111,6 +111,7 @@ describe("hydrateSessionFromCache", () => {
       remoteKey: "local",
       agentId: "agent-1",
       schemaVersion: CACHE_SCHEMA_VERSION,
+      projectionGeneration: SESSION_PROJECTION_GENERATION,
       eventLogEpoch: "epoch-1",
       eventsBySeq: { 1: { id: "e1" } },
       eventSeqs: [1],
@@ -124,7 +125,7 @@ describe("hydrateSessionFromCache", () => {
 
     const result = hydrateSessionFromCache(cached);
 
-    expect(result.eventsBySeq).toEqual({ 1: { id: "e1" } });
+    expect(result.eventsBySeq).toEqual({ 1: { id: "e1", event_seq: 1 } });
     expect(result.eventLogEpoch).toBe("epoch-1");
     expect(result.eventSeqs).toEqual([1]);
     expect(result.newestSeq).toBe(1);
