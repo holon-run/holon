@@ -1,12 +1,19 @@
 import {
+  Ban,
   Bot,
+  Circle,
   CircleAlert,
+  CircleCheck,
+  CircleStop,
+  CircleX,
   Clock,
   Diamond,
   ImageIcon,
   ChevronRight,
   Equal,
+  LoaderCircle,
   RefreshCw,
+  Scissors,
   Sparkles,
   User,
   Zap,
@@ -17,7 +24,14 @@ import i18next from "i18next";
 
 import { MarkdownContent, parseWorkspaceImageRef, type WorkspaceImageRef } from "../../components/MarkdownContent";
 import { useRuntimeStore } from "../../runtime/runtime-store";
-import type { AgentSummary, AgentTimelineActivity, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
+import type {
+  AgentSummary,
+  AgentTimelineActivity,
+  AgentTimelineItem,
+  DisplayLevel,
+  TimelineExecutionOutcome,
+  TimelineStatusStep,
+} from "../../runtime/types";
 import { TimelineTurn, sortableActivityTime, timelineItemToWorkingActivity } from "./timeline-utils";
 
 export const TimelineTurnGroup = memo(function TimelineTurnGroup({
@@ -214,7 +228,7 @@ function isRuntimeActivityItem(item: Pick<AgentTimelineItem, "kind">): boolean {
   return item.kind === "tool" || item.kind === "event" || item.kind === "system";
 }
 
-function ActivityTrail({
+export function ActivityTrail({
   activities,
   displayLevel,
   onOpenInspector,
@@ -244,10 +258,11 @@ function ActivityTrail({
             <span className="activity-icon" aria-label={activity.label} title={activity.label}>
               {activityIcon(activity)}
             </span>
-            <span className="activity-body">{activity.body}</span>
-            {activity.stateEvolution ? (
-              <span className="activity-state-evolution">{activity.stateEvolution.map((s) => s.replace(/^Task\s+/, "")).join(" → ")}</span>
-            ) : null}
+            <span className="activity-body" title={activity.body}>{activity.body}</span>
+            <span className="activity-tail">
+              {activity.statusTrail ? <StatusTrail steps={activity.statusTrail} /> : null}
+              <ExecutionMetadata activity={activity} />
+            </span>
           </button>
         );
 
@@ -268,7 +283,90 @@ function ActivityTrail({
   );
 }
 
+function ExecutionMetadata({ activity }: { activity: AgentTimelineActivity }) {
+  const { t } = useTranslation();
+  const meta = activity.executionMeta;
+  if (!meta || (meta.taskId == null && meta.exitStatus == null && meta.durationMs == null && !meta.outputTruncated)) return null;
+  return (
+    <span className="activity-execution-meta">
+      {meta.taskId ? (
+        <span className="activity-meta-chip task" title={t("agent.taskId", { id: meta.taskId })} aria-label={t("agent.taskId", { id: meta.taskId })}>
+          <Zap size={11} aria-hidden="true" />
+          <span>{shortTaskId(meta.taskId)}</span>
+        </span>
+      ) : null}
+      {meta.exitStatus != null ? (
+        <span
+          className={`activity-meta-chip exit ${meta.exitStatus === 0 ? "success" : "danger"}`}
+          title={t("agent.exitStatus", { status: meta.exitStatus })}
+          aria-label={t("agent.exitStatus", { status: meta.exitStatus })}
+        >
+          {meta.exitStatus === 0 ? <CircleCheck size={11} aria-hidden="true" /> : <CircleX size={11} aria-hidden="true" />}
+          <span>{meta.exitStatus}</span>
+        </span>
+      ) : null}
+      {meta.durationMs != null ? (
+        <span className="activity-meta-chip duration" title={t("agent.duration", { duration: formatDuration(meta.durationMs) })} aria-label={t("agent.duration", { duration: formatDuration(meta.durationMs) })}>
+          <Clock size={11} aria-hidden="true" />
+          <span>{formatDuration(meta.durationMs)}</span>
+        </span>
+      ) : null}
+      {meta.outputTruncated ? (
+        <span className="activity-meta-icon truncated" title={t("agent.outputTruncated")} aria-label={t("agent.outputTruncated")}>
+          <Scissors size={11} aria-hidden="true" />
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function StatusTrail({ steps }: { steps: TimelineStatusStep[] }) {
+  const { t } = useTranslation();
+  const label = steps.map((step) => statusLabel(step.status, t)).join(" → ");
+  return (
+    <span className="activity-status-trail" aria-label={label} title={label}>
+      {steps.map((step, index) => (
+        <span className="activity-status-step" data-status={step.status} key={`${step.status}-${index}`}>
+          {index > 0 ? <span className="activity-status-connector" aria-hidden="true" /> : null}
+          {statusIcon(step.status)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function statusIcon(status: TimelineExecutionOutcome): ReactNode {
+  if (status === "queued") return <Circle size={12} aria-hidden="true" />;
+  if (status === "running" || status === "cancelling") return <LoaderCircle className="is-spinning" size={12} aria-hidden="true" />;
+  if (status === "completed") return <CircleCheck size={12} aria-hidden="true" />;
+  if (status === "failed") return <CircleX size={12} aria-hidden="true" />;
+  if (status === "cancelled") return <Ban size={12} aria-hidden="true" />;
+  if (status === "interrupted") return <CircleStop size={12} aria-hidden="true" />;
+  return <Zap size={12} aria-hidden="true" />;
+}
+
+function statusLabel(status: TimelineExecutionOutcome, t: ReturnType<typeof useTranslation>["t"]): string {
+  return t(`agent.taskStatus.${status}`);
+}
+
+function shortTaskId(taskId: string): string {
+  return taskId.length > 12 ? `${taskId.slice(0, 12)}…` : taskId;
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 1 : 0)}s`;
+}
+
 function activityIcon(activity: AgentTimelineActivity): ReactNode {
+  const outcome = activity.executionMeta?.outcome;
+  if (outcome === "failed" || (activity.executionMeta?.exitStatus != null && activity.executionMeta.exitStatus !== 0)) {
+    return <CircleAlert size={12} />;
+  }
+  if (outcome === "running" || outcome === "cancelling" || outcome === "promoted") return <LoaderCircle className="is-spinning" size={12} />;
+  if (outcome === "completed") return <CircleCheck size={12} />;
+  if (outcome === "cancelled") return <Ban size={12} />;
+  if (outcome === "interrupted") return <CircleStop size={12} />;
   const text = `${activity.label} ${activity.meta} ${activity.detail?.tone ?? ""}`;
   if (/failed|error|exit\s+[1-9]/i.test(text)) return <CircleAlert size={12} />;
   if (/wait/i.test(text)) return <Clock size={12} />;

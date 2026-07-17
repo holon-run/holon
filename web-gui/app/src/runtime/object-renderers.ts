@@ -122,6 +122,7 @@ function renderToolExecutionObject(obj: ToolExecutionObject, ctx: RenderContext)
     },
     relatedStateObjectRef: obj.relatedStateObjectRef,
     detail: projection.detail,
+    executionMeta: projection.executionMeta,
     rawEvent: event,
     debug: ctx.includeDebug ? JSON.stringify(event, null, 2) : undefined,
   };
@@ -148,6 +149,8 @@ function renderTaskObject(obj: TaskObject, ctx: RenderContext): AgentTimelineIte
       summary: obj.summary,
     },
     activities: renderTaskActivities(obj, ctx),
+    executionMeta: { outcome: taskExecutionOutcome(obj.initialStatus ?? obj.status), taskId: obj.id.replace(/^task:/, "") },
+    statusTrail: [{ status: taskExecutionOutcome(obj.initialStatus ?? obj.status) }],
     rawEvent: event,
     debug: ctx.includeDebug && event ? JSON.stringify(event, null, 2) : undefined,
   };
@@ -169,6 +172,20 @@ function taskStatusLabel(status: string): string {
 
 function isFailedTaskStatus(status: string): boolean {
   return status === "failed" || status === "cancelled" || status === "interrupted";
+}
+
+function taskExecutionOutcome(status: string): NonNullable<NonNullable<AgentTimelineItem["executionMeta"]>["outcome"]> {
+  switch (status) {
+    case "created":
+    case "queued": return "queued";
+    case "running":
+    case "cancelling":
+    case "completed":
+    case "failed":
+    case "cancelled":
+    case "interrupted": return status;
+    default: return "running";
+  }
 }
 
 function renderTaskActivities(obj: TaskObject, ctx: RenderContext): AgentTimelineItem["activities"] {
@@ -234,6 +251,8 @@ function renderRuntimeActivity(activity: RuntimeActivityObject, ctx: RenderConte
     sourceIds: orderedSourceEventIds(activity, ctx),
     relatedStateObjectRef: activity.relatedStateObjectRef,
     detail: projection.detail,
+    executionMeta: projection.executionMeta,
+    statusTrail: projection.statusTrail,
     rawEvent: event,
     debug: ctx.includeDebug ? JSON.stringify(event, null, 2) : undefined,
   };

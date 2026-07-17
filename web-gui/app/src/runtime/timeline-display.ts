@@ -156,6 +156,8 @@ function activityToTimelineItem(activity: AgentTimelineActivity): AgentTimelineI
     sourceIds: activity.sourceIds,
     relatedStateObjectRef: activity.relatedStateObjectRef,
     detail: activity.detail,
+    executionMeta: activity.executionMeta,
+    statusTrail: activity.statusTrail,
     rawEvent: activity.rawEvent,
     debug: activity.debug,
   };
@@ -208,7 +210,7 @@ function sortableTime(value: string): number {
  * - `relatedStateObjectRef.kind` in mergeable kinds (flattened lifecycle activities)
  *
  * The merged item keeps the earliest timestamp, the latest label/body, and
- * accumulates status labels into `stateEvolution`.
+ * accumulates semantic status steps into `statusTrail`.
  */
 function mergeConsecutiveStateObjectActivities(items: AgentTimelineItem[]): AgentTimelineItem[] {
   if (!items.length) return items;
@@ -260,7 +262,7 @@ function stateObjectRefId(item: AgentTimelineItem): string | undefined {
  * - id: prefer the card's id (stateObjectRef) for stable React keys
  * - timestamp: earliest (group start)
  * - label/body/detail: from the last item (latest state)
- * - stateEvolution: accumulated status labels from all items
+ * - statusTrail: accumulated semantic statuses from all items
  * - stateObjectRef: from the card if present
  * - sourceIds: merged from all
  */
@@ -269,12 +271,12 @@ function mergeStateObjectGroup(group: AgentTimelineItem[]): AgentTimelineItem {
   const last = group[group.length - 1];
   const card = group.find((item) => item.stateObjectRef && mergeableStateObjectKinds.has(item.stateObjectRef.kind));
 
-  // Build state evolution from status labels
-  const stateEvolution: string[] = [];
+  const statusTrail: NonNullable<AgentTimelineItem["statusTrail"]> = [];
   for (const item of group) {
-    const label = item.label;
-    if (label && !stateEvolution.includes(label)) {
-      stateEvolution.push(label);
+    for (const step of item.statusTrail ?? []) {
+      if (!statusTrail.some((existing) => existing.status === step.status)) {
+        statusTrail.push(step);
+      }
     }
   }
 
@@ -293,7 +295,8 @@ function mergeStateObjectGroup(group: AgentTimelineItem[]): AgentTimelineItem {
     stateObjectRef: card?.stateObjectRef ?? last.relatedStateObjectRef,
     relatedStateObjectRef: card ? undefined : last.relatedStateObjectRef,
     detail: last.detail,
-    stateEvolution: stateEvolution.length > 1 ? stateEvolution : undefined,
+    executionMeta: last.executionMeta,
+    statusTrail: statusTrail.length ? statusTrail : undefined,
     activities: undefined,
     rawEvent: last.rawEvent,
     debug: last.debug,

@@ -221,7 +221,8 @@ describe("reduceAgentSessionTimeline", () => {
       expect.objectContaining({
         kind: "tool",
         label: "Tool finished",
-        body: "Viewed image · Screenshot.png · 1200×800 · A browser screenshot showing the conversation timeline. · 9.7s",
+        body: "Viewed image · Screenshot.png · 1200×800 · A browser screenshot showing the conversation timeline.",
+        executionMeta: expect.objectContaining({ outcome: "completed", durationMs: 9700 }),
       }),
     );
   });
@@ -326,7 +327,8 @@ describe("reduceAgentSessionTimeline", () => {
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         kind: "tool",
-        body: "Task output · task_abc123 · completed · Run command: cargo build · exit 0",
+        body: "Task output · task_abc123 · completed · Run command: cargo build",
+        executionMeta: expect.objectContaining({ outcome: "completed", exitStatus: 0, taskId: "task_abc123" }),
       }),
     );
     // Duration should be suppressed for read/control tools
@@ -379,7 +381,37 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline[0].body).toContain("truncated");
+    expect(timeline[0].body).not.toContain("truncated");
+    expect(timeline[0].executionMeta).toEqual(expect.objectContaining({
+      outcome: "running",
+      outputTruncated: true,
+      taskId: "task_xyz",
+    }));
+  });
+
+  it("projects promoted command initial output truncation", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("exec-promoted-trunc", "ExecCommand", {
+            exec_command_cmd: "npm run dev",
+            exec_command_disposition: "promoted_to_task",
+            task_handle: { task_id: "task_promoted" },
+            exec_command_result: {
+              disposition: "promoted_to_task",
+              task_handle: { task_id: "task_promoted" },
+              initial_output_truncated: true,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0].executionMeta).toEqual(expect.objectContaining({
+      outcome: "promoted",
+      outputTruncated: true,
+      taskId: "task_promoted",
+    }));
   });
 
   it("projects TaskStatus with status and kind", () => {
@@ -443,7 +475,8 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        body: "OpaqueTool · 9.7s",
+        body: "OpaqueTool",
+        executionMeta: expect.objectContaining({ durationMs: 9700 }),
       }),
     );
   });
@@ -467,7 +500,8 @@ describe("reduceAgentSessionTimeline", () => {
       expect.objectContaining({
         kind: "tool",
         label: "Patch failed",
-        body: "ApplyPatch · 120ms · context mismatch near projectApplyPatchTool",
+        body: "ApplyPatch · context mismatch near projectApplyPatchTool",
+        executionMeta: expect.objectContaining({ outcome: "failed", durationMs: 120 }),
         detail: {
           label: "Error",
           text: "context mismatch near projectApplyPatchTool",
@@ -821,7 +855,7 @@ describe("reduceAgentSessionTimeline", () => {
     // Task StateObject renders as a stable card; task_result_received is an
     // ActivityView that gets flattened back into the timeline by compactAgentTimelineItems.
     // Consecutive task lifecycle items from the same task are merged into one entry
-    // with stateEvolution tracking the status progression.
+    // with statusTrail tracking the semantic status progression.
     expect(timeline).toHaveLength(1);
     const merged = timeline.find((item) => item.id === "task:task_123");
     expect(merged).toEqual(
@@ -829,9 +863,10 @@ describe("reduceAgentSessionTimeline", () => {
         id: "task:task_123",
         kind: "tool",
         label: "Task completed",
-        body: "Run command: npm test · exit 0 · 42 tests passed",
+        body: "Run command: npm test",
         stateObjectRef: { kind: "task", id: "task:task_123", status: "completed", summary: "Run command: npm test" },
-        stateEvolution: ["Task queued", "Task completed"],
+        executionMeta: expect.objectContaining({ outcome: "completed", exitStatus: 0, taskId: "task_123" }),
+        statusTrail: [{ status: "queued" }, { status: "completed" }],
         detail: {
           label: "Task details",
           text: "task: task_123 · output: /tmp/task.log · 42 tests passed",
@@ -862,7 +897,7 @@ describe("reduceAgentSessionTimeline", () => {
     });
 
     // Single task_result_received creates task card + activity which are merged.
-    // Both have same label "Task failed" so stateEvolution is not set (length <= 1).
+    // A single failed lifecycle state still produces one semantic status step.
     expect(timeline).toHaveLength(1);
     const merged = timeline[0]!;
     expect(merged).toEqual(
@@ -870,7 +905,9 @@ describe("reduceAgentSessionTimeline", () => {
         id: "task:task_failed",
         kind: "tool",
         label: "Task failed",
-        body: "Run command: cargo test · exit 101 · tests failed",
+        body: "Run command: cargo test · tests failed",
+        executionMeta: expect.objectContaining({ outcome: "failed", exitStatus: 101 }),
+        statusTrail: [{ status: "failed" }],
         minDisplayLevel: "info",
       }),
     );
@@ -916,7 +953,7 @@ describe("reduceAgentSessionTimeline", () => {
     });
 
     // All 3 consecutive task lifecycle items from the same task are merged into one entry.
-    // The merged item shows the final status label and accumulates stateEvolution.
+    // The merged item shows the final status label and accumulates statusTrail.
     expect(timeline).toHaveLength(1);
     const merged = timeline[0]!;
     expect(merged).toEqual(
@@ -924,9 +961,10 @@ describe("reduceAgentSessionTimeline", () => {
         id: "task:task_abc",
         kind: "tool",
         label: "Task completed",
-        body: "npm run build · exit 0",
+        body: "npm run build",
         stateObjectRef: { kind: "task", id: "task:task_abc", status: "completed", summary: "npm run build" },
-        stateEvolution: ["Task queued", "Task running", "Task completed"],
+        executionMeta: expect.objectContaining({ outcome: "completed", exitStatus: 0 }),
+        statusTrail: [{ status: "queued" }, { status: "running" }, { status: "completed" }],
       }),
     );
   });
