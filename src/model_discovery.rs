@@ -102,12 +102,13 @@ fn provider_discovery_definition(
     provider: &ProviderRuntimeConfig,
 ) -> Option<&'static ModelDiscoveryDefinition> {
     let definition = provider_definition(provider.id.as_str())?;
+    let discovery = definition.discovery.as_ref()?;
     debug_assert_ne!(
         definition.catalog_policy,
         ProviderCatalogPolicy::StaticOnly,
         "providers with discovery must declare a discovery catalog policy"
     );
-    definition.discovery.as_ref()
+    Some(discovery)
 }
 
 pub fn discovery_cache_status_for_provider(
