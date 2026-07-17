@@ -1201,7 +1201,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "brief-event",
+        id: "brief:brief_123",
         label: "Result",
         body: "Full persisted brief text.",
       }),
@@ -1246,7 +1246,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "brief-event",
+        id: "assistant_round:round_123",
         body: "Canonical persisted brief.",
       }),
     );
@@ -1282,7 +1282,7 @@ describe("reduceAgentSessionTimeline", () => {
 
     expect(timeline[0]).toEqual(
       expect.objectContaining({
-        id: "assistant-round",
+        id: "assistant_round:round_123",
         body: "Operator-visible response.",
         minDisplayLevel: "verbose",
       }),

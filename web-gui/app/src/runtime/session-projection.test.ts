@@ -111,6 +111,110 @@ describe("SessionProjectionState", () => {
     expect(projectionSnapshot(twice)).toEqual(projectionSnapshot(once));
   });
 
+  it("promotes an assistant round across event batches using semantic identity", () => {
+    const recorded = receive(createSessionProjectionState(), [
+      event(6, "assistant_round_recorded", {
+        assistant_round_id: "round-1",
+        text_preview: "Partial result...",
+      }),
+    ]);
+    const promoted = receive(recorded, [
+      event(7, "brief_created", {
+        brief_id: "brief-1",
+        finalizes_assistant_round_id: "round-1",
+        kind: "result",
+        text: "Complete result.",
+      }),
+    ]);
+
+    expect(promoted.domain.rounds).toHaveLength(1);
+    expect(promoted.domain.rounds.get("assistant_round:round-1")).toEqual(
+      expect.objectContaining({
+        status: "brief_promoted",
+        sourceEventIds: ["event-6", "event-7"],
+      }),
+    );
+    expect(deriveSessionTimeline(promoted)).toEqual([
+      expect.objectContaining({
+        id: "assistant_round:round-1",
+        body: "Complete result.",
+      }),
+    ]);
+  });
+
+  it("promotes a cached assistant round when its live brief arrives", () => {
+    const recordedEvent = event(6, "assistant_round_recorded", {
+      assistant_round_id: "round-1",
+      text_preview: "Partial result...",
+    });
+    const restored = reduceSessionProjection(createSessionProjectionState(), {
+      type: "cache_restored",
+      generation: SESSION_PROJECTION_GENERATION,
+      eventLogEpoch: "epoch-1",
+      eventsBySeq: { 6: recordedEvent },
+      eventSeqs: [6],
+      messagesById: {},
+      transcriptEntriesById: {},
+      briefRecordsById: {},
+      newestSeq: 6,
+      oldestSeq: 6,
+    });
+    const promoted = receive(restored, [
+      event(7, "brief_created", {
+        brief_id: "brief-1",
+        finalizes_assistant_round_id: "round-1",
+        kind: "result",
+        text: "Complete result.",
+      }),
+    ]);
+
+    expect(promoted.domain.rounds).toHaveLength(1);
+    expect(deriveSessionTimeline(promoted)).toEqual([
+      expect.objectContaining({
+        id: "assistant_round:round-1",
+        body: "Complete result.",
+        sourceIds: ["event-6", "event-7"],
+      }),
+    ]);
+  });
+
+  it("only uses transcript entry identity when the brief relation is finalizes", () => {
+    const projection = receive(createSessionProjectionState(), [
+      event(8, "assistant_round_recorded", {
+        assistant_round_id: "round-1",
+        text_preview: "First round",
+      }),
+      event(9, "brief_created", {
+        brief_id: "brief-final",
+        content_source: {
+          kind: "transcript_entry",
+          relation: "finalizes",
+          entry_id: "round-1",
+        },
+        text: "Promoted first round",
+      }),
+      event(10, "brief_created", {
+        brief_id: "brief-independent",
+        content_source: {
+          kind: "transcript_entry",
+          relation: "references",
+          entry_id: "round-1",
+        },
+        text: "Independent result",
+      }),
+      event(11, "assistant_round_recorded", {
+        assistant_round_id: "round-2",
+        text_preview: "Second round",
+      }),
+    ]);
+
+    expect(Array.from(projection.domain.rounds.keys())).toEqual([
+      "assistant_round:round-1",
+      "brief:brief-independent",
+      "assistant_round:round-2",
+    ]);
+  });
+
   it("records and closes gaps when backfill arrives", () => {
     const withGap = receive(createSessionProjectionState(), [events[0], events[2]]);
     expect(withGap.gaps).toEqual([{ afterSeq: 1, beforeSeq: 3 }]);

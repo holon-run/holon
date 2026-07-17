@@ -57,6 +57,14 @@ export interface OperatorPromptAttachment {
   dataBase64: string;
 }
 
+export interface OperatorPromptResponse {
+  messageId: string;
+}
+
+interface OperatorPromptResponseDto {
+  message_id?: string;
+}
+
 const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
@@ -1019,19 +1027,33 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) return undefined;
       return streamGlobalEvents(baseUrl, fetchImpl, requestHeaders, options);
     },
-    async sendOperatorPrompt(agentId: string, text: string, attachments: OperatorPromptAttachment[] = []): Promise<void> {
+    async sendOperatorPrompt(
+      agentId: string,
+      text: string,
+      attachments: OperatorPromptAttachment[] = [],
+    ): Promise<OperatorPromptResponse> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, {
-        text,
-        attachments: attachments.map((attachment) => ({
-          kind: attachment.kind,
-          name: attachment.name,
-          media_type: attachment.mediaType,
-          data_base64: attachment.dataBase64,
-        })),
-      }, requestHeaders);
+      const response = await postJson<OperatorPromptResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/prompt`,
+        {
+          text,
+          attachments: attachments.map((attachment) => ({
+            kind: attachment.kind,
+            name: attachment.name,
+            media_type: attachment.mediaType,
+            data_base64: attachment.dataBase64,
+          })),
+        },
+        requestHeaders,
+      );
+      if (!response.message_id) {
+        throw new Error("Operator prompt response did not include message_id.");
+      }
+      return { messageId: response.message_id };
     },
     async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
       if (!baseUrl) {

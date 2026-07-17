@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, DisplayLevel, RuntimeMessageEnvelope, RuntimeBriefRecord, RuntimeTranscriptEntry } from "./types";
 import type { SessionEventEnvelope } from "./session-events";
 import type { SessionState } from "./session-state-reducer";
-import type { DomainObject, InsertionEntry } from "./session-object-types";
+import type { DomainObject, InsertionEntry, SessionObjectType } from "./session-object-types";
 import { compactAgentTimelineItems } from "./timeline-display";
 import { renderDomainObject } from "./object-renderers";
 
@@ -34,7 +34,7 @@ export function deriveTimelineView(state: SessionState, ctx: RenderContext): Age
   for (const entry of state.insertionOrder) {
     const obj = lookupObject(state, entry);
     if (!obj) continue;
-    const item = renderObject(obj, ctx);
+    const item = renderObject(obj, entry.objectType, ctx);
     if (item) items.push(item);
   }
   const sorted = items.sort((left, right) => {
@@ -64,7 +64,11 @@ function lookupObject(state: SessionState, entry: InsertionEntry): DomainObject 
  * Calls {@link renderDomainObject} to produce the display-ready item.
  * Returns `undefined` when the object produces no visible projection.
  */
-function renderObject(obj: DomainObject, ctx: RenderContext): AgentTimelineItem | undefined {
+function renderObject(
+  obj: DomainObject,
+  objectType: SessionObjectType,
+  ctx: RenderContext,
+): AgentTimelineItem | undefined {
   // Skip activity objects that are children of a parent StateObject.
   // Tool execution objects may carry relatedStateObjectRef for breadcrumb
   // navigation but should still render as standalone timeline items.
@@ -77,7 +81,7 @@ function renderObject(obj: DomainObject, ctx: RenderContext): AgentTimelineItem 
     // Use the stable object id when available (stateObjectRef-bearing objects
     // and messages with message_id-based identity). Fall back to the last
     // source event id for objects without a stable identity.
-    id: item.stateObjectRef || obj.id.startsWith("message:")
+    id: item.stateObjectRef || obj.id.startsWith("message:") || objectType === "assistant_round"
       ? obj.id
       : obj.primaryEventId,
   };
