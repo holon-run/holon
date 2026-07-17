@@ -1,5 +1,9 @@
 use super::*;
-use crate::model_catalog::ReasoningEffortValidationError;
+use crate::model_catalog::{
+    ModelMetadataConstraint, ModelMetadataConstraintKind, ModelMetadataConstraintSource,
+    ModelMetadataField, ReasoningEffortValidationError,
+};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelRef {
@@ -221,15 +225,27 @@ pub struct ResolvedModelCapabilities {
 }
 
 impl ResolvedModelCapabilities {
-    fn resolve(policy: &ResolvedRuntimeModelPolicy, transport: ProviderTransportKind) -> Self {
+    fn resolve(policy: &mut ResolvedRuntimeModelPolicy, transport: ProviderTransportKind) -> Self {
         let intrinsic = policy.capabilities.intrinsic();
         let endpoint = crate::model_catalog::EndpointModelPolicy {
             accepted_parameters: resolved_parameter_contracts(policy),
         };
         let transport = transport.capabilities();
+        let image_input = constrain_transport_capability(
+            policy,
+            ModelMetadataField::ImageInput,
+            policy.capabilities.image_input,
+            transport.image_input,
+        );
+        let image_output = constrain_transport_capability(
+            policy,
+            ModelMetadataField::ImageGeneration,
+            policy.capabilities.image_generation,
+            transport.image_output,
+        );
         Self {
-            image_input: policy.capabilities.image_input && transport.image_input,
-            image_output: policy.capabilities.image_generation && transport.image_output,
+            image_input,
+            image_output,
             intrinsic,
             endpoint,
             transport,
@@ -243,6 +259,28 @@ impl ResolvedModelCapabilities {
             ModelRouteCapability::ImageGeneration => self.image_output,
         }
     }
+}
+
+fn constrain_transport_capability(
+    policy: &mut ResolvedRuntimeModelPolicy,
+    field: ModelMetadataField,
+    model_supports: bool,
+    transport_supports: bool,
+) -> bool {
+    let effective = model_supports && transport_supports;
+    if model_supports && !transport_supports {
+        let constraint = ModelMetadataConstraint {
+            field,
+            kind: ModelMetadataConstraintKind::Disabled,
+            source: ModelMetadataConstraintSource::TransportCapability,
+            requested: "true".to_string(),
+            effective: "false".to_string(),
+        };
+        if !policy.evidence.constraints.contains(&constraint) {
+            policy.evidence.constraints.push(constraint);
+        }
+    }
+    effective
 }
 
 fn resolved_parameter_contracts(
@@ -289,6 +327,15 @@ pub struct ResolvedModelRoute {
     pub policy: ResolvedRuntimeModelPolicy,
     pub capabilities: ResolvedModelCapabilities,
     pub requested_capability: ModelRouteCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedModelRouteMetadata {
+    pub route_ref: ModelRouteRef,
+    pub model_ref: ModelRef,
+    pub endpoint: ResolvedProviderEndpointConfig,
+    pub policy: ResolvedRuntimeModelPolicy,
+    pub capabilities: ResolvedModelCapabilities,
 }
 
 impl ResolvedModelRoute {
@@ -398,26 +445,16 @@ impl RuntimeModelCatalog {
             endpoint.endpoint.clone(),
             model_ref.model.clone(),
         );
-
-        let policy = self.built_in_catalog.resolve_route_policy(
-            &route_ref,
-            &self.model_overrides,
-            &self.discovered_models,
-            self.unknown_model_fallback.as_ref(),
-            base_context_config,
-            self.configured_runtime_max_output_tokens,
-        );
-        let capabilities =
-            ResolvedModelCapabilities::resolve(&policy, endpoint.runtime_config.transport);
-        if !capabilities.supports(requested_capability) {
+        let metadata = self.resolve_explicit_model_metadata(base_context_config, &route_ref)?;
+        if !metadata.capabilities.supports(requested_capability) {
             return None;
         }
         Some(ResolvedModelRoute {
-            route_ref,
-            model_ref: model_ref.clone(),
-            endpoint: endpoint.clone(),
-            policy,
-            capabilities,
+            route_ref: metadata.route_ref,
+            model_ref: metadata.model_ref,
+            endpoint: metadata.endpoint,
+            policy: metadata.policy,
+            capabilities: metadata.capabilities,
             requested_capability,
         })
     }
@@ -428,6 +465,25 @@ impl RuntimeModelCatalog {
         route_ref: &ModelRouteRef,
         requested_capability: ModelRouteCapability,
     ) -> Option<ResolvedModelRoute> {
+        let metadata = self.resolve_explicit_model_metadata(base_context_config, route_ref)?;
+        if !metadata.capabilities.supports(requested_capability) {
+            return None;
+        }
+        Some(ResolvedModelRoute {
+            route_ref: metadata.route_ref,
+            model_ref: metadata.model_ref,
+            endpoint: metadata.endpoint,
+            policy: metadata.policy,
+            capabilities: metadata.capabilities,
+            requested_capability,
+        })
+    }
+
+    pub(crate) fn resolve_explicit_model_metadata(
+        &self,
+        base_context_config: &ContextConfig,
+        route_ref: &ModelRouteRef,
+    ) -> Option<ResolvedModelRouteMetadata> {
         let canonical_model_ref = self
             .built_in_catalog
             .canonicalize_model_ref(&route_ref.model_ref());
@@ -440,26 +496,16 @@ impl RuntimeModelCatalog {
             endpoint.provider == canonical_route_ref.provider
                 && endpoint.endpoint == canonical_route_ref.endpoint
         })?;
-        let policy = self.built_in_catalog.resolve_route_policy(
-            &canonical_route_ref,
-            &self.model_overrides,
-            &self.discovered_models,
-            self.unknown_model_fallback.as_ref(),
-            base_context_config,
-            self.configured_runtime_max_output_tokens,
-        );
+        let mut policy =
+            self.resolved_model_policy_for_route(base_context_config, &canonical_route_ref);
         let capabilities =
-            ResolvedModelCapabilities::resolve(&policy, endpoint.runtime_config.transport);
-        if !capabilities.supports(requested_capability) {
-            return None;
-        }
-        Some(ResolvedModelRoute {
+            ResolvedModelCapabilities::resolve(&mut policy, endpoint.runtime_config.transport);
+        Some(ResolvedModelRouteMetadata {
             route_ref: canonical_route_ref,
             model_ref: canonical_model_ref,
             endpoint: endpoint.clone(),
             policy,
             capabilities,
-            requested_capability,
         })
     }
 
@@ -530,8 +576,28 @@ impl RuntimeModelCatalog {
         model_override: Option<&ModelRouteRef>,
     ) -> ResolvedRuntimeModelPolicy {
         let route_ref = self.effective_model(model_override);
+        self.resolve_explicit_model_metadata(base_context_config, &route_ref)
+            .map(|route| route.policy)
+            .unwrap_or_else(|| {
+                self.resolved_model_policy_for_route(base_context_config, &route_ref)
+            })
+    }
+
+    fn resolved_model_policy_for_route(
+        &self,
+        base_context_config: &ContextConfig,
+        route_ref: &ModelRouteRef,
+    ) -> ResolvedRuntimeModelPolicy {
+        let canonical_model_ref = self
+            .built_in_catalog
+            .canonicalize_model_ref(&route_ref.model_ref());
+        let canonical_route_ref = ModelRouteRef::new(
+            route_ref.provider.clone(),
+            route_ref.endpoint.clone(),
+            canonical_model_ref.model,
+        );
         self.built_in_catalog.resolve_route_policy(
-            &route_ref,
+            &canonical_route_ref,
             &self.model_overrides,
             &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
@@ -545,87 +611,51 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         model_override: Option<&ModelRouteRef>,
     ) -> ContextConfig {
-        let model_ref = self.effective_model(model_override).model_ref();
-        self.built_in_catalog
-            .apply_policy(
-                &model_ref,
-                &self.model_overrides,
-                &self.discovered_models,
-                self.unknown_model_fallback.as_ref(),
-                base_context_config,
-                self.configured_runtime_max_output_tokens,
-            )
-            .0
+        let policy = self.resolved_model_policy(base_context_config, model_override);
+        let mut resolved = base_context_config.clone();
+        resolved.prompt_budget_estimated_tokens = policy.prompt_budget_estimated_tokens;
+        resolved.compaction_trigger_estimated_tokens = policy.compaction_trigger_estimated_tokens;
+        resolved.compaction_keep_recent_estimated_tokens =
+            policy.compaction_keep_recent_estimated_tokens;
+        resolved
     }
 
     pub fn available_models(&self) -> Vec<BuiltInModelMetadata> {
-        let mut models = self.built_in_catalog.list();
-        for discovered in self.discovered_models.values() {
-            if !self.model_overrides.contains_key(&discovered.model_ref) {
-                models.retain(|model| model.model_ref != discovered.model_ref);
-                models.push(discovered.clone());
-            }
-        }
-        for (model_ref, override_config) in &self.model_overrides {
-            let base = self
-                .discovered_models
-                .get(model_ref)
-                .or_else(|| self.built_in_catalog.get(model_ref));
-            models.retain(|model| &model.model_ref != model_ref);
-            models.push(BuiltInModelMetadata {
-                model_ref: model_ref.clone(),
-                display_name: override_config
-                    .display_name
-                    .clone()
-                    .or_else(|| base.map(|model| model.display_name.clone()))
-                    .unwrap_or_else(|| model_ref.as_string()),
-                description: override_config
-                    .description
-                    .clone()
-                    .or_else(|| base.map(|model| model.description.clone()))
-                    .unwrap_or_else(|| "User-configured model metadata override.".to_string()),
-                context_window_tokens: override_config
-                    .context_window_tokens
-                    .or_else(|| base.and_then(|model| model.context_window_tokens)),
-                effective_context_window_percent: override_config
-                    .effective_context_window_percent
-                    .unwrap_or_else(|| {
-                        base.map(|model| model.effective_context_window_percent)
-                            .unwrap_or(95)
-                    }),
-                auto_compact_token_limit: override_config
-                    .auto_compact_token_limit
-                    .or_else(|| base.and_then(|model| model.auto_compact_token_limit)),
-                default_max_output_tokens: override_config
-                    .runtime_max_output_tokens
-                    .or_else(|| base.and_then(|model| model.default_max_output_tokens)),
-                max_output_tokens_upper_limit: base
-                    .and_then(|model| model.max_output_tokens_upper_limit),
-                default_verbosity: override_config
-                    .verbosity
-                    .or_else(|| base.and_then(|model| model.default_verbosity)),
-                tool_output_truncation_estimated_tokens: override_config
-                    .tool_output_truncation_estimated_tokens
-                    .or_else(|| {
-                        base.and_then(|model| model.tool_output_truncation_estimated_tokens)
-                    }),
-                capabilities: merged_model_capabilities(
-                    base.map(|model| &model.capabilities),
-                    override_config.capabilities.as_ref(),
-                ),
-                reasoning_effort_options: base
-                    .map(|model| model.reasoning_effort_options.clone())
-                    .unwrap_or_default(),
-                source: crate::model_catalog::ModelMetadataSource::ConfigOverride,
-                endpoint: None,
-            });
-        }
+        let mut model_refs = self
+            .built_in_catalog
+            .list()
+            .into_iter()
+            .map(|model| model.model_ref)
+            .collect::<HashSet<_>>();
+        model_refs.extend(self.discovered_models.keys().cloned());
+        model_refs.extend(self.model_overrides.keys().cloned());
+        let base_context_config = ContextConfig::default();
+        let mut models = model_refs
+            .into_iter()
+            .map(|model_ref| self.resolved_catalog_entry(&base_context_config, &model_ref))
+            .collect::<Vec<_>>();
         models.sort_by(|left, right| {
             left.display_name
                 .cmp(&right.display_name)
                 .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
         });
         models
+    }
+
+    fn resolved_catalog_entry(
+        &self,
+        base_context_config: &ContextConfig,
+        model_ref: &ModelRef,
+    ) -> BuiltInModelMetadata {
+        let canonical_model_ref = self.built_in_catalog.canonicalize_model_ref(model_ref);
+        self.built_in_catalog.resolve_catalog_entry(
+            &canonical_model_ref,
+            &self.model_overrides,
+            &self.discovered_models,
+            self.unknown_model_fallback.as_ref(),
+            base_context_config,
+            self.configured_runtime_max_output_tokens,
+        )
     }
 
     pub fn available_model_routes(&self) -> Vec<ModelRouteRef> {
@@ -698,27 +728,18 @@ impl RuntimeModelCatalog {
         let mut selected = None;
 
         for route_ref in &model_refs {
-            let model_ref = route_ref.model_ref();
-            let policy = self.built_in_catalog.resolve_policy(
-                &model_ref,
-                &self.model_overrides,
-                &self.discovered_models,
-                self.unknown_model_fallback.as_ref(),
-                base_context_config,
-                self.configured_runtime_max_output_tokens,
-            );
-            let image_input = policy.capabilities.image_input;
-            let supported_transport = self
-                .provider_endpoints
-                .values()
-                .find(|endpoint| {
-                    endpoint.provider == route_ref.provider
-                        && endpoint.endpoint == route_ref.endpoint
-                })
-                .is_some_and(|endpoint| {
-                    ModelRouteCapability::VisionObservation
-                        .transport_supports(endpoint.runtime_config.transport)
+            let resolved = self.resolve_explicit_model_metadata(base_context_config, route_ref);
+            let policy = resolved
+                .as_ref()
+                .map(|route| route.policy.clone())
+                .unwrap_or_else(|| {
+                    self.resolved_model_policy(base_context_config, Some(route_ref))
                 });
+            let image_input = policy.capabilities.image_input;
+            let supported_transport = resolved.as_ref().is_some_and(|route| {
+                ModelRouteCapability::VisionObservation
+                    .transport_supports(route.endpoint.runtime_config.transport)
+            });
             let reason = if !image_input {
                 "model_lacks_image_input"
             } else if supported_transport {
@@ -733,15 +754,7 @@ impl RuntimeModelCatalog {
                 image_input,
                 reason: reason.to_string(),
             });
-            if self
-                .resolve_explicit_model_route(
-                    base_context_config,
-                    route_ref,
-                    ModelRouteCapability::VisionObservation,
-                )
-                .is_some()
-                && selected.is_none()
-            {
+            if resolved.is_some_and(|route| route.capabilities.image_input) && selected.is_none() {
                 selected = Some(route_ref.clone());
             }
         }
@@ -834,31 +847,6 @@ impl Default for RuntimeModelCatalog {
             configured_runtime_max_output_tokens: 8192,
         }
     }
-}
-
-pub(crate) fn merged_model_capabilities(
-    base: Option<&crate::model_catalog::ModelCapabilityFlags>,
-    override_config: Option<&crate::model_catalog::ModelCapabilityOverride>,
-) -> crate::model_catalog::ModelCapabilityFlags {
-    let mut capabilities = base.cloned().unwrap_or_default();
-    if let Some(override_config) = override_config {
-        if let Some(value) = override_config.parallel_tool_calls {
-            capabilities.parallel_tool_calls = value;
-        }
-        if let Some(value) = override_config.supports_reasoning {
-            capabilities.supports_reasoning = value;
-        }
-        if let Some(value) = override_config.image_input {
-            capabilities.image_input = value;
-        }
-        if let Some(value) = override_config.image_generation {
-            capabilities.image_generation = value;
-        }
-        if let Some(value) = override_config.interactive_exec {
-            capabilities.interactive_exec = value;
-        }
-    }
-    capabilities
 }
 
 impl ModelRef {
@@ -1160,8 +1148,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_policy_preserves_exact_route_metadata_without_a_configured_endpoint() {
+        let catalog = RuntimeModelCatalog::default();
+        let route_ref = ModelRouteRef::parse("volcengine@plan/glm-5.2").unwrap();
+
+        let policy = catalog.resolved_model_policy(&ContextConfig::default(), Some(&route_ref));
+
+        assert_eq!(policy.reasoning_effort_options, ["low", "medium", "high"]);
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::ReasoningEffortOptions),
+            Some(crate::model_catalog::ModelMetadataOrigin::RouteBuiltin)
+        );
+    }
+
+    #[test]
     fn resolved_capabilities_intersect_model_and_transport_image_output() {
-        let policy = ResolvedRuntimeModelPolicy {
+        let mut policy = ResolvedRuntimeModelPolicy {
             capabilities: crate::model_catalog::ModelCapabilityFlags {
                 image_generation: true,
                 ..Default::default()
@@ -1169,8 +1173,10 @@ mod tests {
             ..Default::default()
         };
 
-        let capabilities =
-            ResolvedModelCapabilities::resolve(&policy, ProviderTransportKind::AnthropicMessages);
+        let capabilities = ResolvedModelCapabilities::resolve(
+            &mut policy,
+            ProviderTransportKind::AnthropicMessages,
+        );
 
         assert!(capabilities
             .intrinsic
@@ -1179,12 +1185,77 @@ mod tests {
         assert!(!capabilities.transport.image_output);
         assert!(!capabilities.image_output);
         assert!(!capabilities.supports(ModelRouteCapability::ImageGeneration));
+        assert_eq!(
+            policy.evidence.constraints,
+            [ModelMetadataConstraint {
+                field: ModelMetadataField::ImageGeneration,
+                kind: ModelMetadataConstraintKind::Disabled,
+                source: ModelMetadataConstraintSource::TransportCapability,
+                requested: "true".into(),
+                effective: "false".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn resolved_capabilities_record_each_transport_image_constraint_once() {
+        let mut policy = ResolvedRuntimeModelPolicy {
+            capabilities: crate::model_catalog::ModelCapabilityFlags {
+                image_input: true,
+                image_generation: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        for _ in 0..2 {
+            let capabilities = ResolvedModelCapabilities::resolve(
+                &mut policy,
+                ProviderTransportKind::GeminiGenerateContent,
+            );
+            assert!(!capabilities.image_input);
+            assert!(!capabilities.image_output);
+        }
+
+        assert_eq!(
+            policy.evidence.constraints,
+            [
+                ModelMetadataConstraint {
+                    field: ModelMetadataField::ImageInput,
+                    kind: ModelMetadataConstraintKind::Disabled,
+                    source: ModelMetadataConstraintSource::TransportCapability,
+                    requested: "true".into(),
+                    effective: "false".into(),
+                },
+                ModelMetadataConstraint {
+                    field: ModelMetadataField::ImageGeneration,
+                    kind: ModelMetadataConstraintKind::Disabled,
+                    source: ModelMetadataConstraintSource::TransportCapability,
+                    requested: "true".into(),
+                    effective: "false".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn resolved_capabilities_do_not_record_inactive_transport_constraints() {
+        let mut policy = ResolvedRuntimeModelPolicy::default();
+
+        let capabilities = ResolvedModelCapabilities::resolve(
+            &mut policy,
+            ProviderTransportKind::GeminiGenerateContent,
+        );
+
+        assert!(!capabilities.image_input);
+        assert!(!capabilities.image_output);
+        assert!(policy.evidence.constraints.is_empty());
     }
 
     #[test]
     fn gemini_transport_does_not_advertise_unimplemented_vision_or_reasoning_controls() {
         let catalog = crate::model_catalog::BuiltInModelCatalog::new();
-        let policy = catalog.resolve_policy(
+        let mut policy = catalog.resolve_policy(
             &ModelRef::parse("gemini/gemini-3.5-flash").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
@@ -1198,7 +1269,7 @@ mod tests {
         assert!(policy.reasoning_effort_options.is_empty());
 
         let capabilities = ResolvedModelCapabilities::resolve(
-            &policy,
+            &mut policy,
             ProviderTransportKind::GeminiGenerateContent,
         );
         assert!(!capabilities.transport.image_input);
@@ -1213,13 +1284,13 @@ mod tests {
 
     #[test]
     fn resolved_capabilities_preserve_reasoning_effort_allowed_values() {
-        let policy = ResolvedRuntimeModelPolicy {
+        let mut policy = ResolvedRuntimeModelPolicy {
             reasoning_effort_options: vec!["low".into(), "high".into()],
             ..Default::default()
         };
 
         let capabilities =
-            ResolvedModelCapabilities::resolve(&policy, ProviderTransportKind::OpenAiResponses);
+            ResolvedModelCapabilities::resolve(&mut policy, ProviderTransportKind::OpenAiResponses);
 
         assert_eq!(
             capabilities.endpoint.accepted_parameters,

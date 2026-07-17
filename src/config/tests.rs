@@ -2487,12 +2487,19 @@ fn runtime_model_catalog_resolves_config_override_and_unknown_fallback() {
             .compaction_keep_recent_estimated_tokens,
         recent_episode_candidates: fixture.config.recent_episode_candidates,
         max_relevant_episodes: fixture.config.max_relevant_episodes,
+        callback_base_url: "https://callback.example".into(),
         ..ContextConfig::default()
     };
 
     let known = catalog.resolved_model_policy(&base_context, None);
     assert_eq!(known.prompt_budget_estimated_tokens, 24_000);
     assert_eq!(known.runtime_max_output_tokens, 4_096);
+    let resolved_context = catalog.resolved_context_config(&base_context, None);
+    assert_eq!(resolved_context.prompt_budget_estimated_tokens, 24_000);
+    assert_eq!(
+        resolved_context.callback_base_url,
+        "https://callback.example"
+    );
 
     let unknown =
         catalog.resolved_model_policy(&base_context, Some(&route_ref("openai/custom-model")));
@@ -3059,11 +3066,17 @@ fn runtime_model_catalog_resolves_canonical_seedream_route_endpoint() {
 #[test]
 fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
     let mut fixture = test_app_config("openrouter/anthropic/claude-3.5-sonnet", &[]);
+    let openrouter = ProviderId::parse("openrouter").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture.config.providers.insert(
+        openrouter.clone(),
+        built_ins.get(&openrouter).unwrap().clone(),
+    );
     let remote_model_ref = ModelRef::parse("openrouter/anthropic/claude-3.5-sonnet").unwrap();
     fixture.config.model_discovery_cache.providers.insert(
-        ProviderId::parse("openrouter").unwrap(),
+        openrouter.clone(),
         ProviderModelDiscoveryCache {
-            provider: ProviderId::parse("openrouter").unwrap(),
+            provider: openrouter,
             fetched_at: chrono::Utc::now(),
             source_url: Some("https://openrouter.ai/api/v1/models".into()),
             response_hash: Some("sha256:test".into()),
@@ -3119,6 +3132,19 @@ fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
         .find(|model| model.model_ref == remote_model_ref)
         .expect("remote model should be listed");
     assert_eq!(listed.source, ModelMetadataSource::RemoteDiscovered);
+    assert_eq!(listed.display_name, remote.display_name);
+    assert_eq!(listed.context_window_tokens, remote.context_window_tokens);
+    assert_eq!(
+        listed.default_max_output_tokens,
+        Some(remote.runtime_max_output_tokens)
+    );
+    let route = catalog
+        .resolve_explicit_model_metadata(
+            &base_context,
+            &route_ref("openrouter/anthropic/claude-3.5-sonnet"),
+        )
+        .expect("configured OpenRouter route should resolve");
+    assert_eq!(route.policy, remote);
 
     let override_config = ModelRuntimeOverride {
         display_name: Some("Configured Claude".into()),
@@ -3140,6 +3166,16 @@ fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
     assert_eq!(overridden.source, ModelMetadataSource::ConfigOverride);
     assert_eq!(overridden.display_name, "Configured Claude");
     assert_eq!(overridden.prompt_budget_estimated_tokens, 42_000);
+    let listed = catalog
+        .available_models()
+        .into_iter()
+        .find(|model| model.model_ref == remote_model_ref)
+        .expect("overridden model should remain listed");
+    assert_eq!(listed.display_name, overridden.display_name);
+    assert_eq!(
+        listed.context_window_tokens,
+        overridden.context_window_tokens
+    );
 }
 
 #[test]

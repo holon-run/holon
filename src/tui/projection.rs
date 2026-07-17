@@ -3820,6 +3820,7 @@ mod tests {
                     },
                     reasoning_effort_options: Vec::new(),
                     source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
+                    evidence: Default::default(),
                 },
             },
             token_usage: AgentTokenUsageSummary {

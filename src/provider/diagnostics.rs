@@ -4,10 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{load_codex_cli_credential, load_codex_oauth_profile_credential},
-    config::{
-        AppConfig, CredentialSource, ModelRouteCapability, ModelRouteRef, ProviderId,
-        RuntimeModelCatalog,
-    },
+    config::{AppConfig, CredentialSource, ModelRouteRef, ProviderId, RuntimeModelCatalog},
     context::ContextConfig,
     onboarding::{onboarding_report, search_diagnostics},
     types::{
@@ -327,16 +324,15 @@ fn resolved_model_availability_entry(
 ) -> ResolvedModelAvailability {
     let base_context = base_context_config(config);
     let model_ref = route_ref.model_ref();
-    let policy = catalog.resolved_model_policy(&base_context, Some(route_ref));
     let route = resolve_route_for_diagnostics(catalog, &base_context, route_ref);
-    let metadata_source = if config.validated_model_overrides.contains_key(&model_ref) {
-        "config_override".to_string()
-    } else {
-        serde_json::to_value(policy.source)
-            .ok()
-            .and_then(|value| value.as_str().map(ToString::to_string))
-            .unwrap_or_else(|| "unknown_fallback".to_string())
-    };
+    let policy = route
+        .as_ref()
+        .map(|route| route.policy.clone())
+        .unwrap_or_else(|| catalog.resolved_model_policy(&base_context, Some(route_ref)));
+    let metadata_source = serde_json::to_value(policy.source)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| "unknown_fallback".to_string());
     let route_provider = route
         .as_ref()
         .map(|route| route.endpoint.runtime_config.id.clone())
@@ -400,16 +396,8 @@ fn resolve_route_for_diagnostics(
     catalog: &RuntimeModelCatalog,
     base_context: &ContextConfig,
     route_ref: &ModelRouteRef,
-) -> Option<crate::config::ResolvedModelRoute> {
-    [
-        ModelRouteCapability::Turn,
-        ModelRouteCapability::ImageGeneration,
-        ModelRouteCapability::VisionObservation,
-    ]
-    .into_iter()
-    .find_map(|capability| {
-        catalog.resolve_explicit_model_route(base_context, route_ref, capability)
-    })
+) -> Option<crate::config::ResolvedModelRouteMetadata> {
+    catalog.resolve_explicit_model_metadata(base_context, route_ref)
 }
 
 fn provider_source_for_config(config: &AppConfig, provider_id: &ProviderId) -> String {
@@ -537,8 +525,9 @@ mod tests {
     };
 
     use super::{
-        provider_doctor, resolved_model_availability, resolved_model_providers,
-        resolved_model_providers_from_availability_for_runtime, resolved_provider_models,
+        base_context_config, provider_doctor, resolved_model_availability,
+        resolved_model_providers, resolved_model_providers_from_availability_for_runtime,
+        resolved_provider_models, RuntimeModelCatalog,
     };
 
     struct TestConfigFixture {
@@ -622,6 +611,18 @@ mod tests {
         assert_eq!(
             openai.policy.source,
             ModelMetadataSource::ConservativeBuiltin
+        );
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+        let route = catalog
+            .resolve_explicit_model_metadata(
+                &base_context_config(&fixture.config),
+                &fixture.config.default_model,
+            )
+            .expect("default OpenAI route should resolve");
+        assert_eq!(openai.policy, route.policy);
+        assert_eq!(
+            openai.resolved_capabilities.as_ref(),
+            Some(&route.capabilities)
         );
     }
 
