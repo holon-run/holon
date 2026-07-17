@@ -2,8 +2,8 @@ use anyhow::Result;
 use holon::{
     config::AppConfig,
     provider::{
-        AgentProvider, ConversationMessage, ModelBlock, ModelToolCallKind, OpenAiCodexProvider,
-        OpenAiProvider, ProviderTurnRequest, ToolResultBlock,
+        AgentProvider, ContinuationScopeId, ConversationMessage, ModelBlock, ModelToolCallKind,
+        OpenAiCodexProvider, OpenAiProvider, ProviderTurnRequest, ToolResultBlock,
     },
     tool::ToolSpec,
 };
@@ -75,13 +75,14 @@ async fn live_openai_apply_patch_function_call_kind_survives_continuation() -> R
         "Call the ApplyPatch tool exactly once with {\"patch\":\"live function probe\"}. Do not answer with plain text."
             .into(),
     );
-    let first = provider
-        .complete_turn(ProviderTurnRequest::plain(
-            "Follow tool requirements exactly.",
-            vec![user.clone()],
-            tools.clone(),
-        ))
-        .await?;
+    let scope = ContinuationScopeId::new("live-openai-apply-patch").unwrap();
+    let mut first_request = ProviderTurnRequest::plain(
+        "Follow tool requirements exactly.",
+        vec![user.clone()],
+        tools.clone(),
+    );
+    first_request.continuation_scope_id = Some(scope.clone());
+    let first = provider.complete_turn(first_request).await?;
     let (call_id, input) = first
         .blocks
         .iter()
@@ -101,22 +102,22 @@ async fn live_openai_apply_patch_function_call_kind_survives_continuation() -> R
         .expect("expected ApplyPatch function call from real OpenAI response");
     assert_eq!(input["patch"], json!("live function probe"));
 
-    let second = provider
-        .complete_turn(ProviderTurnRequest::plain(
-            "Follow tool requirements exactly.",
-            vec![
-                user,
-                ConversationMessage::AssistantBlocks(first.blocks),
-                ConversationMessage::UserToolResults(vec![ToolResultBlock {
-                    tool_use_id: call_id,
-                    content: "Recorded live function probe.".into(),
-                    is_error: false,
-                    error: None,
-                }]),
-            ],
-            tools,
-        ))
-        .await?;
+    let mut second_request = ProviderTurnRequest::plain(
+        "Follow tool requirements exactly.",
+        vec![
+            user,
+            ConversationMessage::AssistantBlocks(first.blocks),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: call_id,
+                content: "Recorded live function probe.".into(),
+                is_error: false,
+                error: None,
+            }]),
+        ],
+        tools,
+    );
+    second_request.continuation_scope_id = Some(scope);
+    let second = provider.complete_turn(second_request).await?;
     assert!(!second.blocks.is_empty());
     Ok(())
 }

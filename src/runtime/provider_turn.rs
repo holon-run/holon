@@ -27,8 +27,9 @@
 use crate::{
     prompt::{render_section, EffectivePrompt, PromptSection, PromptStability},
     provider::{
-        ConversationMessage, PromptContentBlock, ProviderNativeWebSearchRequest,
-        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
+        ContinuationScopeId, ConversationMessage, PromptContentBlock,
+        ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
+        ProviderTurnRequest,
     },
     system::ExecutionSnapshot,
     tool::ToolSpec,
@@ -67,6 +68,10 @@ pub fn build_provider_turn_request(
     ));
 
     ProviderTurnRequest {
+        continuation_scope_id: Some(
+            ContinuationScopeId::new(effective_prompt.cache_identity.agent_id.clone())
+                .expect("effective prompt agent id must not be empty"),
+        ),
         prompt_frame: ProviderPromptFrame::structured(
             effective_prompt.rendered_system_prompt.clone(),
             system_blocks,
@@ -85,12 +90,14 @@ pub fn build_provider_turn_request(
 /// This is used for subsequent turns in a multi-turn conversation where
 /// we need to pass the full conversation history to the provider.
 pub fn build_continuation_request(
+    continuation_scope_id: ContinuationScopeId,
     prompt_frame: ProviderPromptFrame,
     conversation: Vec<ConversationMessage>,
     available_tools: Vec<ToolSpec>,
     native_web_search: Option<ProviderNativeWebSearchRequest>,
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
+        continuation_scope_id: Some(continuation_scope_id),
         prompt_frame,
         conversation,
         tools: available_tools,
@@ -446,6 +453,13 @@ mod tests {
         let request = build_provider_turn_request(&effective_prompt, tools, None);
 
         assert_eq!(request.prompt_frame.system_prompt, "system prompt");
+        assert_eq!(
+            request
+                .continuation_scope_id
+                .as_ref()
+                .map(ContinuationScopeId::as_str),
+            Some("default")
+        );
         assert_eq!(request.prompt_frame.system_blocks.len(), 0);
         assert_eq!(request.conversation.len(), 1);
         assert_eq!(request.tools.len(), 1);
@@ -740,9 +754,22 @@ mod tests {
             }),
         );
 
-        let request = build_continuation_request(prompt_frame, conversation, tools, None);
+        let request = build_continuation_request(
+            ContinuationScopeId::new("default").unwrap(),
+            prompt_frame,
+            conversation,
+            tools,
+            None,
+        );
 
         assert_eq!(request.prompt_frame.system_prompt, "system");
+        assert_eq!(
+            request
+                .continuation_scope_id
+                .as_ref()
+                .map(ContinuationScopeId::as_str),
+            Some("default")
+        );
         assert_eq!(request.prompt_frame.system_blocks.len(), 1);
         assert_eq!(request.prompt_frame.context_blocks.len(), 1);
         assert!(request.prompt_frame.system_blocks[0].cache_breakpoint);

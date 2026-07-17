@@ -218,6 +218,7 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
 
     let first = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: frame.clone(),
             conversation: vec![ConversationMessage::UserText(
                 "Reply with exactly CACHE_BASELINE_ONE.".into(),
@@ -230,6 +231,7 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
         .context("first Anthropic live cache baseline request failed")?;
     let second = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: frame,
             conversation: vec![ConversationMessage::UserText(
                 "Reply with exactly CACHE_BASELINE_TWO.".into(),

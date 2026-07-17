@@ -400,6 +400,7 @@ mod tests {
         };
 
         let request = ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
                 "base",
                 vec![PromptContentBlock {

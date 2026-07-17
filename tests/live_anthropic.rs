@@ -87,6 +87,7 @@ async fn live_anthropic_builtin_web_search_reports_backend() -> Result<()> {
 
     let output = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(
                 "Use web search if needed. Reply in one short sentence.",
             ),
@@ -130,6 +131,7 @@ async fn live_provider_accepts_tool_result_continuation_with_runtime_tools() -> 
     }];
     let output = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
                 "Reply to the user briefly.",
                 Vec::new(),

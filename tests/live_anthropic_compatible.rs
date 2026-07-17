@@ -105,6 +105,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
     let initial_user_text = "Call ProbeTool once with reason context-management-smoke. Do not answer directly before the tool result.".to_string();
     let first_output = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: prompt_frame.clone(),
             conversation: vec![
                 ConversationMessage::UserBlocks(context_blocks.clone()),
@@ -131,6 +132,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
 
     let output = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame,
             conversation: vec![
                 ConversationMessage::UserBlocks(context_blocks),
@@ -214,6 +216,7 @@ async fn provider_builtin_web_search_reports_backend(
 
     let output = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(
                 "Use web search if needed. Reply in one short sentence.",
             ),

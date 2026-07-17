@@ -3,9 +3,9 @@ use holon::{
     config::AppConfig,
     prompt::PromptStability,
     provider::{
-        AgentProvider, ConversationMessage, ModelBlock, OpenAiCodexProvider, PromptContentBlock,
-        ProviderGenerateImageRequest, ProviderNativeWebSearchRequest, ProviderPromptCache,
-        ProviderPromptFrame, ProviderTurnRequest,
+        AgentProvider, ContinuationScopeId, ConversationMessage, ModelBlock, OpenAiCodexProvider,
+        PromptContentBlock, ProviderGenerateImageRequest, ProviderNativeWebSearchRequest,
+        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
     },
     tool::ToolSpec,
 };
@@ -126,6 +126,7 @@ async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
 
     let output = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(
                 "Use web search if needed. Reply in one short sentence.",
             ),
@@ -155,8 +156,10 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
     let config = live_config()?;
     let provider = OpenAiCodexProvider::from_config(&config, &live_openai_codex_model())?;
     let frame = live_append_match_prompt_frame();
+    let scope = ContinuationScopeId::new("live-openai-codex-append-match").unwrap();
     let first = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: Some(scope.clone()),
             prompt_frame: frame.clone(),
             conversation: vec![ConversationMessage::UserText(
                 "Reply with exactly READY.".into(),
@@ -174,6 +177,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
 
     let second = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: Some(scope),
             prompt_frame: frame,
             conversation: vec![
                 ConversationMessage::UserText("Reply with exactly READY.".into()),

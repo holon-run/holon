@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use holon::{
     config::{AppConfig, ProviderId, XSearchRuntimeConfig},
     provider::{
-        AgentProvider, ConversationMessage, ModelBlock, OpenAiProvider, ProviderPromptCache,
-        ProviderPromptFrame, ProviderTurnRequest,
+        AgentProvider, ContinuationScopeId, ConversationMessage, ModelBlock, OpenAiProvider,
+        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
     },
     x_search::{search, XSearchRequest},
 };
@@ -64,9 +64,11 @@ async fn live_xai_responses_uses_incremental_continuation_without_instructions()
     let config = AppConfig::load()?;
     let provider = live_xai_provider(&config)?;
     let prompt_frame = continuation_prompt_frame();
+    let scope = ContinuationScopeId::new("live-xai-responses").unwrap();
     let first_user = ConversationMessage::UserText("Reply with exactly ALPHA-2158.".into());
     let first = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: Some(scope.clone()),
             prompt_frame: prompt_frame.clone(),
             conversation: vec![first_user.clone()],
             tools: Vec::new(),
@@ -78,6 +80,7 @@ async fn live_xai_responses_uses_incremental_continuation_without_instructions()
 
     let second = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: Some(scope),
             prompt_frame,
             conversation: vec![
                 first_user,
