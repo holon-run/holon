@@ -389,6 +389,31 @@ describe("reduceAgentSessionTimeline", () => {
     }));
   });
 
+  it("projects promoted command initial output truncation", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("exec-promoted-trunc", "ExecCommand", {
+            exec_command_cmd: "npm run dev",
+            exec_command_disposition: "promoted_to_task",
+            task_handle: { task_id: "task_promoted" },
+            exec_command_result: {
+              disposition: "promoted_to_task",
+              task_handle: { task_id: "task_promoted" },
+              initial_output_truncated: true,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0].executionMeta).toEqual(expect.objectContaining({
+      outcome: "promoted",
+      outputTruncated: true,
+      taskId: "task_promoted",
+    }));
+  });
+
   it("projects TaskStatus with status and kind", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {

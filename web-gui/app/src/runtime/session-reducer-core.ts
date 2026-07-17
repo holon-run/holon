@@ -574,12 +574,18 @@ export function projectToolExecution(
 
 function toolOutputTruncated(payload: Record<string, unknown> | undefined): boolean {
   const result = unwrapToolResult(payload);
+  const execCommandResult = asRecord(payload?.exec_command_result);
   const task = asRecord(result.task) ?? asRecord(result.task_record);
-  return payload?.output_truncated === true
-    || payload?.truncated === true
-    || result.output_truncated === true
-    || result.truncated === true
-    || task?.output_truncated === true;
+  return [payload, result, execCommandResult, task].some((value) =>
+    value != null
+    && [
+      "truncated",
+      "initial_output_truncated",
+      "stdout_truncated",
+      "stderr_truncated",
+      "output_truncated",
+    ].some((key) => value[key] === true)
+  );
 }
 
 function shortTaskId(taskId: string): string {
