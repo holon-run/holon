@@ -6,6 +6,7 @@ use crate::config::{
     built_in_provider_endpoint_identity, ModelRef, ModelRouteRef, ProviderEndpointId, ProviderId,
 };
 use crate::context::ContextConfig;
+use crate::provider::provider_definitions;
 
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
 const DEFAULT_COMPACTION_TRIGGER_PERCENT: u8 = 90;
@@ -1393,7 +1394,15 @@ use providers::common::catalog_model;
 pub(crate) use providers::is_tencent_tokenhub_model_id;
 
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {
-    providers::built_in_entries()
+    let mut registrations = provider_definitions()
+        .iter()
+        .filter_map(|definition| definition.catalog_registration)
+        .collect::<Vec<_>>();
+    registrations.sort();
+    registrations
+        .into_iter()
+        .flat_map(providers::entries_for_registration)
+        .collect()
 }
 
 fn is_turn_default_candidate(entry: &BuiltInModelMetadata) -> bool {
@@ -1411,6 +1420,7 @@ fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{provider_definitions, ProviderCatalogPolicy, ProviderMaterializer};
 
     fn base_context() -> ContextConfig {
         ContextConfig {
@@ -1424,6 +1434,30 @@ mod tests {
             recent_episode_candidates: 12,
             max_relevant_episodes: 3,
             ..ContextConfig::default()
+        }
+    }
+
+    #[test]
+    fn discovery_catalog_policies_match_static_catalog_registration() {
+        let catalog = BuiltInModelCatalog::new();
+        for definition in provider_definitions() {
+            let provider = ProviderId::parse(definition.route_provider).unwrap();
+            let has_static_entry = catalog
+                .entries
+                .keys()
+                .any(|model_ref| model_ref.provider == provider);
+            match definition.catalog_policy {
+                ProviderCatalogPolicy::StaticAndDiscovery => assert!(
+                    has_static_entry,
+                    "{} declares static discovery metadata without a static catalog entry",
+                    definition.legacy_provider
+                ),
+                ProviderCatalogPolicy::DiscoveryOnly => {
+                    assert!(definition.discovery.is_some());
+                    assert_eq!(definition.materializer, ProviderMaterializer::Generic);
+                }
+                ProviderCatalogPolicy::StaticOnly => {}
+            }
         }
     }
 

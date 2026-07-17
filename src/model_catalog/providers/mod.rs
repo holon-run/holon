@@ -7,15 +7,20 @@ mod tencent_tokenhub;
 
 pub(crate) use tencent_tokenhub::is_tencent_tokenhub_model_id;
 
-pub(super) fn built_in_entries() -> Vec<super::BuiltInModelMetadata> {
-    let mut entries = core::entries();
-    entries.extend(hosted::early_entries());
-    entries.extend(gateways::kilocode_entries());
-    entries.extend(hosted::middle_entries());
-    entries.extend(gateways::opencode_entries());
-    entries.extend(china::early_entries());
-    entries.extend(hosted::late_entries());
-    entries.extend(china::late_entries());
-    entries.extend(tencent_tokenhub::entries());
-    entries
+pub(super) fn entries_for_registration(
+    registration: crate::provider::ProviderCatalogRegistration,
+) -> Vec<super::BuiltInModelMetadata> {
+    use crate::provider::ProviderCatalogRegistration;
+
+    match registration {
+        ProviderCatalogRegistration::Core => core::entries(),
+        ProviderCatalogRegistration::HostedEarly => hosted::early_entries(),
+        ProviderCatalogRegistration::KiloCode => gateways::kilocode_entries(),
+        ProviderCatalogRegistration::HostedMiddle => hosted::middle_entries(),
+        ProviderCatalogRegistration::OpenCodeGo => gateways::opencode_entries(),
+        ProviderCatalogRegistration::ChinaEarly => china::early_entries(),
+        ProviderCatalogRegistration::HostedLate => hosted::late_entries(),
+        ProviderCatalogRegistration::ChinaLate => china::late_entries(),
+        ProviderCatalogRegistration::TencentTokenHub => tencent_tokenhub::entries(),
+    }
 }
