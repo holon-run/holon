@@ -7,8 +7,6 @@ use crate::types::{
     MessageOrigin,
 };
 
-use super::budget::estimate_section_tokens;
-
 /// Create a section with `AgentScoped` stability.
 pub(super) fn section(name: &'static str, content: String) -> PromptSection {
     PromptSection {
@@ -27,21 +25,6 @@ pub(super) fn turn_section(name: &'static str, content: String) -> PromptSection
         content,
         stability: PromptStability::TurnScoped,
     }
-}
-
-/// Push a section into the sections list if it fits within the remaining budget.
-/// Returns `true` if the section was pushed.
-pub(super) fn push_budgeted_section(
-    sections: &mut Vec<PromptSection>,
-    remaining_budget: &mut usize,
-    section: PromptSection,
-) -> bool {
-    let Some(section) = super::budget::fit_section_to_budget(section, *remaining_budget) else {
-        return false;
-    };
-    *remaining_budget = remaining_budget.saturating_sub(estimate_section_tokens(&section));
-    sections.push(section);
-    true
 }
 
 /// Sanitize a string for inline display: collapse whitespace, no newlines.

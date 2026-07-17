@@ -1,14 +1,21 @@
 //! Context assembly: builds prompt sections from runtime state.
 mod budget;
+mod planner;
 mod render;
+pub(crate) use planner::ContextPlanEvidence;
+#[cfg(test)]
+pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
 // Re-import budget helpers for use within this module.
-use budget::{estimate_text_tokens, reserve_current_input_budget, truncate_section_content};
+use budget::{estimate_text_tokens, truncate_section_content};
+use planner::{
+    plan_context, ContextCandidate, ContextCandidatePolicy, DropTier, RetentionPriority,
+};
 // Re-import render helpers for use within this module.
 #[cfg(test)]
 use render::trust_label;
 use render::{
     body_preview, bounded_inline, enum_label, indent_block, message_body_text, message_header,
-    push_budgeted_section, sanitize_inline, section, turn_section,
+    sanitize_inline, section, turn_section,
 };
 
 use std::cmp::Ordering;
@@ -91,6 +98,7 @@ impl ContextConfig {
 #[derive(Debug, Clone)]
 pub struct BuiltContext {
     pub sections: Vec<PromptSection>,
+    pub(crate) plan_evidence: ContextPlanEvidence,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
 }
 
@@ -152,6 +160,46 @@ pub fn build_context(
     )
 }
 
+fn context_candidate(
+    full: PromptSection,
+    compact: Option<PromptSection>,
+    pinned: bool,
+) -> ContextCandidate {
+    let policy = context_candidate_policy(&full.id, pinned);
+    ContextCandidate::new(full, compact, policy)
+}
+
+fn context_candidate_policy(id: &str, pinned: bool) -> ContextCandidatePolicy {
+    let (priority, drop_tier, render_order) = match id {
+        "agent" => (RetentionPriority::High, DropTier::Last, 10),
+        "default_external_ingress" => (RetentionPriority::Normal, DropTier::Normal, 20),
+        "execution_environment" => (RetentionPriority::High, DropTier::Last, 30),
+        "active_tasks" => (RetentionPriority::High, DropTier::Late, 40),
+        "current_work_item" => (RetentionPriority::Critical, DropTier::Last, 50),
+        "current_work_refs" => (RetentionPriority::High, DropTier::Late, 60),
+        "relevant_episode_memory" => (RetentionPriority::Normal, DropTier::Normal, 70),
+        "current_work_item_process_trace" => (RetentionPriority::Normal, DropTier::Normal, 80),
+        "queued_blocked_work_items" => (RetentionPriority::Normal, DropTier::Normal, 90),
+        "worktree_session" => (RetentionPriority::Normal, DropTier::Late, 100),
+        "agent_templates_catalog" => (RetentionPriority::Low, DropTier::Early, 110),
+        "skills_catalog" => (RetentionPriority::Low, DropTier::Early, 120),
+        "active_skills" => (RetentionPriority::Normal, DropTier::Normal, 130),
+        "agent_home_notes_catalog" => (RetentionPriority::Low, DropTier::Early, 140),
+        "context_contract" => (RetentionPriority::High, DropTier::Last, 150),
+        "continuation_anchor" => (RetentionPriority::Critical, DropTier::Last, 160),
+        "recent_turns" => (RetentionPriority::High, DropTier::Late, 170),
+        "continuation_context" => (RetentionPriority::High, DropTier::Last, 180),
+        "current_input" => (RetentionPriority::Critical, DropTier::Last, 190),
+        _ => (RetentionPriority::Normal, DropTier::Normal, u16::MAX),
+    };
+    ContextCandidatePolicy {
+        pinned,
+        priority,
+        drop_tier,
+        render_order,
+    }
+}
+
 pub fn build_context_with_default_external_ingress(
     storage: &AppStorage,
     agent: &AgentState,
@@ -185,35 +233,28 @@ pub fn build_context_with_default_external_ingress(
     let work_queue_projection = storage.work_queue_prompt_projection()?;
     let current_work_item = work_queue_projection.current.as_ref();
 
-    let current_input_reserved_budget =
-        reserve_current_input_budget(config.prompt_budget_estimated_tokens);
-    let mut sections = Vec::new();
-    let mut remaining_budget = config
-        .prompt_budget_estimated_tokens
-        .saturating_sub(current_input_reserved_budget);
-    push_budgeted_section(
-        &mut sections,
-        &mut remaining_budget,
+    let mut candidates = Vec::new();
+    candidates.push(context_candidate(
         section("agent", format!("Agent id: {}", agent.id)),
-    );
+        None,
+        false,
+    ));
     let default_ingress = match default_external_ingress_override {
         Some(record) => Some(record.clone()),
         None => default_external_ingress(storage, &agent.id)?,
     };
     if let Some(default_ingress) = default_ingress {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             section(
                 "default_external_ingress",
                 render_default_external_ingress(&config.callback_base_url, &default_ingress),
             ),
-        );
+            None,
+            false,
+        ));
     }
     let execution_summary = execution_policy_summary_lines(execution).join("\n");
-    push_budgeted_section(
-        &mut sections,
-        &mut remaining_budget,
+    candidates.push(context_candidate(
         section(
             "execution_environment",
             format!(
@@ -222,43 +263,48 @@ pub fn build_context_with_default_external_ingress(
                 execution_summary,
             ),
         ),
-    );
+        None,
+        false,
+    ));
     let active_task_count = storage.active_task_count_for_agent(&agent.id)?;
     if active_task_count > 0 {
         let active_tasks =
             storage.latest_active_task_records_for_agent(&agent.id, ACTIVE_TASKS_CONTEXT_LIMIT)?;
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             section(
                 "active_tasks",
                 render_active_tasks(&active_tasks, active_task_count),
             ),
-        );
+            None,
+            false,
+        ));
     }
 
     if let Some(work_item) = current_work_item {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             turn_section(
                 "current_work_item",
                 render_current_work_item(work_item, storage.data_dir(), &active_wait_conditions),
             ),
-        );
+            Some(turn_section(
+                "current_work_item",
+                render_compact_current_work_item(work_item),
+            )),
+            true,
+        ));
         if let Some(content) = render_current_work_refs(work_item) {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
+            candidates.push(context_candidate(
                 turn_section("current_work_refs", content),
-            );
+                None,
+                false,
+            ));
         }
     } else {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             turn_section("current_work_item", render_empty_current_work_item()),
-        );
+            None,
+            false,
+        ));
     }
 
     let recent_turn_window_start = recent_turn_window_start(&turn_records);
@@ -268,44 +314,42 @@ pub fn build_context_with_default_external_ingress(
         current_work_item,
         current_message,
         config,
-        remaining_budget,
+        config.prompt_budget_estimated_tokens,
         recent_turn_window_start,
     ) {
-        push_budgeted_section(&mut sections, &mut remaining_budget, section);
+        candidates.push(context_candidate(section, None, false));
     }
 
     if let Some(work_item) = current_work_item {
         if let Some(content) =
             render_current_work_item_process_trace(work_item, &briefs, &tools, &transcript)
         {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
+            candidates.push(context_candidate(
                 turn_section("current_work_item_process_trace", content),
-            );
+                None,
+                false,
+            ));
         }
     }
 
     if work_queue_projection.has_non_current_candidates() {
-        let candidates = render_work_item_candidates(
+        let rendered_candidates = render_work_item_candidates(
             &work_queue_projection,
             storage,
             &agent.id,
             storage.data_dir(),
         )?;
-        if let Some(content) = candidates {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
+        if let Some(content) = rendered_candidates {
+            candidates.push(context_candidate(
                 turn_section("queued_blocked_work_items", content),
-            );
+                None,
+                false,
+            ));
         }
     }
 
     if let Some(worktree) = &agent.worktree_session {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             section(
                 "worktree_session",
                 format!(
@@ -320,7 +364,9 @@ pub fn build_context_with_default_external_ingress(
                     worktree.worktree_branch
                 ),
             ),
-        );
+            None,
+            false,
+        ));
     }
 
     if !skills.agent_templates_catalog.is_empty() {
@@ -356,14 +402,14 @@ pub fn build_context_with_default_external_ingress(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             section(
                 "agent_templates_catalog",
                 format!("Discovered agent templates catalog:\n{rendered}"),
             ),
-        );
+            None,
+            false,
+        ));
     }
 
     if !skills.discoverable_skills.is_empty() {
@@ -381,16 +427,16 @@ pub fn build_context_with_default_external_ingress(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             section(
                 "skills_catalog",
                 format!(
                     "Discovered skills catalog (same-name precedence: agent > workspace > user; lower-precedence duplicates are omitted):\n{rendered}"
                 ),
             ),
-        );
+            None,
+            false,
+        ));
     }
 
     if !skills.active_skills.is_empty() {
@@ -409,60 +455,72 @@ pub fn build_context_with_default_external_ingress(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             section(
                 "active_skills",
                 format!("Active skills (same-name precedence follows skills_catalog):\n{rendered}"),
             ),
-        );
+            None,
+            false,
+        ));
     }
 
     if let Some(notes_content) =
         crate::notes_catalog::render_agent_home_notes_catalog_section(agent_home)
     {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        candidates.push(context_candidate(
             section("agent_home_notes_catalog", notes_content),
-        );
+            None,
+            false,
+        ));
     }
 
-    push_budgeted_section(
-        &mut sections,
-        &mut remaining_budget,
+    candidates.push(context_candidate(
         section(
             "context_contract",
             "Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, and current work refs after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."
                 .to_string(),
         ),
-    );
+        None,
+        false,
+    ));
 
     if let Some(anchor) = render_continuation_anchor(
         &continuation_anchor_messages,
         current_message,
         continuation,
         current_work_item,
-        remaining_budget,
+        config.prompt_budget_estimated_tokens,
     ) {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        let compact_anchor = render_continuation_anchor(
+            &continuation_anchor_messages,
+            current_message,
+            continuation,
+            current_work_item,
+            48,
+        )
+        .expect("full continuation anchor implies compact continuation anchor");
+        candidates.push(context_candidate(
             turn_section("continuation_anchor", anchor),
-        );
+            Some(turn_section("continuation_anchor", compact_anchor)),
+            true,
+        ));
     }
 
-    let recent_turns_budget = remaining_budget.min(config.turn_projection_budget());
-    let recent_turns_reprojection = (!turn_records.is_empty()).then(|| RecentTurnsReprojection {
-        turn_records: turn_records.clone(),
-        messages: messages.clone(),
-        briefs: briefs.clone(),
-        tools: tools.clone(),
-        current_message: current_message.clone(),
-        current_work_item: current_work_item.cloned(),
-        initial_budget: recent_turns_budget,
-    });
+    let recent_turns_budget = config
+        .prompt_budget_estimated_tokens
+        .min(config.turn_projection_budget());
+    let recent_turns_compact_budget = recent_turns_budget.min(128);
+    let mut recent_turns_reprojection =
+        (!turn_records.is_empty()).then(|| RecentTurnsReprojection {
+            turn_records: turn_records.clone(),
+            messages: messages.clone(),
+            briefs: briefs.clone(),
+            tools: tools.clone(),
+            current_message: current_message.clone(),
+            current_work_item: current_work_item.cloned(),
+            initial_budget: recent_turns_budget,
+        });
     if let Some(content) = render_recent_turns_with_budget(
         storage,
         &turn_records,
@@ -473,48 +531,82 @@ pub fn build_context_with_default_external_ingress(
         current_work_item,
         recent_turns_budget,
     ) {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
+        let compact = render_recent_turns_with_budget(
+            storage,
+            &turn_records,
+            &messages,
+            &briefs,
+            &tools,
+            current_message,
+            current_work_item,
+            recent_turns_compact_budget,
+        )
+        .map(|content| turn_section("recent_turns", content));
+        candidates.push(context_candidate(
             turn_section("recent_turns", content),
-        );
+            compact,
+            false,
+        ));
     }
 
-    let continuation_pushed =
+    let continuation_present =
         if let Some(content) = continuation_context(current_message, continuation) {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
+            candidates.push(context_candidate(
                 turn_section("continuation_context", content),
-            )
+                None,
+                false,
+            ));
+            true
         } else {
             false
         };
 
-    let mut current_input_budget = current_input_reserved_budget.saturating_add(remaining_budget);
-    let current_input_body = render_current_input_body_with_budget(
-        &current_message.body,
-        current_input_budget,
-        (!continuation_pushed)
-            .then(|| render_wake_hint_context(current_message))
-            .flatten()
-            .as_deref(),
+    let wake_hint_fallback = (!continuation_present)
+        .then(|| render_wake_hint_context(current_message))
+        .flatten();
+    let current_input_full = render_current_input_section(
+        current_message,
+        config.prompt_budget_estimated_tokens,
+        wake_hint_fallback.as_deref(),
     );
-    push_budgeted_section(
-        &mut sections,
-        &mut current_input_budget,
-        turn_section(
-            "current_input",
-            format!(
-                "Current input:\n- {}\n{}",
-                message_header(current_message),
-                indent_block(&current_input_body, 2),
-            ),
-        ),
-    );
+    let current_input_compact =
+        render_current_input_section(current_message, 48, wake_hint_fallback.as_deref());
+    candidates.push(context_candidate(
+        current_input_full,
+        Some(current_input_compact),
+        true,
+    ));
+
+    let plan = plan_context(candidates, config.prompt_budget_estimated_tokens)?;
+    let drop_recent_turns_reprojection =
+        if let Some(reprojection) = recent_turns_reprojection.as_mut() {
+            match plan
+                .evidence
+                .decisions
+                .iter()
+                .find(|decision| decision.candidate_id == "recent_turns")
+            {
+                Some(decision) if decision.outcome == planner::ContextPlanOutcome::Full => false,
+                Some(decision) if decision.outcome == planner::ContextPlanOutcome::Compact => {
+                    reprojection.initial_budget = recent_turns_compact_budget;
+                    false
+                }
+                Some(decision) if decision.outcome == planner::ContextPlanOutcome::Truncated => {
+                    reprojection.initial_budget = decision.allocated_estimated_tokens;
+                    false
+                }
+                _ => true,
+            }
+        } else {
+            false
+        };
+    if drop_recent_turns_reprojection {
+        recent_turns_reprojection = None;
+    }
 
     Ok(BuiltContext {
-        sections,
+        sections: plan.sections,
+        plan_evidence: plan.evidence,
         recent_turns_reprojection,
     })
 }
@@ -888,6 +980,14 @@ fn render_current_work_item(
         }));
     }
     lines.join("\n")
+}
+
+fn render_compact_current_work_item(work_item: &WorkItemRecord) -> String {
+    format!(
+        "Current work item:\n- Id: {}\n- Objective: {}",
+        work_item.id,
+        bounded_inline(&work_item.objective, 96)
+    )
 }
 
 fn render_empty_current_work_item() -> String {
@@ -1487,8 +1587,28 @@ fn render_current_input_body_with_budget(
     truncate_section_content(
         "",
         &rendered,
-        budget.max(64),
+        budget.max(16),
         Some("\n[truncated current input body]"),
+    )
+}
+
+fn render_current_input_section(
+    current_message: &MessageEnvelope,
+    body_budget: usize,
+    wake_hint_fallback: Option<&str>,
+) -> PromptSection {
+    let current_input_body = render_current_input_body_with_budget(
+        &current_message.body,
+        body_budget,
+        wake_hint_fallback,
+    );
+    turn_section(
+        "current_input",
+        format!(
+            "Current input:\n- {}\n{}",
+            message_header(current_message),
+            indent_block(&current_input_body, 2),
+        ),
     )
 }
 
@@ -6840,6 +6960,241 @@ mod tests {
             .content
             .contains("Implement continuation anchor runtime behavior"));
         assert!(!anchor.content.contains("Current WorkItem"));
+    }
+
+    #[test]
+    fn build_context_preserves_pinned_truth_at_exact_minimum_and_fails_below_it() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+
+        let operator_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Preserve this trusted operator intent for the active implementation."
+                    .repeat(8),
+            },
+        );
+        storage.append_message(&operator_message).unwrap();
+
+        let active = crate::types::WorkItemRecord::new(
+            "default",
+            "Implement the deterministic context budget planner without losing durable truth."
+                .repeat(6),
+            crate::types::WorkItemState::Open,
+        );
+        storage.append_work_item(&active).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
+
+        let mut system_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue the focused work item after a runtime scheduling wake.".repeat(8),
+            },
+        );
+        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+        let continuation = ContinuationResolution {
+            trigger_kind: ContinuationTriggerKind::SystemTick,
+            class: ContinuationClass::LocalContinuation,
+            model_reentry: true,
+            prior_closure_outcome: crate::types::ClosureOutcome::Continuable,
+            prior_waiting_reason: None,
+            matched_waiting_reason: false,
+            evidence: vec![],
+        };
+
+        let build = |budget| {
+            build_context(
+                &storage,
+                &agent,
+                &execution_snapshot_for(&agent),
+                &crate::types::SkillsRuntimeView::default(),
+                &system_tick,
+                Some(&continuation),
+                &ContextConfig {
+                    recent_messages: 4,
+                    recent_briefs: 4,
+                    prompt_budget_estimated_tokens: budget,
+                    ..ContextConfig::default()
+                },
+                dir.path(),
+            )
+        };
+
+        let initial = build(4096).unwrap();
+        let pinned_ids = ["current_input", "current_work_item", "continuation_anchor"];
+        let pinned_minimum = initial
+            .plan_evidence
+            .decisions
+            .iter()
+            .filter(|decision| pinned_ids.contains(&decision.candidate_id.as_str()))
+            .map(|decision| decision.minimum_estimated_tokens)
+            .sum::<usize>();
+        assert!(pinned_minimum > 0);
+
+        let exact = build(pinned_minimum).unwrap();
+        for candidate_id in pinned_ids {
+            assert!(
+                exact
+                    .sections
+                    .iter()
+                    .any(|section| section.id == candidate_id),
+                "missing pinned candidate {candidate_id}"
+            );
+            let decision = exact
+                .plan_evidence
+                .decisions
+                .iter()
+                .find(|decision| decision.candidate_id == candidate_id)
+                .expect("pinned decision should be present");
+            assert_ne!(
+                decision.outcome,
+                super::planner::ContextPlanOutcome::Omitted
+            );
+            assert!(decision.allocated_estimated_tokens >= decision.minimum_estimated_tokens);
+        }
+        assert!(exact.plan_evidence.allocated_estimated_tokens <= pinned_minimum);
+
+        let error = build(pinned_minimum - 1).unwrap_err();
+        assert!(error.to_string().contains("pinned_minimum_over_budget"));
+        assert!(error
+            .to_string()
+            .contains(&format!("pinned_minimum={pinned_minimum}")));
+    }
+
+    #[test]
+    fn build_context_bounds_recent_turn_reprojection_to_planned_compact_budget() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let mut historical_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "large historical context ".repeat(4_000),
+            },
+        );
+        historical_message.turn_id = Some("turn-large-history".to_string());
+        storage.append_message(&historical_message).unwrap();
+        let mut historical_turn = crate::types::TurnRecord::new("default", "turn-large-history", 1);
+        historical_turn.input_message_ids = vec![historical_message.id.clone()];
+        historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &historical_message,
+        ));
+        storage.append_turn(&historical_turn).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue with the current task.".to_string(),
+            },
+        );
+        let agent = AgentState::new("default");
+        let config_for_budget = |budget| ContextConfig {
+            prompt_budget_estimated_tokens: budget,
+            turn_projection_budget_ratio: 1.0,
+            turn_projection_min_budget: 0,
+            turn_projection_max_budget: budget,
+            ..ContextConfig::default()
+        };
+        let initial = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &config_for_budget(20_000),
+            dir.path(),
+        )
+        .unwrap();
+        let requested = |candidate_id: &str| {
+            initial
+                .plan_evidence
+                .decisions
+                .iter()
+                .find(|decision| decision.candidate_id == candidate_id)
+                .expect("candidate decision")
+                .requested_estimated_tokens
+        };
+        let recent_turns_minimum = initial
+            .plan_evidence
+            .decisions
+            .iter()
+            .find(|decision| decision.candidate_id == "recent_turns")
+            .expect("recent_turns decision")
+            .minimum_estimated_tokens;
+        let compact_plan_budget = [
+            "current_input",
+            "current_work_item",
+            "agent",
+            "execution_environment",
+            "context_contract",
+        ]
+        .into_iter()
+        .map(requested)
+        .sum::<usize>()
+            + recent_turns_minimum;
+
+        let (compact_plan_budget, compact) = (compact_plan_budget..compact_plan_budget + 512)
+            .find_map(|budget| {
+                let built = build_context(
+                    &storage,
+                    &agent,
+                    &execution_snapshot_for(&agent),
+                    &crate::types::SkillsRuntimeView::default(),
+                    &current_message,
+                    None,
+                    &config_for_budget(budget),
+                    dir.path(),
+                )
+                .unwrap();
+                built
+                    .plan_evidence
+                    .decisions
+                    .iter()
+                    .any(|decision| {
+                        decision.candidate_id == "recent_turns"
+                            && decision.outcome == super::planner::ContextPlanOutcome::Compact
+                    })
+                    .then_some((budget, built))
+            })
+            .expect("a nearby budget should select compact recent_turns");
+        let decision = compact
+            .plan_evidence
+            .decisions
+            .iter()
+            .find(|decision| decision.candidate_id == "recent_turns")
+            .expect("recent_turns decision");
+        assert_eq!(
+            decision.outcome,
+            super::planner::ContextPlanOutcome::Compact
+        );
+        assert_eq!(
+            compact
+                .recent_turns_reprojection
+                .as_ref()
+                .expect("selected recent_turns remains reprojectable")
+                .initial_budget(),
+            compact_plan_budget.min(128)
+        );
     }
 
     #[test]

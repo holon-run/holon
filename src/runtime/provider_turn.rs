@@ -590,6 +590,7 @@ mod tests {
             }],
             rendered_system_prompt: "system prompt".to_string(),
             rendered_context_attachment: "context attachment".to_string(),
+            context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
         }
     }
@@ -668,6 +669,7 @@ mod tests {
             ],
             rendered_system_prompt: "system prompt".to_string(),
             rendered_context_attachment: "context attachment".to_string(),
+            context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
         };
 

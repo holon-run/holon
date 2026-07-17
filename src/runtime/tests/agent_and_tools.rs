@@ -1345,6 +1345,7 @@ fn current_input_summary_extracts_body_from_context_section() {
         }],
         rendered_system_prompt: String::new(),
         rendered_context_attachment: String::new(),
+        context_plan_evidence: Default::default(),
         recent_turns_reprojection: None,
     };
 
