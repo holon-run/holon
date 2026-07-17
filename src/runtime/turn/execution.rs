@@ -1062,6 +1062,7 @@ impl TurnExecution<'_> {
                     }
                 }
                 let request = build_continuation_request(
+                    crate::provider::ContinuationScopeId::new(agent_id),
                     prompt_frame,
                     projection.conversation,
                     available_tools.clone(),

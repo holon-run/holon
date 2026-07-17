@@ -33,8 +33,23 @@ pub use transports::{
     OpenAiProvider,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ContinuationScopeId(String);
+
+impl ContinuationScopeId {
+    pub fn new(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        (!value.trim().is_empty()).then_some(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderTurnRequest {
+    pub continuation_scope_id: Option<ContinuationScopeId>,
     pub prompt_frame: ProviderPromptFrame,
     pub conversation: Vec<ConversationMessage>,
     pub tools: Vec<ToolSpec>,
@@ -49,6 +64,7 @@ impl ProviderTurnRequest {
         tools: Vec<ToolSpec>,
     ) -> Self {
         Self {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(system_prompt),
             conversation,
             tools,
@@ -505,6 +521,7 @@ pub(crate) fn builtin_web_search_probe_turn_request(
     native_web_search: ProviderNativeWebSearchRequest,
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
+        continuation_scope_id: None,
         prompt_frame: ProviderPromptFrame::plain("Reply with exactly OK."),
         conversation: vec![ConversationMessage::UserText(
             "Reply with exactly OK.".into(),

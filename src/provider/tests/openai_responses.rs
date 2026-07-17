@@ -10,11 +10,17 @@ use super::*;
 use crate::config::{ModelRef, ProviderId};
 use crate::model_catalog::ModelRuntimeOverride;
 use crate::provider::transports::set_stream_idle_timeout_override_for_tests;
-use crate::provider::{ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest};
+use crate::provider::{
+    ContinuationScopeId, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
+};
 use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
 
 fn openai_tool_call_response(response_id: &str) -> Value {
+    openai_tool_call_response_for(response_id, "exec-1")
+}
+
+fn openai_tool_call_response_for(response_id: &str, call_id: &str) -> Value {
     json!({
         "id": response_id,
         "status": "completed",
@@ -23,7 +29,7 @@ fn openai_tool_call_response(response_id: &str) -> Value {
             "type": "function_call",
             "id": "fc_non_persisted",
             "status": "completed",
-            "call_id": "exec-1",
+            "call_id": call_id,
             "name": "ExecCommand",
             "arguments": "{\n  \"cmd\": \"printf ok\"\n}"
         }]
@@ -1977,7 +1983,7 @@ async fn openai_responses_local_shape_change_does_not_rewrite_compacted_provider
 }
 
 #[tokio::test]
-async fn openai_responses_does_not_reuse_without_prompt_cache_scope() {
+async fn openai_responses_does_not_reuse_without_continuation_scope() {
     let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_for_server = captured_bodies.clone();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -2007,7 +2013,10 @@ async fn openai_responses_does_not_reuse_without_prompt_cache_scope() {
         .unwrap()
         .base_url = base_url;
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
-    let mut continuation = provider_turn_request();
+    let mut initial = provider_turn_request_with_prompt_frame();
+    initial.continuation_scope_id = None;
+    let mut continuation = provider_continuation_request_with_prompt_frame();
+    continuation.continuation_scope_id = None;
     continuation.conversation.extend([
         ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
             id: "exec-1".into(),
@@ -2023,10 +2032,7 @@ async fn openai_responses_does_not_reuse_without_prompt_cache_scope() {
         }]),
     ]);
 
-    provider
-        .complete_turn(provider_turn_request())
-        .await
-        .unwrap();
+    provider.complete_turn(initial).await.unwrap();
     let response = provider.complete_turn(continuation).await.unwrap();
 
     assert_eq!(
@@ -2044,7 +2050,7 @@ async fn openai_responses_does_not_reuse_without_prompt_cache_scope() {
 }
 
 #[tokio::test]
-async fn openai_responses_scopes_incremental_state_by_prompt_cache_identity() {
+async fn openai_responses_scopes_incremental_state_by_continuation_scope_id() {
     let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_for_server = captured_bodies.clone();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -2080,7 +2086,7 @@ async fn openai_responses_scopes_incremental_state_by_prompt_cache_identity() {
         .await
         .unwrap();
     let mut other_agent = provider_continuation_request_with_prompt_frame();
-    other_agent.prompt_frame.cache.as_mut().unwrap().agent_id = "other".into();
+    other_agent.continuation_scope_id = ContinuationScopeId::new("other");
     let other_response = provider.complete_turn(other_agent).await.unwrap();
     let same_agent_response = provider
         .complete_turn(provider_continuation_request_with_prompt_frame())
@@ -2106,6 +2112,87 @@ async fn openai_responses_scopes_incremental_state_by_prompt_cache_identity() {
     assert_eq!(bodies.len(), 3);
     assert!(bodies[1].get("previous_response_id").is_none());
     assert_eq!(bodies[2]["previous_response_id"], json!("resp_1"));
+}
+
+#[tokio::test]
+async fn openai_responses_cache_key_change_preserves_lineage_after_shape_fallback() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            let attempts = attempts_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                match attempts.fetch_add(1, Ordering::SeqCst) {
+                    0 => Json(openai_tool_call_response_for("resp_1", "exec-1")),
+                    1 => Json(openai_tool_call_response_for("resp_2", "exec-2")),
+                    _ => Json(openai_text_response("resp_3", "done")),
+                }
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+    let mut changed = provider_continuation_request_with_prompt_frame();
+    let changed_cache = changed.prompt_frame.cache.as_mut().unwrap();
+    changed_cache.prompt_cache_key = "cache-key-v2".into();
+    let fallback = provider.complete_turn(changed.clone()).await.unwrap();
+
+    assert_eq!(
+        fallback
+            .request_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.incremental_continuation.as_ref())
+            .and_then(|diagnostics| diagnostics.fallback_reason.as_deref()),
+        Some("request_shape_changed")
+    );
+
+    changed.conversation.extend([
+        ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+            id: "exec-2".into(),
+            name: "ExecCommand".into(),
+            input: json!({ "cmd": "printf ok" }),
+            kind: crate::provider::ModelToolCallKind::Function,
+        }]),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "exec-2".into(),
+            content: "ok".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ]);
+    let resumed = provider.complete_turn(changed).await.unwrap();
+
+    assert_eq!(
+        resumed
+            .request_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.request_lowering_mode.as_str()),
+        Some("incremental_continuation")
+    );
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 3);
+    assert_eq!(bodies[0]["prompt_cache_key"], json!("cache-key"));
+    assert_eq!(bodies[1]["prompt_cache_key"], json!("cache-key-v2"));
+    assert!(bodies[1].get("previous_response_id").is_none());
+    assert_eq!(bodies[2]["prompt_cache_key"], json!("cache-key-v2"));
+    assert_eq!(bodies[2]["previous_response_id"], json!("resp_2"));
 }
 
 #[tokio::test]

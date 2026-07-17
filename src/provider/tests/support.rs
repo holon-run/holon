@@ -4,6 +4,7 @@ use super::*;
 use crate::{
     config::{provider_registry_for_tests, AppConfig, ControlAuthMode},
     prompt::PromptStability,
+    provider::ContinuationScopeId,
     tool::{ToolRegistry, ToolSpec},
 };
 use axum::Router;
@@ -148,6 +149,7 @@ pub fn provider_turn_request_with_tools(tools: Vec<ToolSpec>) -> ProviderTurnReq
 
 pub fn provider_turn_request_with_prompt_frame() -> ProviderTurnRequest {
     ProviderTurnRequest {
+        continuation_scope_id: ContinuationScopeId::new("default"),
         prompt_frame: ProviderPromptFrame::structured(
             "rendered system",
             vec![PromptContentBlock {

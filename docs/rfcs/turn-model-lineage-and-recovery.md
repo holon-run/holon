@@ -100,6 +100,16 @@ At minimum, a lineage includes:
 OpenAI continuation state should further include the request shape that guards
 `previous_response_id` and provider-window replay.
 
+### Continuation Scope
+
+`ContinuationScopeId` is the provider-neutral identity used to find candidate
+provider continuation state across rounds. The runtime assigns one stable scope
+per agent and passes it explicitly on `ProviderTurnRequest`.
+
+The scope is not a wire field, prompt-cache key, run id, turn id, or round id.
+It only identifies the candidate lineage window. The transport must still
+compare the full request shape before using incremental continuation.
+
 ### Turn Active Model
 
 The first model lineage that successfully produces assistant/provider output
@@ -237,6 +247,17 @@ For OpenAI Responses and OpenAI Codex Responses, this includes:
 - remote compaction items
 - encrypted `compaction` / `compaction_summary` content
 - unsupported compact endpoint negative cache
+
+Lineage lookup and wire compatibility are separate checks:
+
+1. `ContinuationScopeId` finds the candidate provider window.
+2. The provider request shape decides whether that window can be reused.
+
+For the current runtime, the scope is stable for one runtime agent. A missing
+scope disables continuation state reads and writes. Changing the OpenAI prompt
+cache key does not create a new lineage; it changes the request shape, so the
+current request falls back to a full request and installs the new compatible
+shape for later rounds.
 
 Changing provider id, model id, transport contract, endpoint kind, request
 controls, tool schema, or prompt frame should invalidate the provider

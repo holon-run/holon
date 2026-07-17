@@ -2556,6 +2556,7 @@ mod tests {
     #[test]
     fn anthropic_request_payload_for_fingerprints_is_wire_object() {
         let request = ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "unused plain system".to_string(),
                 system_blocks: vec![PromptContentBlock {
@@ -2592,6 +2593,7 @@ mod tests {
     #[test]
     fn test_collect_anthropic_cache_diagnostics_initial_request() {
         let request = ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 system_blocks: vec![
@@ -2669,6 +2671,7 @@ mod tests {
     #[test]
     fn test_collect_anthropic_cache_diagnostics_continuation_with_breakpoints() {
         let request = ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 system_blocks: vec![
@@ -3030,6 +3033,7 @@ mod tests {
     #[test]
     fn test_estimate_token_distribution() {
         let request = ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "System prompt".to_string(),
                 system_blocks: vec![
@@ -3087,6 +3091,7 @@ mod tests {
         }
 
         let request = ProviderTurnRequest {
+            continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "System prompt".to_string(),
                 system_blocks,

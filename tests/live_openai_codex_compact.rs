@@ -3,10 +3,11 @@ use std::{fs, path::Path, process::Command, time::Duration};
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use holon::{
-    config::{AppConfig, ProviderId, ProviderRuntimeConfig},
+    config::{AppConfig, ModelRef, ProviderId, ProviderRuntimeConfig},
+    model_catalog::ModelRuntimeOverride,
     provider::{
-        AgentProvider, ConversationMessage, OpenAiCodexProvider, ProviderPromptCache,
-        ProviderPromptFrame, ProviderTurnRequest,
+        AgentProvider, ContinuationScopeId, ConversationMessage, OpenAiCodexProvider,
+        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
     },
 };
 use reqwest::Client;
@@ -45,15 +46,26 @@ fn codex_responses_route(base_url: &str) -> String {
 #[tokio::test]
 #[ignore = "requires Codex CLI ChatGPT auth and network access"]
 async fn live_openai_codex_remote_compact_route_probe() -> Result<()> {
-    let config = live_config()?;
+    let mut config = live_config()?;
+    let model = live_openai_codex_model();
+    config.validated_model_overrides.insert(
+        ModelRef::parse(&format!("openai-codex/{model}"))?,
+        ModelRuntimeOverride {
+            prompt_budget_estimated_tokens: Some(64),
+            compaction_trigger_estimated_tokens: Some(1),
+            compaction_keep_recent_estimated_tokens: Some(1),
+            ..ModelRuntimeOverride::default()
+        },
+    );
     let provider_config = config
         .providers
         .get(&ProviderId::openai_codex())
         .ok_or_else(|| anyhow!("missing openai-codex provider config"))?;
     let route = codex_compact_route(&provider_config.base_url);
-    let provider = OpenAiCodexProvider::from_config(&config, &live_openai_codex_model())?;
+    let provider = OpenAiCodexProvider::from_config(&config, &model)?;
     let output = provider
         .complete_turn(ProviderTurnRequest {
+            continuation_scope_id: ContinuationScopeId::new("live-openai-codex-compact-probe"),
             prompt_frame: ProviderPromptFrame::structured(
                 "Reply briefly. Do not include private information.",
                 Vec::new(),
