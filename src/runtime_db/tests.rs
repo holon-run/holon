@@ -2,6 +2,8 @@
 #[cfg(test)]
 use crate::runtime_db::connection::{is_retryable_db_error, open_connection};
 #[cfg(test)]
+use crate::runtime_db::evidence::content_hash;
+#[cfg(test)]
 use crate::runtime_db::evidence::insert_audit_event_tx;
 #[cfg(test)]
 use crate::runtime_db::migrations::{
@@ -573,17 +575,33 @@ INSERT INTO storage_domains (
     }
 
     #[test]
-    fn runtime_sequence_migration_rejects_duplicate_historical_values() -> Result<()> {
+    fn runtime_sequence_migration_repairs_duplicate_historical_values() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let old_event_log_epoch;
         {
             let connection = open_connection(&db_path)?;
+            old_event_log_epoch = connection.query_row(
+                "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?;
             connection.execute_batch(
                 "DELETE FROM schema_migrations WHERE version = 26;
+                 DROP INDEX idx_audit_events_agent_event_seq_unique;
+                 DROP INDEX idx_audit_events_host_event_seq_unique;
                  DROP INDEX idx_messages_agent_message_seq_unique;
+                 DROP INDEX idx_transcript_entries_agent_transcript_seq_unique;
                  DROP TABLE runtime_sequences;",
             )?;
-            for (id, text) in [("duplicate-a", "a"), ("duplicate-b", "b")] {
+            let created_at = Utc::now();
+            for (id, sequence, text) in [
+                ("message-a", 7_i64, "a"),
+                ("message-b", 7_i64, "b"),
+                ("message-c", 9_i64, "c"),
+                ("message-d", 9_i64, "d"),
+                ("message-max", 12_i64, "max"),
+            ] {
                 let mut message = MessageEnvelope::new(
                     "agent-a",
                     crate::types::MessageKind::OperatorPrompt,
@@ -593,30 +611,276 @@ INSERT INTO storage_domains (
                     crate::types::MessageBody::Text { text: text.into() },
                 );
                 message.id = id.into();
-                message.message_seq = Some(7);
+                message.created_at = created_at;
+                message.message_seq = Some(sequence as u64);
+                let payload_json = serde_json::to_string(&message)?;
                 connection.execute(
                     "INSERT INTO messages (
-                        evidence_id, agent_id, message_id, message_seq, created_at,
-                        kind, payload_json
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        evidence_id, agent_id, message_id, message_seq, created_at, kind,
+                        content_hash, payload_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         message.id,
                         message.agent_id,
                         message.id,
-                        7_i64,
+                        sequence,
                         timestamp(message.created_at),
                         "operator_prompt",
-                        serde_json::to_string(&message)?,
+                        content_hash(&payload_json),
+                        payload_json,
                     ],
                 )?;
             }
+            for (id, sequence) in [
+                ("transcript-a", 3_i64),
+                ("transcript-b", 3_i64),
+                ("transcript-c", 5_i64),
+                ("transcript-d", 5_i64),
+                ("transcript-max", 8_i64),
+            ] {
+                let mut entry = TranscriptEntry::new(
+                    "agent-a",
+                    TranscriptEntryKind::IncomingMessage,
+                    None,
+                    None,
+                    serde_json::json!({"text": id}),
+                );
+                entry.id = id.into();
+                entry.created_at = created_at;
+                entry.transcript_seq = Some(sequence as u64);
+                let payload_json = serde_json::to_string(&entry)?;
+                connection.execute(
+                    "INSERT INTO transcript_entries (
+                        evidence_id, agent_id, transcript_seq, created_at, kind,
+                        content_hash, payload_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        entry.id,
+                        entry.agent_id,
+                        sequence,
+                        timestamp(entry.created_at),
+                        "user",
+                        content_hash(&payload_json),
+                        payload_json,
+                    ],
+                )?;
+            }
+            for (id, sequence) in [
+                ("audit-a", 11_i64),
+                ("audit-b", 11_i64),
+                ("audit-c", 12_i64),
+                ("audit-d", 12_i64),
+                ("audit-max", 15_i64),
+            ] {
+                let mut event = AuditEvent::legacy("test", serde_json::json!({"id": id}));
+                event.id = id.into();
+                event.created_at = created_at;
+                event.event_seq = sequence as u64;
+                connection.execute(
+                    "INSERT INTO audit_events (
+                        audit_event_id, event_seq, agent_id, kind, created_at, data_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        event.id,
+                        sequence,
+                        "agent-a",
+                        event.kind,
+                        timestamp(event.created_at),
+                        serde_json::to_string(&event)?,
+                    ],
+                )?;
+            }
+            let mut unaffected = MessageEnvelope::new(
+                "agent-b",
+                crate::types::MessageKind::OperatorPrompt,
+                crate::types::MessageOrigin::Operator { actor_id: None },
+                crate::types::AuthorityClass::OperatorInstruction,
+                crate::types::Priority::Normal,
+                crate::types::MessageBody::Text {
+                    text: "unaffected".into(),
+                },
+            );
+            unaffected.id = "message-unaffected".into();
+            unaffected.created_at = created_at;
+            unaffected.message_seq = Some(42);
+            let payload_json = serde_json::to_string(&unaffected)?;
+            connection.execute(
+                "INSERT INTO messages (
+                    evidence_id, agent_id, message_id, message_seq, created_at, kind,
+                    content_hash, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    unaffected.id,
+                    unaffected.agent_id,
+                    unaffected.id,
+                    42_i64,
+                    timestamp(unaffected.created_at),
+                    "operator_prompt",
+                    content_hash(&payload_json),
+                    payload_json,
+                ],
+            )?;
         }
 
-        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
-        let text = error.to_string();
-        assert!(text.contains("domain=message"), "{text}");
-        assert!(text.contains("scope=agent:agent-a"), "{text}");
-        assert!(text.contains("sequence=7"), "{text}");
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+        for (table, id_column, id, sequence_column, expected) in [
+            ("messages", "evidence_id", "message-a", "message_seq", 1_i64),
+            ("messages", "evidence_id", "message-b", "message_seq", 2_i64),
+            ("messages", "evidence_id", "message-c", "message_seq", 3_i64),
+            ("messages", "evidence_id", "message-d", "message_seq", 4_i64),
+            (
+                "messages",
+                "evidence_id",
+                "message-max",
+                "message_seq",
+                5_i64,
+            ),
+            (
+                "transcript_entries",
+                "evidence_id",
+                "transcript-a",
+                "transcript_seq",
+                1_i64,
+            ),
+            (
+                "transcript_entries",
+                "evidence_id",
+                "transcript-b",
+                "transcript_seq",
+                2_i64,
+            ),
+            (
+                "transcript_entries",
+                "evidence_id",
+                "transcript-max",
+                "transcript_seq",
+                5_i64,
+            ),
+            (
+                "audit_events",
+                "audit_event_id",
+                "audit-a",
+                "event_seq",
+                1_i64,
+            ),
+            (
+                "audit_events",
+                "audit_event_id",
+                "audit-b",
+                "event_seq",
+                2_i64,
+            ),
+            (
+                "audit_events",
+                "audit_event_id",
+                "audit-max",
+                "event_seq",
+                5_i64,
+            ),
+            (
+                "messages",
+                "evidence_id",
+                "message-unaffected",
+                "message_seq",
+                42_i64,
+            ),
+        ] {
+            let sql = format!("SELECT {sequence_column} FROM {table} WHERE {id_column} = ?1");
+            let actual: i64 = connection.query_row(&sql, [id], |row| row.get(0))?;
+            assert_eq!(actual, expected, "{table}.{id}");
+        }
+        for (table, id, sequence_column, payload_column, expected) in [
+            (
+                "messages",
+                "message-b",
+                "message_seq",
+                "payload_json",
+                2_i64,
+            ),
+            (
+                "transcript_entries",
+                "transcript-b",
+                "transcript_seq",
+                "payload_json",
+                2_i64,
+            ),
+            ("audit_events", "audit-b", "event_seq", "data_json", 2_i64),
+        ] {
+            let id_column = if table == "audit_events" {
+                "audit_event_id"
+            } else {
+                "evidence_id"
+            };
+            let sql = format!(
+                "SELECT {sequence_column}, {payload_column} FROM {table} WHERE {id_column} = ?1"
+            );
+            let (sequence, payload_json): (i64, String) =
+                connection.query_row(&sql, [id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            let payload: serde_json::Value = serde_json::from_str(&payload_json)?;
+            assert_eq!(sequence, expected);
+            assert_eq!(payload[sequence_column], expected);
+            if table != "audit_events" {
+                let stored_hash: String = connection.query_row(
+                    &format!("SELECT content_hash FROM {table} WHERE {id_column} = ?1"),
+                    [id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(stored_hash, content_hash(&payload_json));
+            }
+        }
+        for (domain, expected) in [
+            ("audit_event", 5_i64),
+            ("message", 5_i64),
+            ("transcript", 5_i64),
+        ] {
+            let head: i64 = connection.query_row(
+                "SELECT last_value FROM runtime_sequences
+                 WHERE domain = ?1 AND scope_key = 'agent:agent-a'",
+                [domain],
+                |row| row.get(0),
+            )?;
+            assert_eq!(head, expected, "{domain}");
+        }
+        let new_event_log_epoch: String = connection.query_row(
+            "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_ne!(new_event_log_epoch, old_event_log_epoch);
+        let audit_epochs = connection
+            .prepare("SELECT data_json FROM audit_events ORDER BY event_seq")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .map(|row| {
+                let payload: serde_json::Value = serde_json::from_str(&row?)?;
+                Ok(payload["event_log_epoch"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        assert!(audit_epochs
+            .iter()
+            .all(|epoch| epoch == &new_event_log_epoch));
+
+        drop(connection);
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+        let reopened_epoch: String = connection.query_row(
+            "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(reopened_epoch, new_event_log_epoch);
+        let reopened_message_sequences = connection
+            .prepare(
+                "SELECT message_seq FROM messages
+                 WHERE agent_id = 'agent-a'
+                 ORDER BY message_seq",
+            )?
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(reopened_message_sequences, vec![1, 2, 3, 4, 5]);
         Ok(())
     }
 

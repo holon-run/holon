@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::runtime_db::evidence::content_hash;
 use crate::types::{AgentState, WaitConditionRecord, WorkItemRecord};
 
 pub struct Migration {
@@ -1181,7 +1182,7 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
 
     let transaction = connection.transaction()?;
     if migration.name == "strict_runtime_sequences" {
-        preflight_runtime_sequence_uniqueness(&transaction)?;
+        repair_runtime_sequence_duplicates(&transaction)?;
     }
     if migration.name == "canonical_work_item_focus" {
         preflight_work_item_focus(&transaction)?;
@@ -1220,35 +1221,47 @@ fn drop_work_item_readiness(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn preflight_runtime_sequence_uniqueness(connection: &Connection) -> Result<()> {
+fn repair_runtime_sequence_duplicates(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "DROP INDEX IF EXISTS idx_audit_events_agent_event_seq_unique;
+         DROP INDEX IF EXISTS idx_audit_events_host_event_seq_unique;
+         DROP INDEX IF EXISTS idx_messages_agent_message_seq_unique;
+         DROP INDEX IF EXISTS idx_transcript_entries_agent_transcript_seq_unique;",
+    )?;
     if table_exists_internal(connection, "audit_events")? {
-        preflight_sequence_domain(
+        let audit_resequenced = resequence_duplicate_scopes(
             connection,
-            "audit_event",
             "audit_events",
             "CASE WHEN agent_id IS NULL THEN 'host' ELSE 'agent:' || agent_id END",
             "event_seq",
             "audit_event_id",
+            "data_json",
+            false,
         )?;
+        if audit_resequenced {
+            rotate_audit_event_epoch(connection)?;
+        }
     }
     if table_exists_internal(connection, "messages")? {
-        preflight_sequence_domain(
+        resequence_duplicate_scopes(
             connection,
-            "message",
             "messages",
             "'agent:' || agent_id",
             "message_seq",
             "evidence_id",
+            "payload_json",
+            true,
         )?;
     }
     if table_exists_internal(connection, "transcript_entries")? {
-        preflight_sequence_domain(
+        resequence_duplicate_scopes(
             connection,
-            "transcript",
             "transcript_entries",
             "'agent:' || agent_id",
             "transcript_seq",
             "evidence_id",
+            "payload_json",
+            true,
         )?;
     }
     Ok(())
@@ -1318,35 +1331,157 @@ fn table_exists_internal(connection: &Connection, table_name: &str) -> Result<bo
         .map_err(Into::into)
 }
 
-fn preflight_sequence_domain(
+fn resequence_duplicate_scopes(
     connection: &Connection,
-    domain: &str,
     table: &str,
     scope_expression: &str,
     sequence_column: &str,
     id_column: &str,
-) -> Result<()> {
+    payload_column: &str,
+    update_content_hash: bool,
+) -> Result<bool> {
     let sql = format!(
-        "SELECT {scope_expression}, {sequence_column}, GROUP_CONCAT({id_column}, ',')
-         FROM {table}
-         WHERE {sequence_column} IS NOT NULL
-         GROUP BY {scope_expression}, {sequence_column}
-         HAVING COUNT(*) > 1
-         LIMIT 1"
+        "WITH scoped AS (
+           SELECT
+             {id_column} AS record_id,
+             {scope_expression} AS scope_key,
+             {sequence_column} AS sequence,
+             created_at,
+             {payload_column} AS payload_json
+           FROM {table}
+           WHERE {sequence_column} IS NOT NULL
+         ),
+         duplicate_scopes AS (
+           SELECT DISTINCT scope_key
+           FROM scoped
+           GROUP BY scope_key, sequence
+           HAVING COUNT(*) > 1
+         ),
+         ranked AS (
+           SELECT
+             record_id,
+             scope_key,
+             sequence,
+             payload_json,
+             ROW_NUMBER() OVER (
+               PARTITION BY scope_key
+               ORDER BY sequence, created_at, record_id
+             ) AS new_sequence
+           FROM scoped
+           WHERE scope_key IN (SELECT scope_key FROM duplicate_scopes)
+         )
+         SELECT record_id, scope_key, sequence, new_sequence, payload_json
+         FROM ranked
+         ORDER BY scope_key, new_sequence"
     );
-    let duplicate = connection
-        .query_row(&sql, [], |row| {
+    let resequenced = connection
+        .prepare(&sql)?
+        .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
             ))
-        })
-        .optional()?;
-    if let Some((scope, sequence, record_ids)) = duplicate {
-        bail!(
-            "runtime sequence migration found duplicate sequence: domain={domain}, scope={scope}, sequence={sequence}, record_ids={record_ids}"
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let changed = !resequenced.is_empty();
+    for (record_id, scope_key, old_sequence, new_sequence, payload_json) in resequenced {
+        let mut payload: serde_json::Value = serde_json::from_str(&payload_json).with_context(|| {
+            format!(
+                "decoding runtime sequence payload during migration: table={table}, record_id={record_id}"
+            )
+        })?;
+        let object = payload.as_object_mut().with_context(|| {
+            format!(
+                "runtime sequence payload is not an object: table={table}, record_id={record_id}"
+            )
+        })?;
+        object.insert(
+            sequence_column.to_string(),
+            serde_json::Value::from(new_sequence),
         );
+        let payload_json = serde_json::to_string(&payload)?;
+        let updated = if update_content_hash {
+            let sql = format!(
+                "UPDATE {table}
+                 SET {sequence_column} = ?1, {payload_column} = ?2, content_hash = ?3
+                 WHERE {id_column} = ?4 AND {sequence_column} = ?5"
+            );
+            connection.execute(
+                &sql,
+                params![
+                    new_sequence,
+                    payload_json,
+                    content_hash(&payload_json),
+                    record_id,
+                    old_sequence
+                ],
+            )?
+        } else {
+            let sql = format!(
+                "UPDATE {table}
+                 SET {sequence_column} = ?1, {payload_column} = ?2
+                 WHERE {id_column} = ?3 AND {sequence_column} = ?4"
+            );
+            connection.execute(
+                &sql,
+                params![new_sequence, payload_json, record_id, old_sequence],
+            )?
+        };
+        anyhow::ensure!(
+            updated == 1,
+            "runtime sequence migration failed to repair duplicate: table={table}, scope={scope_key}, record_id={record_id}"
+        );
+    }
+    Ok(changed)
+}
+
+fn rotate_audit_event_epoch(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS runtime_metadata (
+           key TEXT PRIMARY KEY,
+           value TEXT NOT NULL,
+           created_at TEXT NOT NULL,
+           updated_at TEXT NOT NULL
+         );",
+    )?;
+    let epoch = crate::ids::event_log_epoch_id();
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    connection.execute(
+        "INSERT INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('event_log_epoch', ?1, ?2, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![epoch, now],
+    )?;
+
+    let events = connection
+        .prepare("SELECT audit_event_id, data_json FROM audit_events")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (record_id, payload_json) in events {
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&payload_json).with_context(|| {
+                format!(
+                    "decoding audit event payload while rotating event-log epoch: record_id={record_id}"
+                )
+            })?;
+        let object = payload.as_object_mut().with_context(|| {
+            format!(
+                "audit event payload is not an object while rotating event-log epoch: record_id={record_id}"
+            )
+        })?;
+        object.insert(
+            "event_log_epoch".to_string(),
+            serde_json::Value::String(epoch.clone()),
+        );
+        connection.execute(
+            "UPDATE audit_events SET data_json = ?1 WHERE audit_event_id = ?2",
+            params![serde_json::to_string(&payload)?, record_id],
+        )?;
     }
     Ok(())
 }
