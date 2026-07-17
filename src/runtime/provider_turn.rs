@@ -68,9 +68,8 @@ pub fn build_provider_turn_request(
     ));
 
     ProviderTurnRequest {
-        continuation_scope_id: Some(
-            ContinuationScopeId::new(effective_prompt.cache_identity.agent_id.clone())
-                .expect("effective prompt agent id must not be empty"),
+        continuation_scope_id: ContinuationScopeId::new(
+            effective_prompt.cache_identity.agent_id.clone(),
         ),
         prompt_frame: ProviderPromptFrame::structured(
             effective_prompt.rendered_system_prompt.clone(),
@@ -90,14 +89,14 @@ pub fn build_provider_turn_request(
 /// This is used for subsequent turns in a multi-turn conversation where
 /// we need to pass the full conversation history to the provider.
 pub fn build_continuation_request(
-    continuation_scope_id: ContinuationScopeId,
+    continuation_scope_id: Option<ContinuationScopeId>,
     prompt_frame: ProviderPromptFrame,
     conversation: Vec<ConversationMessage>,
     available_tools: Vec<ToolSpec>,
     native_web_search: Option<ProviderNativeWebSearchRequest>,
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
-        continuation_scope_id: Some(continuation_scope_id),
+        continuation_scope_id,
         prompt_frame,
         conversation,
         tools: available_tools,
@@ -490,6 +489,16 @@ mod tests {
     }
 
     #[test]
+    fn build_provider_turn_request_disables_continuation_for_empty_agent_id() {
+        let mut effective_prompt = fixture_prompt();
+        effective_prompt.cache_identity.agent_id.clear();
+
+        let request = build_provider_turn_request(&effective_prompt, vec![], None);
+
+        assert_eq!(request.continuation_scope_id, None);
+    }
+
+    #[test]
     fn build_provider_turn_request_adds_workspace_markdown_image_input() {
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::create_dir(workspace.path().join("outputs")).expect("outputs dir");
@@ -755,7 +764,7 @@ mod tests {
         );
 
         let request = build_continuation_request(
-            ContinuationScopeId::new("default").unwrap(),
+            ContinuationScopeId::new("default"),
             prompt_frame,
             conversation,
             tools,
@@ -784,6 +793,19 @@ mod tests {
         );
         assert_eq!(request.conversation.len(), 2);
         assert_eq!(request.tools.len(), 1);
+    }
+
+    #[test]
+    fn build_continuation_request_accepts_missing_scope() {
+        let request = build_continuation_request(
+            None,
+            ProviderPromptFrame::plain("system"),
+            vec![],
+            vec![],
+            None,
+        );
+
+        assert_eq!(request.continuation_scope_id, None);
     }
 
     #[test]
