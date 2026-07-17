@@ -179,7 +179,16 @@ export interface AgentRosterActivity {
   lastReadSeq?: number;
 }
 
-function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: AgentSummary | undefined, prompt: string): AgentDetail | null {
+const OPTIMISTIC_OPERATOR_PROMPT_SOURCE = "pending-operator-prompt";
+const OPTIMISTIC_OPERATOR_CLIENT_PREFIX = "operator-prompt-client:";
+const OPTIMISTIC_OPERATOR_MESSAGE_PREFIX = "operator-prompt-message:";
+
+function appendOptimisticOperatorPrompt(
+  detail: AgentDetail | null,
+  agent: AgentSummary | undefined,
+  prompt: string,
+  clientId: string,
+): AgentDetail | null {
   const baseDetail = detail ?? createLiveAgentDetail(agent);
   if (!baseDetail) return null;
   const timestamp = new Date().toISOString();
@@ -188,30 +197,38 @@ function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: Agent
     timeline: [
       ...baseDetail.timeline,
       {
-        id: `operator-prompt:pending:${timestamp}`,
+        id: `operator-prompt:pending:${clientId}`,
         kind: "operator",
         label: "Operator input",
         body: prompt,
         timestamp,
         meta: "sending",
         minDisplayLevel: "info",
-        sourceIds: ["pending-operator-prompt"],
+        sourceIds: [OPTIMISTIC_OPERATOR_PROMPT_SOURCE, `${OPTIMISTIC_OPERATOR_CLIENT_PREFIX}${clientId}`],
       },
     ],
   };
 }
 
-function markOptimisticOperatorPromptsSent(detail: AgentDetail | null): AgentDetail | null {
+function confirmOptimisticOperatorPrompt(
+  detail: AgentDetail | null,
+  clientId: string,
+  messageId: string,
+): AgentDetail | null {
   if (!detail) return detail;
   let changed = false;
   const timeline = detail.timeline.map((item) => {
-    if (item.kind !== "operator" || item.meta !== "sending" || !item.sourceIds.includes("pending-operator-prompt")) {
+    if (
+      item.kind !== "operator" ||
+      !item.sourceIds.includes(`${OPTIMISTIC_OPERATOR_CLIENT_PREFIX}${clientId}`)
+    ) {
       return item;
     }
     changed = true;
     return {
       ...item,
       meta: "Sent",
+      sourceIds: [...item.sourceIds, `${OPTIMISTIC_OPERATOR_MESSAGE_PREFIX}${messageId}`],
     };
   });
   return changed ? { ...detail, timeline } : detail;
@@ -2049,6 +2066,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return;
     }
 
+    const clientId = crypto.randomUUID();
     set((state) => {
       const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
       if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
@@ -2068,6 +2086,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               state.sessionsByAgentId[agentId]?.detail ?? null,
               state.bootstrap.agents.find((agent) => agent.id === agentId),
               prompt,
+              clientId,
             ),
           },
         },
@@ -2075,7 +2094,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     });
 
     try {
-      await runtimeClient.sendOperatorPrompt(agentId, prompt, attachments);
+      const { messageId } = await runtimeClient.sendOperatorPrompt(agentId, prompt, attachments);
       scheduleBootstrapRefresh(get, 250);
       set((state) => ({
         sessionsByAgentId: {
@@ -2085,7 +2104,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             ...state.sessionsByAgentId[agentId],
             sendingPrompt: false,
             promptError: undefined,
-            detail: markOptimisticOperatorPromptsSent(state.sessionsByAgentId[agentId]?.detail ?? null),
+            detail: confirmOptimisticOperatorPrompt(
+              state.sessionsByAgentId[agentId]?.detail ?? null,
+              clientId,
+              messageId,
+            ),
           },
         },
       }));
@@ -2261,15 +2284,29 @@ function applyProjectionAction(
   };
 }
 
-function materializeProjectionDetail(
+export function materializeProjectionDetail(
   detail: AgentDetail | null,
   projection: SessionProjectionState,
   displayLevel: DisplayLevel,
 ): AgentDetail | null {
   if (!detail) return null;
-  const optimisticItems = detail.timeline.filter((item) => item.sourceIds.includes("pending-operator-prompt"));
+  const projectedTimeline = deriveSessionTimeline(projection, displayLevel);
+  const projectedMessageIds = new Set(
+    projectedTimeline.flatMap((item) =>
+      item.kind === "operator" && item.id.startsWith("message:")
+        ? [item.id.slice("message:".length)]
+        : [],
+    ),
+  );
+  const optimisticItems = detail.timeline.filter((item) => {
+    if (!item.sourceIds.includes(OPTIMISTIC_OPERATOR_PROMPT_SOURCE)) return false;
+    const canonicalMessageId = item.sourceIds
+      .find((sourceId) => sourceId.startsWith(OPTIMISTIC_OPERATOR_MESSAGE_PREFIX))
+      ?.slice(OPTIMISTIC_OPERATOR_MESSAGE_PREFIX.length);
+    return !canonicalMessageId || !projectedMessageIds.has(canonicalMessageId);
+  });
   const timeline = compactAgentTimelineItems([
-    ...deriveSessionTimeline(projection, displayLevel),
+    ...projectedTimeline,
     ...optimisticItems,
   ]).sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
   return {

@@ -383,7 +383,7 @@ describe("createRuntimeClient", () => {
     let requestBody: unknown;
     const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
       requestBody = init?.body ? JSON.parse(String(init.body)) : undefined;
-      return new Response(null, { status: 204 });
+      return Response.json({ message_id: "message-123" });
     };
 
     const client = createRuntimeClient({
@@ -393,7 +393,7 @@ describe("createRuntimeClient", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    await client.sendOperatorPrompt("agent-one", "see attached", [
+    const response = await client.sendOperatorPrompt("agent-one", "see attached", [
       {
         kind: "file",
         name: "report.pdf",
@@ -402,6 +402,7 @@ describe("createRuntimeClient", () => {
       },
     ]);
 
+    expect(response).toEqual({ messageId: "message-123" });
     expect(requestBody).toEqual({
       text: "see attached",
       attachments: [
@@ -845,7 +846,7 @@ describe("createRuntimeClient", () => {
     expect(detail.timeline).toEqual([]);
     expect(deriveSessionTimeline(projection)[0]).toEqual(
       expect.objectContaining({
-        id: "brief-event",
+        id: "assistant_round:round-123",
         body: "Canonical persisted brief.",
       }),
     );

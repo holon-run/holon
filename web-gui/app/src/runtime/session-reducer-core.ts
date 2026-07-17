@@ -260,10 +260,11 @@ export function applySessionEvent(state: SessionState, event: SessionEventEnvelo
       } as DomainObject);
     }
   } else if (eventType === "brief_created" || eventType === "assistant_round_recorded") {
-    upsertObject(state, "assistant_round", eventId, {
+    const roundIdentity = assistantRoundIdentity(eventType, payload, eventId);
+    upsertObject(state, "assistant_round", roundIdentity.id, {
       ...baseFields,
-      id: eventId,
-      status: "recorded",
+      id: roundIdentity.id,
+      status: roundIdentity.promoted ? "brief_promoted" : "recorded",
     } as DomainObject);
   } else {
     upsertObject(state, "activity", eventId, {
@@ -273,6 +274,45 @@ export function applySessionEvent(state: SessionState, event: SessionEventEnvelo
       eventType,
     } as DomainObject);
   }
+}
+
+function assistantRoundIdentity(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+  eventId: string,
+): { id: string; promoted: boolean } {
+  if (eventType === "assistant_round_recorded") {
+    const assistantRoundId = stringField(payload, "assistant_round_id");
+    return {
+      id: assistantRoundId ? `assistant_round:${assistantRoundId}` : eventId,
+      promoted: false,
+    };
+  }
+
+  const finalizedRoundId =
+    stringField(payload, "finalizes_assistant_round_id") ??
+    finalizedTranscriptEntryId(payload);
+  if (finalizedRoundId) {
+    return { id: `assistant_round:${finalizedRoundId}`, promoted: true };
+  }
+  const briefId = firstStringField(payload, ["brief_id", "id"]);
+  return {
+    id: briefId ? `brief:${briefId}` : eventId,
+    promoted: false,
+  };
+}
+
+function finalizedTranscriptEntryId(
+  payload: Record<string, unknown> | undefined,
+): string | undefined {
+  const contentSource = asRecord(payload?.content_source);
+  if (
+    stringField(contentSource, "kind") !== "transcript_entry" ||
+    stringField(contentSource, "relation") !== "finalizes"
+  ) {
+    return undefined;
+  }
+  return stringField(contentSource, "entry_id");
 }
 
 export function debugAgentSessionEvents(events: SessionEventEnvelope[], options: { itemLimit?: number } = {}): AgentTimelineItem[] {

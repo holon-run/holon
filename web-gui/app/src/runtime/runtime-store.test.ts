@@ -5,6 +5,7 @@ import {
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
   isLoopbackWebHostname,
+  materializeProjectionDetail,
   mergeCachedSessionIntoCurrent,
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
@@ -15,7 +16,7 @@ import {
 } from "./runtime-store";
 import type { StreamEventEnvelopeDto } from "./client";
 import type { AgentSessionState } from "./runtime-store";
-import { createSessionProjectionState } from "./session-projection";
+import { createSessionProjectionState, reduceSessionProjection } from "./session-projection";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -454,5 +455,73 @@ describe("brief projection and hydration", () => {
     };
 
     expect(missingBriefIdsForHydration(session)).toEqual(["brief-123"]);
+  });
+});
+
+describe("optimistic operator prompt reconciliation", () => {
+  it("removes a confirmed optimistic item when its canonical message is projected", () => {
+    const projection = reduceSessionProjection(createSessionProjectionState(), {
+      type: "events_received",
+      eventLogEpoch: "epoch-1",
+      events: [{
+        id: "message-event",
+        event_seq: 1,
+        event_log_epoch: "epoch-1",
+        ts: "2026-07-17T00:00:01Z",
+        type: "message_enqueued",
+        payload: {
+          message_id: "message-123",
+          origin: { kind: "operator" },
+          body: "Run the checks",
+        },
+      }],
+    });
+    const detail = materializeProjectionDetail({
+      agent: { id: "agent-1" } as NonNullable<AgentSessionState["detail"]>["agent"],
+      source: "http",
+      timeline: [{
+        id: "operator-prompt:pending:client-123",
+        kind: "operator",
+        label: "Operator input",
+        body: "Run the checks",
+        timestamp: "2026-07-17T00:00:00Z",
+        meta: "Sent",
+        minDisplayLevel: "info",
+        sourceIds: [
+          "pending-operator-prompt",
+          "operator-prompt-client:client-123",
+          "operator-prompt-message:message-123",
+        ],
+      }, {
+        id: "operator-prompt:pending:client-456",
+        kind: "operator",
+        label: "Operator input",
+        body: "Run different checks",
+        timestamp: "2026-07-17T00:00:00Z",
+        meta: "Sent",
+        minDisplayLevel: "info",
+        sourceIds: [
+          "pending-operator-prompt",
+          "operator-prompt-client:client-456",
+          "operator-prompt-message:message-456",
+        ],
+      }],
+    }, projection, "info");
+
+    expect(detail?.timeline).toHaveLength(2);
+    expect(detail?.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "message:message-123",
+      }),
+      expect.objectContaining({
+      id: "operator-prompt:pending:client-456",
+      body: "Run different checks",
+      }),
+    ]));
+    expect(detail?.timeline).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "operator-prompt:pending:client-123",
+      }),
+    ]));
   });
 });
