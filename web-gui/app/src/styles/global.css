@@ -2006,12 +2006,77 @@ code {
   font-size: 11px;
 }
 
-.activity-state-evolution {
+.activity-tail,
+.activity-execution-meta,
+.activity-status-trail,
+.activity-status-step,
+.activity-meta-chip,
+.activity-meta-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.activity-tail {
+  min-width: 0;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.activity-execution-meta {
   flex: 0 0 auto;
-  margin-left: 4px;
+  gap: 5px;
+}
+
+.activity-meta-chip {
+  gap: 3px;
   color: var(--faint);
   font-size: 11px;
-  white-space: nowrap;
+}
+
+.activity-meta-chip.success,
+.activity-status-step[data-status="completed"] {
+  color: var(--success);
+}
+
+.activity-meta-chip.danger,
+.activity-status-step[data-status="failed"] {
+  color: var(--danger);
+}
+
+.activity-meta-icon,
+.activity-status-trail {
+  color: var(--faint);
+}
+
+.activity-status-step {
+  gap: 2px;
+}
+
+.activity-status-connector {
+  width: 7px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.activity-status-step[data-status="running"],
+.activity-status-step[data-status="cancelling"],
+.activity-status-step[data-status="interrupted"] {
+  color: var(--warning);
+}
+
+.activity-status-step[data-status="cancelled"] {
+  color: var(--muted);
+}
+
+.is-spinning {
+  animation: activity-spin 1s linear infinite;
+}
+
+@keyframes activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .activity-meta {

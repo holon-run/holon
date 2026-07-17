@@ -449,6 +449,29 @@ export interface AgentTimelineItemDetail {
   tone?: "command" | "output" | "data" | "diff";
 }
 
+export type TimelineExecutionOutcome =
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "promoted";
+
+export interface TimelineExecutionMeta {
+  outcome?: TimelineExecutionOutcome;
+  exitStatus?: number;
+  durationMs?: number;
+  outputTruncated?: boolean;
+  taskId?: string;
+}
+
+export interface TimelineStatusStep {
+  status: TimelineExecutionOutcome;
+  timestamp?: string;
+}
+
 export type TimelineStateObjectRef =
   | {
       kind: "work_item";
@@ -481,7 +504,8 @@ export interface AgentTimelineActivity {
   stateObjectRef?: TimelineStateObjectRef;
   relatedStateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
-  stateEvolution?: string[];
+  executionMeta?: TimelineExecutionMeta;
+  statusTrail?: TimelineStatusStep[];
   rawEvent?: unknown;
   debug?: string;
 }
@@ -632,7 +656,8 @@ export interface AgentTimelineItem {
   stateObjectRef?: TimelineStateObjectRef;
   relatedStateObjectRef?: TimelineStateObjectRef;
   detail?: AgentTimelineItemDetail;
-  stateEvolution?: string[];
+  executionMeta?: TimelineExecutionMeta;
+  statusTrail?: TimelineStatusStep[];
   activities?: AgentTimelineActivity[];
   rawEvent?: unknown;
   debug?: string;

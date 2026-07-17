@@ -31,6 +31,8 @@ import type {
   AgentTimelineItem,
   AgentTimelineItemDetail,
   AgentTimelineItemKind,
+  TimelineExecutionMeta,
+  TimelineStatusStep,
   TimelineStateObjectRef,
   DisplayLevel,
   RuntimeMessageEnvelope,
@@ -82,6 +84,8 @@ interface SessionItemDraft {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
+  executionMeta?: TimelineExecutionMeta;
+  statusTrail?: TimelineStatusStep[];
   rawEvent?: unknown;
   debug?: string;
 }
@@ -345,7 +349,7 @@ export function projectRuntimeEvent(
   messagesById?: Record<string, RuntimeMessageEnvelope>,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
   briefRecordsById?: Record<string, RuntimeBriefRecord>,
-): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
+): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload, messagesById);
     if (message?.origin === "operator") {
@@ -517,7 +521,7 @@ export function projectToolExecution(
   eventType: string,
   payload: Record<string, unknown> | undefined,
   options: { includeHiddenWorkItemMutations?: boolean } = {},
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail" | "executionMeta"> | undefined {
   const toolName = stringField(payload, "tool_name") ?? "tool";
   const failed = eventType === "tool_execution_failed" || Boolean(payload?.error);
   if (!failed && isWorkItemMutationTool(toolName) && !options.includeHiddenWorkItemMutations) return undefined;
@@ -526,7 +530,8 @@ export function projectToolExecution(
   const summary = stringField(payload, "summary");
   const commandPreview = execCommandPreview(payload);
   const result = asRecord(payload?.exec_command_result);
-  const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
+  const taskOutputInfo = toolName === "TaskOutput" ? extractTaskFromOutput(payload) : undefined;
+  const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status") ?? taskOutputInfo?.exitStatus;
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const error = toolErrorMessage(payload);
   const disposition = firstStringField(payload, ["exec_command_disposition"]) ?? firstStringField(result, ["disposition"]);
@@ -538,13 +543,16 @@ export function projectToolExecution(
   const suppressDuration = promoted || isReadControlTool(toolName);
   const effectiveDuration = suppressDuration ? undefined : durationMs;
   const promotedTaskId = promoted ? firstStringField(asRecord(payload?.task_handle), ["task_id"]) : undefined;
-  const body = compactJoin([
-    toolSummary,
-    promotedTaskId ? `task ${shortTaskId(promotedTaskId)}` : undefined,
-    exitStatus == null ? undefined : `exit ${exitStatus}`,
-    effectiveDuration == null ? undefined : formatDuration(effectiveDuration),
-    error,
-  ]);
+  const outputTruncated = toolOutputTruncated(payload) || taskOutputInfo?.truncated === true;
+  const executionTaskId = promotedTaskId ?? taskOutputInfo?.taskId;
+  const outcome = failed || (exitStatus != null && exitStatus !== 0)
+    ? "failed"
+    : promoted
+      ? "promoted"
+      : taskOutputInfo?.taskStatus === "running" || taskOutputInfo?.taskStatus === "cancelling"
+        ? taskOutputInfo.taskStatus
+        : "completed";
+  const body = compactJoin([toolSummary, error]);
   const outputPreview = commandOutputPreview(payload);
   const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview, toolSummary, failed ? error : undefined);
 
@@ -553,8 +561,25 @@ export function projectToolExecution(
     label,
     body: body || (failed ? "Failed." : "Completed."),
     detail,
+    executionMeta: {
+      outcome,
+      exitStatus,
+      durationMs: effectiveDuration,
+      outputTruncated: outputTruncated || undefined,
+      taskId: executionTaskId,
+    },
     minDisplayLevel: toolTimelineDisplayLevel(toolName),
   };
+}
+
+function toolOutputTruncated(payload: Record<string, unknown> | undefined): boolean {
+  const result = unwrapToolResult(payload);
+  const task = asRecord(result.task) ?? asRecord(result.task_record);
+  return payload?.output_truncated === true
+    || payload?.truncated === true
+    || result.output_truncated === true
+    || result.truncated === true
+    || task?.output_truncated === true;
 }
 
 function shortTaskId(taskId: string): string {
@@ -849,8 +874,6 @@ function projectTaskOutputTool(payload: Record<string, unknown> | undefined): Pi
     info.taskStatus,
     info.kind,
     info.summary,
-    info.exitStatus != null ? `exit ${info.exitStatus}` : undefined,
-    info.truncated ? "truncated" : undefined,
   ]);
   return {
     body,
@@ -1436,21 +1459,20 @@ function summarizeWorkItemEvent(eventType: string, payload: Record<string, unkno
 export function projectTaskLifecycleEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> {
   const status = firstStringField(payload, ["task_status", "status"]);
   const summary = stringField(payload, "summary");
   const outputPreview = stringField(payload, "output_summary_preview");
   const error = stringField(payload, "error");
   const taskId = stringField(payload, "task_id");
   const exitStatus = numberField(payload, "exit_status");
+  const durationMs = numberField(payload, "duration_ms");
+  const outputTruncated = payload?.output_truncated === true;
   const outputPath = stringField(payload, "output_path");
   const label = taskLifecycleLabel(eventType, status);
   const body = compactJoin([
     summary || taskId,
-    status && !label.toLowerCase().includes(status.toLowerCase()) ? status : undefined,
-    exitStatus == null ? undefined : `exit ${exitStatus}`,
     error,
-    outputPreview,
   ]) || humanizeEventType(eventType);
   const detailText = compactJoin([
     taskId ? `task: ${taskId}` : undefined,
@@ -1464,7 +1486,28 @@ export function projectTaskLifecycleEvent(
     body,
     minDisplayLevel: error || isFailedTaskStatus(status) ? "info" : "verbose",
     detail: detailText ? { label: "Task details", text: detailText, tone: outputPreview ? "output" : "data" } : undefined,
+    executionMeta: {
+      outcome: taskExecutionOutcome(eventType, status),
+      exitStatus,
+      durationMs,
+      outputTruncated: outputTruncated || undefined,
+      taskId,
+    },
+    statusTrail: [{ status: taskExecutionOutcome(eventType, status) }],
   };
+}
+
+function taskExecutionOutcome(eventType: string, status: string | undefined): NonNullable<TimelineExecutionMeta["outcome"]> {
+  if (status === "created" || status === "queued" || eventType === "task_created") return "queued";
+  if (
+    status === "running"
+    || status === "cancelling"
+    || status === "completed"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "interrupted"
+  ) return status;
+  return eventType === "task_result_received" ? "completed" : "running";
 }
 
 function taskLifecycleLabel(eventType: string, status: string | undefined): string {
