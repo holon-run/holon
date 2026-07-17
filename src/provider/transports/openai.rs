@@ -21,11 +21,11 @@ use crate::{
     },
     config::{
         load_credential_store_at, save_credential_store_at, AppConfig, CredentialKind,
-        CredentialProfileFile, CredentialSource, ModelRef, ProviderBuiltinWebSearchConfig,
-        ProviderId, ProviderRuntimeConfig,
+        CredentialProfileFile, CredentialSource, ModelRef, ModelRouteRef,
+        ProviderBuiltinWebSearchConfig, ProviderId, ProviderRuntimeConfig, RuntimeModelCatalog,
     },
     context::ContextConfig,
-    model_catalog::{BuiltInModelCatalog, ModelVerbosity},
+    model_catalog::{ModelRuntimeOverride, ModelVerbosity},
     provider::{
         builtin_web_search_probe_turn_request, emitted_tool_json_schema,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
@@ -267,12 +267,15 @@ impl OpenAiProvider {
             .providers
             .get(&ProviderId::openai())
             .ok_or_else(|| anyhow::anyhow!("missing openai provider config"))?;
+        let policy = openai_model_policy_from_config(config, ProviderId::openai(), model);
         Self::from_runtime_config_with_compaction_policy(
             provider_config,
             model,
-            config.runtime_max_output_tokens,
+            policy.runtime_max_output_tokens,
             &config.home_dir,
-            openai_compaction_policy_from_config(config, ProviderId::openai(), model),
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+            },
         )
     }
 
@@ -282,12 +285,16 @@ impl OpenAiProvider {
         max_output_tokens: u32,
         trace_home_dir: &Path,
     ) -> Result<Self> {
+        let policy =
+            openai_model_policy_for_runtime_config(provider_config, model, max_output_tokens);
         Self::from_runtime_config_with_compaction_policy(
             provider_config,
             model,
-            max_output_tokens,
+            policy.runtime_max_output_tokens,
             trace_home_dir,
-            openai_compaction_policy_for_model(ProviderId::openai(), model, max_output_tokens),
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+            },
         )
     }
 
@@ -491,14 +498,17 @@ impl OpenAiCodexProvider {
             .providers
             .get(&ProviderId::openai_codex())
             .ok_or_else(|| anyhow::anyhow!("missing openai-codex provider config"))?;
+        let policy = openai_model_policy_from_config(config, ProviderId::openai_codex(), model);
         Self::from_runtime_config_with_compaction_policy(
             provider_config,
             model,
-            config.runtime_max_output_tokens,
+            policy.runtime_max_output_tokens,
             &config.home_dir,
-            openai_compaction_policy_from_config(config, ProviderId::openai_codex(), model),
-            openai_verbosity_from_config(config, ProviderId::openai_codex(), model),
-            false,
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+            },
+            policy.verbosity,
+            policy.capabilities.supports_reasoning,
         )
     }
 
@@ -509,17 +519,17 @@ impl OpenAiCodexProvider {
         trace_home_dir: &Path,
         supports_reasoning: bool,
     ) -> Result<Self> {
+        let policy =
+            openai_model_policy_for_runtime_config(provider_config, model, max_output_tokens);
         Self::from_runtime_config_with_compaction_policy(
             provider_config,
             model,
-            max_output_tokens,
+            policy.runtime_max_output_tokens,
             trace_home_dir,
-            openai_compaction_policy_for_model(
-                ProviderId::openai_codex(),
-                model,
-                max_output_tokens,
-            ),
-            openai_verbosity_for_model(ProviderId::openai_codex(), model, max_output_tokens),
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+            },
+            policy.verbosity,
             supports_reasoning,
         )
     }
@@ -828,25 +838,6 @@ fn resolve_openai_codex_credential(
     })
 }
 
-fn openai_compaction_policy_from_config(
-    config: &AppConfig,
-    provider: ProviderId,
-    model: &str,
-) -> OpenAiCompactionPolicy {
-    let policy = openai_model_policy_from_config(config, provider, model);
-    OpenAiCompactionPolicy {
-        trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
-    }
-}
-
-fn openai_verbosity_from_config(
-    config: &AppConfig,
-    provider: ProviderId,
-    model: &str,
-) -> Option<ModelVerbosity> {
-    openai_model_policy_from_config(config, provider, model).verbosity
-}
-
 fn openai_model_policy_from_config(
     config: &AppConfig,
     provider: ProviderId,
@@ -864,49 +855,46 @@ fn openai_model_policy_from_config(
         max_relevant_episodes: config.max_relevant_episodes,
         ..ContextConfig::default()
     };
-    BuiltInModelCatalog::default().resolve_policy(
-        &ModelRef::new(provider, model),
-        &config.validated_model_overrides,
-        &config.model_discovery_cache.models(),
-        config.validated_unknown_model_fallback.as_ref(),
-        &base_context_config,
-        config.runtime_max_output_tokens,
-    )
+    let route_ref = config
+        .providers
+        .get(&provider)
+        .map(|provider_config| {
+            ModelRouteRef::new(
+                provider_config.route_provider.clone(),
+                provider_config.route_endpoint.clone(),
+                model,
+            )
+        })
+        .unwrap_or_else(|| ModelRouteRef::from_legacy_model_ref(&ModelRef::new(provider, model)));
+    RuntimeModelCatalog::from_config(config)
+        .resolved_model_policy(&base_context_config, Some(&route_ref))
 }
 
-fn openai_compaction_policy_for_model(
-    provider: ProviderId,
+fn openai_model_policy_for_runtime_config(
+    provider_config: &ProviderRuntimeConfig,
     model: &str,
     max_output_tokens: u32,
-) -> OpenAiCompactionPolicy {
-    let policy = BuiltInModelCatalog::default().resolve_policy(
-        &ModelRef::new(provider, model),
-        &Default::default(),
-        &Default::default(),
-        None,
-        &ContextConfig::default(),
-        max_output_tokens,
+) -> crate::model_catalog::ResolvedRuntimeModelPolicy {
+    let model_ref = ModelRef::new(provider_config.route_provider.clone(), model);
+    let route_ref = ModelRouteRef::new(
+        provider_config.route_provider.clone(),
+        provider_config.route_endpoint.clone(),
+        model,
     );
-    OpenAiCompactionPolicy {
-        trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+    let mut model_overrides = HashMap::new();
+    model_overrides.insert(
+        model_ref,
+        ModelRuntimeOverride {
+            runtime_max_output_tokens: Some(max_output_tokens),
+            ..ModelRuntimeOverride::default()
+        },
+    );
+    RuntimeModelCatalog {
+        model_overrides,
+        configured_runtime_max_output_tokens: max_output_tokens,
+        ..RuntimeModelCatalog::default()
     }
-}
-
-fn openai_verbosity_for_model(
-    provider: ProviderId,
-    model: &str,
-    max_output_tokens: u32,
-) -> Option<ModelVerbosity> {
-    BuiltInModelCatalog::default()
-        .resolve_policy(
-            &ModelRef::new(provider, model),
-            &Default::default(),
-            &Default::default(),
-            None,
-            &ContextConfig::default(),
-            max_output_tokens,
-        )
-        .verbosity
+    .resolved_model_policy(&ContextConfig::default(), Some(&route_ref))
 }
 
 impl OpenAiChatCompletionsProvider {
@@ -915,10 +903,11 @@ impl OpenAiChatCompletionsProvider {
             .providers
             .get(&ProviderId::openai())
             .ok_or_else(|| anyhow::anyhow!("missing openai provider config"))?;
-        Self::from_runtime_config(
+        let policy = openai_model_policy_from_config(config, ProviderId::openai(), model);
+        Self::from_resolved_runtime_config(
             provider_config,
             model,
-            config.runtime_max_output_tokens,
+            policy.runtime_max_output_tokens,
             &config.home_dir,
         )
     }
@@ -927,6 +916,22 @@ impl OpenAiChatCompletionsProvider {
         provider_config: &ProviderRuntimeConfig,
         model: &str,
         max_output_tokens: u32,
+        trace_home_dir: &Path,
+    ) -> Result<Self> {
+        let policy =
+            openai_model_policy_for_runtime_config(provider_config, model, max_output_tokens);
+        Self::from_resolved_runtime_config(
+            provider_config,
+            model,
+            policy.runtime_max_output_tokens,
+            trace_home_dir,
+        )
+    }
+
+    pub(crate) fn from_resolved_runtime_config(
+        provider_config: &ProviderRuntimeConfig,
+        model: &str,
+        resolved_max_output_tokens: u32,
         trace_home_dir: &Path,
     ) -> Result<Self> {
         let client = build_http_client()?;
@@ -955,7 +960,7 @@ impl OpenAiChatCompletionsProvider {
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
             model: model.to_string(),
-            max_output_tokens,
+            max_output_tokens: resolved_max_output_tokens,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
@@ -5744,12 +5749,12 @@ mod tests {
         chat_completions_url, choose_openai_codex_credential, consume_openai_sse_event,
         incremental_diagnostics, latest_openai_compaction_index, native_web_search_diagnostics,
         openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
-        openai_provider_window_compaction_candidate,
+        openai_model_policy_for_runtime_config, openai_provider_window_compaction_candidate,
         parse_openai_codex_image_generation_response_items, plan_openai_responses_request,
-        resolve_openai_codex_credential, CredentialStoreRefreshLock, OpenAiCodexProvider,
-        OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProvider, OpenAiProviderWindow,
-        OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesContinuationContract,
-        OpenAiResponsesTransportContract, ToolSchemaContract,
+        resolve_openai_codex_credential, CredentialStoreRefreshLock, OpenAiChatCompletionsProvider,
+        OpenAiCodexProvider, OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProvider,
+        OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
+        OpenAiResponsesContinuationContract, OpenAiResponsesTransportContract, ToolSchemaContract,
     };
     use crate::auth::CodexCliCredential;
     use crate::config::{
@@ -5857,6 +5862,38 @@ mod tests {
             context_management: Default::default(),
             builtin_web_search: None,
         }
+    }
+
+    #[test]
+    fn runtime_config_policy_preserves_exact_route_and_explicit_output_limit() {
+        let mut config = test_openai_codex_config(Some("credential".into()));
+        config.route_provider = ProviderId::parse("volcengine").unwrap();
+        config.route_endpoint = ProviderEndpointId::parse("plan").unwrap();
+
+        let clamped = openai_model_policy_for_runtime_config(&config, "glm-5.2", 200_000);
+        assert_eq!(clamped.runtime_max_output_tokens, 128_000);
+        assert_eq!(clamped.reasoning_effort_options, ["low", "medium", "high"]);
+
+        let explicit = openai_model_policy_for_runtime_config(&config, "glm-5.2", 1_024);
+        assert_eq!(explicit.runtime_max_output_tokens, 1_024);
+    }
+
+    #[test]
+    fn chat_completions_resolved_runtime_config_does_not_resolve_metadata_again() {
+        let mut config = test_openai_codex_config(Some("credential".into()));
+        config.route_provider = ProviderId::parse("volcengine").unwrap();
+        config.route_endpoint = ProviderEndpointId::parse("plan").unwrap();
+        let home = tempfile::tempdir().unwrap();
+
+        let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config(
+            &config,
+            "glm-5.2",
+            200_000,
+            home.path(),
+        )
+        .unwrap();
+
+        assert_eq!(provider.max_output_tokens, 200_000);
     }
 
     #[test]

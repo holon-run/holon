@@ -162,6 +162,46 @@ fn provider_large_window_request_with_prompt_frame() -> ProviderTurnRequest {
 }
 
 #[tokio::test]
+async fn openai_from_config_uses_resolved_max_output_override_on_the_wire() {
+    let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let response_bodies_for_server = response_bodies.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = response_bodies_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                Json(openai_text_response("resp_1", "done"))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, false);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    fixture.config.validated_model_overrides.insert(
+        ModelRef::parse("openai/gpt-5.4").unwrap(),
+        ModelRuntimeOverride {
+            runtime_max_output_tokens: Some(1_234),
+            ..ModelRuntimeOverride::default()
+        },
+    );
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let response_bodies = response_bodies.lock().unwrap();
+    assert_eq!(response_bodies[0]["max_output_tokens"], json!(1_234));
+}
+
+#[tokio::test]
 async fn openai_responses_lowers_user_image_to_input_image() {
     let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let response_bodies_for_server = response_bodies.clone();

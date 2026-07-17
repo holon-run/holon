@@ -121,7 +121,7 @@ pub(crate) fn build_candidate_from_model_route(
             )?)
         }
         ProviderTransportKind::OpenAiChatCompletions => {
-            Arc::new(OpenAiChatCompletionsProvider::from_runtime_config(
+            Arc::new(OpenAiChatCompletionsProvider::from_resolved_runtime_config(
                 provider_config,
                 &model_ref.model,
                 max_output_tokens,

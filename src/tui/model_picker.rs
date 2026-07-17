@@ -259,6 +259,7 @@ mod tests {
                 .then(|| vec!["low".into(), "medium".into(), "high".into()])
                 .unwrap_or_default(),
             source: ModelMetadataSource::BuiltInCatalog,
+            evidence: Default::default(),
         }
     }
 

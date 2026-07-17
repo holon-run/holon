@@ -244,6 +244,7 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
                 },
                 reasoning_effort_options: Vec::new(),
                 source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
+                evidence: Default::default(),
             },
         },
         token_usage: AgentTokenUsageSummary {
@@ -332,6 +333,7 @@ fn sample_model_availability(
                 .then(|| vec!["low".into(), "medium".into(), "high".into()])
                 .unwrap_or_default(),
             source: crate::model_catalog::ModelMetadataSource::RemoteDiscovered,
+            evidence: Default::default(),
         },
         resolved_capabilities: None,
     }

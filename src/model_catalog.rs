@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,78 @@ pub enum ModelMetadataSource {
 impl Default for ModelMetadataSource {
     fn default() -> Self {
         Self::UnknownFallback
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelMetadataOrigin {
+    ExplicitOverride,
+    RemoteDiscovered,
+    RouteBuiltin,
+    ModelBuiltin,
+    UnknownFallback,
+    RuntimeDefault,
+    Derived,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelMetadataField {
+    DisplayName,
+    Description,
+    ContextWindowTokens,
+    EffectiveContextWindowPercent,
+    AutoCompactTokenLimit,
+    PromptBudgetEstimatedTokens,
+    CompactionTriggerEstimatedTokens,
+    CompactionKeepRecentEstimatedTokens,
+    RuntimeMaxOutputTokens,
+    Verbosity,
+    ToolOutputTruncationEstimatedTokens,
+    MaxOutputTokensUpperLimit,
+    ParallelToolCalls,
+    ImageInput,
+    ImageGeneration,
+    SupportsReasoning,
+    InteractiveExec,
+    ReasoningEffortOptions,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelMetadataConstraintKind {
+    Clamped,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelMetadataConstraintSource {
+    ModelUpperLimit,
+    TransportCapability,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelMetadataConstraint {
+    pub field: ModelMetadataField,
+    pub kind: ModelMetadataConstraintKind,
+    pub source: ModelMetadataConstraintSource,
+    pub requested: String,
+    pub effective: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelMetadataEvidence {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<ModelMetadataField, ModelMetadataOrigin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<ModelMetadataConstraint>,
+}
+
+impl ModelMetadataEvidence {
+    pub fn source_for(&self, field: ModelMetadataField) -> Option<ModelMetadataOrigin> {
+        self.fields.get(&field).copied()
     }
 }
 
@@ -126,24 +198,6 @@ impl ModelCapabilityOverride {
             && self.image_generation.is_none()
             && self.supports_reasoning.is_none()
             && self.interactive_exec.is_none()
-    }
-
-    fn apply_to(&self, base: &mut ModelCapabilityFlags) {
-        if let Some(value) = self.parallel_tool_calls {
-            base.parallel_tool_calls = value;
-        }
-        if let Some(value) = self.image_input {
-            base.image_input = value;
-        }
-        if let Some(value) = self.image_generation {
-            base.image_generation = value;
-        }
-        if let Some(value) = self.supports_reasoning {
-            base.supports_reasoning = value;
-        }
-        if let Some(value) = self.interactive_exec {
-            base.interactive_exec = value;
-        }
     }
 }
 
@@ -266,6 +320,8 @@ pub struct ResolvedRuntimeModelPolicy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_effort_options: Vec<String>,
     pub source: ModelMetadataSource,
+    #[serde(default)]
+    pub evidence: ModelMetadataEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +373,7 @@ impl Default for ResolvedRuntimeModelPolicy {
             capabilities: ModelCapabilityFlags::default(),
             reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::UnknownFallback,
+            evidence: ModelMetadataEvidence::default(),
         }
     }
 }
@@ -351,6 +408,12 @@ impl ResolvedRuntimeModelPolicy {
             self.reasoning_effort_options.join(", ")
         )))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedModelMetadata {
+    policy: ResolvedRuntimeModelPolicy,
+    catalog_entry: BuiltInModelMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -517,9 +580,10 @@ impl BuiltInModelCatalog {
         configured_runtime_max_output_tokens: u32,
     ) -> ResolvedRuntimeModelPolicy {
         let model_ref = route_ref.model_ref();
-        self.resolve_policy_with_builtin(
+        self.resolve_metadata(
             &model_ref,
             self.route_entries.get(route_ref),
+            self.get(&model_ref),
             overrides,
             discovered_models,
             unknown_fallback,
@@ -527,6 +591,7 @@ impl BuiltInModelCatalog {
             configured_runtime_max_output_tokens,
             Some(&route_ref.endpoint),
         )
+        .policy
     }
 
     pub fn resolve_policy(
@@ -538,8 +603,9 @@ impl BuiltInModelCatalog {
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
     ) -> ResolvedRuntimeModelPolicy {
-        self.resolve_policy_with_builtin(
+        self.resolve_metadata(
             model_ref,
+            None,
             self.get(model_ref),
             overrides,
             discovered_models,
@@ -548,153 +614,588 @@ impl BuiltInModelCatalog {
             configured_runtime_max_output_tokens,
             None,
         )
+        .policy
+    }
+
+    pub(crate) fn resolve_catalog_entry(
+        &self,
+        model_ref: &ModelRef,
+        overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        unknown_fallback: Option<&ModelRuntimeOverride>,
+        base_context_config: &ContextConfig,
+        configured_runtime_max_output_tokens: u32,
+    ) -> BuiltInModelMetadata {
+        self.resolve_metadata(
+            model_ref,
+            None,
+            self.get(model_ref),
+            overrides,
+            discovered_models,
+            unknown_fallback,
+            base_context_config,
+            configured_runtime_max_output_tokens,
+            None,
+        )
+        .catalog_entry
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn resolve_policy_with_builtin(
+    fn resolve_metadata(
         &self,
         model_ref: &ModelRef,
         route_builtin: Option<&BuiltInModelMetadata>,
+        model_builtin: Option<&BuiltInModelMetadata>,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
         discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
         endpoint: Option<&ProviderEndpointId>,
-    ) -> ResolvedRuntimeModelPolicy {
+    ) -> ResolvedModelMetadata {
         let discovered = discovered_models.get(model_ref);
-        let built_in = discovered.or(route_builtin);
         let override_config = overrides.get(model_ref);
-        let fallback_override = if built_in.is_none() {
+        let has_metadata =
+            route_builtin.is_some() || model_builtin.is_some() || discovered.is_some();
+        let fallback_override = if !has_metadata {
             unknown_fallback
         } else {
             None
         };
-        let source = if override_config.is_some() || fallback_override.is_some() {
-            if built_in.is_some() {
-                ModelMetadataSource::ConfigOverride
-            } else {
-                ModelMetadataSource::UnknownFallback
-            }
+        let mut evidence = ModelMetadataEvidence::default();
+        let source = if override_config.is_some() {
+            ModelMetadataSource::ConfigOverride
+        } else if fallback_override.is_some() {
+            ModelMetadataSource::UnknownFallback
+        } else if discovered.is_some() {
+            ModelMetadataSource::RemoteDiscovered
         } else {
-            built_in
+            route_builtin
+                .or(model_builtin)
                 .map(|entry| entry.source)
                 .unwrap_or(ModelMetadataSource::UnknownFallback)
         };
-        let display_name = override_config
-            .and_then(|value| value.display_name.clone())
-            .or_else(|| built_in.map(|entry| entry.display_name.clone()))
-            .or_else(|| fallback_override.and_then(|value| value.display_name.clone()))
-            .unwrap_or_else(|| model_ref.as_string());
-        let description = override_config
-            .and_then(|value| value.description.clone())
-            .or_else(|| built_in.map(|entry| entry.description.clone()))
-            .or_else(|| fallback_override.and_then(|value| value.description.clone()))
-            .unwrap_or_else(|| "Explicit unknown-model fallback policy".to_string());
-        let context_window_tokens = override_config
-            .and_then(|value| value.context_window_tokens)
-            .or_else(|| built_in.and_then(|entry| entry.context_window_tokens))
-            .or_else(|| fallback_override.and_then(|value| value.context_window_tokens));
-        let effective_context_window_percent = validated_percent(
-            override_config
-                .and_then(|value| value.effective_context_window_percent)
-                .or_else(|| built_in.map(|entry| entry.effective_context_window_percent))
-                .or_else(|| {
-                    fallback_override.and_then(|value| value.effective_context_window_percent)
-                })
-                .unwrap_or(DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT),
+        let display_name = select_field(
+            &mut evidence,
+            ModelMetadataField::DisplayName,
+            [
+                (
+                    override_config.and_then(|value| value.display_name.clone()),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    discovered.map(|entry| entry.display_name.clone()),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    route_builtin.map(|entry| entry.display_name.clone()),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    model_builtin.map(|entry| entry.display_name.clone()),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+                (
+                    fallback_override.and_then(|value| value.display_name.clone()),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
+        )
+        .unwrap_or_else(|| {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::DisplayName,
+                ModelMetadataOrigin::Derived,
+            );
+            model_ref.as_string()
+        });
+        let description = select_field(
+            &mut evidence,
+            ModelMetadataField::Description,
+            [
+                (
+                    override_config.and_then(|value| value.description.clone()),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    discovered.map(|entry| entry.description.clone()),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    route_builtin.map(|entry| entry.description.clone()),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    model_builtin.map(|entry| entry.description.clone()),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+                (
+                    fallback_override.and_then(|value| value.description.clone()),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
+        )
+        .unwrap_or_else(|| {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::Description,
+                ModelMetadataOrigin::Derived,
+            );
+            "Explicit unknown-model fallback policy".to_string()
+        });
+        let context_window_tokens = select_field(
+            &mut evidence,
+            ModelMetadataField::ContextWindowTokens,
+            [
+                (
+                    override_config.and_then(|value| value.context_window_tokens),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    discovered.and_then(|entry| entry.context_window_tokens),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    route_builtin.and_then(|entry| entry.context_window_tokens),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    model_builtin.and_then(|entry| entry.context_window_tokens),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+                (
+                    fallback_override.and_then(|value| value.context_window_tokens),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
         );
-        let prompt_budget_estimated_tokens = override_config
-            .and_then(|value| value.prompt_budget_estimated_tokens)
-            .or_else(|| {
-                context_window_tokens
-                    .map(|window| percent_of(window, usize::from(effective_context_window_percent)))
-            })
-            .or_else(|| fallback_override.and_then(|value| value.prompt_budget_estimated_tokens))
+        if context_window_tokens.is_none() {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::ContextWindowTokens,
+                ModelMetadataOrigin::Derived,
+            );
+        }
+        let effective_context_window_percent = validated_percent(
+            select_field(
+                &mut evidence,
+                ModelMetadataField::EffectiveContextWindowPercent,
+                [
+                    (
+                        override_config.and_then(|value| value.effective_context_window_percent),
+                        ModelMetadataOrigin::ExplicitOverride,
+                    ),
+                    (
+                        route_builtin.map(|entry| entry.effective_context_window_percent),
+                        ModelMetadataOrigin::RouteBuiltin,
+                    ),
+                    (
+                        model_builtin.map(|entry| entry.effective_context_window_percent),
+                        ModelMetadataOrigin::ModelBuiltin,
+                    ),
+                    (
+                        discovered.map(|entry| entry.effective_context_window_percent),
+                        ModelMetadataOrigin::RemoteDiscovered,
+                    ),
+                    (
+                        fallback_override.and_then(|value| value.effective_context_window_percent),
+                        ModelMetadataOrigin::UnknownFallback,
+                    ),
+                ],
+            )
             .unwrap_or_else(|| {
-                if built_in.is_none() {
-                    DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS
-                } else {
-                    base_context_config.prompt_budget_estimated_tokens
-                }
-            });
-        let auto_compact_token_limit = override_config
-            .and_then(|value| value.auto_compact_token_limit)
-            .or_else(|| built_in.and_then(|entry| entry.auto_compact_token_limit))
-            .or_else(|| fallback_override.and_then(|value| value.auto_compact_token_limit));
-        let compaction_trigger_estimated_tokens = override_config
-            .and_then(|value| value.compaction_trigger_estimated_tokens)
-            .or_else(|| {
-                fallback_override.and_then(|value| value.compaction_trigger_estimated_tokens)
-            })
-            .or(auto_compact_token_limit)
-            .or_else(|| {
-                Some(percent_of(
-                    prompt_budget_estimated_tokens,
-                    usize::from(DEFAULT_COMPACTION_TRIGGER_PERCENT),
-                ))
-            })
-            .unwrap_or(base_context_config.compaction_trigger_estimated_tokens);
-        let compaction_keep_recent_estimated_tokens = override_config
-            .and_then(|value| value.compaction_keep_recent_estimated_tokens)
-            .or_else(|| {
-                fallback_override.and_then(|value| value.compaction_keep_recent_estimated_tokens)
-            })
-            .or_else(|| {
-                Some(percent_of(
-                    compaction_trigger_estimated_tokens,
-                    usize::from(DEFAULT_KEEP_RECENT_PERCENT),
-                ))
-            })
-            .unwrap_or(base_context_config.compaction_keep_recent_estimated_tokens);
-        let runtime_max_output_tokens = override_config
-            .and_then(|value| value.runtime_max_output_tokens)
-            .or_else(|| built_in.and_then(|entry| entry.default_max_output_tokens))
-            .or_else(|| fallback_override.and_then(|value| value.runtime_max_output_tokens))
-            .unwrap_or(configured_runtime_max_output_tokens);
-        let max_output_tokens_upper_limit =
-            built_in.and_then(|entry| entry.max_output_tokens_upper_limit);
-        // Clamp runtime_max_output_tokens to the model's declared upper limit so
-        // wire-level requests (e.g. Anthropic max_tokens) never exceed what the
-        // provider accepts.
+                record_origin(
+                    &mut evidence,
+                    ModelMetadataField::EffectiveContextWindowPercent,
+                    ModelMetadataOrigin::Derived,
+                );
+                DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT
+            }),
+        );
+        let prompt_budget_estimated_tokens = select_field(
+            &mut evidence,
+            ModelMetadataField::PromptBudgetEstimatedTokens,
+            [
+                (
+                    override_config.and_then(|value| value.prompt_budget_estimated_tokens),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    fallback_override.and_then(|value| value.prompt_budget_estimated_tokens),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
+        )
+        .unwrap_or_else(|| {
+            if let Some(window) = context_window_tokens {
+                record_origin(
+                    &mut evidence,
+                    ModelMetadataField::PromptBudgetEstimatedTokens,
+                    ModelMetadataOrigin::Derived,
+                );
+                percent_of(window, usize::from(effective_context_window_percent))
+            } else if has_metadata {
+                record_origin(
+                    &mut evidence,
+                    ModelMetadataField::PromptBudgetEstimatedTokens,
+                    ModelMetadataOrigin::RuntimeDefault,
+                );
+                base_context_config.prompt_budget_estimated_tokens
+            } else {
+                record_origin(
+                    &mut evidence,
+                    ModelMetadataField::PromptBudgetEstimatedTokens,
+                    ModelMetadataOrigin::Derived,
+                );
+                DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS
+            }
+        });
+        let auto_compact_token_limit = select_field(
+            &mut evidence,
+            ModelMetadataField::AutoCompactTokenLimit,
+            [
+                (
+                    override_config.and_then(|value| value.auto_compact_token_limit),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    route_builtin.and_then(|entry| entry.auto_compact_token_limit),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    model_builtin.and_then(|entry| entry.auto_compact_token_limit),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+                (
+                    discovered.and_then(|entry| entry.auto_compact_token_limit),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    fallback_override.and_then(|value| value.auto_compact_token_limit),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
+        );
+        if auto_compact_token_limit.is_none() {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::AutoCompactTokenLimit,
+                ModelMetadataOrigin::Derived,
+            );
+        }
+        let compaction_trigger_estimated_tokens = select_field(
+            &mut evidence,
+            ModelMetadataField::CompactionTriggerEstimatedTokens,
+            [
+                (
+                    override_config.and_then(|value| value.compaction_trigger_estimated_tokens),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    fallback_override.and_then(|value| value.compaction_trigger_estimated_tokens),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+                (auto_compact_token_limit, ModelMetadataOrigin::Derived),
+            ],
+        )
+        .unwrap_or_else(|| {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::CompactionTriggerEstimatedTokens,
+                ModelMetadataOrigin::Derived,
+            );
+            percent_of(
+                prompt_budget_estimated_tokens,
+                usize::from(DEFAULT_COMPACTION_TRIGGER_PERCENT),
+            )
+        });
+        let compaction_keep_recent_estimated_tokens = select_field(
+            &mut evidence,
+            ModelMetadataField::CompactionKeepRecentEstimatedTokens,
+            [
+                (
+                    override_config.and_then(|value| value.compaction_keep_recent_estimated_tokens),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    fallback_override
+                        .and_then(|value| value.compaction_keep_recent_estimated_tokens),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
+        )
+        .unwrap_or_else(|| {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::CompactionKeepRecentEstimatedTokens,
+                ModelMetadataOrigin::Derived,
+            );
+            percent_of(
+                compaction_trigger_estimated_tokens,
+                usize::from(DEFAULT_KEEP_RECENT_PERCENT),
+            )
+        });
+        let default_max_output_tokens = select_field(
+            &mut evidence,
+            ModelMetadataField::RuntimeMaxOutputTokens,
+            [
+                (
+                    override_config.and_then(|value| value.runtime_max_output_tokens),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    route_builtin.and_then(|entry| entry.default_max_output_tokens),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    model_builtin.and_then(|entry| entry.default_max_output_tokens),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+                (
+                    discovered.and_then(|entry| entry.default_max_output_tokens),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    fallback_override.and_then(|value| value.runtime_max_output_tokens),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
+        );
+        let requested_runtime_max_output_tokens = default_max_output_tokens.unwrap_or_else(|| {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::RuntimeMaxOutputTokens,
+                ModelMetadataOrigin::RuntimeDefault,
+            );
+            configured_runtime_max_output_tokens
+        });
+        let max_output_tokens_upper_limit = select_field(
+            &mut evidence,
+            ModelMetadataField::MaxOutputTokensUpperLimit,
+            [
+                (
+                    route_builtin.and_then(|entry| entry.max_output_tokens_upper_limit),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    discovered.and_then(|entry| entry.max_output_tokens_upper_limit),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    model_builtin.and_then(|entry| entry.max_output_tokens_upper_limit),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+            ],
+        );
+        if max_output_tokens_upper_limit.is_none() {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::MaxOutputTokensUpperLimit,
+                ModelMetadataOrigin::Derived,
+            );
+        }
         let runtime_max_output_tokens = match max_output_tokens_upper_limit {
-            Some(upper) => runtime_max_output_tokens.min(upper),
-            None => runtime_max_output_tokens,
+            Some(upper) if requested_runtime_max_output_tokens > upper => {
+                evidence.constraints.push(ModelMetadataConstraint {
+                    field: ModelMetadataField::RuntimeMaxOutputTokens,
+                    kind: ModelMetadataConstraintKind::Clamped,
+                    source: ModelMetadataConstraintSource::ModelUpperLimit,
+                    requested: requested_runtime_max_output_tokens.to_string(),
+                    effective: upper.to_string(),
+                });
+                upper
+            }
+            _ => requested_runtime_max_output_tokens,
         };
-        let verbosity = override_config
-            .and_then(|value| value.verbosity)
-            .or_else(|| built_in.and_then(|entry| entry.default_verbosity))
-            .or_else(|| fallback_override.and_then(|value| value.verbosity))
-            .or_else(|| default_verbosity_for_model(model_ref));
-        let tool_output_truncation_estimated_tokens = override_config
-            .and_then(|value| value.tool_output_truncation_estimated_tokens)
-            .or_else(|| built_in.and_then(|entry| entry.tool_output_truncation_estimated_tokens))
-            .or_else(|| {
-                fallback_override.and_then(|value| value.tool_output_truncation_estimated_tokens)
-            })
-            .unwrap_or(DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS);
-        let mut capabilities = built_in
-            .map(|entry| entry.capabilities.clone())
-            .unwrap_or_default();
-        if let Some(fallback_capabilities) =
-            fallback_override.and_then(|value| value.capabilities.as_ref())
-        {
-            fallback_capabilities.apply_to(&mut capabilities);
+        let effective_default_max_output_tokens =
+            default_max_output_tokens.map(|_| runtime_max_output_tokens);
+        let verbosity = select_field(
+            &mut evidence,
+            ModelMetadataField::Verbosity,
+            [
+                (
+                    override_config.and_then(|value| value.verbosity),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    route_builtin.and_then(|entry| entry.default_verbosity),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    model_builtin.and_then(|entry| entry.default_verbosity),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+                (
+                    discovered.and_then(|entry| entry.default_verbosity),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    fallback_override.and_then(|value| value.verbosity),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+                (
+                    default_verbosity_for_model(model_ref),
+                    ModelMetadataOrigin::Derived,
+                ),
+            ],
+        );
+        if verbosity.is_none() {
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::Verbosity,
+                ModelMetadataOrigin::Derived,
+            );
         }
-        if let Some(override_capabilities) =
-            override_config.and_then(|value| value.capabilities.as_ref())
-        {
-            override_capabilities.apply_to(&mut capabilities);
-        }
-        let reasoning_effort_options = built_in
-            .map(|entry| entry.reasoning_effort_options.clone())
-            .filter(|options| !options.is_empty())
-            .unwrap_or_else(|| reasoning_effort_options(model_ref, endpoint, &capabilities));
+        let configured_tool_output_truncation_estimated_tokens = select_field(
+            &mut evidence,
+            ModelMetadataField::ToolOutputTruncationEstimatedTokens,
+            [
+                (
+                    override_config.and_then(|value| value.tool_output_truncation_estimated_tokens),
+                    ModelMetadataOrigin::ExplicitOverride,
+                ),
+                (
+                    route_builtin.and_then(|entry| entry.tool_output_truncation_estimated_tokens),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    model_builtin.and_then(|entry| entry.tool_output_truncation_estimated_tokens),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+                (
+                    discovered.and_then(|entry| entry.tool_output_truncation_estimated_tokens),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    fallback_override
+                        .and_then(|value| value.tool_output_truncation_estimated_tokens),
+                    ModelMetadataOrigin::UnknownFallback,
+                ),
+            ],
+        );
+        let tool_output_truncation_estimated_tokens =
+            configured_tool_output_truncation_estimated_tokens.unwrap_or_else(|| {
+                record_origin(
+                    &mut evidence,
+                    ModelMetadataField::ToolOutputTruncationEstimatedTokens,
+                    ModelMetadataOrigin::Derived,
+                );
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS
+            });
+        let capabilities = ModelCapabilityFlags {
+            parallel_tool_calls: resolve_capability_field(
+                &mut evidence,
+                ModelMetadataField::ParallelToolCalls,
+                override_config
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.parallel_tool_calls),
+                discovered.map(|entry| entry.capabilities.parallel_tool_calls),
+                route_builtin.map(|entry| entry.capabilities.parallel_tool_calls),
+                model_builtin.map(|entry| entry.capabilities.parallel_tool_calls),
+                fallback_override
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.parallel_tool_calls),
+            ),
+            image_input: resolve_capability_field(
+                &mut evidence,
+                ModelMetadataField::ImageInput,
+                override_config
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.image_input),
+                discovered.map(|entry| entry.capabilities.image_input),
+                route_builtin.map(|entry| entry.capabilities.image_input),
+                model_builtin.map(|entry| entry.capabilities.image_input),
+                fallback_override
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.image_input),
+            ),
+            image_generation: resolve_capability_field(
+                &mut evidence,
+                ModelMetadataField::ImageGeneration,
+                override_config
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.image_generation),
+                discovered.map(|entry| entry.capabilities.image_generation),
+                route_builtin.map(|entry| entry.capabilities.image_generation),
+                model_builtin.map(|entry| entry.capabilities.image_generation),
+                fallback_override
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.image_generation),
+            ),
+            supports_reasoning: resolve_capability_field(
+                &mut evidence,
+                ModelMetadataField::SupportsReasoning,
+                override_config
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.supports_reasoning),
+                discovered.map(|entry| entry.capabilities.supports_reasoning),
+                route_builtin.map(|entry| entry.capabilities.supports_reasoning),
+                model_builtin.map(|entry| entry.capabilities.supports_reasoning),
+                fallback_override
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.supports_reasoning),
+            ),
+            interactive_exec: resolve_capability_field(
+                &mut evidence,
+                ModelMetadataField::InteractiveExec,
+                override_config
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.interactive_exec),
+                discovered.map(|entry| entry.capabilities.interactive_exec),
+                route_builtin.map(|entry| entry.capabilities.interactive_exec),
+                model_builtin.map(|entry| entry.capabilities.interactive_exec),
+                fallback_override
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.interactive_exec),
+            ),
+        };
+        let reasoning_effort_options = select_field(
+            &mut evidence,
+            ModelMetadataField::ReasoningEffortOptions,
+            [
+                (
+                    route_builtin
+                        .map(|entry| entry.reasoning_effort_options.clone())
+                        .filter(|options| !options.is_empty()),
+                    ModelMetadataOrigin::RouteBuiltin,
+                ),
+                (
+                    discovered.and_then(|entry| {
+                        (!entry.reasoning_effort_options.is_empty()
+                            || entry.capabilities.supports_reasoning)
+                            .then(|| entry.reasoning_effort_options.clone())
+                    }),
+                    ModelMetadataOrigin::RemoteDiscovered,
+                ),
+                (
+                    model_builtin
+                        .map(|entry| entry.reasoning_effort_options.clone())
+                        .filter(|options| !options.is_empty()),
+                    ModelMetadataOrigin::ModelBuiltin,
+                ),
+            ],
+        )
+        .unwrap_or_else(|| {
+            let options = reasoning_effort_options(model_ref, endpoint, &capabilities);
+            let origin = if !options.is_empty() && route_builtin.is_some() {
+                ModelMetadataOrigin::RouteBuiltin
+            } else if !options.is_empty() && model_builtin.is_some() {
+                ModelMetadataOrigin::ModelBuiltin
+            } else {
+                ModelMetadataOrigin::Derived
+            };
+            record_origin(
+                &mut evidence,
+                ModelMetadataField::ReasoningEffortOptions,
+                origin,
+            );
+            options
+        });
 
-        ResolvedRuntimeModelPolicy {
+        let policy = ResolvedRuntimeModelPolicy {
             model_ref: model_ref.clone(),
-            display_name,
-            description,
+            display_name: display_name.clone(),
+            description: description.clone(),
             context_window_tokens,
             effective_context_window_percent,
             prompt_budget_estimated_tokens,
@@ -704,9 +1205,31 @@ impl BuiltInModelCatalog {
             verbosity,
             tool_output_truncation_estimated_tokens,
             max_output_tokens_upper_limit,
+            capabilities: capabilities.clone(),
+            reasoning_effort_options: reasoning_effort_options.clone(),
+            source,
+            evidence,
+        };
+        let catalog_entry = BuiltInModelMetadata {
+            model_ref: model_ref.clone(),
+            display_name,
+            description,
+            context_window_tokens,
+            effective_context_window_percent,
+            auto_compact_token_limit,
+            default_max_output_tokens: effective_default_max_output_tokens,
+            max_output_tokens_upper_limit,
+            default_verbosity: verbosity,
+            tool_output_truncation_estimated_tokens:
+                configured_tool_output_truncation_estimated_tokens,
             capabilities,
             reasoning_effort_options,
             source,
+            endpoint: endpoint.cloned(),
+        };
+        ResolvedModelMetadata {
+            policy,
+            catalog_entry,
         }
     }
 
@@ -750,6 +1273,57 @@ impl Default for BuiltInModelCatalog {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn record_origin(
+    evidence: &mut ModelMetadataEvidence,
+    field: ModelMetadataField,
+    origin: ModelMetadataOrigin,
+) {
+    evidence.fields.entry(field).or_insert(origin);
+}
+
+fn select_field<T, const N: usize>(
+    evidence: &mut ModelMetadataEvidence,
+    field: ModelMetadataField,
+    candidates: [(Option<T>, ModelMetadataOrigin); N],
+) -> Option<T> {
+    for (value, origin) in candidates {
+        if value.is_some() {
+            record_origin(evidence, field, origin);
+            return value;
+        }
+    }
+    None
+}
+
+fn resolve_capability_field(
+    evidence: &mut ModelMetadataEvidence,
+    field: ModelMetadataField,
+    explicit_override: Option<bool>,
+    discovered: Option<bool>,
+    route_builtin: Option<bool>,
+    model_builtin: Option<bool>,
+    unknown_fallback: Option<bool>,
+) -> bool {
+    select_field(
+        evidence,
+        field,
+        [
+            (explicit_override, ModelMetadataOrigin::ExplicitOverride),
+            (
+                discovered.filter(|value| *value),
+                ModelMetadataOrigin::RemoteDiscovered,
+            ),
+            (route_builtin, ModelMetadataOrigin::RouteBuiltin),
+            (model_builtin, ModelMetadataOrigin::ModelBuiltin),
+            (unknown_fallback, ModelMetadataOrigin::UnknownFallback),
+        ],
+    )
+    .unwrap_or_else(|| {
+        record_origin(evidence, field, ModelMetadataOrigin::Derived);
+        false
+    })
 }
 
 fn default_effective_context_window_percent() -> u8 {
@@ -4944,6 +5518,222 @@ mod tests {
     }
 
     #[test]
+    fn metadata_precedence_matrix_resolves_fields_independently_with_evidence() {
+        let catalog = BuiltInModelCatalog::new();
+        let model_ref = ModelRef::new(ProviderId::openai(), "matrix-model");
+        let mut model_builtin = catalog_model(
+            "openai",
+            "matrix-model",
+            "Model Builtin",
+            100_000,
+            6_000,
+            true,
+            false,
+        );
+        model_builtin.default_verbosity = Some(ModelVerbosity::High);
+        let mut route_builtin = model_builtin.clone();
+        route_builtin.display_name = "Route Builtin".into();
+        route_builtin.context_window_tokens = Some(120_000);
+        route_builtin.default_max_output_tokens = Some(4_000);
+        route_builtin.max_output_tokens_upper_limit = Some(8_000);
+        route_builtin.capabilities.image_input = true;
+        route_builtin.reasoning_effort_options = vec!["route".into()];
+        let mut discovered = model_builtin.clone();
+        discovered.display_name = "Remote Discovered".into();
+        discovered.description = "Remote description".into();
+        discovered.context_window_tokens = Some(200_000);
+        discovered.default_max_output_tokens = Some(16_000);
+        discovered.max_output_tokens_upper_limit = Some(16_000);
+        discovered.default_verbosity = Some(ModelVerbosity::Low);
+        discovered.capabilities.image_input = false;
+        discovered.reasoning_effort_options = vec!["remote".into()];
+        discovered.source = ModelMetadataSource::RemoteDiscovered;
+        let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+        let overrides = HashMap::from([(
+            model_ref.clone(),
+            ModelRuntimeOverride {
+                display_name: Some("Explicit Override".into()),
+                runtime_max_output_tokens: Some(12_000),
+                verbosity: Some(ModelVerbosity::Medium),
+                capabilities: Some(ModelCapabilityOverride {
+                    image_input: Some(false),
+                    ..ModelCapabilityOverride::default()
+                }),
+                ..ModelRuntimeOverride::default()
+            },
+        )]);
+
+        let resolved = catalog.resolve_metadata(
+            &model_ref,
+            Some(&route_builtin),
+            Some(&model_builtin),
+            &overrides,
+            &discovered_models,
+            None,
+            &base_context(),
+            8_192,
+            Some(&ProviderEndpointId::default_endpoint()),
+        );
+        assert_eq!(
+            resolved.catalog_entry.default_max_output_tokens,
+            Some(8_000)
+        );
+        let policy = resolved.policy;
+
+        assert_eq!(policy.display_name, "Explicit Override");
+        assert_eq!(policy.description, "Remote description");
+        assert_eq!(policy.context_window_tokens, Some(200_000));
+        assert_eq!(policy.runtime_max_output_tokens, 8_000);
+        assert_eq!(policy.max_output_tokens_upper_limit, Some(8_000));
+        assert_eq!(policy.verbosity, Some(ModelVerbosity::Medium));
+        assert!(!policy.capabilities.image_input);
+        assert_eq!(policy.reasoning_effort_options, ["route"]);
+        assert_eq!(
+            policy.evidence.source_for(ModelMetadataField::DisplayName),
+            Some(ModelMetadataOrigin::ExplicitOverride)
+        );
+        assert_eq!(
+            policy.evidence.source_for(ModelMetadataField::Description),
+            Some(ModelMetadataOrigin::RemoteDiscovered)
+        );
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::ContextWindowTokens),
+            Some(ModelMetadataOrigin::RemoteDiscovered)
+        );
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::MaxOutputTokensUpperLimit),
+            Some(ModelMetadataOrigin::RouteBuiltin)
+        );
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::ReasoningEffortOptions),
+            Some(ModelMetadataOrigin::RouteBuiltin)
+        );
+        assert_eq!(
+            policy.evidence.constraints,
+            [ModelMetadataConstraint {
+                field: ModelMetadataField::RuntimeMaxOutputTokens,
+                kind: ModelMetadataConstraintKind::Clamped,
+                source: ModelMetadataConstraintSource::ModelUpperLimit,
+                requested: "12000".into(),
+                effective: "8000".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn capability_precedence_treats_discovered_false_as_unknown_but_preserves_explicit_false() {
+        let catalog = BuiltInModelCatalog::new();
+        let model_ref = ModelRef::new(ProviderId::openai(), "capability-matrix");
+        let mut route_builtin = catalog_model(
+            "openai",
+            "capability-matrix",
+            "Route",
+            100_000,
+            8_192,
+            true,
+            true,
+        );
+        route_builtin.capabilities.image_input = true;
+        let mut discovered = route_builtin.clone();
+        discovered.capabilities.image_input = false;
+        discovered.source = ModelMetadataSource::RemoteDiscovered;
+        let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+
+        let route_selected = catalog.resolve_metadata(
+            &model_ref,
+            Some(&route_builtin),
+            None,
+            &HashMap::new(),
+            &discovered_models,
+            None,
+            &base_context(),
+            8_192,
+            Some(&ProviderEndpointId::default_endpoint()),
+        );
+        assert!(route_selected.policy.capabilities.image_input);
+        assert_eq!(
+            route_selected
+                .policy
+                .evidence
+                .source_for(ModelMetadataField::ImageInput),
+            Some(ModelMetadataOrigin::RouteBuiltin)
+        );
+
+        let overrides = HashMap::from([(
+            model_ref.clone(),
+            ModelRuntimeOverride {
+                capabilities: Some(ModelCapabilityOverride {
+                    image_input: Some(false),
+                    ..ModelCapabilityOverride::default()
+                }),
+                ..ModelRuntimeOverride::default()
+            },
+        )]);
+        let explicit_false = catalog.resolve_metadata(
+            &model_ref,
+            Some(&route_builtin),
+            None,
+            &overrides,
+            &discovered_models,
+            None,
+            &base_context(),
+            8_192,
+            Some(&ProviderEndpointId::default_endpoint()),
+        );
+        assert!(!explicit_false.policy.capabilities.image_input);
+        assert_eq!(
+            explicit_false
+                .policy
+                .evidence
+                .source_for(ModelMetadataField::ImageInput),
+            Some(ModelMetadataOrigin::ExplicitOverride)
+        );
+    }
+
+    #[test]
+    fn discovered_fixed_reasoning_preserves_an_explicit_empty_effort_contract() {
+        let catalog = BuiltInModelCatalog::new();
+        let model_ref = ModelRef::new(ProviderId::openai(), "fixed-reasoning");
+        let mut model_builtin = catalog_model(
+            "openai",
+            "fixed-reasoning",
+            "Fixed Reasoning",
+            100_000,
+            8_192,
+            true,
+            false,
+        );
+        model_builtin.reasoning_effort_options = vec!["low".into(), "high".into()];
+        let mut discovered = model_builtin.clone();
+        discovered.reasoning_effort_options.clear();
+        discovered.source = ModelMetadataSource::RemoteDiscovered;
+        let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+
+        let policy = catalog.resolve_policy(
+            &model_ref,
+            &HashMap::new(),
+            &discovered_models,
+            None,
+            &base_context(),
+            8_192,
+        );
+
+        assert!(policy.reasoning_effort_options.is_empty());
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::ReasoningEffortOptions),
+            Some(ModelMetadataOrigin::RemoteDiscovered)
+        );
+    }
+
+    #[test]
     fn resolves_unknown_model_from_explicit_fallback() {
         let catalog = BuiltInModelCatalog::new();
         let policy = catalog.resolve_policy(
@@ -4963,6 +5753,12 @@ mod tests {
         assert_eq!(policy.compaction_trigger_estimated_tokens, 48_000);
         assert_eq!(policy.compaction_keep_recent_estimated_tokens, 24_000);
         assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::PromptBudgetEstimatedTokens),
+            Some(ModelMetadataOrigin::UnknownFallback)
+        );
     }
 
     #[test]
@@ -5015,7 +5811,7 @@ mod tests {
         );
 
         assert!(policy.capabilities.image_input);
-        assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
+        assert_eq!(policy.source, ModelMetadataSource::ConfigOverride);
     }
 
     #[test]
@@ -5062,6 +5858,7 @@ mod tests {
         );
         assert_eq!(policy.runtime_max_output_tokens, 131_072);
         assert_eq!(policy.max_output_tokens_upper_limit, Some(131_072));
+        assert!(policy.evidence.constraints.is_empty());
 
         // Override that exceeds the limit should also be clamped.
         let mut overrides = HashMap::new();
@@ -5081,6 +5878,16 @@ mod tests {
             8192,
         );
         assert_eq!(policy.runtime_max_output_tokens, 131_072);
+        assert_eq!(
+            policy.evidence.constraints,
+            [ModelMetadataConstraint {
+                field: ModelMetadataField::RuntimeMaxOutputTokens,
+                kind: ModelMetadataConstraintKind::Clamped,
+                source: ModelMetadataConstraintSource::ModelUpperLimit,
+                requested: "200000".into(),
+                effective: "131072".into(),
+            }]
+        );
     }
 
     #[test]

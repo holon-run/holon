@@ -57,6 +57,7 @@ implementation and tests.
 - [Runtime Configuration Surface](./runtime-configuration-surface.md)
 - [Extensible Model And Provider Configuration](./extensible-model-provider-configuration.md)
 - [Model Capability Resolution](./model-capability-resolution.md)
+- [Model Metadata Precedence](./model-metadata-precedence.md)
 
 ## Workspace And Instruction Surface
 
