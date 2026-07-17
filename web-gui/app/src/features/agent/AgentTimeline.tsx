@@ -360,7 +360,9 @@ function formatDuration(durationMs: number): string {
 
 function activityIcon(activity: AgentTimelineActivity): ReactNode {
   const outcome = activity.executionMeta?.outcome;
-  if (outcome === "failed" || activity.executionMeta?.exitStatus && activity.executionMeta.exitStatus !== 0) return <CircleAlert size={12} />;
+  if (outcome === "failed" || (activity.executionMeta?.exitStatus != null && activity.executionMeta.exitStatus !== 0)) {
+    return <CircleAlert size={12} />;
+  }
   if (outcome === "running" || outcome === "cancelling" || outcome === "promoted") return <LoaderCircle className="is-spinning" size={12} />;
   if (outcome === "completed") return <CircleCheck size={12} />;
   if (outcome === "cancelled") return <Ban size={12} />;
