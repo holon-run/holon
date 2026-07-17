@@ -1,4 +1,8 @@
 use super::*;
+use crate::provider::{
+    provider_definition, provider_definitions, ProviderContextManagement, ProviderDefinition,
+    ProviderMaterializer, ProviderWebSearch,
+};
 
 pub fn validate_provider_config(
     provider_id: &ProviderId,
@@ -838,27 +842,15 @@ impl BuiltInProviderCatalog {
 pub(crate) fn built_in_provider_endpoint_identity(
     legacy_provider: &ProviderId,
 ) -> Result<(ProviderId, ProviderEndpointId)> {
-    let (provider, endpoint) = match legacy_provider.as_str() {
-        "byteplus-coding" => ("byteplus", "coding"),
-        "dashscope-token-plan" => ("dashscope", "token-plan"),
-        "dashscope-coding-plan" => ("dashscope", "coding-plan"),
-        "opencode-go-messages" => ("opencode-go", "messages"),
-        "stepfun-plan" => ("stepfun", "plan"),
-        "tencent-tokenhub-messages" => ("tencent-tokenhub", "messages"),
-        "volcengine-coding" => ("volcengine", "coding"),
-        "volcengine-agent" => ("volcengine", "plan"),
-        "volcengine-image-openai" => ("volcengine", "default"),
-        "xiaomi-token-plan" => ("xiaomi", "token-plan"),
-        _ => {
-            return Ok((
-                legacy_provider.clone(),
-                ProviderEndpointId::default_endpoint(),
-            ));
-        }
+    let Some(definition) = provider_definition(legacy_provider.as_str()) else {
+        return Ok((
+            legacy_provider.clone(),
+            ProviderEndpointId::default_endpoint(),
+        ));
     };
     Ok((
-        ProviderId::parse(provider)?,
-        ProviderEndpointId::parse(endpoint)?,
+        ProviderId::parse(definition.route_provider)?,
+        ProviderEndpointId::parse(definition.route_endpoint)?,
     ))
 }
 
@@ -866,24 +858,63 @@ pub(crate) fn populate_built_in_provider_catalog(
     catalog: &mut BuiltInProviderCatalog,
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
-    let openai_codex = ProviderId::openai_codex();
-    let openai_codex_reasoning_effort = env::var("HOLON_OPENAI_CODEX_REASONING_EFFORT")
+    for definition in provider_definitions() {
+        match definition.materializer {
+            ProviderMaterializer::OpenAiCodex => insert_openai_codex_provider(catalog, definition)?,
+            ProviderMaterializer::OpenAi => insert_openai_provider(catalog, definition)?,
+            ProviderMaterializer::Anthropic => {
+                insert_anthropic_provider(catalog, definition, settings_env)?
+            }
+            ProviderMaterializer::Gemini => {
+                insert_gemini_provider(catalog, definition, settings_env)?
+            }
+            ProviderMaterializer::Generic => {
+                insert_generic_provider(catalog, definition, settings_env)?
+            }
+            ProviderMaterializer::VercelAiGateway => {
+                insert_vercel_ai_gateway_provider(catalog, definition, settings_env)?
+            }
+            ProviderMaterializer::AliasOnly => {}
+        }
+    }
+    Ok(())
+}
+
+fn insert_definition_runtime(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+    runtime_config: ProviderRuntimeConfig,
+) -> Result<()> {
+    catalog.insert_endpoint(
+        ProviderId::parse(definition.route_provider)?,
+        ProviderEndpointId::parse(definition.route_endpoint)?,
+        ProviderId::parse(definition.legacy_provider)?,
+        runtime_config,
+    );
+    Ok(())
+}
+
+fn insert_openai_codex_provider(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+) -> Result<()> {
+    let id = ProviderId::parse(definition.legacy_provider)?;
+    let reasoning_effort = env::var("HOLON_OPENAI_CODEX_REASONING_EFFORT")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| Some("low".to_string()))
         .map(|value| validate_openai_reasoning_effort(&value).map(|_| value))
         .transpose()?;
-    catalog.insert_endpoint(
-        openai_codex.clone(),
-        ProviderEndpointId::default_endpoint(),
-        openai_codex.clone(),
+    insert_definition_runtime(
+        catalog,
+        definition,
         ProviderRuntimeConfig {
-            id: openai_codex.clone(),
-            route_provider: openai_codex,
-            route_endpoint: ProviderEndpointId::default_endpoint(),
-            transport: ProviderTransportKind::OpenAiCodexResponses,
+            id,
+            route_provider: ProviderId::parse(definition.route_provider)?,
+            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
+            transport: definition.transport,
             base_url: env::var("HOLON_OPENAI_CODEX_BASE_URL")
-                .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".to_string()),
+                .unwrap_or_else(|_| definition.default_base_url.to_string()),
             auth: ProviderAuthConfig {
                 source: CredentialSource::AuthProfile,
                 kind: CredentialKind::OAuth,
@@ -899,25 +930,30 @@ pub(crate) fn populate_built_in_provider_catalog(
                     .unwrap_or_else(|_| default_codex_home()),
             ),
             originator: Some("codex_cli_rs".into()),
-            reasoning_effort: openai_codex_reasoning_effort,
+            reasoning_effort,
             context_management: Default::default(),
             builtin_web_search: Some(openai_codex_builtin_web_search_config()),
         },
-    );
-    let openai = ProviderId::openai();
-    catalog.insert_endpoint(
-        openai.clone(),
-        ProviderEndpointId::default_endpoint(),
-        openai.clone(),
+    )
+}
+
+fn insert_openai_provider(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+) -> Result<()> {
+    let id = ProviderId::parse(definition.legacy_provider)?;
+    insert_definition_runtime(
+        catalog,
+        definition,
         ProviderRuntimeConfig {
-            id: openai.clone(),
-            route_provider: openai,
-            route_endpoint: ProviderEndpointId::default_endpoint(),
-            transport: ProviderTransportKind::OpenAiResponses,
+            id,
+            route_provider: ProviderId::parse(definition.route_provider)?,
+            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
+            transport: definition.transport,
             base_url: env::var("HOLON_OPENAI_BASE_URL")
                 .ok()
                 .or_else(|| env::var("OPENAI_BASE_URL").ok())
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+                .unwrap_or_else(|| definition.default_base_url.to_string()),
             auth: ProviderAuthConfig {
                 source: CredentialSource::Env,
                 kind: CredentialKind::ApiKey,
@@ -933,19 +969,25 @@ pub(crate) fn populate_built_in_provider_catalog(
             context_management: Default::default(),
             builtin_web_search: Some(openai_builtin_web_search_config()),
         },
-    );
-    let anthropic = ProviderId::anthropic();
-    catalog.insert_endpoint(
-        anthropic.clone(),
-        ProviderEndpointId::default_endpoint(),
-        anthropic.clone(),
+    )
+}
+
+fn insert_anthropic_provider(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    let id = ProviderId::parse(definition.legacy_provider)?;
+    insert_definition_runtime(
+        catalog,
+        definition,
         ProviderRuntimeConfig {
-            id: anthropic.clone(),
-            route_provider: anthropic,
-            route_endpoint: ProviderEndpointId::default_endpoint(),
-            transport: ProviderTransportKind::AnthropicMessages,
+            id,
+            route_provider: ProviderId::parse(definition.route_provider)?,
+            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
+            transport: definition.transport,
             base_url: get_config_value("ANTHROPIC_BASE_URL", None, settings_env)
-                .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
+                .unwrap_or_else(|| definition.default_base_url.to_string()),
             auth: ProviderAuthConfig {
                 source: CredentialSource::Env,
                 kind: CredentialKind::ApiKey,
@@ -961,19 +1003,25 @@ pub(crate) fn populate_built_in_provider_catalog(
             context_management: resolve_anthropic_context_management_config()?,
             builtin_web_search: Some(anthropic_builtin_web_search_config()),
         },
-    );
-    let gemini = ProviderId::gemini();
-    catalog.insert_endpoint(
-        gemini.clone(),
-        ProviderEndpointId::default_endpoint(),
-        gemini.clone(),
+    )
+}
+
+fn insert_gemini_provider(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    let id = ProviderId::parse(definition.legacy_provider)?;
+    insert_definition_runtime(
+        catalog,
+        definition,
         ProviderRuntimeConfig {
-            id: gemini.clone(),
-            route_provider: gemini,
-            route_endpoint: ProviderEndpointId::default_endpoint(),
-            transport: ProviderTransportKind::GeminiGenerateContent,
+            id,
+            route_provider: ProviderId::parse(definition.route_provider)?,
+            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
+            transport: definition.transport,
             base_url: get_config_value("HOLON_GEMINI_BASE_URL", None, settings_env)
-                .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string()),
+                .unwrap_or_else(|| definition.default_base_url.to_string()),
             auth: ProviderAuthConfig {
                 source: CredentialSource::Env,
                 kind: CredentialKind::ApiKey,
@@ -989,277 +1037,41 @@ pub(crate) fn populate_built_in_provider_catalog(
             context_management: Default::default(),
             builtin_web_search: None,
         },
-    );
-    insert_openai_compatible_provider(
+    )
+}
+
+fn insert_generic_provider(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    let context_management = match definition.context_management {
+        ProviderContextManagement::Default => Default::default(),
+        ProviderContextManagement::Anthropic => resolve_anthropic_context_management_config()?,
+        ProviderContextManagement::AnthropicCompatible => {
+            resolve_anthropic_compatible_context_management_config()?
+        }
+    };
+    let builtin_web_search = match definition.web_search {
+        ProviderWebSearch::None => None,
+        ProviderWebSearch::OpenAi => Some(openai_builtin_web_search_config()),
+        ProviderWebSearch::OpenAiCodex => Some(openai_codex_builtin_web_search_config()),
+        ProviderWebSearch::Anthropic => Some(anthropic_builtin_web_search_config()),
+        ProviderWebSearch::Zai => Some(zai_builtin_web_search_config()),
+        ProviderWebSearch::BigModel => Some(bigmodel_builtin_web_search_config()),
+        ProviderWebSearch::DeepSeek => Some(deepseek_builtin_web_search_config()),
+    };
+    insert_builtin_http_provider_with_context_management(
         catalog,
-        "arcee",
-        "https://api.arcee.ai/v1",
-        &["ARCEE_API_KEY"],
+        definition.legacy_provider,
+        definition.transport,
+        definition.default_base_url,
+        definition.credential_envs,
         settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "byteplus",
-        "https://ark.ap-southeast.bytepluses.com/api/v3",
-        &["BYTEPLUS_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "byteplus-coding",
-        "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
-        &["BYTEPLUS_CODING_API_KEY", "BYTEPLUS_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "chutes",
-        "https://llm.chutes.ai/v1",
-        &["CHUTES_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "dashscope",
-        "https://dashscope.aliyuncs.com/apps/anthropic",
-        &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "dashscope-token-plan",
-        "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-        &["DASHSCOPE_TOKEN_PLAN_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "dashscope-coding-plan",
-        "https://coding.dashscope.aliyuncs.com/apps/anthropic",
-        &["DASHSCOPE_CODING_PLAN_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "deepseek",
-        "https://api.deepseek.com/anthropic",
-        &["DEEPSEEK_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "fireworks",
-        "https://api.fireworks.ai/inference/v1",
-        &["FIREWORKS_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "huggingface",
-        "https://router.huggingface.co/v1",
-        &["HUGGINGFACE_API_KEY", "HF_TOKEN"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "kilocode",
-        "https://api.kilo.ai/api/gateway",
-        &["KILOCODE_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "litellm",
-        "http://localhost:4000",
-        &["LITELLM_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "mistral",
-        "https://api.mistral.ai/v1",
-        &["MISTRAL_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "moonshot",
-        "https://api.moonshot.ai/v1",
-        &["MOONSHOT_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "nearai",
-        "https://cloud-api.near.ai/v1",
-        &["NEARAI_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "nvidia",
-        "https://integrate.api.nvidia.com/v1",
-        &["NVIDIA_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "opencode-go",
-        "https://opencode.ai/zen/go/v1",
-        &["OPENCODE_GO_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "opencode-go-messages",
-        "https://opencode.ai/zen/go/v1",
-        &["OPENCODE_GO_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "openrouter",
-        "https://openrouter.ai/api/v1",
-        &["OPENROUTER_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "qianfan",
-        "https://qianfan.baidubce.com/v2",
-        &["QIANFAN_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "stepfun",
-        "https://api.stepfun.com/v1",
-        &["STEPFUN_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "stepfun-plan",
-        "https://api.stepfun.com/step_plan/v1",
-        &["STEPFUN_PLAN_API_KEY", "STEPFUN_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "synthetic",
-        "https://api.synthetic.new/anthropic",
-        &["SYNTHETIC_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "tencent-tokenhub",
-        "https://tokenhub.tencentmaas.com/v1",
-        &["TOKENHUB_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "tencent-tokenhub-messages",
-        "https://tokenhub.tencentmaas.com",
-        &["TOKENHUB_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "together",
-        "https://api.together.xyz/v1",
-        &["TOGETHER_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "venice",
-        "https://api.venice.ai/api/v1",
-        &["VENICE_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        catalog,
-        "vllm",
-        "http://127.0.0.1:8000/v1",
-        &[],
-        settings_env,
-    )?;
-    // Standard tier — OpenAI Responses at /api/v3 (not the non-existent /api/compatible).
-    insert_builtin_http_provider(
-        catalog,
-        "volcengine",
-        ProviderTransportKind::OpenAiResponses,
-        "https://ark.cn-beijing.volces.com/api/v3",
-        &["VOLCENGINE_API_KEY", "VOLCENGINE_IMAGE_OPENAI_API_KEY"],
-        settings_env,
-    )?;
-    // Coding Plan tier — OpenAI Responses at /api/coding/v3 (independent plan, isolated key).
-    insert_builtin_http_provider(
-        catalog,
-        "volcengine-coding",
-        ProviderTransportKind::OpenAiResponses,
-        "https://ark.cn-beijing.volces.com/api/coding/v3",
-        &["VOLCENGINE_CODING_API_KEY"],
-        settings_env,
-    )?;
-    // Agent Plan tier — OpenAI Responses at /api/plan/v3 (isolated key, no cross-tier fallback).
-    insert_builtin_http_provider(
-        catalog,
-        "volcengine-agent",
-        ProviderTransportKind::OpenAiResponses,
-        "https://ark.cn-beijing.volces.com/api/plan/v3",
-        &["VOLCENGINE_AGENT_API_KEY"],
-        settings_env,
-    )?;
-    insert_builtin_http_provider(
-        catalog,
-        "xiaomi",
-        ProviderTransportKind::OpenAiResponses,
-        "https://api.xiaomimimo.com/v1",
-        &["XIAOMI_API_KEY"],
-        settings_env,
-    )?;
-    insert_builtin_http_provider(
-        catalog,
-        "xiaomi-token-plan",
-        ProviderTransportKind::OpenAiResponses,
-        "https://token-plan-cn.xiaomimimo.com/v1",
-        &["XIAOMI_TOKEN_PLAN_API_KEY"],
-        settings_env,
-    )?;
-    insert_builtin_http_provider(
-        catalog,
-        "xai",
-        ProviderTransportKind::OpenAiResponses,
-        "https://api.x.ai/v1",
-        &["XAI_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "zai",
-        "https://api.z.ai/api/anthropic",
-        &["ZAI_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "bigmodel",
-        "https://open.bigmodel.cn/api/anthropic",
-        &["BIGMODEL_API_KEY"],
-        settings_env,
-    )?;
-    insert_anthropic_compatible_provider(
-        catalog,
-        "minimax",
-        "https://api.minimax.io/anthropic",
-        &["MINIMAX_API_KEY"],
-        settings_env,
-    )?;
-    insert_vercel_ai_gateway_provider(catalog, settings_env)?;
-    Ok(())
+        context_management,
+        builtin_web_search,
+        definition.default_reasoning_effort,
+    )
 }
 
 /// Public entry point for tools that need the built-in provider registry (e.g. docgen).
@@ -1268,53 +1080,9 @@ pub fn built_in_provider_registry() -> Result<ProviderRegistry> {
     built_in_provider_registry_with_settings(&settings_env)
 }
 
-pub(crate) fn insert_openai_compatible_provider(
-    catalog: &mut BuiltInProviderCatalog,
-    provider: &str,
-    default_base_url: &str,
-    env_names: &[&str],
-    settings_env: &HashMap<String, String>,
-) -> Result<()> {
-    insert_builtin_http_provider(
-        catalog,
-        provider,
-        ProviderTransportKind::OpenAiChatCompletions,
-        default_base_url,
-        env_names,
-        settings_env,
-    )
-}
-
-/// Insert an Anthropic-compatible provider using Claude Code-like prompt-cache
-/// lowering while avoiding implicit Claude-specific beta injection. Operators can
-/// still override cache strategy and betas explicitly with env config.
-pub(crate) fn insert_anthropic_compatible_provider(
-    catalog: &mut BuiltInProviderCatalog,
-    provider: &str,
-    default_base_url: &str,
-    env_names: &[&str],
-    settings_env: &HashMap<String, String>,
-) -> Result<()> {
-    let builtin_web_search = match provider {
-        "zai" => Some(zai_builtin_web_search_config()),
-        "bigmodel" => Some(bigmodel_builtin_web_search_config()),
-        "deepseek" => Some(deepseek_builtin_web_search_config()),
-        _ => None,
-    };
-    insert_builtin_http_provider_with_context_management(
-        catalog,
-        provider,
-        ProviderTransportKind::AnthropicMessages,
-        default_base_url,
-        env_names,
-        settings_env,
-        resolve_anthropic_compatible_context_management_config()?,
-        builtin_web_search,
-    )
-}
-
 pub(crate) fn insert_vercel_ai_gateway_provider(
     catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
     let context_management = resolve_anthropic_compatible_context_management_config()?;
@@ -1348,18 +1116,17 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
             None,
         )
     };
-    let id = ProviderId::parse("vercel-ai-gateway")?;
-    catalog.insert_endpoint(
-        id.clone(),
-        ProviderEndpointId::default_endpoint(),
-        id.clone(),
+    let id = ProviderId::parse(definition.legacy_provider)?;
+    insert_definition_runtime(
+        catalog,
+        definition,
         ProviderRuntimeConfig {
-            id: id.clone(),
-            route_provider: id,
-            route_endpoint: ProviderEndpointId::default_endpoint(),
-            transport: ProviderTransportKind::AnthropicMessages,
+            id,
+            route_provider: ProviderId::parse(definition.route_provider)?,
+            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
+            transport: definition.transport,
             base_url: get_config_value("HOLON_VERCEL_AI_GATEWAY_BASE_URL", None, settings_env)
-                .unwrap_or_else(|| "https://ai-gateway.vercel.sh".to_string()),
+                .unwrap_or_else(|| definition.default_base_url.to_string()),
             auth: ProviderAuthConfig {
                 source: CredentialSource::Env,
                 kind,
@@ -1375,31 +1142,10 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
             context_management,
             builtin_web_search: None,
         },
-    );
-    Ok(())
-}
-
-pub(crate) fn insert_builtin_http_provider(
-    catalog: &mut BuiltInProviderCatalog,
-    provider: &str,
-    transport: ProviderTransportKind,
-    default_base_url: &str,
-    env_names: &[&str],
-    settings_env: &HashMap<String, String>,
-) -> Result<()> {
-    insert_builtin_http_provider_with_context_management(
-        catalog,
-        provider,
-        transport,
-        default_base_url,
-        env_names,
-        settings_env,
-        Default::default(),
-        None,
     )
 }
 
-pub(crate) fn insert_builtin_http_provider_with_context_management(
+fn insert_builtin_http_provider_with_context_management(
     catalog: &mut BuiltInProviderCatalog,
     provider: &str,
     transport: ProviderTransportKind,
@@ -1408,6 +1154,7 @@ pub(crate) fn insert_builtin_http_provider_with_context_management(
     settings_env: &HashMap<String, String>,
     context_management: AnthropicContextManagementConfig,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
+    default_reasoning_effort: Option<&str>,
 ) -> Result<()> {
     let id = ProviderId::parse(provider)?;
     let (provider_id, endpoint_id) = built_in_provider_endpoint_identity(&id)?;
@@ -1449,11 +1196,7 @@ pub(crate) fn insert_builtin_http_provider_with_context_management(
             credential_store_path: None,
             codex_home: None,
             originator: None,
-            reasoning_effort: if provider == "xai" {
-                Some("medium".into())
-            } else {
-                None
-            },
+            reasoning_effort: default_reasoning_effort.map(str::to_string),
             context_management,
             builtin_web_search,
         },

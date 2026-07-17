@@ -15,10 +15,13 @@ use crate::{
         is_tencent_tokenhub_model_id, BuiltInModelMetadata, ModelCapabilityFlags,
         ModelMetadataSource,
     },
+    provider::{
+        provider_definition, ModelDiscoveryAuth, ModelDiscoveryDecoder, ModelDiscoveryDefinition,
+        ModelDiscoveryRoute, ProviderCatalogPolicy,
+    },
 };
 
 const OPENAI_COMPATIBLE_MODELS_PATH: &str = "/models";
-const SYNTHETIC_MODELS_URL: &str = "https://api.synthetic.new/openai/v1/models";
 pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -87,35 +90,25 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
 }
 
 pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
-    matches!(
-        provider.id.as_str(),
-        "arcee"
-            | "huggingface"
-            | "kilocode"
-            | "litellm"
-            | "nearai"
-            | "opencode-go"
-            | "openrouter"
-            | "synthetic"
-            | "tencent-tokenhub"
-            | "venice"
-            | "vercel-ai-gateway"
-            | "vllm"
-    )
+    provider_discovery_definition(provider).is_some()
 }
 
 fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
-    !matches!(
-        provider.id.as_str(),
-        "huggingface"
-            | "kilocode"
-            | "nearai"
-            | "opencode-go"
-            | "synthetic"
-            | "venice"
-            | "vercel-ai-gateway"
-            | "vllm"
-    )
+    provider_discovery_definition(provider)
+        .is_some_and(|definition| definition.auth == ModelDiscoveryAuth::Required)
+}
+
+fn provider_discovery_definition(
+    provider: &ProviderRuntimeConfig,
+) -> Option<&'static ModelDiscoveryDefinition> {
+    let definition = provider_definition(provider.id.as_str())?;
+    let discovery = definition.discovery.as_ref()?;
+    debug_assert_ne!(
+        definition.catalog_policy,
+        ProviderCatalogPolicy::StaticOnly,
+        "providers with discovery must declare a discovery catalog policy"
+    );
+    Some(discovery)
 }
 
 pub fn discovery_cache_status_for_provider(
@@ -200,12 +193,12 @@ pub async fn refresh_provider_models(
     provider: &ProviderRuntimeConfig,
     cache_path: &Path,
 ) -> Result<ModelDiscoveryRefreshReport> {
-    if !provider_supports_model_discovery(provider) {
-        return Err(anyhow!(
+    let discovery = provider_discovery_definition(provider).ok_or_else(|| {
+        anyhow!(
             "provider {} does not support model discovery yet",
             provider.id.as_str()
-        ));
-    }
+        )
+    })?;
 
     let source_url = provider_models_url(provider)?;
     let request = reqwest::Client::builder()
@@ -236,43 +229,54 @@ pub async fn refresh_provider_models(
         )
     })?;
     let response_hash = format!("sha256:{}", sha256_hex(&raw));
-    let models = match provider.id.as_str() {
-        "arcee" => serde_json::from_slice::<ArceeModelsResponse>(&raw)
+    let fetched_at = Utc::now();
+    let models = match discovery.decoder {
+        ModelDiscoveryDecoder::Arcee => serde_json::from_slice::<ArceeModelsResponse>(&raw)
             .context("failed to parse Arcee model discovery response")?
             .into_model_metadata(&provider.id),
-        "huggingface" => serde_json::from_slice::<HuggingFaceModelsResponse>(&raw)
-            .context("failed to parse Hugging Face model discovery response")?
-            .into_model_metadata(&provider.id),
-        "kilocode" => serde_json::from_slice::<KiloModelsResponse>(&raw)
+        ModelDiscoveryDecoder::HuggingFace => {
+            serde_json::from_slice::<HuggingFaceModelsResponse>(&raw)
+                .context("failed to parse Hugging Face model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::Kilo => serde_json::from_slice::<KiloModelsResponse>(&raw)
             .context("failed to parse Kilo Gateway model discovery response")?
             .into_model_metadata(&provider.id),
-        "litellm" | "vllm" => serde_json::from_slice::<OpenAiCompatibleModelsResponse>(&raw)
-            .context("failed to parse OpenAI-compatible model discovery response")?
-            .into_model_metadata(&provider.id),
-        "nearai" => serde_json::from_slice::<NearAiModelsResponse>(&raw)
+        ModelDiscoveryDecoder::OpenAiCompatible => {
+            serde_json::from_slice::<OpenAiCompatibleModelsResponse>(&raw)
+                .context("failed to parse OpenAI-compatible model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::NearAi => serde_json::from_slice::<NearAiModelsResponse>(&raw)
             .context("failed to parse NEAR AI model discovery response")?
             .into_model_metadata(&provider.id),
-        "opencode-go" => serde_json::from_slice::<OpenCodeGoModelsResponse>(&raw)
-            .context("failed to parse OpenCode Go model discovery response")?
-            .into_model_metadata(&provider.id),
-        "openrouter" => serde_json::from_slice::<OpenRouterModelsResponse>(&raw)
-            .context("failed to parse OpenRouter model discovery response")?
-            .into_model_metadata(&provider.id),
-        "synthetic" => serde_json::from_slice::<SyntheticModelsResponse>(&raw)
+        ModelDiscoveryDecoder::OpenCodeGo => {
+            serde_json::from_slice::<OpenCodeGoModelsResponse>(&raw)
+                .context("failed to parse OpenCode Go model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::OpenRouter => {
+            serde_json::from_slice::<OpenRouterModelsResponse>(&raw)
+                .context("failed to parse OpenRouter model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::Synthetic => serde_json::from_slice::<SyntheticModelsResponse>(&raw)
             .context("failed to parse Synthetic model discovery response")?
             .into_model_metadata(&provider.id),
-        "tencent-tokenhub" => serde_json::from_slice::<TencentTokenHubModelsResponse>(&raw)
-            .context("failed to parse Tencent TokenHub model discovery response")?
-            .into_model_metadata(&provider.id),
-        "venice" => serde_json::from_slice::<VeniceModelsResponse>(&raw)
+        ModelDiscoveryDecoder::TencentTokenHub => {
+            serde_json::from_slice::<TencentTokenHubModelsResponse>(&raw)
+                .context("failed to parse Tencent TokenHub model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::Venice => serde_json::from_slice::<VeniceModelsResponse>(&raw)
             .context("failed to parse Venice model discovery response")?
-            .into_model_metadata(&provider.id, Utc::now()),
-        "vercel-ai-gateway" => serde_json::from_slice::<VercelModelsResponse>(&raw)
-            .context("failed to parse Vercel AI Gateway model discovery response")?
-            .into_model_metadata(&provider.id),
-        _ => unreachable!("unsupported providers returned above"),
+            .into_model_metadata(&provider.id, fetched_at),
+        ModelDiscoveryDecoder::VercelAiGateway => {
+            serde_json::from_slice::<VercelModelsResponse>(&raw)
+                .context("failed to parse Vercel AI Gateway model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
     };
-    let fetched_at = Utc::now();
 
     let mut cache = load_discovery_cache_at(cache_path)?;
     cache.providers.insert(
@@ -296,23 +300,18 @@ pub async fn refresh_provider_models(
 }
 
 fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
-    match provider.id.as_str() {
-        "arcee" => Ok("https://api.arcee.ai/api/v1/models".to_string()),
-        "huggingface" => openai_compatible_models_url(&provider.base_url),
-        "kilocode" => openai_compatible_models_url(&provider.base_url),
-        "litellm" => openai_v1_models_url(&provider.base_url),
-        "nearai" => openai_compatible_models_url(&provider.base_url),
-        "opencode-go" => openai_compatible_models_url(&provider.base_url),
-        "openrouter" => openrouter_models_url(&provider.base_url),
-        "synthetic" => Ok(SYNTHETIC_MODELS_URL.to_string()),
-        "tencent-tokenhub" => openai_compatible_models_url(&provider.base_url),
-        "venice" => venice_models_url(&provider.base_url),
-        "vercel-ai-gateway" => vercel_models_url(&provider.base_url),
-        "vllm" => openai_compatible_models_url(&provider.base_url),
-        _ => Err(anyhow!(
+    let discovery = provider_discovery_definition(provider).ok_or_else(|| {
+        anyhow!(
             "provider {} does not support model discovery yet",
             provider.id.as_str()
-        )),
+        )
+    })?;
+    match discovery.route {
+        ModelDiscoveryRoute::Fixed(url) => Ok(url.to_string()),
+        ModelDiscoveryRoute::OpenAiCompatible => openai_compatible_models_url(&provider.base_url),
+        ModelDiscoveryRoute::OpenAiV1 => openai_v1_models_url(&provider.base_url),
+        ModelDiscoveryRoute::Venice => venice_models_url(&provider.base_url),
+        ModelDiscoveryRoute::VercelAiGateway => vercel_models_url(&provider.base_url),
     }
 }
 
@@ -327,10 +326,6 @@ fn openai_v1_models_url(base_url: &str) -> Result<String> {
         url.set_path(&format!("{path}/v1/models"));
     }
     Ok(url.to_string())
-}
-
-fn openrouter_models_url(base_url: &str) -> Result<String> {
-    openai_compatible_models_url(base_url)
 }
 
 fn venice_models_url(base_url: &str) -> Result<String> {

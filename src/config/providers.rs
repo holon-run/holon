@@ -255,50 +255,35 @@ impl CredentialKind {
 
 impl ProviderTransportKind {
     pub fn parse(value: &str) -> Result<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "openai_codex_responses" => Ok(Self::OpenAiCodexResponses),
-            "openai_responses" => Ok(Self::OpenAiResponses),
-            "openai_chat_completions" => Ok(Self::OpenAiChatCompletions),
-            "anthropic_messages" => Ok(Self::AnthropicMessages),
-            "gemini_generate_content" => Ok(Self::GeminiGenerateContent),
-            other => Err(anyhow!(
-                "invalid provider transport {other}; expected openai_codex_responses|openai_responses|openai_chat_completions|anthropic_messages|gemini_generate_content"
-            )),
-        }
+        let normalized = value.trim().to_ascii_lowercase();
+        crate::provider::provider_transport_definition_by_wire_name(&normalized)
+            .map(|definition| definition.kind)
+            .ok_or_else(|| {
+                anyhow!(
+                    "invalid provider transport {normalized}; expected {}",
+                    crate::provider::provider_transport_definitions()
+                        .iter()
+                        .map(|definition| definition.wire_name)
+                        .collect::<Vec<_>>()
+                        .join("|")
+                )
+            })
     }
 
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::OpenAiCodexResponses => "openai_codex_responses",
-            Self::OpenAiResponses => "openai_responses",
-            Self::OpenAiChatCompletions => "openai_chat_completions",
-            Self::AnthropicMessages => "anthropic_messages",
-            Self::GeminiGenerateContent => "gemini_generate_content",
-        }
+        crate::provider::provider_transport_definition(self).wire_name
     }
 
     pub fn supports_view_image_observation_generation(self) -> bool {
-        matches!(
-            self,
-            Self::OpenAiCodexResponses
-                | Self::OpenAiResponses
-                | Self::OpenAiChatCompletions
-                | Self::AnthropicMessages
-        )
+        self.capabilities().image_input
     }
 
     pub fn supports_image_generation(self) -> bool {
-        matches!(
-            self,
-            Self::OpenAiCodexResponses | Self::OpenAiResponses | Self::OpenAiChatCompletions
-        )
+        self.capabilities().image_output
     }
 
     pub fn capabilities(self) -> TransportCapabilities {
-        TransportCapabilities {
-            image_input: self.supports_view_image_observation_generation(),
-            image_output: self.supports_image_generation(),
-        }
+        crate::provider::provider_transport_definition(self).capabilities
     }
 }
 

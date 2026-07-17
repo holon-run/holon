@@ -4,20 +4,13 @@ use anyhow::{anyhow, Result};
 
 use crate::{
     config::{
-        AppConfig, ModelRouteCapability, ModelRouteRef, ProviderTransportKind, ResolvedModelRoute,
-        RuntimeModelCatalog,
+        AppConfig, ModelRouteCapability, ModelRouteRef, ResolvedModelRoute, RuntimeModelCatalog,
     },
     context::ContextConfig,
     provider::fallback::FallbackProvider,
 };
 
-use super::{
-    transports::{
-        GeminiProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
-        OpenAiProvider,
-    },
-    AgentProvider, AnthropicProvider,
-};
+use super::{build_provider_for_route, AgentProvider};
 
 #[derive(Clone)]
 pub(crate) struct ProviderCandidate {
@@ -78,65 +71,11 @@ pub(crate) fn build_candidate_from_model_route(
     home_dir: &Path,
     route: &ResolvedModelRoute,
 ) -> Result<ProviderCandidate> {
-    let model_ref = &route.model_ref;
     let provider_config = route.provider_config();
-    let resolved_policy = &route.policy;
     if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
         route.validate_reasoning_effort(reasoning_effort)?;
     }
-    let openai_compaction_policy = OpenAiCompactionPolicy {
-        trigger_input_tokens: resolved_policy.compaction_trigger_estimated_tokens as u64,
-    };
-    // Use the resolved (and already-clamped) max output tokens so wire requests
-    // never exceed the model's declared upper limit.
-    let max_output_tokens = resolved_policy.runtime_max_output_tokens;
-    let provider: Arc<dyn AgentProvider> = match provider_config.transport {
-        ProviderTransportKind::OpenAiCodexResponses => Arc::new(
-            OpenAiCodexProvider::from_runtime_config_with_compaction_policy(
-                provider_config,
-                &model_ref.model,
-                max_output_tokens,
-                home_dir,
-                openai_compaction_policy,
-                resolved_policy.verbosity,
-                resolved_policy.capabilities.supports_reasoning,
-            )?,
-        ),
-        ProviderTransportKind::OpenAiResponses => {
-            Arc::new(OpenAiProvider::from_runtime_config_with_compaction_policy(
-                provider_config,
-                &model_ref.model,
-                max_output_tokens,
-                home_dir,
-                openai_compaction_policy,
-            )?)
-        }
-        ProviderTransportKind::AnthropicMessages => {
-            Arc::new(AnthropicProvider::from_runtime_config(
-                provider_config,
-                &model_ref.model,
-                max_output_tokens,
-                home_dir,
-                resolved_policy.capabilities.supports_reasoning,
-            )?)
-        }
-        ProviderTransportKind::OpenAiChatCompletions => {
-            Arc::new(OpenAiChatCompletionsProvider::from_resolved_runtime_config(
-                provider_config,
-                &model_ref.model,
-                max_output_tokens,
-                home_dir,
-            )?)
-        }
-        ProviderTransportKind::GeminiGenerateContent => {
-            Arc::new(GeminiProvider::from_runtime_config(
-                provider_config,
-                &model_ref.model,
-                max_output_tokens,
-                home_dir,
-            )?)
-        }
-    };
+    let provider = build_provider_for_route(home_dir, route)?;
     Ok(ProviderCandidate {
         model_ref: route.route_ref.as_string(),
         provider_name: route.provider_name().to_string(),
