@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     context::{
         build_context_with_default_external_ingress, reproject_recent_turns, BuiltContext,
-        ContextConfig, RecentTurnsReprojection,
+        ContextConfig, ContextPlanEvidence, RecentTurnsReprojection,
     },
     storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
@@ -81,6 +81,7 @@ pub struct EffectivePrompt {
     pub context_sections: Vec<PromptSection>,
     pub rendered_system_prompt: String,
     pub rendered_context_attachment: String,
+    pub(crate) context_plan_evidence: ContextPlanEvidence,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
 }
 
@@ -102,6 +103,7 @@ impl EffectivePrompt {
             return None;
         }
         let replacement = reproject_recent_turns(storage, reprojection, budget);
+        let replacement_for_evidence = replacement.clone();
         let mut context_sections = self
             .context_sections
             .iter()
@@ -132,6 +134,9 @@ impl EffectivePrompt {
         prompt.context_sections = context_sections;
         prompt.rendered_context_attachment = rendered_context_attachment;
         prompt.cache_identity.context_fingerprint = context_fingerprint;
+        prompt
+            .context_plan_evidence
+            .record_reprojection("recent_turns", replacement_for_evidence.as_ref());
         Some(prompt)
     }
 
@@ -257,6 +262,28 @@ impl EffectivePrompt {
                 section.stability,
                 prompt_cache_scope_label(section.stability),
                 section.content.chars().count()
+            ));
+        }
+        output.push("".to_string());
+        output.push("Context budget plan:".to_string());
+        output.push(format!(
+            "  - total estimated tokens: {}",
+            self.context_plan_evidence.total_budget_estimated_tokens
+        ));
+        output.push(format!(
+            "  - allocated estimated tokens: {}",
+            self.context_plan_evidence.allocated_estimated_tokens
+        ));
+        for decision in &self.context_plan_evidence.decisions {
+            output.push(format!(
+                "  - [{}] section={} outcome={} reason={} requested={} minimum={} allocated={}",
+                decision.candidate_id,
+                decision.section_name,
+                decision.outcome.label(),
+                decision.reason.code(),
+                decision.requested_estimated_tokens,
+                decision.minimum_estimated_tokens,
+                decision.allocated_estimated_tokens,
             ));
         }
         output.push("".to_string());
@@ -523,6 +550,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         context_sections,
         rendered_system_prompt,
         rendered_context_attachment,
+        context_plan_evidence: built_context.plan_evidence,
         recent_turns_reprojection: built_context.recent_turns_reprojection,
     })
 }
@@ -2299,6 +2327,19 @@ mod tests {
             }],
             rendered_system_prompt: "rendered system".to_string(),
             rendered_context_attachment: "rendered context".to_string(),
+            context_plan_evidence: ContextPlanEvidence {
+                total_budget_estimated_tokens: 100,
+                allocated_estimated_tokens: 20,
+                decisions: vec![crate::context::ContextPlanDecision {
+                    candidate_id: "context_section".to_string(),
+                    section_name: "context_section".to_string(),
+                    requested_estimated_tokens: 40,
+                    minimum_estimated_tokens: 10,
+                    allocated_estimated_tokens: 20,
+                    outcome: crate::context::ContextPlanOutcome::Truncated,
+                    reason: crate::context::ContextPlanReason::TruncatedToRemainingBudget,
+                }],
+            },
             recent_turns_reprojection: None,
         };
 
@@ -2322,6 +2363,11 @@ mod tests {
         ));
         assert!(dump.contains(
             "#1 [context_section] (id: ctx-id-456, stability: AgentScoped, cache scope: included"
+        ));
+        assert!(dump.contains("Context budget plan:"));
+        assert!(dump.contains("total estimated tokens: 100"));
+        assert!(dump.contains(
+            "[context_section] section=context_section outcome=truncated reason=truncated_to_remaining_budget requested=40 minimum=10 allocated=20"
         ));
         assert!(dump.contains("[test_section][id: test-stable-id-123][Stable]"));
         assert!(dump.contains("[context_section][id: ctx-id-456][AgentScoped]"));
@@ -2350,6 +2396,7 @@ mod tests {
             }],
             rendered_system_prompt: "rendered turn system".to_string(),
             rendered_context_attachment: "rendered turn context".to_string(),
+            context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
         };
 
@@ -2405,6 +2452,7 @@ mod tests {
             context_sections: vec![],
             rendered_system_prompt: "very secret agent guidance".to_string(),
             rendered_context_attachment: String::new(),
+            context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
         };
 

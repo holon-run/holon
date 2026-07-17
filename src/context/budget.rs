@@ -13,11 +13,6 @@ pub(super) fn estimate_text_tokens(text: &str) -> usize {
     chars.div_ceil(4).max(1)
 }
 
-/// Reserve a portion of the total budget for the current input section.
-pub(super) fn reserve_current_input_budget(total_budget: usize) -> usize {
-    total_budget.min(256)
-}
-
 /// Truncate text to fit within a token budget, optionally appending a truncation
 /// notice. Uses binary search to find the maximum character count that fits.
 pub(super) fn truncate_section_content(

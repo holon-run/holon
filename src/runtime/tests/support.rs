@@ -177,6 +177,7 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
         context_sections: vec![],
         rendered_system_prompt: "system".into(),
         rendered_context_attachment: "context".into(),
+        context_plan_evidence: Default::default(),
         recent_turns_reprojection: None,
     }
 }
