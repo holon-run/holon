@@ -124,6 +124,7 @@ interface StatusBadgeProps extends Omit<HTMLAttributes<HTMLSpanElement>, "childr
   kind?: StatusKind;
   value?: string | null;
   children?: ReactNode;
+  spinIcon?: boolean;
 }
 
 interface AgentStateBadgeProps extends Omit<StatusBadgeProps, "kind"> {
@@ -145,6 +146,10 @@ function StatusBadgeIcon({ kind, value }: { kind: StatusKind; value: string }) {
   return <Icon size={13} className={spin ? "animate-spin" : undefined} />;
 }
 
+function SpinOnlyIcon() {
+  return <LoaderCircle size={13} className="animate-spin" />;
+}
+
 export function StatusChip({ tone = "idle", iconOnly, children, title, ...props }: StatusChipProps) {
   if (iconOnly) {
     const { Icon, spin } = toneIcon(tone);
@@ -158,13 +163,13 @@ export function StatusChip({ tone = "idle", iconOnly, children, title, ...props 
   return <Badge tone={toneToBadge(tone)} {...props} title={title} data-tooltip={title}>{children}</Badge>;
 }
 
-export function StatusBadge({ kind = "runtime", value, children, title, ...props }: StatusBadgeProps) {
+export function StatusBadge({ kind = "runtime", value, children, title, spinIcon, ...props }: StatusBadgeProps) {
   const { t } = useTranslation();
   const status = describeStatus(kind, value, t);
   const normalizedValue = normalizeStatus(value);
   return (
     <StatusChip tone={status.tone} title={title ?? status.title} {...props}>
-      {children ?? <StatusBadgeIcon kind={kind} value={normalizedValue} />}
+      {children ?? (spinIcon ? <SpinOnlyIcon /> : <StatusBadgeIcon kind={kind} value={normalizedValue} />)}
     </StatusChip>
   );
 }
