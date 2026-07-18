@@ -50,6 +50,7 @@ impl<'a> LegacyImporter<'a> {
         } else {
             self.read_agent_file()?
         };
+        // Re-entrant with host registry bootstrap; completeness guards keep imports at most once.
         self.import_host_domains()?;
         if !self.storage_domain_complete("work_items")? {
             let mut legacy_work_items = self.storage.read_recent_work_items(usize::MAX)?;
