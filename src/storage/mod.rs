@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::Notify;
 
 use crate::{
     memory::index::enqueue_memory_index_upsert,
@@ -42,6 +42,7 @@ mod recovery;
 mod work_queue;
 
 pub use activity::{FileActivityMarker, PollActivityMarker};
+pub use events::RuntimeEventLog;
 pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
 pub use read_models::RuntimeReadModels;
 pub use recovery::RecoverySnapshot;
@@ -70,17 +71,10 @@ pub struct AppStorage {
     read_only: bool,
     agent_path: PathBuf,
     append_mutex: Arc<Mutex<()>>,
-    audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
     runtime_db: RuntimeDb,
-    event_bus: Arc<Mutex<Option<EventBus>>>,
+    event_log: RuntimeEventLog,
     /// Optional shared notify for the daemon-level memory indexer.
     memory_index_notify: Arc<Mutex<Option<Arc<Notify>>>>,
-}
-
-#[derive(Debug, Clone)]
-struct AuditEventIndexSink {
-    runtime_db: RuntimeDb,
-    agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,14 +207,21 @@ impl AppStorage {
             }
         }
 
+        let read_only = mode == StorageOpenMode::ReadOnly;
+        let append_mutex = Arc::new(Mutex::new(()));
+        let event_log = RuntimeEventLog::new(
+            runtime_db.clone(),
+            agent_id.clone(),
+            read_only,
+            append_mutex.clone(),
+        );
         Ok(Self {
             agent_id,
-            read_only: mode == StorageOpenMode::ReadOnly,
+            read_only,
             agent_path: state_dir.join("agent.json"),
-            append_mutex: Arc::new(Mutex::new(())),
-            audit_event_index: Arc::new(Mutex::new(None)),
+            append_mutex,
             runtime_db,
-            event_bus: Arc::new(Mutex::new(None)),
+            event_log,
             data_dir,
             memory_index_notify: Arc::new(Mutex::new(None)),
         })
@@ -239,25 +240,12 @@ impl AppStorage {
         runtime_db: RuntimeDb,
         agent_id: Option<String>,
     ) -> Result<()> {
-        self.ensure_writable()?;
-        let mut guard = self
-            .audit_event_index
-            .lock()
-            .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?;
-        *guard = Some(AuditEventIndexSink {
-            runtime_db,
-            agent_id,
-        });
-        Ok(())
+        self.event_log
+            .enable_audit_event_index(runtime_db, agent_id)
     }
 
     pub(crate) fn enable_event_bus(&self, event_bus: EventBus) -> Result<()> {
-        let mut guard = self
-            .event_bus
-            .lock()
-            .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?;
-        *guard = Some(event_bus);
-        Ok(())
+        self.event_log.enable_event_bus(event_bus)
     }
 
     /// Attach a shared memory-index notify so the daemon-level indexer is
@@ -273,52 +261,15 @@ impl AppStorage {
 
     pub(crate) fn subscribe_events(
         &self,
-    ) -> Result<Option<broadcast::Receiver<PublishedAuditEvent>>> {
-        Ok(self
-            .event_bus
-            .lock()
-            .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?
-            .as_ref()
-            .map(EventBus::subscribe))
-    }
-
-    fn publish_event(&self, agent_id: Option<String>, event: &AuditEvent) -> Result<()> {
-        if let Some(event_bus) = self
-            .event_bus
-            .lock()
-            .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?
-            .clone()
-        {
-            event_bus.publish(PublishedAuditEvent {
-                agent_id,
-                event: event.clone(),
-            });
-        }
-        Ok(())
+    ) -> Result<Option<tokio::sync::broadcast::Receiver<PublishedAuditEvent>>> {
+        self.event_log.subscribe()
     }
 
     pub(crate) fn publish_transition_events(
         &self,
         effects: &PostCommitEffects,
     ) -> Vec<PostCommitWarning> {
-        let agent_id = self.agent_id.clone();
-        let mut warnings = Vec::new();
-        for event in &effects.audit_events {
-            if let Err(error) = self.publish_event(agent_id.clone(), event) {
-                tracing::warn!(
-                    error = %error,
-                    event_id = %event.id,
-                    event_kind = %event.kind,
-                    event_seq = event.event_seq,
-                    "failed to publish committed transition audit event"
-                );
-                warnings.push(PostCommitWarning {
-                    effect: "event_publication",
-                    message: error.to_string(),
-                });
-            }
-        }
-        warnings
+        self.event_log.publish_transition_events(effects)
     }
 
     pub(crate) fn notify_transition_memory_index(
@@ -347,20 +298,6 @@ impl AppStorage {
             }
         }
         warnings
-    }
-
-    #[cfg(test)]
-    fn flush_audit_event_writes_for_tests(&self) -> Result<()> {
-        if let Some(sink) = self
-            .audit_event_index
-            .lock()
-            .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
-            .clone()
-        {
-            sink.runtime_db.flush_background_writes_for_tests()?;
-        }
-        self.runtime_db.flush_background_writes_for_tests()?;
-        Ok(())
     }
 
     pub(crate) fn current_agent_id(&self) -> Result<Option<String>> {
@@ -410,13 +347,17 @@ impl AppStorage {
         RuntimeReadModels::new(self.runtime_db.clone(), self.agent_id.clone())
     }
 
+    pub fn event_log(&self) -> RuntimeEventLog {
+        self.event_log.clone()
+    }
+
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
         let empty = FileActivityMarker::default();
         Ok(PollActivityMarker {
             briefs: empty.clone(),
             tasks: self.tasks_activity_marker()?,
             tools: empty.clone(),
-            events: self.audit_events_activity_marker()?,
+            events: self.event_log.activity_marker()?,
             transcript: empty,
         })
     }
@@ -433,65 +374,8 @@ impl AppStorage {
         });
     }
 
-    fn audit_events_activity_marker(&self) -> Result<FileActivityMarker> {
-        let runtime_db = self.runtime_db.clone();
-        let latest_seq = runtime_db
-            .audit_events()
-            .latest_event_seq(self.current_agent_id()?.as_deref())?
-            .unwrap_or(0);
-        return Ok(FileActivityMarker {
-            exists: latest_seq > 0,
-            len: latest_seq,
-            modified_unix_ms: u128::from(latest_seq),
-        });
-    }
-
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
-        let started = std::time::Instant::now();
-        self.ensure_writable()?;
-        let _guard = self
-            .append_mutex
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        let result = self.append_event_with_append_mutex_held(event);
-        crate::diagnostics::record_storage_append_event(started.elapsed());
-        result
-    }
-
-    fn append_event_with_append_mutex_held(&self, event: &AuditEvent) -> Result<()> {
-        self.ensure_writable()?;
-        let sink = self
-            .audit_event_index
-            .lock()
-            .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
-            .clone();
-        let agent_id = if let Some(sink) = sink {
-            let agent_id = sink.agent_id.clone();
-            let event = sink
-                .runtime_db
-                .audit_events()
-                .append(agent_id.as_deref(), &event)?;
-            (agent_id, event)
-        } else {
-            let agent_id = self.current_agent_id()?;
-            let event = self
-                .runtime_db
-                .audit_events()
-                .append(agent_id.as_deref(), &event)?;
-            (agent_id, event)
-        };
-        let (agent_id, event) = agent_id;
-        if let Err(error) = self.publish_event(agent_id.clone(), &event) {
-            tracing::warn!(
-                error = %error,
-                event_id = %event.id,
-                event_kind = %event.kind,
-                event_seq = event.event_seq,
-                agent_id = agent_id.as_deref().unwrap_or("<global>"),
-                "failed to publish committed audit event"
-            );
-        }
-        Ok(())
+        self.event_log.append(event)
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
@@ -632,7 +516,7 @@ impl AppStorage {
         let runtime_db = self.runtime_db.clone();
         runtime_db.wait_conditions().upsert(record)?;
         if let Some(event) = event.as_ref() {
-            self.append_event_with_append_mutex_held(event)?;
+            self.event_log.append_with_append_mutex_held(event)?;
         }
         return Ok(());
     }
@@ -1126,25 +1010,15 @@ impl AppStorage {
     }
 
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
-        #[cfg(test)]
-        self.flush_audit_event_writes_for_tests()?;
-        let runtime_db = self.runtime_db.clone();
-        return runtime_db
-            .audit_events()
-            .recent(self.current_agent_id()?.as_deref(), limit);
+        self.event_log.recent(limit)
     }
 
     pub fn latest_event_seq(&self) -> Result<Option<u64>> {
-        #[cfg(test)]
-        self.flush_audit_event_writes_for_tests()?;
-        let runtime_db = self.runtime_db.clone();
-        return runtime_db
-            .audit_events()
-            .latest_event_seq(self.current_agent_id()?.as_deref());
+        self.event_log.latest_seq()
     }
 
     pub fn event_log_epoch(&self) -> Result<String> {
-        self.runtime_db.event_log_epoch()
+        self.event_log.epoch()
     }
 
     pub(crate) fn read_event_page_matching<F>(
@@ -1153,71 +1027,13 @@ impl AppStorage {
         after_seq: Option<u64>,
         limit: usize,
         order: EventLogPageOrder,
-        mut matches: F,
+        matches: F,
     ) -> Result<EventLogPage>
     where
         F: FnMut(&AuditEvent) -> bool,
     {
-        #[cfg(test)]
-        self.flush_audit_event_writes_for_tests()?;
-        let runtime_db = self.runtime_db.clone();
-        if limit == 0 {
-            return Ok(EventLogPage {
-                events: Vec::new(),
-                has_older: false,
-                has_newer: false,
-            });
-        }
-        let descending = matches!(order, EventLogPageOrder::Desc);
-        let mut page = Vec::with_capacity(limit.saturating_add(1).min(1024));
-        let agent_id = self.current_agent_id()?;
-        let chunk_limit = limit.saturating_add(1).clamp(64, 1024);
-        let mut next_before_seq = before_seq;
-        let mut next_after_seq = after_seq;
-        loop {
-            let chunk = runtime_db.audit_events().range(
-                agent_id.as_deref(),
-                next_before_seq,
-                next_after_seq,
-                descending,
-                chunk_limit,
-            )?;
-            let Some(last_seq) = chunk.last().map(|event| event.event_seq) else {
-                break;
-            };
-            for event in chunk {
-                if matches(&event) {
-                    page.push(event);
-                }
-                if page.len() > limit {
-                    break;
-                }
-            }
-            if page.len() > limit {
-                break;
-            }
-            if descending {
-                next_before_seq = Some(last_seq);
-            } else {
-                next_after_seq = Some(last_seq);
-            }
-        }
-        let has_more = page.len() > limit;
-        if has_more {
-            page.truncate(limit);
-        }
-        return Ok(match order {
-            EventLogPageOrder::Desc => EventLogPage {
-                events: page,
-                has_older: has_more,
-                has_newer: false,
-            },
-            EventLogPageOrder::Asc => EventLogPage {
-                events: page,
-                has_older: false,
-                has_newer: has_more,
-            },
-        });
+        self.event_log
+            .page_matching(before_seq, after_seq, limit, order, matches)
     }
 
     pub fn read_recent_briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {
@@ -1851,6 +1667,7 @@ pub fn to_json_value<T: Serialize>(value: &T) -> Value {
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
+    use tokio::sync::broadcast;
 
     use chrono::Utc;
 
@@ -1921,6 +1738,56 @@ mod tests {
             .unwrap();
         let events = reopened.read_recent_events(10).unwrap();
         assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
+
+    #[test]
+    fn runtime_event_log_preserves_app_storage_facade_contract() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
+        storage.enable_event_bus(EventBus::new(8)).unwrap();
+        let mut receiver = storage.subscribe_events().unwrap().unwrap();
+        let event_log = storage.event_log();
+
+        event_log
+            .append(&AuditEvent::legacy(
+                "direct_event",
+                serde_json::json!({ "source": "collaborator" }),
+            ))
+            .unwrap();
+        storage
+            .append_event(&AuditEvent::legacy(
+                "facade_event",
+                serde_json::json!({ "source": "facade" }),
+            ))
+            .unwrap();
+
+        let direct_events = event_log.recent(10).unwrap();
+        let facade_events = storage.read_recent_events(10).unwrap();
+        assert_eq!(direct_events, facade_events);
+        assert_eq!(
+            direct_events
+                .iter()
+                .map(|event| (event.kind.as_str(), event.event_seq))
+                .collect::<Vec<_>>(),
+            vec![("direct_event", 1), ("facade_event", 2)]
+        );
+        assert_eq!(
+            event_log.latest_seq().unwrap(),
+            storage.latest_event_seq().unwrap()
+        );
+        assert_eq!(
+            event_log.epoch().unwrap(),
+            storage.event_log_epoch().unwrap()
+        );
+
+        let direct_published = receiver.try_recv().unwrap();
+        let facade_published = receiver.try_recv().unwrap();
+        assert_eq!(direct_published.agent_id.as_deref(), Some("agent-test"));
+        assert_eq!(direct_published.event.kind, "direct_event");
+        assert_eq!(direct_published.event.event_seq, 1);
+        assert_eq!(facade_published.agent_id.as_deref(), Some("agent-test"));
+        assert_eq!(facade_published.event.kind, "facade_event");
+        assert_eq!(facade_published.event.event_seq, 2);
     }
 
     #[test]
