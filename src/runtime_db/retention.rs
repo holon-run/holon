@@ -227,7 +227,7 @@ impl RuntimeDb {
         let policy = policy.validate()?;
         if !policy.enabled {
             let connection = self.connection()?;
-            return build_retention_report(&connection, &policy, now, false, None);
+            return build_retention_report(&connection, &policy, now, true, None);
         }
         let transaction_policy = policy.clone();
         let mut report = self.transaction_with_context(
@@ -968,6 +968,43 @@ mod tests {
         .validate()
         .expect_err("audit floor below replay window must fail");
         assert!(error.to_string().contains("must be at least"));
+    }
+
+    #[test]
+    fn disabled_retention_reports_candidates_without_deleting() -> Result<()> {
+        let (_directory, db) = runtime_db()?;
+        let now = Utc::now();
+        for id in ["transcript-old-a", "transcript-old-b"] {
+            let mut entry = TranscriptEntry::new(
+                "agent-a",
+                TranscriptEntryKind::IncomingMessage,
+                None,
+                None,
+                serde_json::json!({"text": id}),
+            );
+            entry.id = id.into();
+            entry.created_at = now - Duration::days(60);
+            db.transcript_entries().append(&entry)?;
+        }
+        let mut disabled = policy();
+        disabled.enabled = false;
+
+        let report = db.run_retention_pass(disabled, now)?;
+
+        assert!(report.dry_run);
+        assert!(!report.enabled);
+        assert_eq!(report.transcript_entries.candidate_rows, 2);
+        assert_eq!(report.transcript_entries.planned_delete_rows, 1);
+        assert_eq!(report.transcript_entries.deleted_rows, 0);
+        assert!(db
+            .transcript_entries()
+            .by_id(None, "transcript-old-a")?
+            .is_some());
+        assert!(db
+            .transcript_entries()
+            .by_id(None, "transcript-old-b")?
+            .is_some());
+        Ok(())
     }
 
     #[test]
