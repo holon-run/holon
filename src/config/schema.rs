@@ -348,6 +348,69 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
+            key: "runtime.retention.enabled",
+            kind: "boolean",
+            description: "Enable bounded runtime SQLite retention. Disabled unless explicitly configured.",
+            default: json!(false),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.audit_events_days",
+            kind: "positive_integer",
+            description: "Age window in days for audit event retention.",
+            default: json!(crate::runtime_db::retention::DEFAULT_AUDIT_EVENTS_DAYS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.transcript_entries_days",
+            kind: "positive_integer",
+            description: "Age window in days for transcript entry retention.",
+            default: json!(crate::runtime_db::retention::DEFAULT_TRANSCRIPT_ENTRIES_DAYS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.tool_executions_days",
+            kind: "positive_integer",
+            description: "Age window in days for tool execution retention.",
+            default: json!(crate::runtime_db::retention::DEFAULT_TOOL_EXECUTIONS_DAYS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.audit_events_min_rows_per_scope",
+            kind: "positive_integer",
+            description: "Minimum audit event rows retained independently for each agent or host scope.",
+            default: json!(crate::runtime_db::retention::DEFAULT_AUDIT_EVENTS_MIN_ROWS_PER_SCOPE),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.transcript_entries_min_rows",
+            kind: "positive_integer",
+            description: "Minimum transcript rows retained globally.",
+            default: json!(crate::runtime_db::retention::DEFAULT_TRANSCRIPT_ENTRIES_MIN_ROWS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.tool_executions_min_rows",
+            kind: "positive_integer",
+            description: "Minimum tool execution rows retained globally.",
+            default: json!(crate::runtime_db::retention::DEFAULT_TOOL_EXECUTIONS_MIN_ROWS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.interval_hours",
+            kind: "positive_integer",
+            description: "Hours between daemon retention passes while retention is enabled.",
+            default: json!(crate::runtime_db::retention::DEFAULT_RETENTION_INTERVAL_HOURS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.incremental_vacuum_pages",
+            kind: "positive_integer",
+            description: "Maximum pages requested from SQLite incremental vacuum after a retention pass.",
+            default: json!(crate::runtime_db::retention::DEFAULT_INCREMENTAL_VACUUM_PAGES),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "tui.alternate_screen",
             kind: "enum",
             description: "Whether the TUI uses the terminal alternate screen buffer.",
@@ -689,6 +752,60 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .disable_provider_fallback
             .map(Value::Bool)
             .unwrap_or(Value::Null)),
+        "runtime.retention.enabled" => Ok(config
+            .runtime
+            .retention
+            .enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "runtime.retention.audit_events_days" => Ok(config
+            .runtime
+            .retention
+            .audit_events_days
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.transcript_entries_days" => Ok(config
+            .runtime
+            .retention
+            .transcript_entries_days
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.tool_executions_days" => Ok(config
+            .runtime
+            .retention
+            .tool_executions_days
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.audit_events_min_rows_per_scope" => Ok(config
+            .runtime
+            .retention
+            .audit_events_min_rows_per_scope
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.transcript_entries_min_rows" => Ok(config
+            .runtime
+            .retention
+            .transcript_entries_min_rows
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.tool_executions_min_rows" => Ok(config
+            .runtime
+            .retention
+            .tool_executions_min_rows
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.interval_hours" => Ok(config
+            .runtime
+            .retention
+            .interval_hours
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.incremental_vacuum_pages" => Ok(config
+            .runtime
+            .retention
+            .incremental_vacuum_pages
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "tui.alternate_screen" => Ok(config
             .tui
             .alternate_screen
@@ -978,6 +1095,42 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
+        "runtime.retention.enabled" => {
+            config.runtime.retention.enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "runtime.retention.audit_events_days" => {
+            config.runtime.retention.audit_events_days =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.retention.transcript_entries_days" => {
+            config.runtime.retention.transcript_entries_days =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.retention.tool_executions_days" => {
+            config.runtime.retention.tool_executions_days =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.retention.audit_events_min_rows_per_scope" => {
+            config.runtime.retention.audit_events_min_rows_per_scope =
+                Some(parse_positive_usize_key(key, raw_value)?);
+        }
+        "runtime.retention.transcript_entries_min_rows" => {
+            config.runtime.retention.transcript_entries_min_rows =
+                Some(parse_positive_usize_key(key, raw_value)?);
+        }
+        "runtime.retention.tool_executions_min_rows" => {
+            config.runtime.retention.tool_executions_min_rows =
+                Some(parse_positive_usize_key(key, raw_value)?);
+        }
+        "runtime.retention.interval_hours" => {
+            config.runtime.retention.interval_hours = Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.retention.incremental_vacuum_pages" => {
+            config.runtime.retention.incremental_vacuum_pages =
+                Some(parse_positive_u32_key(key, raw_value)?);
+        }
         "tui.alternate_screen" => {
             config.tui.alternate_screen = Some(AltScreenMode::parse(raw_value)?);
         }
@@ -1187,6 +1340,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         _ => return Err(unknown_config_key(key)),
     }
     validate_api_cors_config(&config.api.cors)?;
+    super::resolve_runtime_db_retention_policy(config)?;
     Ok(())
 }
 
@@ -1241,6 +1395,31 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "runtime.default_tool_output_tokens" => config.runtime.default_tool_output_tokens = None,
         "runtime.max_tool_output_tokens" => config.runtime.max_tool_output_tokens = None,
         "runtime.disable_provider_fallback" => config.runtime.disable_provider_fallback = None,
+        "runtime.retention.enabled" => config.runtime.retention.enabled = None,
+        "runtime.retention.audit_events_days" => {
+            config.runtime.retention.audit_events_days = None;
+        }
+        "runtime.retention.transcript_entries_days" => {
+            config.runtime.retention.transcript_entries_days = None;
+        }
+        "runtime.retention.tool_executions_days" => {
+            config.runtime.retention.tool_executions_days = None;
+        }
+        "runtime.retention.audit_events_min_rows_per_scope" => {
+            config.runtime.retention.audit_events_min_rows_per_scope = None;
+        }
+        "runtime.retention.transcript_entries_min_rows" => {
+            config.runtime.retention.transcript_entries_min_rows = None;
+        }
+        "runtime.retention.tool_executions_min_rows" => {
+            config.runtime.retention.tool_executions_min_rows = None;
+        }
+        "runtime.retention.interval_hours" => {
+            config.runtime.retention.interval_hours = None;
+        }
+        "runtime.retention.incremental_vacuum_pages" => {
+            config.runtime.retention.incremental_vacuum_pages = None;
+        }
         "tui.alternate_screen" => config.tui.alternate_screen = None,
         "web.fetch.enabled" => config.web.fetch.enabled = None,
         "web.fetch.max_chars" => config.web.fetch.max_chars = None,

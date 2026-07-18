@@ -42,7 +42,7 @@ use holon::{
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
     runtime::maybe_enqueue_first_run_intro,
-    runtime_db::RuntimeDb,
+    runtime_db::{RuntimeDb, RuntimeDbLock},
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
     tui::run_tui,
@@ -826,6 +826,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let host = RuntimeHost::new(config.clone())?;
     let runtime = host.default_runtime().await?;
     host.spawn_daemon_memory_indexer();
+    host.spawn_daemon_runtime_db_retention();
     spawn_stale_agent_template_remote_source_sync(&config, &host);
     emit_first_run_intro(&config, &runtime).await;
     let runtime_service = RuntimeServiceHandle::new(&config)?;
@@ -2188,8 +2189,51 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             events_limit,
         } => print_latency_diagnostics(&config, agent, limit, events_limit),
         DebugCommands::Performance { json } => print_performance_diagnostics(&config, json).await,
+        DebugCommands::RuntimeDb { command } => handle_runtime_db_debug_command(&config, command),
         DebugCommands::SchedulerFixture { agent, output } => {
             export_scheduler_fixture(&config, agent, &output)
+        }
+    }
+}
+
+fn handle_runtime_db_debug_command(
+    config: &AppConfig,
+    command: holon::cli::RuntimeDbDebugCommands,
+) -> Result<()> {
+    match command {
+        holon::cli::RuntimeDbDebugCommands::Retention { dry_run, json } => {
+            let policy = config.runtime_db_retention_policy()?;
+            let db = RuntimeDb::open_and_migrate(
+                config.runtime_db_path(),
+                config.runtime_db_lock_path(),
+            )?;
+            let report = if dry_run {
+                db.plan_retention(policy, chrono::Utc::now())?
+            } else {
+                let _maintenance_lock =
+                    RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+                        .context("runtime database maintenance is already running")?;
+                db.run_retention_pass(policy, chrono::Utc::now())?
+            };
+            if json {
+                print_json(&serde_json::to_value(report)?)
+            } else {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            }
+        }
+        holon::cli::RuntimeDbDebugCommands::Compact { json } => {
+            let report = RuntimeDb::compact_offline(
+                &config.runtime_db_path(),
+                &config.runtime_db_lock_path(),
+                &config.runtime_db_maintenance_lock_path(),
+            )?;
+            if json {
+                print_json(&serde_json::to_value(report)?)
+            } else {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            }
         }
     }
 }

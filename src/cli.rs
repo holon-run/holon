@@ -566,11 +566,29 @@ pub enum DebugCommands {
         #[arg(long)]
         json: bool,
     },
+    RuntimeDb {
+        #[command(subcommand)]
+        command: RuntimeDbDebugCommands,
+    },
     SchedulerFixture {
         #[arg(long)]
         agent: Option<String>,
         #[arg(long)]
         output: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RuntimeDbDebugCommands {
+    Retention {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Compact {
+        #[arg(long)]
+        json: bool,
     },
 }
 

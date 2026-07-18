@@ -14,6 +14,7 @@ pub mod connection;
 pub mod evidence;
 pub mod migrations;
 pub mod repositories;
+pub mod retention;
 pub mod storage_domain;
 pub(crate) mod transitions;
 pub mod types;
@@ -27,6 +28,10 @@ pub use crate::runtime_db::evidence::{
 };
 pub use crate::runtime_db::index_outbox::{
     RuntimeIndexChange, RuntimeIndexOperation, RuntimeIndexOutboxRepository, RuntimeIndexOutboxRow,
+};
+pub use crate::runtime_db::retention::{
+    RuntimeDbCompactReport, RuntimeDbRetentionPolicy, RuntimeDbRetentionReport,
+    RuntimeDbRetentionTableReport,
 };
 pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub use crate::runtime_db::types::{
@@ -53,7 +58,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::runtime_db::connection::{
-    configure_persistent_database, flock, open_connection, unlock, LockMode,
+    configure_new_database_auto_vacuum, configure_persistent_database, flock, open_connection,
+    unlock, LockMode,
 };
 use crate::runtime_db::migrations::{
     apply_migration, backfill_wait_condition_payload_columns, backfill_work_item_recheck_columns,
@@ -623,6 +629,7 @@ impl RuntimeDb {
             .connection
             .lock()
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        configure_new_database_auto_vacuum(&connection)?;
         configure_persistent_database(&connection)?;
         ensure_migration_table(&connection)?;
         let current_version = current_schema_version(&connection)?;
