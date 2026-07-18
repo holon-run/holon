@@ -144,14 +144,15 @@ pub fn request_memory_index_rebuild(
 }
 
 pub(crate) fn enqueue_memory_index_upsert(
-    storage: &AppStorage,
+    shared_indexes_dir: &Path,
+    agent_id: &str,
     source_kind: &str,
     source_id: &str,
     source_ref: &str,
 ) -> Result<()> {
-    let index = MemoryIndex::open(storage)?;
+    let index = MemoryIndex::open_in(shared_indexes_dir)?;
     index.enqueue_source(
-        &storage_agent_id(storage),
+        agent_id,
         source_kind,
         source_id,
         source_ref,
@@ -489,13 +490,13 @@ struct MemoryIndex {
 
 impl MemoryIndex {
     fn open(storage: &AppStorage) -> Result<Self> {
-        fs::create_dir_all(storage.shared_indexes_dir()).with_context(|| {
-            format!(
-                "failed to create {}",
-                storage.shared_indexes_dir().display()
-            )
-        })?;
-        let connection = Connection::open(memory_index_path(storage))?;
+        Self::open_in(&storage.shared_indexes_dir())
+    }
+
+    fn open_in(shared_indexes_dir: &Path) -> Result<Self> {
+        fs::create_dir_all(shared_indexes_dir)
+            .with_context(|| format!("failed to create {}", shared_indexes_dir.display()))?;
+        let connection = Connection::open(shared_indexes_dir.join(INDEX_FILENAME))?;
         let index = Self {
             connection,
             last_outbox_consume_reached_limit: false,
