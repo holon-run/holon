@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::runtime_error::{
+    collect_runtime_error_source_chain, describe_runtime_error, RuntimeErrorDomain,
+};
+
 const MODEL_VISIBLE_DETAILS_MAX_CHARS: usize = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -10,10 +14,14 @@ pub struct ToolError {
     pub kind: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<RuntimeErrorDomain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_hint: Option<String>,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_chain: Vec<String>,
 }
 
 impl ToolError {
@@ -21,10 +29,17 @@ impl ToolError {
         Self {
             kind: kind.into(),
             message: message.into(),
+            domain: None,
             details: None,
             recovery_hint: None,
             retryable: false,
+            source_chain: Vec::new(),
         }
+    }
+
+    pub fn with_domain(mut self, domain: RuntimeErrorDomain) -> Self {
+        self.domain = Some(domain);
+        self
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
@@ -39,6 +54,11 @@ impl ToolError {
 
     pub fn with_retryable(mut self, retryable: bool) -> Self {
         self.retryable = retryable;
+        self
+    }
+
+    pub fn with_source_chain(mut self, source_chain: Vec<String>) -> Self {
+        self.source_chain = source_chain;
         self
     }
 
@@ -62,6 +82,9 @@ impl ToolError {
         }
         receipt.insert("kind".to_string(), Value::String(self.kind.clone()));
         receipt.insert("message".to_string(), Value::String(self.message.clone()));
+        if let Some(domain) = self.domain {
+            receipt.insert("domain".to_string(), json!(domain));
+        }
         if let Some(recovery_hint) = self.recovery_hint.as_deref() {
             receipt.insert("hint".to_string(), Value::String(recovery_hint.to_string()));
         }
@@ -97,13 +120,35 @@ impl ToolError {
     }
 
     pub fn from_anyhow(error: &AnyhowError) -> Self {
-        error
+        if let Some(mut tool_error) = error
             .chain()
             .find_map(|cause| cause.downcast_ref::<ToolError>())
             .cloned()
-            .unwrap_or_else(|| {
-                ToolError::new("tool_execution_failed", error.to_string()).with_retryable(false)
-            })
+        {
+            if tool_error.source_chain.is_empty() {
+                tool_error.source_chain = collect_runtime_error_source_chain(error);
+            }
+            return tool_error;
+        }
+
+        let descriptor = describe_runtime_error(error);
+        let details = (!descriptor.safe_context.is_empty()).then(|| json!(descriptor.safe_context));
+        let kind = if descriptor.domain == RuntimeErrorDomain::Unknown
+            && descriptor.code == "runtime_error"
+        {
+            "tool_execution_failed".to_string()
+        } else {
+            descriptor.code
+        };
+        Self {
+            kind,
+            message: descriptor.operator_message,
+            domain: Some(descriptor.domain),
+            details,
+            recovery_hint: descriptor.recovery_hint,
+            retryable: descriptor.retryable,
+            source_chain: descriptor.source_chain,
+        }
     }
 }
 
@@ -224,5 +269,53 @@ mod tests {
 
         assert_eq!(tool_error.kind, "execution_root_violation");
         assert_eq!(tool_error.recovery_hint.as_deref(), Some("omit `workdir`"));
+        assert!(tool_error
+            .source_chain
+            .iter()
+            .any(|message| message == "failed to resolve command task"));
+    }
+
+    #[test]
+    fn tool_error_from_anyhow_projects_typed_runtime_error() {
+        let error = anyhow::Error::from(
+            crate::runtime_error::RuntimeError::not_found(
+                "task_not_found",
+                "task task_123 not found",
+            )
+            .with_safe_context("task_id", "task_123"),
+        )
+        .context("failed to read task");
+
+        let tool_error = ToolError::from_anyhow(&error);
+
+        assert_eq!(tool_error.kind, "task_not_found");
+        assert_eq!(tool_error.domain, Some(RuntimeErrorDomain::NotFound));
+        assert_eq!(tool_error.details.as_ref().unwrap()["task_id"], "task_123");
+        assert!(tool_error
+            .source_chain
+            .iter()
+            .any(|message| message == "failed to read task"));
+    }
+
+    #[test]
+    fn tool_error_from_anyhow_preserves_unknown_fallback_code() {
+        let tool_error = ToolError::from_anyhow(&anyhow::anyhow!("unclassified failure"));
+
+        assert_eq!(tool_error.kind, "tool_execution_failed");
+        assert_eq!(tool_error.domain, Some(RuntimeErrorDomain::Unknown));
+        assert!(!tool_error.retryable);
+    }
+
+    #[test]
+    fn tool_error_deserializes_legacy_shape_with_taxonomy_defaults() {
+        let tool_error: ToolError = serde_json::from_value(serde_json::json!({
+            "kind": "tool_execution_failed",
+            "message": "legacy failure",
+            "retryable": false
+        }))
+        .unwrap();
+
+        assert_eq!(tool_error.domain, None);
+        assert!(tool_error.source_chain.is_empty());
     }
 }

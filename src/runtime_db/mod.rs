@@ -97,6 +97,10 @@ impl RuntimeDbRetryableError {
             source: source.to_string(),
         }
     }
+
+    pub fn operation(&self) -> &'static str {
+        self.operation
+    }
 }
 
 impl fmt::Display for RuntimeDbRetryableError {
@@ -162,6 +166,19 @@ impl RuntimeStateTransitionConflict {
             expected_revision,
             actual_revision,
             retryable,
+        }
+    }
+
+    pub(crate) fn concurrent_mutation(domain: &'static str, record_id: impl Into<String>) -> Self {
+        Self {
+            domain,
+            record_id: record_id.into(),
+            code: "revision_conflict",
+            existing_status: "changed".into(),
+            incoming_status: "expected_snapshot".into(),
+            expected_revision: None,
+            actual_revision: None,
+            retryable: true,
         }
     }
 

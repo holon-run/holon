@@ -336,6 +336,19 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
         failure_event.data["summary"].as_str(),
         Some("Failed: CreateTask not exposed for round")
     );
+    assert_eq!(failure_event.data["tool_error"]["domain"].as_str(), None);
+    let tool_execution_id = failure_event.data["tool_execution_id"]
+        .as_str()
+        .expect("tool execution id");
+    let canonical = runtime
+        .storage()
+        .read_tool_execution_by_id(tool_execution_id)
+        .unwrap()
+        .expect("canonical tool execution");
+    assert_eq!(
+        canonical.output["tool_error"]["kind"],
+        "tool_not_exposed_for_round"
+    );
 
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
     assert_eq!(
@@ -1589,6 +1602,20 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
     assert_eq!(
         failure.data["failure_artifact"]["metadata"]["http_trace_path"],
         ".holon/http-trace/default/trace-1-1.jsonl"
+    );
+    assert_eq!(failure.data["failure_artifact"]["domain"], "provider");
+    assert_eq!(failure.data["failure_artifact"]["retryable"], false);
+    assert_eq!(
+        failure.data["failure_artifact"]["context"]["message_id"],
+        message.id
+    );
+    assert_eq!(
+        failure.data["failure_artifact"]["context"]["provider"],
+        "openai"
+    );
+    assert_eq!(
+        failure.data["failure_artifact"]["context"]["model_ref"],
+        "openai/gpt-5.4"
     );
     assert!(failure.data["token_usage"].is_null());
     assert!(failure.data["provider_attempt_timeline"]["winning_model_ref"].is_null());

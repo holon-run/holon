@@ -1,5 +1,6 @@
 use super::*;
 use crate::provider::ProviderAttemptTimeline;
+use crate::runtime_error::{describe_runtime_error, RuntimeErrorContext, RuntimeErrorDescriptor};
 use crate::types::{FailureArtifact, FailureArtifactCategory, TurnTerminalRecord};
 
 impl RuntimeHandle {
@@ -69,6 +70,8 @@ impl RuntimeHandle {
     fn failure_artifact_for_provider_timeline(
         error_summary: &str,
         attempt_timeline: &ProviderAttemptTimeline,
+        descriptor: &RuntimeErrorDescriptor,
+        mut context: RuntimeErrorContext,
     ) -> FailureArtifact {
         let latest_attempt = attempt_timeline.attempts.iter().rev().find(|attempt| {
             attempt.failure_kind.is_some() || attempt.transport_diagnostics.is_some()
@@ -159,12 +162,18 @@ impl RuntimeHandle {
         let source_chain = latest_attempt
             .and_then(|attempt| attempt.transport_diagnostics.as_ref())
             .map(|diag| diag.source_chain.clone())
-            .unwrap_or_default();
+            .filter(|chain| !chain.is_empty())
+            .unwrap_or_else(|| descriptor.source_chain.clone());
+        context.provider = latest_attempt.map(|attempt| attempt.provider.clone());
+        context.model_ref = latest_attempt.map(|attempt| attempt.model_ref.clone());
 
         FailureArtifact {
             category: Self::provider_failure_category(&kind),
             kind,
             summary: error_summary.to_string(),
+            domain: Some(descriptor.domain),
+            retryable: Some(descriptor.retryable),
+            recovery_hint: descriptor.recovery_hint.clone(),
             provider: latest_attempt
                 .map(|attempt| attempt.provider.clone())
                 .or_else(|| metadata.get("provider").cloned()),
@@ -177,6 +186,7 @@ impl RuntimeHandle {
             task_id: None,
             exit_status: None,
             source_chain,
+            context: Box::new(context),
             metadata,
         }
     }
@@ -184,6 +194,8 @@ impl RuntimeHandle {
     fn failure_artifact_for_runtime_error(
         message: &MessageEnvelope,
         failure_text: &str,
+        descriptor: &RuntimeErrorDescriptor,
+        context: RuntimeErrorContext,
     ) -> FailureArtifact {
         let mut metadata = std::collections::BTreeMap::new();
         metadata.insert(
@@ -205,14 +217,18 @@ impl RuntimeHandle {
         );
         FailureArtifact {
             category: FailureArtifactCategory::Runtime,
-            kind: "runtime_error".into(),
+            kind: descriptor.code.clone(),
             summary: failure_text.to_string(),
+            domain: Some(descriptor.domain),
+            retryable: Some(descriptor.retryable),
+            recovery_hint: descriptor.recovery_hint.clone(),
             provider: None,
             model_ref: None,
             status: None,
             task_id: None,
             exit_status: None,
-            source_chain: Vec::new(),
+            source_chain: descriptor.source_chain.clone(),
+            context: Box::new(context),
             metadata,
         }
     }
@@ -221,14 +237,21 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         failure_text: &str,
         error: &anyhow::Error,
+        context: RuntimeErrorContext,
     ) -> FailureArtifact {
+        let descriptor = describe_runtime_error(error);
         if let Some(timeline) = provider_attempt_timeline(error) {
             if !timeline.attempts.is_empty() {
-                return Self::failure_artifact_for_provider_timeline(failure_text, timeline);
+                return Self::failure_artifact_for_provider_timeline(
+                    failure_text,
+                    timeline,
+                    &descriptor,
+                    context,
+                );
             }
         }
 
-        Self::failure_artifact_for_runtime_error(message, failure_text)
+        Self::failure_artifact_for_runtime_error(message, failure_text, &descriptor, context)
     }
 
     pub(super) fn summarize_runtime_failure_error(error: &anyhow::Error) -> String {
@@ -285,7 +308,9 @@ impl RuntimeHandle {
             .as_str()
             .map(ToString::to_string)
             .unwrap_or_else(|| "message".to_string());
-        let error_summary = Self::summarize_runtime_failure_error(error);
+        let descriptor = describe_runtime_error(error);
+        let error_summary =
+            Self::summarize_runtime_failure_error(&anyhow::anyhow!(descriptor.operator_message));
         format!(
             "Turn failed while processing {}: {}",
             message_kind, error_summary
@@ -299,17 +324,34 @@ impl RuntimeHandle {
     ) -> Result<()> {
         let failure_text = Self::concise_runtime_failure_text(message, error);
         let attempt_timeline = provider_attempt_timeline(error);
-        let failure_artifact = Self::failure_artifact(message, &failure_text, error);
+        let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
+        let (run_id, current_work_item_id) = {
+            let guard = self.inner.agent.lock().await;
+            (
+                guard.state.current_run_id.clone(),
+                guard
+                    .state
+                    .current_turn_work_item_id
+                    .clone()
+                    .or_else(|| guard.state.current_work_item_id.clone()),
+            )
+        };
+        let context = RuntimeErrorContext {
+            message_id: Some(message.id.clone()),
+            turn_id: Some(terminal.turn_id.clone()),
+            run_id,
+            work_item_id: message.work_item_id.clone().or(current_work_item_id),
+            task_id: message.task_id.clone(),
+            correlation_id: message.correlation_id.clone(),
+            causation_id: message.causation_id.clone(),
+            ..RuntimeErrorContext::default()
+        };
+        let descriptor = describe_runtime_error(error);
+        let failure_artifact = Self::failure_artifact(message, &failure_text, error, context);
         let token_usage = attempt_timeline
             .as_ref()
             .and_then(|timeline| timeline.aggregated_token_usage.clone());
-        let error_chain = error
-            .chain()
-            .skip(1)
-            .map(ToString::to_string)
-            .filter(|line| !line.trim().is_empty())
-            .collect::<Vec<_>>();
-        let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
+        let error_chain = failure_artifact.source_chain.clone();
         let mut brief = brief::make_failure(&message.agent_id, message, failure_text.clone());
         brief.turn_id = Some(terminal.turn_id.clone());
         brief.turn_index = Some(terminal.turn_index);
@@ -326,7 +368,7 @@ impl RuntimeHandle {
                 "authority_class": message.authority_class,
                 "delivery_surface": message.delivery_surface,
                 "admission_context": message.admission_context,
-                "error": error.to_string(),
+                "error": descriptor.operator_message,
                 "error_chain": error_chain,
                 "text": failure_text,
                 "failure_artifact": failure_artifact.clone(),

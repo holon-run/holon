@@ -15,8 +15,9 @@ use crate::{
             upsert_task_tx, upsert_wait_condition_tx, upsert_work_item_continuation_tx,
             wait_condition_transition,
         },
-        RuntimeDb, RuntimeIndexChange,
+        RuntimeDb, RuntimeIndexChange, RuntimeStateTransitionConflict,
     },
+    runtime_error::RuntimeError,
     types::{
         AgentState, AuditEvent, QueueEntryRecord, TaskRecord, TranscriptEntry, WaitConditionRecord,
         WorkItemContinuationFrame, WorkItemRecord, WorkItemState,
@@ -469,10 +470,11 @@ fn validate_agent_state_mutation_tx(
     if let Some(expected) = mutation.expected.as_ref() {
         let actual = agent_state_tx(tx, &mutation.record.id)?;
         if actual.as_ref() != Some(expected.as_ref()) {
-            return Err(anyhow!(
-                "agent state {} changed before runtime transition commit",
-                mutation.record.id
-            ));
+            return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                "agent_state",
+                &mutation.record.id,
+            )
+            .into());
         }
     }
     Ok(())
@@ -490,19 +492,34 @@ fn validate_focus_target_tx(tx: &Transaction<'_>, state: &AgentState) -> Result<
         )
         .optional()?;
     let Some((owner_agent_id, payload_json)) = target else {
-        return Err(anyhow!(
-            "cannot focus missing work item {work_item_id} for agent {}",
-            state.id
-        ));
+        return Err(RuntimeError::not_found(
+            "work_item_not_found",
+            format!(
+                "cannot focus missing work item {work_item_id} for agent {}",
+                state.id
+            ),
+        )
+        .with_safe_context("work_item_id", work_item_id)
+        .with_safe_context("agent_id", &state.id)
+        .into());
     };
     let record: WorkItemRecord = serde_json::from_str(&payload_json)?;
     if owner_agent_id != state.id || record.agent_id != state.id {
-        return Err(anyhow!(
-            "cannot focus work item {work_item_id} owned by another agent"
-        ));
+        return Err(RuntimeError::policy(
+            "work_item_access_denied",
+            format!("cannot focus work item {work_item_id} owned by another agent"),
+        )
+        .with_safe_context("work_item_id", work_item_id)
+        .with_safe_context("agent_id", &state.id)
+        .into());
     }
     if record.state != WorkItemState::Open {
-        return Err(anyhow!("cannot focus completed work item {work_item_id}"));
+        return Err(RuntimeError::validation(
+            "work_item_completed",
+            format!("cannot focus completed work item {work_item_id}"),
+        )
+        .with_safe_context("work_item_id", work_item_id)
+        .into());
     }
     Ok(())
 }
@@ -974,9 +991,13 @@ mod tests {
             .transitions()
             .commit_work_item_focus(&command(&second))
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("changed before runtime transition commit"));
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("concurrent agent state mutation should return typed conflict");
+        assert_eq!(conflict.domain(), "agent_state");
+        assert_eq!(conflict.record_id(), "agent-a");
+        assert_eq!(conflict.code(), "revision_conflict");
+        assert!(conflict.retryable());
         assert_eq!(
             db.agent_states()
                 .latest("agent-a")?

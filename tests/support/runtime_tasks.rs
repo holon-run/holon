@@ -48,9 +48,9 @@ use crate::support::runtime_helpers::{
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
-    RecordingPromptProvider, RuntimeFailureProvider, ShellProvider,
-    SleepOnlyCompletionAfterTextProvider, TerminalResultBriefProvider, ToolErrorProvider,
-    ToolUsingProvider, TruncatedShellReinjectionProvider, UseWorkspaceProvider,
+    RecordingPromptProvider, RuntimeFailureProvider, SensitiveRuntimeFailureProvider,
+    ShellProvider, SleepOnlyCompletionAfterTextProvider, TerminalResultBriefProvider,
+    ToolErrorProvider, ToolUsingProvider, TruncatedShellReinjectionProvider, UseWorkspaceProvider,
     VerboseRuntimeFailureProvider, WakeHintProvider, WorktreeCapturingProvider,
     WorktreeLifecycleProvider,
 };
@@ -1071,6 +1071,13 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
                 == Some("operator_prompt")
             && event.data.get("error").and_then(|value| value.as_str())
                 == Some("provider transport broke")
+            && event.data.get("domain").and_then(|value| value.as_str()) == Some("unknown")
+            && event.data.get("code").and_then(|value| value.as_str()) == Some("runtime_error")
+            && event
+                .data
+                .get("retryable")
+                .and_then(|value| value.as_bool())
+                == Some(false)
     }));
 
     let summary = runtime.agent_summary().await?;
@@ -1090,12 +1097,18 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
         .expect("runtime failure should include normalized failure artifact");
     assert_eq!(artifact.category, FailureArtifactCategory::Runtime);
     assert_eq!(artifact.kind, "runtime_error");
+    assert_eq!(
+        artifact.domain,
+        Some(holon::runtime_error::RuntimeErrorDomain::Unknown)
+    );
+    assert_eq!(artifact.retryable, Some(false));
+    assert!(artifact.context.message_id.is_some());
+    assert!(artifact.context.turn_id.is_some());
     assert!(artifact.summary.contains("provider transport broke"));
     Ok(())
 }
 
-pub async fn runtime_failure_brief_sanitizes_long_provider_error_but_transcript_keeps_full_error(
-) -> Result<()> {
+pub async fn runtime_failure_brief_and_transcript_sanitize_long_provider_error() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(VerboseRuntimeFailureProvider))?;
     attach_default_workspace(&host).await?;
@@ -1149,11 +1162,73 @@ pub async fn runtime_failure_brief_sanitizes_long_provider_error_but_transcript_
         .rev()
         .find(|entry| entry.kind == TranscriptEntryKind::RuntimeFailure)
         .expect("runtime failure transcript entry should exist");
-    assert!(failure_entry
+    assert!(!failure_entry
         .data
         .get("error")
         .and_then(|value| value.as_str())
         .is_some_and(|error| error.contains("raw backend body")));
+    assert!(!failure_entry
+        .data
+        .get("error_chain")
+        .and_then(|value| value.as_array())
+        .is_some_and(|chain| chain.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|error| error.contains("raw backend body"))
+        })));
+
+    Ok(())
+}
+
+pub async fn runtime_failure_brief_and_transcript_redact_short_provider_secret() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(SensitiveRuntimeFailureProvider))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "trigger sensitive runtime failure".into(),
+            },
+        ))
+        .await?;
+
+    eventually_for(Duration::from_secs(10), || {
+        let briefs = runtime.storage().read_recent_briefs(10)?;
+        Ok(briefs.iter().any(|brief| {
+            brief.kind == BriefKind::Failure
+                && brief.text.contains("<redacted-sensitive-error-context>")
+        }))
+    })
+    .await?;
+
+    let failure_brief = runtime
+        .recent_briefs(10)
+        .await?
+        .into_iter()
+        .rev()
+        .find(|brief| brief.kind == BriefKind::Failure)
+        .expect("failure brief should exist");
+    assert!(!failure_brief.text.contains("short-secret"));
+    assert!(!failure_brief.text.contains("access_token"));
+
+    let failure_entry = runtime
+        .recent_transcript(20)
+        .await?
+        .into_iter()
+        .rev()
+        .find(|entry| entry.kind == TranscriptEntryKind::RuntimeFailure)
+        .expect("runtime failure transcript entry should exist");
+    let serialized = failure_entry.data.to_string();
+    assert!(serialized.contains("<redacted-sensitive-error-context>"));
+    assert!(!serialized.contains("short-secret"));
+    assert!(!serialized.contains("access_token"));
 
     Ok(())
 }
@@ -2307,8 +2382,17 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
         .expect("failed command task should expose normalized task artifact");
     assert_eq!(task_artifact.category, FailureArtifactCategory::Task);
     assert_eq!(task_artifact.kind, "command_task_exit_nonzero");
+    assert_eq!(
+        task_artifact.domain,
+        Some(holon::runtime_error::RuntimeErrorDomain::Task)
+    );
+    assert_eq!(task_artifact.retryable, Some(false));
     assert_eq!(task_artifact.exit_status, Some(7));
     assert_eq!(task_artifact.task_id.as_deref(), Some(task.id.as_str()));
+    assert_eq!(
+        task_artifact.context.task_id.as_deref(),
+        Some(task.id.as_str())
+    );
     assert_eq!(task_artifact.summary, "command task exited with status 7");
     assert!(!task_artifact.summary.contains("before_fail"));
     assert_eq!(

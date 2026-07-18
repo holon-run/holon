@@ -1,5 +1,5 @@
 pub(crate) use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     path::{Component, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -74,6 +74,9 @@ pub(crate) use crate::{
     },
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
+    runtime_error::{
+        describe_runtime_error, RuntimeErrorContext, RuntimeErrorDescriptor, RuntimeErrorDomain,
+    },
     skills::registry::SkillsRegistry,
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
@@ -188,6 +191,14 @@ pub(crate) struct HttpErrorEnvelope {
     code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    domain: Option<RuntimeErrorDomain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retryable: Option<bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    context: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "RuntimeErrorContext::is_empty")]
+    correlation: Box<RuntimeErrorContext>,
     #[serde(flatten)]
     extensions: Map<String, Value>,
 }
@@ -199,6 +210,10 @@ impl HttpErrorEnvelope {
             error: error.into(),
             code: None,
             hint: None,
+            domain: None,
+            retryable: None,
+            context: BTreeMap::new(),
+            correlation: Box::default(),
             extensions: Map::new(),
         }
     }
@@ -215,6 +230,25 @@ impl HttpErrorEnvelope {
 
     fn extension(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.extensions.insert(key.into(), value.into());
+        self
+    }
+
+    fn descriptor(mut self, descriptor: RuntimeErrorDescriptor) -> Self {
+        self.error = descriptor.operator_message;
+        self.code = Some(descriptor.code);
+        self.hint = descriptor.recovery_hint;
+        self.domain = Some(descriptor.domain);
+        self.retryable = Some(descriptor.retryable);
+        self.correlation.message_id = descriptor.safe_context.get("message_id").cloned();
+        self.correlation.turn_id = descriptor.safe_context.get("turn_id").cloned();
+        self.correlation.run_id = descriptor.safe_context.get("run_id").cloned();
+        self.correlation.work_item_id = descriptor.safe_context.get("work_item_id").cloned();
+        self.correlation.tool_execution_id =
+            descriptor.safe_context.get("tool_execution_id").cloned();
+        self.correlation.task_id = descriptor.safe_context.get("task_id").cloned();
+        self.correlation.provider = descriptor.safe_context.get("provider").cloned();
+        self.correlation.model_ref = descriptor.safe_context.get("model_ref").cloned();
+        self.context = descriptor.safe_context;
         self
     }
 }
@@ -873,26 +907,11 @@ pub(crate) fn not_found(reason: impl Into<String>) -> (StatusCode, Json<Value>) 
 }
 
 pub(crate) fn task_lifecycle_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
-    let message = error.to_string();
-    if message.starts_with("task ") && message.ends_with(" not found") {
-        not_found(message)
-    } else {
-        error_response(error)
-    }
+    error_response(error)
 }
 
 pub(crate) fn work_item_lifecycle_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
-    let message = error.to_string();
-    let lower = message.to_ascii_lowercase();
-    if (lower.contains("work item") && lower.ends_with("not found"))
-        || lower.starts_with("unknown work item ")
-    {
-        not_found(message)
-    } else if message.starts_with("cannot ") {
-        bad_request(message)
-    } else {
-        error_response(error)
-    }
+    error_response(error)
 }
 
 pub(crate) fn agent_model_override_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
@@ -1044,10 +1063,32 @@ fn remote_skill_install_failed_envelope(
 }
 
 pub(crate) fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    let descriptor = describe_runtime_error(&error);
+    let status = runtime_error_status(&descriptor);
     http_error(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        HttpErrorEnvelope::new(error.to_string()),
+        status,
+        HttpErrorEnvelope::new(descriptor.operator_message.clone()).descriptor(descriptor),
     )
+}
+
+fn runtime_error_status(descriptor: &RuntimeErrorDescriptor) -> StatusCode {
+    match descriptor.domain {
+        RuntimeErrorDomain::Validation => StatusCode::BAD_REQUEST,
+        RuntimeErrorDomain::NotFound => StatusCode::NOT_FOUND,
+        RuntimeErrorDomain::Conflict => StatusCode::CONFLICT,
+        RuntimeErrorDomain::Policy => StatusCode::FORBIDDEN,
+        RuntimeErrorDomain::Provider => {
+            if descriptor.retryable {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_GATEWAY
+            }
+        }
+        RuntimeErrorDomain::Storage | RuntimeErrorDomain::Io if descriptor.retryable => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 pub(crate) fn http_error(
@@ -1113,8 +1154,13 @@ pub async fn serve_unix(
 
 #[cfg(test)]
 mod tests {
-    use super::{router, AppState};
-    use crate::{config::AppConfig, host::RuntimeHost, provider::StubProvider};
+    use super::{error_response, router, AppState};
+    use crate::{
+        config::AppConfig,
+        host::RuntimeHost,
+        provider::StubProvider,
+        runtime_error::{RuntimeError, RuntimeErrorDomain},
+    };
     use axum::{
         body::{to_bytes, Body},
         http::{header, Request, StatusCode},
@@ -1158,5 +1204,38 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(&body[..], b"<html>holon ui</html>");
+    }
+
+    #[test]
+    fn typed_runtime_errors_map_to_compatible_http_envelope() {
+        let (status, axum::Json(body)) = error_response(
+            RuntimeError::not_found("task_not_found", "task task_123 not found")
+                .with_safe_context("task_id", "task_123")
+                .into(),
+        );
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "task task_123 not found");
+        assert_eq!(body["code"], "task_not_found");
+        assert_eq!(body["domain"], "not_found");
+        assert_eq!(body["retryable"], false);
+        assert_eq!(body["context"]["task_id"], "task_123");
+        assert!(body.get("hint").is_none());
+        assert_eq!(
+            serde_json::from_value::<RuntimeErrorDomain>(body["domain"].clone()).unwrap(),
+            RuntimeErrorDomain::NotFound
+        );
+    }
+
+    #[test]
+    fn unknown_runtime_errors_remain_internal_server_errors() {
+        let (status, axum::Json(body)) =
+            error_response(anyhow::anyhow!("unexpected runtime failure"));
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["code"], "runtime_error");
+        assert_eq!(body["domain"], "unknown");
+        assert_eq!(body["retryable"], false);
     }
 }

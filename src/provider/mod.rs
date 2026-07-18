@@ -691,14 +691,15 @@ pub fn provider_transport_diagnostics(
         })
 }
 
-pub fn provider_error_contains_code(error: &anyhow::Error, code: &str) -> bool {
+pub fn provider_error_code(error: &anyhow::Error) -> Option<&str> {
     error
         .chain()
-        .any(|source| source.to_string().contains(code))
+        .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
+        .and_then(|error| error.code.as_deref())
 }
 
 pub fn provider_error_is_context_length_exceeded(error: &anyhow::Error) -> bool {
-    provider_error_contains_code(error, "context_length_exceeded")
+    provider_error_code(error) == Some("context_length_exceeded")
 }
 
 pub(crate) fn provider_turn_error(
@@ -732,12 +733,13 @@ pub(crate) fn aggregate_attempt_token_usage(
 }
 
 pub(crate) use catalog::build_candidate;
-pub(crate) use retry::classify_provider_error;
 #[cfg(test)]
 pub(crate) use retry::provider_max_attempts;
+pub(crate) use retry::{classify_provider_error, ProviderTransportError};
 #[cfg(test)]
 pub(crate) use retry::{
-    provider_transport_error, ProviderFailureClassification, ProviderFailureKind, RetryDisposition,
+    provider_transport_error, provider_transport_error_with_code, ProviderFailureClassification,
+    ProviderFailureKind, RetryDisposition,
 };
 #[cfg(test)]
 pub(crate) use tool_schema::validate_emitted_tool_schema;

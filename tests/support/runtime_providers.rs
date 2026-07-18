@@ -810,6 +810,16 @@ impl AgentProvider for VerboseRuntimeFailureProvider {
     }
 }
 
+/// Provider that fails with a short structured secret in the error body.
+pub struct SensitiveRuntimeFailureProvider;
+
+#[async_trait]
+impl AgentProvider for SensitiveRuntimeFailureProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        anyhow::bail!("{}", r#"provider failed: {"access_token":"short-secret"}"#)
+    }
+}
+
 /// Provider that demonstrates workspace usage
 pub struct UseWorkspaceProvider {
     calls: Mutex<usize>,

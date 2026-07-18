@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::ingress::WakeHint;
+use crate::runtime_error::RuntimeError;
 use crate::types::{
     WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitConditionSummary, WakeSource,
     WorkItemRecord, WorkItemState,
@@ -127,10 +128,12 @@ impl RuntimeHandle {
         if let Some(work_item_id) = work_item_id.as_deref() {
             let existing = self.validate_owned_work_item(agent_id, work_item_id)?;
             if existing.state != WorkItemState::Open {
-                return Err(anyhow!(
-                    "cannot wait on completed work item {}",
-                    work_item_id
-                ));
+                return Err(RuntimeError::validation(
+                    "work_item_completed",
+                    format!("cannot wait on completed work item {work_item_id}"),
+                )
+                .with_safe_context("work_item_id", work_item_id)
+                .into());
             }
             let mut updated = existing.clone();
             if existing.blocked_by.as_deref() != Some(reason.as_str())
@@ -500,14 +503,27 @@ impl RuntimeHandle {
             .inner
             .storage
             .latest_timer_record(timer_id)?
-            .ok_or_else(|| anyhow!("timer {timer_id} not found"))?;
+            .ok_or_else(|| {
+                RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))
+                    .with_safe_context("timer_id", timer_id)
+            })?;
         if timer.agent_id != self.agent_id().await? {
-            return Err(anyhow!("timer {timer_id} not found"));
+            return Err(RuntimeError::not_found(
+                "timer_not_found",
+                format!("timer {timer_id} not found"),
+            )
+            .with_safe_context("timer_id", timer_id)
+            .into());
         }
         match timer.status {
             TimerStatus::Cancelled => return Ok(timer),
             TimerStatus::Completed => {
-                return Err(anyhow!("cannot cancel completed timer {timer_id}"))
+                return Err(RuntimeError::validation(
+                    "timer_completed",
+                    format!("cannot cancel completed timer {timer_id}"),
+                )
+                .with_safe_context("timer_id", timer_id)
+                .into())
             }
             TimerStatus::Active => {}
         }

@@ -524,9 +524,7 @@ fn unsupported_compact_endpoint_status(error: &anyhow::Error) -> Option<u16> {
 
 fn is_non_persisted_compact_item_id_error(error: &anyhow::Error) -> bool {
     error_status(error) == Some(404)
-        && error
-            .to_string()
-            .contains("Items are not persisted when `store` is set to false")
+        && crate::provider::provider_error_code(error) == Some("non_persisted_item_id")
 }
 
 pub(super) fn error_status(error: &anyhow::Error) -> Option<u16> {

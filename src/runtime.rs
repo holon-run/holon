@@ -82,6 +82,7 @@ use crate::{
         },
         RuntimeDb,
     },
+    runtime_error::describe_runtime_error,
     runtime_event::RuntimeEventKind,
     skills::{
         effective_skill_root_registrations, find_skill_by_entrypoint, find_skill_by_script_path,
@@ -1679,14 +1680,30 @@ impl RuntimeHandle {
                     )
                     .await?;
                 } else {
-                    error!("failed to process message {}: {err:#}", message.id);
-                    self.ensure_runtime_failure_terminal(None, 0).await?;
+                    let descriptor = describe_runtime_error(&err);
+                    let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
+                    error!(
+                        message_id = %message.id,
+                        turn_id = %terminal.turn_id,
+                        domain = ?descriptor.domain,
+                        code = %descriptor.code,
+                        retryable = descriptor.retryable,
+                        error = %descriptor.operator_message,
+                        "failed to process message"
+                    );
                     self.inner.storage.append_event(&AuditEvent::legacy(
                         "runtime_error",
                         serde_json::json!({
                             "message_id": message.id,
+                            "turn_id": terminal.turn_id,
                             "message_kind": message.kind,
-                            "error": err.to_string(),
+                            "domain": descriptor.domain,
+                            "code": descriptor.code,
+                            "retryable": descriptor.retryable,
+                            "error": descriptor.operator_message,
+                            "recovery_hint": descriptor.recovery_hint,
+                            "safe_context": descriptor.safe_context,
+                            "source_chain": descriptor.source_chain,
                             "token_usage": provider_attempt_timeline(&err)
                                 .and_then(|timeline| timeline.aggregated_token_usage.clone()),
                             "provider_attempt_timeline": provider_attempt_timeline(&err),

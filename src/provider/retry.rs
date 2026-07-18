@@ -44,6 +44,7 @@ pub(crate) struct ProviderFailureClassification {
 #[error("{message}")]
 pub(crate) struct ProviderTransportError {
     pub classification: ProviderFailureClassification,
+    pub code: Option<String>,
     pub status: Option<u16>,
     pub diagnostics: Option<ProviderTransportDiagnostics>,
     message: String,
@@ -119,8 +120,19 @@ pub(crate) fn provider_transport_error(
     diagnostics: Option<ProviderTransportDiagnostics>,
     message: impl Into<String>,
 ) -> anyhow::Error {
+    provider_transport_error_with_code(classification, None, status, diagnostics, message)
+}
+
+pub(crate) fn provider_transport_error_with_code(
+    classification: ProviderFailureClassification,
+    code: Option<&str>,
+    status: Option<u16>,
+    diagnostics: Option<ProviderTransportDiagnostics>,
+    message: impl Into<String>,
+) -> anyhow::Error {
     ProviderTransportError {
         classification,
+        code: code.map(ToString::to_string),
         status,
         diagnostics,
         message: message.into(),
@@ -261,8 +273,10 @@ pub(crate) fn classify_status_error_with_trace(
             disposition: RetryDisposition::FailFast,
         },
     };
-    provider_transport_error(
+    let code = status_error_code(&body);
+    provider_transport_error_with_code(
         classification,
+        code,
         Some(status.as_u16()),
         Some(ProviderTransportDiagnostics {
             stage: stage.to_string(),
@@ -274,8 +288,13 @@ pub(crate) fn classify_status_error_with_trace(
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
             source_chain: status_error_source_chain(provider, status),
         }),
-        format!("{context} with status {status}: {body}"),
+        format!("{context} with status {status}"),
     )
+}
+
+fn status_error_code(body: &str) -> Option<&'static str> {
+    body.contains("Items are not persisted when `store` is set to false")
+        .then_some("non_persisted_item_id")
 }
 
 fn status_error_source_chain(provider: Option<&str>, status: StatusCode) -> Vec<String> {
@@ -448,6 +467,10 @@ pub(crate) fn format_provider_failure(
 
 #[cfg(test)]
 mod tests {
+    use reqwest::StatusCode;
+
+    use super::{classify_status_error_with_trace, ProviderTransportError};
+
     #[test]
     fn transport_url_sanitizer_removes_credentials_query_and_fragment() {
         assert_eq!(
@@ -455,6 +478,32 @@ mod tests {
                 "https://user:secret@example.com/v1/responses?api_key=token#frag"
             ),
             "https://example.com/v1/responses"
+        );
+    }
+
+    #[test]
+    fn status_error_display_excludes_response_body_but_preserves_typed_code() {
+        let error = classify_status_error_with_trace(
+            "OpenAI compact request failed",
+            "response_status",
+            Some("openai"),
+            Some("openai/gpt-5.4"),
+            Some("https://api.openai.com/v1/responses/compact"),
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"message":"Items are not persisted when `store` is set to false","access_token":"short-secret"}}"#.into(),
+            None,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "OpenAI compact request failed with status 404 Not Found"
+        );
+        assert!(!error.to_string().contains("short-secret"));
+        assert_eq!(
+            error
+                .downcast_ref::<ProviderTransportError>()
+                .and_then(|error| error.code.as_deref()),
+            Some("non_persisted_item_id")
         );
     }
 

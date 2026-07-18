@@ -205,8 +205,9 @@ pub(crate) fn classify_openai_chat_completion_error(
         format!("{}: {}", error_type, error_message)
     };
 
-    provider_transport_error(
+    crate::provider::retry::provider_transport_error_with_code(
         classification,
+        error_code,
         Some(status.as_u16()),
         Some(crate::provider::ProviderTransportDiagnostics {
             stage: "response_status".into(),

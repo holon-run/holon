@@ -2461,9 +2461,11 @@ fn does_not_invalidate_checkpoint_for_failed_state_mutation() {
         error: Some(ToolError {
             kind: "invalid_input".to_string(),
             message: "bad input".to_string(),
+            domain: None,
             details: None,
             recovery_hint: None,
             retryable: false,
+            source_chain: Vec::new(),
         }),
     };
     assert!(!tool_result_invalidates_checkpoint_anchor(&envelope));
@@ -2597,9 +2599,11 @@ fn round_updated_work_item_false_for_failed_work_item_tool() {
         error: Some(ToolError {
             kind: "invalid".to_string(),
             message: "bad".to_string(),
+            domain: None,
             details: None,
             recovery_hint: None,
             retryable: false,
+            source_chain: Vec::new(),
         }),
     }];
     assert!(!round_updated_work_item(&round));

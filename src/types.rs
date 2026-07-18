@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::config::ModelRouteRef;
 use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;
+use crate::runtime_error::{RuntimeErrorContext, RuntimeErrorDomain};
 use crate::system::{
     ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind,
 };
@@ -1536,6 +1537,12 @@ pub struct FailureArtifact {
     pub kind: String,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<RuntimeErrorDomain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_ref: Option<String>,
@@ -1547,6 +1554,8 @@ pub struct FailureArtifact {
     pub exit_status: Option<i32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_chain: Vec<String>,
+    #[serde(default, skip_serializing_if = "RuntimeErrorContext::is_empty")]
+    pub context: Box<RuntimeErrorContext>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
 }
@@ -6145,6 +6154,25 @@ mod tests {
             payload["output_summary_preview"].as_str().unwrap().len()
                 < "large-task-output".repeat(1024).len()
         );
+    }
+
+    #[test]
+    fn failure_artifact_deserializes_legacy_shape_with_taxonomy_defaults() {
+        let artifact: FailureArtifact = serde_json::from_value(serde_json::json!({
+            "category": "runtime",
+            "kind": "runtime_error",
+            "summary": "legacy failure",
+            "source_chain": [],
+            "metadata": {}
+        }))
+        .unwrap();
+
+        assert_eq!(artifact.category, FailureArtifactCategory::Runtime);
+        assert_eq!(artifact.kind, "runtime_error");
+        assert_eq!(artifact.domain, None);
+        assert_eq!(artifact.retryable, None);
+        assert_eq!(artifact.recovery_hint, None);
+        assert!(artifact.context.is_empty());
     }
 
     #[test]

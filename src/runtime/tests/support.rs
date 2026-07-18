@@ -14,10 +14,11 @@ pub(crate) use crate::{
     host::RuntimeHost,
     prompt::{render_section, PromptSection, PromptStability},
     provider::{
-        provider_turn_error, AgentProvider, ConversationMessage, ModelBlock,
-        ProviderAttemptOutcome, ProviderAttemptRecord, ProviderAttemptTimeline,
+        provider_transport_error_with_code, provider_turn_error, AgentProvider,
+        ConversationMessage, ModelBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
+        ProviderAttemptTimeline, ProviderFailureClassification, ProviderFailureKind,
         ProviderHttpTraceDiagnostics, ProviderTransportDiagnostics, ProviderTurnRequest,
-        ProviderTurnResponse, ReqwestTransportDiagnostics, StubProvider,
+        ProviderTurnResponse, ReqwestTransportDiagnostics, RetryDisposition, StubProvider,
     },
     storage::AppStorage,
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
@@ -1055,7 +1056,16 @@ impl AgentProvider for ContextLengthExceededProvider {
                 winning_model_ref: None,
                 pending_fallback_model_ref: None
             },
-            anyhow!("context_length_exceeded: input too long"),
+            provider_transport_error_with_code(
+                ProviderFailureClassification {
+                    kind: ProviderFailureKind::ContractError,
+                    disposition: RetryDisposition::FailFast,
+                },
+                Some("context_length_exceeded"),
+                None,
+                None,
+                "context_length_exceeded: input too long",
+            ),
         ))
     }
 }

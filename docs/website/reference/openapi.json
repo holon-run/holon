@@ -399,6 +399,92 @@
                             ],
                             "type": "string"
                           },
+                          "context": {
+                            "properties": {
+                              "causation_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "correlation_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "message_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "model_ref": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "provider": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "run_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "task_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "tool_execution_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "turn_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "work_item_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "domain": {
+                            "enum": [
+                              "runtime",
+                              "storage",
+                              "policy",
+                              "io",
+                              "conflict",
+                              "not_found",
+                              "validation",
+                              "provider",
+                              "tool",
+                              "task",
+                              "http",
+                              "unknown",
+                              null
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "exit_status": {
                             "format": "int32",
                             "type": [
@@ -424,6 +510,18 @@
                           "provider": {
                             "type": [
                               "string",
+                              "null"
+                            ]
+                          },
+                          "recovery_hint": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "retryable": {
+                            "type": [
+                              "boolean",
                               "null"
                             ]
                           },
@@ -5429,6 +5527,92 @@
                     ],
                     "type": "string"
                   },
+                  "context": {
+                    "properties": {
+                      "causation_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "correlation_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "message_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "model_ref": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "provider": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "run_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "task_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "tool_execution_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "turn_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "work_item_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "domain": {
+                    "enum": [
+                      "runtime",
+                      "storage",
+                      "policy",
+                      "io",
+                      "conflict",
+                      "not_found",
+                      "validation",
+                      "provider",
+                      "tool",
+                      "task",
+                      "http",
+                      "unknown",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "exit_status": {
                     "format": "int32",
                     "type": [
@@ -5454,6 +5638,18 @@
                   "provider": {
                     "type": [
                       "string",
+                      "null"
+                    ]
+                  },
+                  "recovery_hint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "retryable": {
+                    "type": [
+                      "boolean",
                       "null"
                     ]
                   },

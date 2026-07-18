@@ -338,6 +338,9 @@ fn slim_state_failure_artifact(
         truncate_state_bootstrap_string(&artifact.kind, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
     artifact.summary =
         truncate_state_bootstrap_string(&artifact.summary, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    artifact.recovery_hint = artifact
+        .recovery_hint
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
     artifact.provider = artifact
         .provider
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
@@ -347,6 +350,22 @@ fn slim_state_failure_artifact(
     artifact.task_id = artifact
         .task_id
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    for field in [
+        &mut artifact.context.message_id,
+        &mut artifact.context.turn_id,
+        &mut artifact.context.run_id,
+        &mut artifact.context.work_item_id,
+        &mut artifact.context.tool_execution_id,
+        &mut artifact.context.task_id,
+        &mut artifact.context.correlation_id,
+        &mut artifact.context.causation_id,
+        &mut artifact.context.provider,
+        &mut artifact.context.model_ref,
+    ] {
+        *field = field
+            .take()
+            .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    }
     artifact.source_chain = artifact
         .source_chain
         .into_iter()
@@ -671,6 +690,9 @@ mod tests {
                 category: FailureArtifactCategory::Transport,
                 kind: long_text.clone(),
                 summary: long_text.clone(),
+                domain: Some(crate::runtime_error::RuntimeErrorDomain::Provider),
+                retryable: Some(true),
+                recovery_hint: Some(long_text.clone()),
                 provider: Some(long_text.clone()),
                 model_ref: Some(long_text.clone()),
                 status: Some(500),
@@ -679,6 +701,18 @@ mod tests {
                 source_chain: (0..STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT + 4)
                     .map(|_| long_text.clone())
                     .collect(),
+                context: Box::new(crate::runtime_error::RuntimeErrorContext {
+                    message_id: Some(long_text.clone()),
+                    turn_id: Some(long_text.clone()),
+                    run_id: Some(long_text.clone()),
+                    work_item_id: Some(long_text.clone()),
+                    tool_execution_id: Some(long_text.clone()),
+                    task_id: Some(long_text.clone()),
+                    correlation_id: Some(long_text.clone()),
+                    causation_id: Some(long_text.clone()),
+                    provider: Some(long_text.clone()),
+                    model_ref: Some(long_text.clone()),
+                }),
                 metadata: (0..STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT + 4)
                     .map(|index| (format!("{index}-{long_text}"), long_text.clone()))
                     .collect(),
@@ -701,9 +735,52 @@ mod tests {
         for text in [
             artifact.kind.as_str(),
             artifact.summary.as_str(),
+            artifact.recovery_hint.as_deref().expect("recovery hint"),
             artifact.provider.as_deref().expect("provider"),
             artifact.model_ref.as_deref().expect("model ref"),
             artifact.task_id.as_deref().expect("task id"),
+        ] {
+            assert!(text.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+        }
+        for text in [
+            artifact.context.message_id.as_deref().expect("message id"),
+            artifact.context.turn_id.as_deref().expect("turn id"),
+            artifact.context.run_id.as_deref().expect("run id"),
+            artifact
+                .context
+                .work_item_id
+                .as_deref()
+                .expect("work item id"),
+            artifact
+                .context
+                .tool_execution_id
+                .as_deref()
+                .expect("tool execution id"),
+            artifact
+                .context
+                .task_id
+                .as_deref()
+                .expect("context task id"),
+            artifact
+                .context
+                .correlation_id
+                .as_deref()
+                .expect("correlation id"),
+            artifact
+                .context
+                .causation_id
+                .as_deref()
+                .expect("causation id"),
+            artifact
+                .context
+                .provider
+                .as_deref()
+                .expect("context provider"),
+            artifact
+                .context
+                .model_ref
+                .as_deref()
+                .expect("context model ref"),
         ] {
             assert!(text.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
         }
