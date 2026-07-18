@@ -67,6 +67,8 @@ implementation and tests.
 - [Workspace Binding and Execution Roots](./workspace-binding-and-execution-roots.md)
 - [Instruction Loading](./instruction-loading.md)
 - [Agent Workspace Switching](./workspace-entry-and-projection.md)
+- [Agent Workspace Tool Surface](./agent-workspace-tool-surface.md)
+- [Execution Root Registry](./workspace-execution-root-registry.md)
 - [Skill Discovery and Activation](./skill-discovery-and-activation.md)
 
 ## Eventing And Client Surface

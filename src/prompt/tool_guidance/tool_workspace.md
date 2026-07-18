@@ -12,6 +12,27 @@ the root in the runtime's execution root registry — the value is never parsed
 for path information. A future tool that writes to a worktree root should
 include `?root=` by calling `build_execution_root_id` and appending it.
 
-Use UseWorkspace to make the right workspace active when you will inspect, edit, or verify a project over more than a one-off explicit path. Call `UseWorkspace({"path":"/repo/or/subdir"})` when the operator gave you a project path or you need to discover/adopt a directory. Call `UseWorkspace({"workspace_id":"agent_home"})` to return to AgentHome, or `UseWorkspace({"workspace_id":"ws-..."})` to switch to a known workspace id from agent state. Provide exactly one of `path` or `workspace_id`. Use `mode="isolated"` only when you need a runtime-managed isolated execution root, and provide an `isolation_label` as an intent/branch hint rather than inventing a worktree path.
+Use `GetWorkspaceState` before acting when workspace identity, retained
+worktrees, or occupancy is uncertain. Use `AttachWorkspace` only to add a new
+workspace binding; it does not switch.
+
+Use `SwitchWorkspace` to activate an existing attached workspace or registered
+execution root. Provide exactly one of `workspace_id`, `execution_root_id`, or
+`path`. A Git subdirectory resolves to its worktree root while remaining the
+default cwd. A linked worktree belongs to its canonical origin workspace.
+`SwitchWorkspace` never attaches a new repository or creates a worktree.
+
+Use `CreateWorktree` with explicit `workspace_id`, `branch`, and `base_ref`.
+It creates and activates by default. A unique live worktree for the branch may
+be safely reused, but existing branch-only or ambiguous state is a conflict and
+must not be reset or forced.
+
+Use `RemoveWorktree` for safe registered cleanup. It refuses dirty, locked,
+unregistered, canonical, or occupied roots. An active worktree requires
+`return_to`. Use `DetachWorkspace` to remove a binding; active detach first
+returns to `agent_home`, and retained worktree artifacts are not deleted.
+
+`UseWorkspace` is a deprecated compatibility alias and should not be used in
+new workflows.
 
 Shell `cd` affects only that shell command process. It does not redefine the active workspace, instruction root, AGENTS.md loading scope, or relative ApplyPatch base. Switching workspaces does not delete files, remove bindings, or clean up retained isolated roots; cleanup is a separate explicit lifecycle action.

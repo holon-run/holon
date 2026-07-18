@@ -9,7 +9,7 @@ order: 70
 This page defines the current contract for workspace identity, execution
 roots, worktree isolation, and host-local execution policy.
 
-> **Last verified:** 2026-05-23 against `src/types.rs`
+> **Last verified:** 2026-07-18 against `src/types.rs`
 > `ActiveWorkspaceEntry`, `WorkspaceOccupancyRecord`, `WorktreeSession`,
 > `ExecutionSnapshot`, and `src/runtime/workspace.rs`.
 
@@ -17,6 +17,8 @@ roots, worktree isolation, and host-local execution policy.
 
 - [Workspace Binding and Execution Roots](https://github.com/holon-run/holon/blob/main/docs/rfcs/workspace-binding-and-execution-roots.md)
 - [Workspace Entry and Projection](https://github.com/holon-run/holon/blob/main/docs/rfcs/workspace-entry-and-projection.md)
+- [Agent Workspace Tool Surface](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-workspace-tool-surface.md)
+- [Execution Root Registry](https://github.com/holon-run/holon/blob/main/docs/rfcs/workspace-execution-root-registry.md)
 - [Execution Policy and Virtual Execution Boundary](https://github.com/holon-run/holon/blob/main/docs/rfcs/execution-policy-and-virtual-execution-boundary.md)
 - [Agent Home Directory Layout](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-home-directory-layout.md)
 - [Instruction Loading](https://github.com/holon-run/holon/blob/main/docs/rfcs/instruction-loading.md)
@@ -41,7 +43,8 @@ Every agent has exactly one **active workspace**. The active workspace defines:
 - Shell `cd` in `ExecCommand` changes that one command's working directory
   but does **not** change the active workspace, instruction root, AGENTS.md
   scope, or `ApplyPatch` relative-path base.
-- `UseWorkspace` is the tool for switching the active workspace.
+- `SwitchWorkspace` activates an existing workspace or execution root.
+- `AttachWorkspace` adds a binding without changing the active projection.
 
 ## Agent home
 
@@ -81,12 +84,14 @@ preventing concurrent access at the filesystem level.
 
 ## Worktrees
 
-When an agent needs isolated file changes, `UseWorkspace` with
-`mode=isolated` creates a runtime-managed worktree:
+When an agent needs isolated file changes, `CreateWorktree` creates or safely
+reuses a runtime-managed linked worktree from an explicit `branch` and
+`base_ref`:
 
 - The worktree has a separate `execution_root` from the canonical workspace.
-- Worktree lifecycle is tied to the agent session; the runtime cleans up on
-  agent stop or explicit release.
+- Switching away retains the worktree artifact.
+- `RemoveWorktree` performs clean-only removal and optional
+  merge-proven branch deletion.
 - Worktrees use the host-local filesystem (git worktrees or temp directories);
   they are not containerized sandboxes.
 
@@ -114,8 +119,8 @@ filesystem with the agent user's permissions. Key constraints:
 
 ## Known gaps
 
-- Worktree cleanup is best-effort; stale worktrees may persist after abnormal
-  agent termination.
+- Runtime task-owned worktree cleanup and agent-owned explicit cleanup still
+  use separate orchestration paths.
 - Workspace occupancy is advisory; the runtime does not enforce exclusive
   write access at the filesystem level.
 - Isolated worktrees use git worktrees; non-git workspaces fall back to temp

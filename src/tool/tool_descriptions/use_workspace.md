@@ -1,1 +1,3 @@
-Make a workspace active. Provide exactly one of `path` or `workspace_id`: use `path` to discover, attach, and activate a project directory; use `workspace_id` to switch to a known workspace, including `agent_home` for the built-in fallback workspace. Shell `cd` does not change this active workspace for ApplyPatch or future commands.
+Deprecated hidden compatibility surface. Historical calls may still switch,
+implicitly attach a path, or create an isolated worktree, but new workflows
+must use `AttachWorkspace`, `SwitchWorkspace`, and `CreateWorktree`.

@@ -22,15 +22,15 @@ workspace.
 ## Workspace vs Shell Directory
 
 A workspace is **not** a shell `cd`. Shell `cd` changes the directory for
-that one command process. Changing the active workspace requires
-`holon workspace attach` or the `UseWorkspace` tool — this redefines where
-runtime tools operate.
+that one command process. Agents use explicit binding and activation tools to
+change where runtime tools operate.
 
 | Action | Effect |
 |--------|--------|
 | `cd /other` in shell | Only affects that command |
-| `UseWorkspace` | Changes active workspace for all subsequent operations |
-| `holon workspace attach /path` | CLI equivalent of UseWorkspace |
+| `AttachWorkspace` | Adds a workspace binding without switching |
+| `SwitchWorkspace` | Changes active workspace for subsequent operations |
+| `holon workspace attach /path` | Attaches and activates through the CLI compatibility flow |
 
 ## Workspace Commands
 
@@ -67,27 +67,17 @@ Detaching does not delete the directory — it removes the workspace record
 from Holon's index. Memory and episode records associated with the workspace
 are preserved.
 
-## Workspace Modes
+## Worktree Isolation
 
-### Direct Mode
+`CreateWorktree` creates a managed linked worktree from an explicit attached
+workspace, branch, and base ref:
 
-The default. All operations happen in-place on the real filesystem:
-
-```bash
-holon workspace attach /home/user/project
-```
-
-Use direct mode for normal development work where you want changes to
-persist on disk immediately.
-
-### Isolated Mode (Worktrees)
-
-Isolated workspaces create a managed worktree — a separate checkout that can
-be modified without affecting the original:
-
-```bash
-# The runtime creates an isolated worktree
-holon workspace attach /path/to/repo --mode isolated --isolation-label experiment
+```text
+CreateWorktree {
+  workspace_id: "ws_...",
+  branch: "feature/example",
+  base_ref: "origin/main"
+}
 ```
 
 Isolated workspaces are useful for:
@@ -107,16 +97,18 @@ Every agent starts with its agent home as the active workspace. Use
 `workspace attach` to switch to a project workspace, and `workspace exit` to
 return to agent home.
 
-## UseWorkspace Tool
+## Agent Workspace Tools
 
-Agents use the `UseWorkspace` tool during execution to switch workspaces
-programmatically:
+- `GetWorkspaceState({})` — inspect bindings, active projection, worktrees, and occupancy
+- `AttachWorkspace({ path: "/repo" })` — attach without switching
+- `SwitchWorkspace({ workspace_id: "ws_..." })` — activate a canonical root
+- `SwitchWorkspace({ execution_root_id: "..." })` — activate a retained worktree
+- `SwitchWorkspace({ workspace_id: "agent_home" })` — return to agent home
+- `CreateWorktree(...)` — create or safely reuse a linked worktree
+- `RemoveWorktree(...)` — clean-only registered cleanup
+- `DetachWorkspace({ workspace_id: "ws_..." })` — remove a binding; active targets first return to agent home
 
-- `UseWorkspace({ path: "/repo" })` — attach to a directory
-- `UseWorkspace({ workspace_id: "agent_home" })` — return to agent home
-- `UseWorkspace({ workspace_id: "ws-..." })` — switch to a known workspace
-- `mode: "isolated"` — request an isolated worktree
-- `access_mode: "exclusive_write"` — request write access
+`UseWorkspace` remains a hidden compatibility alias for historical calls.
 
 ## See Also
 

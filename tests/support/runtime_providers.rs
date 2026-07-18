@@ -815,14 +815,20 @@ pub struct UseWorkspaceProvider {
     calls: Mutex<usize>,
     workspace_path: PathBuf,
     branch_name: String,
+    base_ref: String,
 }
 
 impl UseWorkspaceProvider {
-    pub fn new(workspace_path: PathBuf, branch_name: impl Into<String>) -> Self {
+    pub fn new(
+        workspace_path: PathBuf,
+        branch_name: impl Into<String>,
+        base_ref: impl Into<String>,
+    ) -> Self {
         Self {
             calls: Mutex::new(0),
             workspace_path,
             branch_name: branch_name.into(),
+            base_ref: base_ref.into(),
         }
     }
 }
@@ -833,15 +839,18 @@ impl AgentProvider for UseWorkspaceProvider {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         if *calls == 1 {
-            assert!(request.tools.iter().any(|tool| tool.name == "UseWorkspace"));
+            assert!(request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "CreateWorktree"));
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::ToolUse {
                     id: "workspace-1".into(),
-                    name: "UseWorkspace".into(),
+                    name: "CreateWorktree".into(),
                     input: json!({
-                        "path": self.workspace_path,
-                        "mode": "isolated",
-                        "isolation_label": self.branch_name
+                        "workspace_id": holon::ids::deterministic_workspace_id(&self.workspace_path),
+                        "branch": self.branch_name,
+                        "base_ref": self.base_ref
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
                 }],
@@ -869,9 +878,9 @@ impl AgentProvider for UseWorkspaceProvider {
                 _ => None,
             })
             .unwrap_or_default();
-        assert!(tool_result_text.contains("\"mode\": \"isolated\""));
-        assert!(tool_result_text.contains("\"projection_kind\": \"git_worktree_root\""));
-        assert!(!tool_result_text.contains("\"access_mode\""));
+        assert!(tool_result_text.contains("\"disposition\":\"created\""));
+        assert!(tool_result_text.contains("\"base_ref_applied\":true"));
+        assert!(tool_result_text.contains("\"activated\":true"));
         Ok(ProviderTurnResponse {
             blocks: vec![ModelBlock::Text {
                 text: "entered worktree successfully".into(),
@@ -892,6 +901,7 @@ pub struct WorktreeLifecycleProvider {
     calls: Mutex<usize>,
     workspace_path: PathBuf,
     branch_name: String,
+    base_ref: String,
     expected_exit_result: String,
 }
 
@@ -899,12 +909,14 @@ impl WorktreeLifecycleProvider {
     pub fn new(
         workspace_path: PathBuf,
         branch_name: impl Into<String>,
+        base_ref: impl Into<String>,
         expected_exit_result: impl Into<String>,
     ) -> Self {
         Self {
             calls: Mutex::new(0),
             workspace_path,
             branch_name: branch_name.into(),
+            base_ref: base_ref.into(),
             expected_exit_result: expected_exit_result.into(),
         }
     }
@@ -918,15 +930,18 @@ impl AgentProvider for WorktreeLifecycleProvider {
 
         match *calls {
             1 => {
-                assert!(request.tools.iter().any(|tool| tool.name == "UseWorkspace"));
+                assert!(request
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == "CreateWorktree"));
                 Ok(ProviderTurnResponse {
                     blocks: vec![ModelBlock::ToolUse {
                         id: "use-1".into(),
-                        name: "UseWorkspace".into(),
+                        name: "CreateWorktree".into(),
                         input: json!({
-                            "path": self.workspace_path,
-                            "mode": "isolated",
-                            "isolation_label": self.branch_name
+                            "workspace_id": holon::ids::deterministic_workspace_id(&self.workspace_path),
+                            "branch": self.branch_name,
+                            "base_ref": self.base_ref
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
                     }],
@@ -952,11 +967,14 @@ impl AgentProvider for WorktreeLifecycleProvider {
                 request_diagnostics: None,
             }),
             3 => {
-                assert!(request.tools.iter().any(|tool| tool.name == "UseWorkspace"));
+                assert!(request
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == "SwitchWorkspace"));
                 Ok(ProviderTurnResponse {
                     blocks: vec![ModelBlock::ToolUse {
                         id: "use-home-1".into(),
-                        name: "UseWorkspace".into(),
+                        name: "SwitchWorkspace".into(),
                         input: json!({
                             "workspace_id": "agent_home"
                         }),

@@ -38,10 +38,10 @@ families in `src/types.rs` (`ToolCapabilityFamily`):
 | Family | Description | Example tools |
 |--------|-------------|---------------|
 | `CoreAgent` | Core agent operations (state, memory, work items, scheduling, CLI/config introspection) | MemorySearch, WaitFor, ListWorkItems, ListModelProviders |
-| `LocalEnvironment` | Workspace-local operations | ExecCommand, ApplyPatch, ViewImage, UseWorkspace |
+| `LocalEnvironment` | Workspace-local operations | ExecCommand, ApplyPatch, ViewImage, GetWorkspaceState, SwitchWorkspace, CreateWorktree |
 | `Web` | Public web access | WebFetch, WebSearch |
 | `AgentCreation` | Agent spawning and delegation | SpawnAgent |
-| `AuthorityExpanding` | Tools that can expand agent authority | (reserved; no built-in tools) |
+| `AuthorityExpanding` | Tools that change workspace authority or destroy registered artifacts | AttachWorkspace, DetachWorkspace, RemoveWorktree |
 | `ExternalTrigger` | External event ingress | CreateExternalTrigger, CancelExternalTrigger |
 
 ## Stability levels

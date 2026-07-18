@@ -202,7 +202,14 @@ pub fn tool_sections_with_context(
             ),
         ));
     }
-    if names.contains(&tn::USE_WORKSPACE) {
+    if names.contains(&tn::GET_WORKSPACE_STATE)
+        || names.contains(&tn::ATTACH_WORKSPACE)
+        || names.contains(&tn::DETACH_WORKSPACE)
+        || names.contains(&tn::SWITCH_WORKSPACE)
+        || names.contains(&tn::CREATE_WORKTREE)
+        || names.contains(&tn::REMOVE_WORKTREE)
+        || names.contains(&tn::USE_WORKSPACE)
+    {
         sections.push(section(
             "tool_workspace",
             PromptStability::Stable,
@@ -745,7 +752,7 @@ mod tests {
     #[test]
     fn test_workspace_section_emitted_when_available() {
         let tools = vec![ToolSpec {
-            name: "UseWorkspace".into(),
+            name: "SwitchWorkspace".into(),
             description: String::new(),
             input_schema: json!({}),
             freeform_grammar: None,
@@ -780,7 +787,7 @@ mod tests {
             .contains("Shell `cd` affects only that shell command"));
         assert!(section.content.contains("AGENTS.md loading scope"));
         assert!(section.content.contains("relative ApplyPatch base"));
-        assert!(section.content.contains("UseWorkspace"));
+        assert!(section.content.contains("SwitchWorkspace"));
     }
 
     #[test]

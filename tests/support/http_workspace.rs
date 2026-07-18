@@ -97,7 +97,7 @@ pub async fn detach_workspace_route_removes_stale_non_active_binding() -> Result
     Ok(())
 }
 
-pub async fn detach_workspace_route_rejects_active_binding() -> Result<()> {
+pub async fn detach_workspace_route_falls_back_from_active_binding() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let active_workspace_id = runtime
@@ -119,17 +119,13 @@ pub async fn detach_workspace_route_rejects_active_binding() -> Result<()> {
         .send()
         .await?;
 
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR
-    );
-    let body = response.text().await?;
-    assert!(
-        body.contains("UseWorkspace with another workspace_id"),
-        "{body}"
-    );
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
     let state = runtime.agent_state().await?;
-    assert!(state.attached_workspaces.contains(&active_workspace_id));
+    assert!(!state.attached_workspaces.contains(&active_workspace_id));
+    assert_eq!(
+        state.active_workspace_entry.unwrap().workspace_id,
+        holon::types::agent_home_workspace_id("default")
+    );
 
     server.abort();
     Ok(())
@@ -370,6 +366,7 @@ pub async fn workspace_files_execution_root_id_resolves_registered_root() -> Res
             workspace_id: workspace_id.into(),
             filesystem_path: execution_root.path().to_path_buf(),
             root_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+            worktree: None,
             created_at: Utc::now(),
             removed_at: None,
         })?;

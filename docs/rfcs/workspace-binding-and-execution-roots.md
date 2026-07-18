@@ -76,16 +76,16 @@ It must not:
 Detaching should be allowed even when the workspace path no longer exists,
 because one important use case is cleaning stale agent-local bindings.
 
-The first version should be a control-plane or CLI operation, not a default
-model-facing local-environment tool. It shrinks an agent's durable workspace
-capability set, so it belongs with binding management rather than ordinary
-file work.
+The model-facing binding surface is defined by
+`agent-workspace-tool-surface.md`. Detach is an authority-expanding lifecycle
+operation, not ordinary file work.
 
-If the target workspace is currently active, the default behavior should reject
-the detach and require switching to another workspace first. The default target
-for leaving a project workspace is `AgentHome`. A future recovery path may add
-an explicit force mode for broken active workspaces, but that is a separate
-failure-recovery design.
+If the target workspace is currently active, the runtime first switches to
+`AgentHome` and only then removes the binding. A failed switch leaves the
+binding unchanged. `AgentHome` is protected and cannot be detached.
+
+Retained worktree artifacts do not block detach. Their durable artifact and
+execution-root records remain discoverable for later inspection or cleanup.
 
 ### `ForgetWorkspace`
 

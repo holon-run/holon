@@ -10,23 +10,29 @@ use crate::{
 
 pub(crate) mod agent_get;
 pub(crate) mod apply_patch_tool;
+pub(crate) mod attach_workspace;
 pub(crate) mod cancel_external_trigger;
 pub(crate) mod complete_work_item;
 pub(crate) mod create_external_trigger;
 pub(crate) mod create_work_item;
+pub(crate) mod create_worktree;
+pub(crate) mod detach_workspace;
 pub(crate) mod enqueue;
 pub(crate) mod exec_command;
 pub(crate) mod exec_command_batch;
 pub(crate) mod generate_image;
 pub(crate) mod get_work_item;
+pub(crate) mod get_workspace_state;
 pub(crate) mod list_model_providers;
 pub(crate) mod list_provider_models;
 pub(crate) mod list_work_items;
 pub(crate) mod memory_get;
 pub(crate) mod memory_search;
 pub(crate) mod pick_work_item;
+pub(crate) mod remove_worktree;
 pub(crate) mod sleep;
 pub(crate) mod spawn_agent;
+pub(crate) mod switch_workspace;
 pub(crate) mod task_input;
 pub(crate) mod task_list;
 pub(crate) mod task_output;
@@ -71,6 +77,12 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         complete_work_item::definition()?,
         memory_search::definition()?,
         memory_get::definition()?,
+        get_workspace_state::definition()?,
+        attach_workspace::definition()?,
+        detach_workspace::definition()?,
+        switch_workspace::definition()?,
+        create_worktree::definition()?,
+        remove_worktree::definition()?,
         apply_patch_tool::definition()?,
         exec_command::definition()?,
         exec_command_batch::definition()?,
@@ -164,6 +176,24 @@ pub(crate) async fn execute_builtin_tool(
         memory_get::NAME => {
             memory_get::execute(runtime, agent_id, authority_class, &call.input).await
         }
+        get_workspace_state::NAME => {
+            get_workspace_state::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        attach_workspace::NAME => {
+            attach_workspace::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        detach_workspace::NAME => {
+            detach_workspace::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        switch_workspace::NAME => {
+            switch_workspace::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        create_worktree::NAME => {
+            create_worktree::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        remove_worktree::NAME => {
+            remove_worktree::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         create_external_trigger::NAME => {
             create_external_trigger::execute(runtime, agent_id, authority_class, &call.input).await
         }
@@ -246,15 +276,19 @@ mod tests {
         Some(match tool_name {
             "AgentGet" => "src/tool/tool_descriptions/agent_get.md",
             "ApplyPatch" => "src/tool/tool_descriptions/apply_patch_unified_diff_json.md",
+            "AttachWorkspace" => "src/tool/tool_descriptions/attach_workspace.md",
             "CancelExternalTrigger" => "src/tool/tool_descriptions/cancel_external_trigger.md",
             "CompleteWorkItem" => "src/tool/tool_descriptions/complete_work_item.md",
             "CreateExternalTrigger" => "src/tool/tool_descriptions/create_external_trigger.md",
             "CreateWorkItem" => "src/tool/tool_descriptions/create_work_item.md",
+            "CreateWorktree" => "src/tool/tool_descriptions/create_worktree.md",
+            "DetachWorkspace" => "src/tool/tool_descriptions/detach_workspace.md",
             "Enqueue" => "src/tool/tool_descriptions/enqueue.md",
             "ExecCommand" => "src/tool/tool_descriptions/exec_command.md",
             "ExecCommandBatch" => "src/tool/tool_descriptions/exec_command_batch.md",
             "GenerateImage" => "src/tool/tool_descriptions/generate_image.md",
             "GetWorkItem" => "src/tool/tool_descriptions/get_work_item.md",
+            "GetWorkspaceState" => "src/tool/tool_descriptions/get_workspace_state.md",
             "ListModelProviders" => "src/tool/tool_descriptions/list_model_providers.md",
             "ListProviderModels" => "src/tool/tool_descriptions/list_provider_models.md",
             "ListTasks" => "src/tool/tool_descriptions/list_tasks.md",
@@ -262,6 +296,7 @@ mod tests {
             "MemoryGet" => "src/tool/tool_descriptions/memory_get.md",
             "MemorySearch" => "src/tool/tool_descriptions/memory_search.md",
             "PickWorkItem" => "src/tool/tool_descriptions/pick_work_item.md",
+            "RemoveWorktree" => "src/tool/tool_descriptions/remove_worktree.md",
             "Sleep" => "src/tool/tool_descriptions/sleep.md",
             "SpawnAgent" => "src/tool/tool_descriptions/spawn_agent.md",
             "TaskInput" => "src/tool/tool_descriptions/task_input.md",
@@ -269,6 +304,7 @@ mod tests {
             "TaskOutput" => "src/tool/tool_descriptions/task_output.md",
             "TaskStatus" => "src/tool/tool_descriptions/task_status.md",
             "TaskStop" => "src/tool/tool_descriptions/task_stop.md",
+            "SwitchWorkspace" => "src/tool/tool_descriptions/switch_workspace.md",
             "UpdateWorkItem" => "src/tool/tool_descriptions/update_work_item.md",
             "UseWorkspace" => "src/tool/tool_descriptions/use_workspace.md",
             "ViewImage" => "src/tool/tool_descriptions/view_image.md",
