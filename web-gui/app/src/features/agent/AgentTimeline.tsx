@@ -302,7 +302,6 @@ function ExecutionMetadata({ activity }: { activity: AgentTimelineActivity }) {
           aria-label={t("agent.exitStatus", { status: meta.exitStatus })}
         >
           {meta.exitStatus === 0 ? <CircleCheck size={11} aria-hidden="true" /> : <CircleX size={11} aria-hidden="true" />}
-          <span>{meta.exitStatus}</span>
         </span>
       ) : null}
       {meta.durationMs != null ? (
