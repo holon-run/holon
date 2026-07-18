@@ -136,6 +136,20 @@ impl WorkQueueReadModel {
     }
 }
 
+impl WorkItemRecord {
+    pub fn readiness(&self) -> WorkItemReadiness {
+        record_only_readiness(self)
+    }
+
+    pub fn is_runnable(&self) -> bool {
+        self.readiness() == WorkItemReadiness::Runnable
+    }
+
+    pub fn is_waiting_for_operator(&self) -> bool {
+        self.readiness() == WorkItemReadiness::WaitingForOperator
+    }
+}
+
 pub struct WorkItemSchedulingFacts<'a> {
     pub work_item: &'a WorkItemRecord,
     pub is_current: bool,
