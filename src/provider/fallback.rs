@@ -190,6 +190,7 @@ mod tests {
         ProviderCandidate {
             model_ref: model_ref.into(),
             provider_name: "anthropic".into(),
+            resolved_image_input: false,
             provider: Arc::new(PolicyProvider {
                 policy: Some(policy),
             }),
@@ -204,6 +205,7 @@ mod tests {
         ProviderCandidate {
             model_ref: model_ref.into(),
             provider_name: provider_name.into(),
+            resolved_image_input: false,
             provider: Arc::new(provider),
         }
     }
@@ -243,6 +245,7 @@ mod tests {
                 ProviderCandidate {
                     model_ref: "zai/glm-4.7".into(),
                     provider_name: "zai".into(),
+                    resolved_image_input: false,
                     provider: Arc::new(SearchProvider {
                         capability: Some(search_capability(
                             "zai",
@@ -254,6 +257,7 @@ mod tests {
                 ProviderCandidate {
                     model_ref: "deepseek/deepseek-v4-flash".into(),
                     provider_name: "deepseek".into(),
+                    resolved_image_input: false,
                     provider: Arc::new(SearchProvider { capability: None }),
                 },
             ],
@@ -267,12 +271,40 @@ mod tests {
         assert_eq!(capability.backend_kind, "zai_web_search_prime");
     }
 
+    #[test]
+    fn resolved_image_input_uses_current_turn_candidate() {
+        let provider = FallbackProvider {
+            candidates: vec![
+                ProviderCandidate {
+                    model_ref: "volcengine@plan/glm-5.2".into(),
+                    provider_name: "volcengine".into(),
+                    resolved_image_input: false,
+                    provider: Arc::new(PolicyProvider { policy: None }),
+                },
+                ProviderCandidate {
+                    model_ref: "anthropic/claude-sonnet-4-6".into(),
+                    provider_name: "anthropic".into(),
+                    resolved_image_input: true,
+                    provider: Arc::new(PolicyProvider { policy: None }),
+                },
+            ],
+        };
+
+        assert_eq!(provider.resolved_image_input_support(), Some(false));
+
+        let reversed = FallbackProvider {
+            candidates: provider.candidates.into_iter().rev().collect(),
+        };
+        assert_eq!(reversed.resolved_image_input_support(), Some(true));
+    }
+
     #[tokio::test]
     async fn generate_image_uses_current_turn_candidate() {
         let provider = FallbackProvider {
             candidates: vec![ProviderCandidate {
                 model_ref: "openai-codex/gpt-5.5".into(),
                 provider_name: "openai-codex".into(),
+                resolved_image_input: false,
                 provider: Arc::new(ImageProvider),
             }],
         };
@@ -635,6 +667,12 @@ impl AgentProvider for FallbackProvider {
 
     fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
         self.candidates.first()?.provider.builtin_web_search()
+    }
+
+    fn resolved_image_input_support(&self) -> Option<bool> {
+        self.candidates
+            .first()
+            .map(|candidate| candidate.resolved_image_input)
     }
 
     async fn generate_image(
