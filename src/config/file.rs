@@ -230,6 +230,30 @@ pub struct RuntimeConfigFile {
     pub max_tool_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_provider_fallback: Option<bool>,
+    #[serde(default, skip_serializing_if = "RuntimeRetentionConfigFile::is_empty")]
+    pub retention: RuntimeRetentionConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuntimeRetentionConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_events_days: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_entries_days: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_executions_days: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_events_min_rows_per_scope: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_entries_min_rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_executions_min_rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_hours: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incremental_vacuum_pages: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -412,7 +436,25 @@ impl ImageGenerationConfigFile {
 
 impl RuntimeConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
-        self.max_output_tokens.is_none() && self.disable_provider_fallback.is_none()
+        self.max_output_tokens.is_none()
+            && self.default_tool_output_tokens.is_none()
+            && self.max_tool_output_tokens.is_none()
+            && self.disable_provider_fallback.is_none()
+            && self.retention.is_empty()
+    }
+}
+
+impl RuntimeRetentionConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.audit_events_days.is_none()
+            && self.transcript_entries_days.is_none()
+            && self.tool_executions_days.is_none()
+            && self.audit_events_min_rows_per_scope.is_none()
+            && self.transcript_entries_min_rows.is_none()
+            && self.tool_executions_min_rows.is_none()
+            && self.interval_hours.is_none()
+            && self.incremental_vacuum_pages.is_none()
     }
 }
 

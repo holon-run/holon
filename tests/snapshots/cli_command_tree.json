@@ -712,6 +712,56 @@
     "aliases": []
   },
   {
+    "path": "debug.runtime-db",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "debug.runtime-db.compact",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "debug.runtime-db.retention",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "dry-run",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "debug.scheduler-fixture",
     "positionals": [],
     "flags": [

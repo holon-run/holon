@@ -1145,6 +1145,11 @@ CREATE TABLE IF NOT EXISTS runtime_metadata (
 );
 "#,
     },
+    Migration {
+        version: 30,
+        name: "runtime_retention_created_at_indexes",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -1195,6 +1200,9 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
     if migration.name == "strict_runtime_sequences" {
         migrate_runtime_sequences(&transaction)?;
     }
+    if migration.name == "runtime_retention_created_at_indexes" {
+        migrate_runtime_retention_created_at_indexes(&transaction)?;
+    }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
         (
@@ -1204,6 +1212,22 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         ),
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_runtime_retention_created_at_indexes(connection: &Connection) -> Result<()> {
+    if table_exists_internal(connection, "transcript_entries")? {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_transcript_entries_created
+               ON transcript_entries(created_at, evidence_id);",
+        )?;
+    }
+    if table_exists_internal(connection, "tool_executions")? {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_tool_executions_created
+               ON tool_executions(created_at, evidence_id);",
+        )?;
+    }
     Ok(())
 }
 

@@ -3615,6 +3615,65 @@
                 },
                 "type": "array"
               },
+              "runtime_db_retention": {
+                "properties": {
+                  "audit_events_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "audit_events_min_rows_per_scope": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "incremental_vacuum_pages": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "interval_hours": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tool_executions_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tool_executions_min_rows": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "transcript_entries_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "transcript_entries_min_rows": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "audit_events_days",
+                  "transcript_entries_days",
+                  "tool_executions_days",
+                  "audit_events_min_rows_per_scope",
+                  "transcript_entries_min_rows",
+                  "tool_executions_min_rows",
+                  "interval_hours",
+                  "incremental_vacuum_pages"
+                ],
+                "type": "object"
+              },
               "runtime_max_output_tokens": {
                 "format": "uint32",
                 "minimum": 0,
@@ -3715,6 +3774,7 @@
               "default_tool_output_tokens",
               "max_tool_output_tokens",
               "disable_provider_fallback",
+              "runtime_db_retention",
               "providers",
               "web_search",
               "web_search_providers"
@@ -3988,6 +4048,65 @@
                 },
                 "type": "array"
               },
+              "runtime_db_retention": {
+                "properties": {
+                  "audit_events_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "audit_events_min_rows_per_scope": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "incremental_vacuum_pages": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "interval_hours": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tool_executions_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tool_executions_min_rows": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "transcript_entries_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "transcript_entries_min_rows": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "audit_events_days",
+                  "transcript_entries_days",
+                  "tool_executions_days",
+                  "audit_events_min_rows_per_scope",
+                  "transcript_entries_min_rows",
+                  "tool_executions_min_rows",
+                  "interval_hours",
+                  "incremental_vacuum_pages"
+                ],
+                "type": "object"
+              },
               "runtime_max_output_tokens": {
                 "format": "uint32",
                 "minimum": 0,
@@ -4088,6 +4207,7 @@
               "default_tool_output_tokens",
               "max_tool_output_tokens",
               "disable_provider_fallback",
+              "runtime_db_retention",
               "providers",
               "web_search",
               "web_search_providers"

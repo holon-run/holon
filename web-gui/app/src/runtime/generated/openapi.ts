@@ -2927,6 +2927,25 @@ export interface components {
                     oauth_supported: boolean;
                     transport: string;
                 }[];
+                runtime_db_retention: {
+                    /** Format: uint64 */
+                    audit_events_days: number;
+                    /** Format: uint */
+                    audit_events_min_rows_per_scope: number;
+                    enabled: boolean;
+                    /** Format: uint32 */
+                    incremental_vacuum_pages: number;
+                    /** Format: uint64 */
+                    interval_hours: number;
+                    /** Format: uint64 */
+                    tool_executions_days: number;
+                    /** Format: uint */
+                    tool_executions_min_rows: number;
+                    /** Format: uint64 */
+                    transcript_entries_days: number;
+                    /** Format: uint */
+                    transcript_entries_min_rows: number;
+                };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;
                 unknown_model_fallback_configured: boolean;
@@ -3016,6 +3035,25 @@ export interface components {
                     oauth_supported: boolean;
                     transport: string;
                 }[];
+                runtime_db_retention: {
+                    /** Format: uint64 */
+                    audit_events_days: number;
+                    /** Format: uint */
+                    audit_events_min_rows_per_scope: number;
+                    enabled: boolean;
+                    /** Format: uint32 */
+                    incremental_vacuum_pages: number;
+                    /** Format: uint64 */
+                    interval_hours: number;
+                    /** Format: uint64 */
+                    tool_executions_days: number;
+                    /** Format: uint */
+                    tool_executions_min_rows: number;
+                    /** Format: uint64 */
+                    transcript_entries_days: number;
+                    /** Format: uint */
+                    transcript_entries_min_rows: number;
+                };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;
                 unknown_model_fallback_configured: boolean;

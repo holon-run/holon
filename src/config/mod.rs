@@ -253,6 +253,7 @@ impl AppConfig {
             .max(default_tool_output_tokens);
 
         let disable_provider_fallback = resolve_disable_provider_fallback(&stored_config)?;
+        resolve_runtime_db_retention_policy(&stored_config)?;
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         let validated_unknown_model_fallback =
             validate_optional_model_runtime_override(stored_config.model.unknown_fallback.clone())?;
@@ -353,6 +354,16 @@ impl AppConfig {
 
     pub fn runtime_db_lock_path(&self) -> PathBuf {
         self.data_dir.join("state").join("runtime.lock")
+    }
+
+    pub fn runtime_db_maintenance_lock_path(&self) -> PathBuf {
+        self.data_dir.join("state").join("runtime-maintenance.lock")
+    }
+
+    pub fn runtime_db_retention_policy(
+        &self,
+    ) -> Result<crate::runtime_db::RuntimeDbRetentionPolicy> {
+        resolve_runtime_db_retention_policy(&self.stored_config)
     }
 
     pub fn agent_root_dir(&self) -> PathBuf {
@@ -471,6 +482,39 @@ fn resolve_disable_provider_fallback(stored_config: &HolonConfigFile) -> Result<
         env::var("HOLON_DISABLE_PROVIDER_FALLBACK").ok().as_deref(),
         stored_config,
     )
+}
+
+fn resolve_runtime_db_retention_policy(
+    stored_config: &HolonConfigFile,
+) -> Result<crate::runtime_db::RuntimeDbRetentionPolicy> {
+    let configured = &stored_config.runtime.retention;
+    let defaults = crate::runtime_db::RuntimeDbRetentionPolicy::default();
+    crate::runtime_db::RuntimeDbRetentionPolicy {
+        enabled: configured.enabled.unwrap_or(defaults.enabled),
+        audit_events_days: configured
+            .audit_events_days
+            .unwrap_or(defaults.audit_events_days),
+        transcript_entries_days: configured
+            .transcript_entries_days
+            .unwrap_or(defaults.transcript_entries_days),
+        tool_executions_days: configured
+            .tool_executions_days
+            .unwrap_or(defaults.tool_executions_days),
+        audit_events_min_rows_per_scope: configured
+            .audit_events_min_rows_per_scope
+            .unwrap_or(defaults.audit_events_min_rows_per_scope),
+        transcript_entries_min_rows: configured
+            .transcript_entries_min_rows
+            .unwrap_or(defaults.transcript_entries_min_rows),
+        tool_executions_min_rows: configured
+            .tool_executions_min_rows
+            .unwrap_or(defaults.tool_executions_min_rows),
+        interval_hours: configured.interval_hours.unwrap_or(defaults.interval_hours),
+        incremental_vacuum_pages: configured
+            .incremental_vacuum_pages
+            .unwrap_or(defaults.incremental_vacuum_pages),
+    }
+    .validate()
 }
 
 fn resolve_disable_provider_fallback_override(

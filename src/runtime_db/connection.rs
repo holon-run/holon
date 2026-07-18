@@ -56,6 +56,19 @@ PRAGMA mmap_size = 268435456;
     Ok(())
 }
 
+pub(crate) fn configure_new_database_auto_vacuum(connection: &Connection) -> Result<()> {
+    let application_tables: u64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    if application_tables == 0 {
+        connection.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
+    }
+    Ok(())
+}
+
 pub(crate) fn run_transaction_on_connection<T>(
     connection: &Connection,
     path: &Path,

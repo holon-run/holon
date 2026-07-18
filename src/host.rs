@@ -108,6 +108,9 @@ struct HostInner {
     memory_index_notify: Arc<Notify>,
     daemon_indexer_token: CancellationToken,
     daemon_indexer_handle: Mutex<Option<JoinHandle<()>>>,
+    daemon_retention_token: CancellationToken,
+    daemon_retention_handle: Mutex<Option<JoinHandle<()>>>,
+    runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
     agents: RwLock<HashMap<String, AgentEntry>>,
@@ -227,6 +230,9 @@ impl RuntimeHost {
                 memory_index_notify: Arc::new(Notify::new()),
                 daemon_indexer_token: CancellationToken::new(),
                 daemon_indexer_handle: Mutex::new(None),
+                daemon_retention_token: CancellationToken::new(),
+                daemon_retention_handle: Mutex::new(None),
+                runtime_db_maintenance_lock: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider,
                 agents: RwLock::new(HashMap::new()),
@@ -313,6 +319,123 @@ impl RuntimeHost {
         let handle = self.inner.daemon_indexer_handle.lock().unwrap().take();
         if let Some(handle) = handle {
             let _ = handle.await;
+        }
+    }
+
+    pub fn spawn_daemon_runtime_db_retention(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            tracing::debug!("daemon runtime db retention not spawned: no Tokio runtime");
+            return;
+        }
+        if self.inner.daemon_retention_handle.lock().unwrap().is_some() {
+            return;
+        }
+        match crate::runtime_db::RuntimeDbLock::try_lock(
+            self.config().runtime_db_maintenance_lock_path(),
+        ) {
+            Ok(lock) => {
+                *self.inner.runtime_db_maintenance_lock.lock().unwrap() = Some(lock);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "daemon runtime db retention disabled: maintenance lock unavailable"
+                );
+                return;
+            }
+        }
+        let host = self.clone();
+        let handle = tokio::spawn(async move {
+            host.run_daemon_runtime_db_retention().await;
+        });
+        *self.inner.daemon_retention_handle.lock().unwrap() = Some(handle);
+    }
+
+    pub async fn shutdown_daemon_runtime_db_retention(&self) {
+        self.inner.daemon_retention_token.cancel();
+        let handle = self.inner.daemon_retention_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
+        self.inner
+            .runtime_db_maintenance_lock
+            .lock()
+            .unwrap()
+            .take();
+    }
+
+    async fn run_daemon_runtime_db_retention(self) {
+        loop {
+            if self.inner.daemon_retention_token.is_cancelled() {
+                break;
+            }
+            let policy = match self.config().runtime_db_retention_policy() {
+                Ok(policy) => policy,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "daemon runtime db retention: invalid reloaded policy"
+                    );
+                    if self
+                        .wait_daemon_retention_round(Duration::from_secs(60))
+                        .await
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            if policy.enabled {
+                let db = self.inner.runtime_db.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    db.run_retention_pass(policy, chrono::Utc::now())
+                })
+                .await;
+                match result {
+                    Ok(Ok(report)) => {
+                        tracing::info!(
+                            audit_deleted = report.audit_events.deleted_rows,
+                            transcript_deleted = report.transcript_entries.deleted_rows,
+                            tool_deleted = report.tool_executions.deleted_rows,
+                            elapsed_ms = report.elapsed_ms,
+                            freelist_pages = report.freelist_pages_after,
+                            "daemon runtime db retention pass completed"
+                        );
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            error = %error,
+                            "daemon runtime db retention pass failed"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "daemon runtime db retention task failed"
+                        );
+                    }
+                }
+            }
+            let interval_hours = self
+                .config()
+                .runtime_db_retention_policy()
+                .map(|policy| policy.interval_hours)
+                .unwrap_or(1);
+            if self
+                .wait_daemon_retention_round(Duration::from_secs(
+                    interval_hours.saturating_mul(60 * 60),
+                ))
+                .await
+            {
+                break;
+            }
+        }
+    }
+
+    async fn wait_daemon_retention_round(&self, duration: Duration) -> bool {
+        tokio::select! {
+            _ = self.inner.daemon_retention_token.cancelled() => true,
+            _ = tokio::time::sleep(duration) => false,
         }
     }
 
@@ -421,6 +544,8 @@ impl RuntimeHost {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        self.shutdown_daemon_runtime_db_retention().await;
+        self.shutdown_daemon_memory_indexer().await;
         let entries = {
             let mut agents = self.inner.agents.write().await;
             agents.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
