@@ -1771,7 +1771,13 @@ impl RuntimeHandle {
                     }
                 }
                 Some(command_task::ManagedTaskHandle::Async(_)) => {
-                    return Err(anyhow!("task {} has an unexpected async handle", task_id));
+                    return Err(RuntimeError::new(
+                        RuntimeErrorDomain::Task,
+                        "task_handle_type_mismatch",
+                        format!("task {task_id} has an unexpected async handle"),
+                    )
+                    .with_safe_context("task_id", task_id)
+                    .into());
                 }
                 None => {
                     command_handle_missing = true;
