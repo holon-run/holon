@@ -1,12 +1,20 @@
 ---
 title: RFC: Agent Workspace Switching
 date: 2026-04-21
-status: accepted
+status: superseded
 issue:
   - 76
+superseded_by:
+  - agent-workspace-tool-surface
 ---
 
 # RFC: Agent Workspace Switching
+
+> This RFC records the original `UseWorkspace` design. The current
+> model-facing contract is defined by
+> [`Agent Workspace Tool Surface`](./agent-workspace-tool-surface.md), which
+> separates binding, activation, and worktree-artifact lifecycle and keeps
+> `UseWorkspace` only as a compatibility alias.
 
 ## Summary
 

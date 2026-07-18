@@ -157,20 +157,18 @@ Typical current members include:
 - `ExecCommand`
 - `ExecCommandBatch`
 - `ApplyPatch`
-- `UseWorkspace`
+- `GetWorkspaceState`
+- `SwitchWorkspace`
+- `CreateWorktree`
 
 These tools describe the local execution surface that is already available to
 the agent through its current profile and runtime boundary state.
 
-`UseWorkspace` is the single model-facing operation for making a workspace
-active. With `path`, it discovers, attaches, and activates a project workspace
-or isolated execution root. With `workspace_id`, it activates a known workspace,
-including returning to the built-in `agent_home` workspace.
+`SwitchWorkspace` activates an existing projection. `CreateWorktree` owns
+artifact creation. `UseWorkspace` is a deprecated compatibility alias.
 
-The model-facing surface should not expose a state where the agent has no
-active workspace. `EnterWorkspace` and `ExitWorkspace` are retired names in the
-new contract, and `SwitchWorkspace` is intentionally not added as a separate
-model-facing tool.
+The model-facing surface does not expose a state where the agent has no active
+workspace. `EnterWorkspace` and `ExitWorkspace` are retired names.
 
 ### 3. Web Tools
 
@@ -201,23 +199,20 @@ waiting plane.
 
 These tools widen what the agent is allowed to operate on.
 
-The clearest current non-tool example is:
+Current model-facing examples are:
 
 - `AttachWorkspace`
+- `DetachWorkspace`
+- `RemoveWorktree`
 
 This family should be treated separately from ordinary local-environment tools.
 Attaching a new workspace is not the same thing as operating within an already
 attached workspace.
 
-If Holon later exposes this family to the model, it should do so through
-explicit agent-profile rules rather than by making arbitrary path attachment
-feel like a normal local edit or command action.
-
-`DetachWorkspace` belongs with the same binding-management concern if exposed.
-The first version should be control-plane or CLI oriented rather than part of
-the default model-facing local environment surface. It removes an agent-local
-workspace binding; it does not delete directories or remove host registry
-entries.
+They are exposed through explicit agent-profile rules rather than making
+arbitrary path attachment feel like a normal local edit. Detach removes an
+agent-local binding; it does not delete directories, worktrees, branches, or
+host registry entries.
 
 Holon should not add `ForgetWorkspace` to the public tool surface in this
 phase. Host registry cleanup should be a separate later design.

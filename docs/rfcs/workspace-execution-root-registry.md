@@ -66,6 +66,21 @@ Lifecycle:
 - **Resolution**: look up by `execution_root_id`; if `removed_at` is set →
   HTTP 410 Gone; if not found → 404 Not Found.
 
+The serialized payload may also carry worktree artifact metadata without
+changing the lookup columns:
+
+- provenance (`runtime_created` or `discovered`);
+- branch ref and tip;
+- requested base ref and resolved commit when known;
+- worktree common-directory identity;
+- lifecycle state and latest cleanup evidence.
+
+This registry is the durable artifact lookup used by `GetWorkspaceState`,
+`SwitchWorkspace`, `CreateWorktree`, and `RemoveWorktree`. Retained entries
+remain discoverable after switching away or detaching a workspace binding.
+Removed entries remain tombstoned for audit and return 410 through
+file-resolution surfaces.
+
 ### HTTP File API
 
 `resolve_workspace_root` now looks up the registry instead of scanning agent
