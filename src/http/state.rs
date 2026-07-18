@@ -701,7 +701,7 @@ mod tests {
                 source_chain: (0..STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT + 4)
                     .map(|_| long_text.clone())
                     .collect(),
-                context: crate::runtime_error::RuntimeErrorContext {
+                context: Box::new(crate::runtime_error::RuntimeErrorContext {
                     message_id: Some(long_text.clone()),
                     turn_id: Some(long_text.clone()),
                     run_id: Some(long_text.clone()),
@@ -712,7 +712,7 @@ mod tests {
                     causation_id: Some(long_text.clone()),
                     provider: Some(long_text.clone()),
                     model_ref: Some(long_text.clone()),
-                },
+                }),
                 metadata: (0..STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT + 4)
                     .map(|index| (format!("{index}-{long_text}"), long_text.clone()))
                     .collect(),

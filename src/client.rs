@@ -224,7 +224,7 @@ pub struct LocalHttpError {
     pub domain: Option<RuntimeErrorDomain>,
     pub retryable: Option<bool>,
     pub context: std::collections::BTreeMap<String, String>,
-    pub correlation: RuntimeErrorContext,
+    pub correlation: Box<RuntimeErrorContext>,
 }
 
 impl LocalHttpError {
@@ -1405,7 +1405,7 @@ struct ErrorPayload {
     #[serde(default)]
     context: std::collections::BTreeMap<String, String>,
     #[serde(default)]
-    correlation: RuntimeErrorContext,
+    correlation: Box<RuntimeErrorContext>,
 }
 
 fn event_stream_path(agent_id: &str, request: &EventStreamRequest) -> Result<String> {

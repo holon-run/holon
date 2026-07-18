@@ -198,7 +198,7 @@ pub(crate) struct HttpErrorEnvelope {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     context: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "RuntimeErrorContext::is_empty")]
-    correlation: RuntimeErrorContext,
+    correlation: Box<RuntimeErrorContext>,
     #[serde(flatten)]
     extensions: Map<String, Value>,
 }
@@ -213,7 +213,7 @@ impl HttpErrorEnvelope {
             domain: None,
             retryable: None,
             context: BTreeMap::new(),
-            correlation: RuntimeErrorContext::default(),
+            correlation: Box::default(),
             extensions: Map::new(),
         }
     }

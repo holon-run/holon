@@ -3418,7 +3418,7 @@ fn task_failure_artifact(
         task_id: Some(task.id.clone()),
         exit_status,
         source_chain,
-        context: RuntimeErrorContext {
+        context: Box::new(RuntimeErrorContext {
             message_id: task.parent_message_id.clone(),
             turn_id: detail_string(&task.detail, "parent_turn_id"),
             work_item_id: task.work_item_id.clone(),
@@ -3426,7 +3426,7 @@ fn task_failure_artifact(
             correlation_id: detail_string(&task.detail, "correlation_id"),
             causation_id: detail_string(&task.detail, "causation_id"),
             ..RuntimeErrorContext::default()
-        },
+        }),
         metadata,
     })
 }

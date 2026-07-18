@@ -186,7 +186,7 @@ impl RuntimeHandle {
             task_id: None,
             exit_status: None,
             source_chain,
-            context,
+            context: Box::new(context),
             metadata,
         }
     }
@@ -228,7 +228,7 @@ impl RuntimeHandle {
             task_id: None,
             exit_status: None,
             source_chain: descriptor.source_chain.clone(),
-            context,
+            context: Box::new(context),
             metadata,
         }
     }

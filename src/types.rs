@@ -1555,7 +1555,7 @@ pub struct FailureArtifact {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_chain: Vec<String>,
     #[serde(default, skip_serializing_if = "RuntimeErrorContext::is_empty")]
-    pub context: RuntimeErrorContext,
+    pub context: Box<RuntimeErrorContext>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
 }
