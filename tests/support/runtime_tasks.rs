@@ -48,9 +48,9 @@ use crate::support::runtime_helpers::{
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
-    RecordingPromptProvider, RuntimeFailureProvider, ShellProvider,
-    SleepOnlyCompletionAfterTextProvider, TerminalResultBriefProvider, ToolErrorProvider,
-    ToolUsingProvider, TruncatedShellReinjectionProvider, UseWorkspaceProvider,
+    RecordingPromptProvider, RuntimeFailureProvider, SensitiveRuntimeFailureProvider,
+    ShellProvider, SleepOnlyCompletionAfterTextProvider, TerminalResultBriefProvider,
+    ToolErrorProvider, ToolUsingProvider, TruncatedShellReinjectionProvider, UseWorkspaceProvider,
     VerboseRuntimeFailureProvider, WakeHintProvider, WorktreeCapturingProvider,
     WorktreeLifecycleProvider,
 };
@@ -1176,6 +1176,59 @@ pub async fn runtime_failure_brief_and_transcript_sanitize_long_provider_error()
                 .as_str()
                 .is_some_and(|error| error.contains("raw backend body"))
         })));
+
+    Ok(())
+}
+
+pub async fn runtime_failure_brief_and_transcript_redact_short_provider_secret() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(SensitiveRuntimeFailureProvider))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "trigger sensitive runtime failure".into(),
+            },
+        ))
+        .await?;
+
+    eventually_for(Duration::from_secs(10), || {
+        let briefs = runtime.storage().read_recent_briefs(10)?;
+        Ok(briefs.iter().any(|brief| {
+            brief.kind == BriefKind::Failure
+                && brief.text.contains("<redacted-sensitive-error-context>")
+        }))
+    })
+    .await?;
+
+    let failure_brief = runtime
+        .recent_briefs(10)
+        .await?
+        .into_iter()
+        .rev()
+        .find(|brief| brief.kind == BriefKind::Failure)
+        .expect("failure brief should exist");
+    assert!(!failure_brief.text.contains("short-secret"));
+    assert!(!failure_brief.text.contains("access_token"));
+
+    let failure_entry = runtime
+        .recent_transcript(20)
+        .await?
+        .into_iter()
+        .rev()
+        .find(|entry| entry.kind == TranscriptEntryKind::RuntimeFailure)
+        .expect("runtime failure transcript entry should exist");
+    let serialized = failure_entry.data.to_string();
+    assert!(serialized.contains("<redacted-sensitive-error-context>"));
+    assert!(!serialized.contains("short-secret"));
+    assert!(!serialized.contains("access_token"));
 
     Ok(())
 }

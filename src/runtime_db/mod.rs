@@ -169,6 +169,19 @@ impl RuntimeStateTransitionConflict {
         }
     }
 
+    pub(crate) fn concurrent_mutation(domain: &'static str, record_id: impl Into<String>) -> Self {
+        Self {
+            domain,
+            record_id: record_id.into(),
+            code: "revision_conflict",
+            existing_status: "changed".into(),
+            incoming_status: "expected_snapshot".into(),
+            expected_revision: None,
+            actual_revision: None,
+            retryable: true,
+        }
+    }
+
     pub fn domain(&self) -> &'static str {
         self.domain
     }

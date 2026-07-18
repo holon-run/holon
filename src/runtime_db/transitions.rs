@@ -470,10 +470,11 @@ fn validate_agent_state_mutation_tx(
     if let Some(expected) = mutation.expected.as_ref() {
         let actual = agent_state_tx(tx, &mutation.record.id)?;
         if actual.as_ref() != Some(expected.as_ref()) {
-            return Err(anyhow!(
-                "agent state {} changed before runtime transition commit",
-                mutation.record.id
-            ));
+            return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                "agent_state",
+                &mutation.record.id,
+            )
+            .into());
         }
     }
     Ok(())
@@ -990,9 +991,13 @@ mod tests {
             .transitions()
             .commit_work_item_focus(&command(&second))
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("changed before runtime transition commit"));
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("concurrent agent state mutation should return typed conflict");
+        assert_eq!(conflict.domain(), "agent_state");
+        assert_eq!(conflict.record_id(), "agent-a");
+        assert_eq!(conflict.code(), "revision_conflict");
+        assert!(conflict.retryable());
         assert_eq!(
             db.agent_states()
                 .latest("agent-a")?

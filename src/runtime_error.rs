@@ -604,6 +604,14 @@ mod tests {
             "<redacted-sensitive-error-context>"
         );
         assert_eq!(
+            sanitize_runtime_error_text(r#"provider failed: {"access_token":"secret"}"#),
+            "<redacted-sensitive-error-context>"
+        );
+        assert_eq!(
+            sanitize_runtime_error_text("provider failed: x-api-key: short-secret"),
+            "<redacted-sensitive-error-context>"
+        );
+        assert_eq!(
             sanitize_runtime_error_text(
                 r#"provider failed: {"detail":"raw backend response body"}"#
             ),
