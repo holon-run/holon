@@ -31,7 +31,7 @@ runtime_async_tests!(
     exec_command_spawn_failure_returns_shell_recovery_hint,
     tool_schema_and_dispatch_errors_are_recorded_without_corrupting_runtime_state,
     runtime_provider_failure_surfaces_failure_brief_and_transcript_entry,
-    runtime_failure_brief_sanitizes_long_provider_error_but_transcript_keeps_full_error,
+    runtime_failure_brief_and_transcript_sanitize_long_provider_error,
     command_task_runs_to_completion_and_persists_detail,
     task_output_returns_completed_command_task_output,
     task_output_non_blocking_reports_running_command_task,

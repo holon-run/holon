@@ -2,6 +2,9 @@ use super::message_dispatch::message_text;
 use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
+use crate::runtime_error::{
+    sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
+};
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
@@ -1521,7 +1524,7 @@ impl RuntimeHandle {
         let task = self
             .task_record(task_id)
             .await?
-            .ok_or_else(|| anyhow!("task {} not found", task_id))?;
+            .ok_or_else(|| task_not_found_error(task_id))?;
         let mut snapshot = TaskStatusSnapshot::from_task_record(&task);
 
         if task.is_child_agent_task()
@@ -1571,7 +1574,7 @@ impl RuntimeHandle {
             let task = self
                 .task_record(task_id)
                 .await?
-                .ok_or_else(|| anyhow!("task {} not found", task_id))?;
+                .ok_or_else(|| task_not_found_error(task_id))?;
             let status = self.task_output_status(&task)?;
             let ready = task_output_ready(&task, &status);
 
@@ -1803,7 +1806,12 @@ impl RuntimeHandle {
                             && detail_string(&task.detail, "child_agent_id").is_some()
                     });
                     if !can_cleanup_interrupted_child {
-                        return Err(anyhow!("task {} is not currently running", task_id));
+                        return Err(RuntimeError::validation(
+                            "task_not_running",
+                            format!("task {task_id} is not currently running"),
+                        )
+                        .with_safe_context("task_id", task_id)
+                        .into());
                     }
                 }
             }
@@ -1833,10 +1841,13 @@ impl RuntimeHandle {
             TaskStatus::Cancelled => "cancelled",
             _ => unreachable!("stop_task only emits cancelling or cancelled"),
         };
-        let stopped_kind = existing
-            .as_ref()
-            .map(|task| task.kind)
-            .ok_or_else(|| anyhow!("task {} is not currently running", task_id))?;
+        let stopped_kind = existing.as_ref().map(|task| task.kind).ok_or_else(|| {
+            RuntimeError::validation(
+                "task_not_running",
+                format!("task {task_id} is not currently running"),
+            )
+            .with_safe_context("task_id", task_id)
+        })?;
         let mut detail = existing.as_ref().and_then(|task| task.detail.clone());
         if let Some(detail_map) = detail.as_mut().and_then(|value| value.as_object_mut()) {
             detail_map.insert("task_status".into(), serde_json::json!(status_text));
@@ -1893,7 +1904,7 @@ impl RuntimeHandle {
         let task = self
             .task_record(task_id)
             .await?
-            .ok_or_else(|| anyhow!("task {} not found", task_id))?;
+            .ok_or_else(|| task_not_found_error(task_id))?;
         let snapshot = TaskStatusSnapshot::from_task_record(&task);
         let command = snapshot.command.clone();
         if matches!(
@@ -1934,7 +1945,7 @@ impl RuntimeHandle {
         let task = self
             .task_record(task_id)
             .await?
-            .ok_or_else(|| anyhow!("task {} not found", task_id))?;
+            .ok_or_else(|| task_not_found_error(task_id))?;
         let snapshot = TaskStatusSnapshot::from_task_record(&task);
         let command = snapshot.command.clone();
         if matches!(
@@ -2021,11 +2032,32 @@ impl RuntimeHandle {
                 response_tx,
             })
             .await
-            .map_err(|_| anyhow!("task {} is not currently running", task.id))?;
+            .map_err(|_| {
+                RuntimeError::validation(
+                    "task_not_running",
+                    format!("task {} is not currently running", task.id),
+                )
+                .with_safe_context("task_id", &task.id)
+            })?;
         let bytes_written = response_rx
             .await
-            .map_err(|_| anyhow!("task {} input delivery was interrupted", task.id))?
-            .map_err(|error| anyhow!("task {} input delivery failed: {}", task.id, error))?;
+            .map_err(|_| {
+                RuntimeError::new(
+                    RuntimeErrorDomain::Task,
+                    "task_input_interrupted",
+                    format!("task {} input delivery was interrupted", task.id),
+                )
+                .with_safe_context("task_id", &task.id)
+                .with_retryable(true)
+            })?
+            .map_err(|_| {
+                RuntimeError::new(
+                    RuntimeErrorDomain::Task,
+                    "task_input_failed",
+                    format!("task {} input delivery failed", task.id),
+                )
+                .with_safe_context("task_id", &task.id)
+            })?;
 
         let input_target = command
             .as_ref()
@@ -2232,7 +2264,12 @@ impl RuntimeHandle {
         };
         let mut record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if record.state == WorkItemState::Completed {
-            return Err(anyhow!("cannot pick completed work item {}", work_item_id));
+            return Err(RuntimeError::validation(
+                "work_item_completed",
+                format!("cannot pick completed work item {work_item_id}"),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .into());
         }
         let normalized_reason = reason.and_then(|value| {
             let trimmed = value.trim();
@@ -2488,10 +2525,12 @@ impl RuntimeHandle {
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state == WorkItemState::Completed {
-            return Err(anyhow!(
-                "cannot update completed work item {}",
-                work_item_id
-            ));
+            return Err(RuntimeError::validation(
+                "work_item_completed",
+                format!("cannot update completed work item {work_item_id}"),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .into());
         }
         let mut record = existing.clone();
         let mut wrote_item = false;
@@ -3002,15 +3041,29 @@ impl RuntimeHandle {
             .runtime_db
             .work_items()
             .latest(work_item_id)?
-            .ok_or_else(|| anyhow!("unknown work item {}", work_item_id))?;
+            .ok_or_else(|| {
+                RuntimeError::not_found(
+                    "work_item_not_found",
+                    format!("unknown work item {work_item_id}"),
+                )
+                .with_safe_context("work_item_id", work_item_id)
+            })?;
         if record.agent_id != agent_id {
-            return Err(anyhow!(
-                "work item {} belongs to another agent",
-                work_item_id
-            ));
+            return Err(RuntimeError::policy(
+                "work_item_access_denied",
+                format!("work item {work_item_id} belongs to another agent"),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .with_safe_context("agent_id", agent_id)
+            .into());
         }
         Ok(record)
     }
+}
+
+fn task_not_found_error(task_id: &str) -> RuntimeError {
+    RuntimeError::not_found("task_not_found", format!("task {task_id} not found"))
+        .with_safe_context("task_id", task_id)
 }
 
 fn continuation_summary(
@@ -3113,6 +3166,21 @@ pub(super) fn task_from_message(message: &MessageEnvelope, agent_id: &str) -> Re
             detail
                 .entry("parent_turn_id")
                 .or_insert_with(|| serde_json::json!(parent_turn_id));
+        }
+    }
+    if message.correlation_id.is_some() || message.causation_id.is_some() {
+        let detail = detail.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(detail) = detail.as_object_mut() {
+            if let Some(correlation_id) = message.correlation_id.as_ref() {
+                detail
+                    .entry("correlation_id")
+                    .or_insert_with(|| serde_json::json!(correlation_id));
+            }
+            if let Some(causation_id) = message.causation_id.as_ref() {
+                detail
+                    .entry("causation_id")
+                    .or_insert_with(|| serde_json::json!(causation_id));
+            }
         }
     }
 
@@ -3266,6 +3334,11 @@ fn task_failure_artifact(
         metadata.insert("output_path".into(), path);
     }
     let has_error = detail_string(&task.detail, "error").is_some();
+    let source_chain = detail_string(&task.detail, "error")
+        .map(|error| sanitize_runtime_error_text(&error))
+        .filter(|error| !error.is_empty())
+        .into_iter()
+        .collect();
     if has_error {
         metadata.insert("error_present".into(), "true".into());
     }
@@ -3330,12 +3403,24 @@ fn task_failure_artifact(
         category: FailureArtifactCategory::Task,
         kind: kind.to_string(),
         summary,
+        domain: Some(RuntimeErrorDomain::Task),
+        retryable: Some(false),
+        recovery_hint: None,
         provider: None,
         model_ref: None,
         status: None,
         task_id: Some(task.id.clone()),
         exit_status,
-        source_chain: Vec::new(),
+        source_chain,
+        context: RuntimeErrorContext {
+            message_id: task.parent_message_id.clone(),
+            turn_id: detail_string(&task.detail, "parent_turn_id"),
+            work_item_id: task.work_item_id.clone(),
+            task_id: Some(task.id.clone()),
+            correlation_id: detail_string(&task.detail, "correlation_id"),
+            causation_id: detail_string(&task.detail, "causation_id"),
+            ..RuntimeErrorContext::default()
+        },
         metadata,
     })
 }

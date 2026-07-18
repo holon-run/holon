@@ -4770,6 +4770,10 @@ fn cursor_not_found_detection_uses_typed_http_error() {
         message: "cursor evt_123 was not found".into(),
         code: Some("cursor_not_found".into()),
         hint: None,
+        domain: None,
+        retryable: None,
+        context: Default::default(),
+        correlation: Default::default(),
     };
     let err = anyhow::Error::new(err);
     assert!(is_cursor_not_found_error(&err));

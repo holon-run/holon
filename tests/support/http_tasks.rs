@@ -364,6 +364,11 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    let missing: serde_json::Value = missing.json().await?;
+    assert_eq!(missing["code"], "task_not_found");
+    assert_eq!(missing["domain"], "not_found");
+    assert_eq!(missing["retryable"], false);
+    assert_eq!(missing["context"]["task_id"], "missing-task");
 
     server.abort();
     Ok(())
@@ -538,6 +543,11 @@ pub async fn work_item_routes_list_and_return_work_item_detail() -> Result<()> {
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    let missing: serde_json::Value = missing.json().await?;
+    assert_eq!(missing["code"], "work_item_not_found");
+    assert_eq!(missing["domain"], "not_found");
+    assert_eq!(missing["retryable"], false);
+    assert_eq!(missing["context"]["work_item_id"], "missing-work");
 
     server.abort();
     Ok(())

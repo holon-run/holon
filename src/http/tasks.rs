@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_error::RuntimeError;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ToolExecutionArtifactContent {
@@ -44,7 +45,7 @@ pub async fn task_status(
         .map_err(error_response)?
         .is_some_and(|task| task.agent_id == agent_id)
     {
-        return Err(not_found(format!("task {task_id} not found")));
+        return Err(task_not_found_response(&task_id));
     }
     let snapshot = runtime
         .managed_tasks()
@@ -72,7 +73,7 @@ pub async fn task_output(
         .map_err(error_response)?
         .is_some_and(|task| task.agent_id == agent_id)
     {
-        return Err(not_found(format!("task {task_id} not found")));
+        return Err(task_not_found_response(&task_id));
     }
     let output = runtime
         .managed_tasks()
@@ -201,7 +202,7 @@ pub async fn task_input(
         .map_err(error_response)?
         .is_some_and(|task| task.agent_id == agent_id)
     {
-        return Err(not_found(format!("task {task_id} not found")));
+        return Err(task_not_found_response(&task_id));
     }
     let authority_class = request
         .authority_class
@@ -232,7 +233,7 @@ pub async fn task_stop(
         .map_err(error_response)?
         .is_some_and(|task| task.agent_id == agent_id)
     {
-        return Err(not_found(format!("task {task_id} not found")));
+        return Err(task_not_found_response(&task_id));
     }
     let authority_class = request
         .authority_class
@@ -555,7 +556,14 @@ pub async fn work_item(
         .into_iter()
         .find(|item| item.id == work_item_id && item.agent_id == agent_id)
     else {
-        return Err(not_found(format!("work item {work_item_id} not found")));
+        return Err(error_response(
+            RuntimeError::not_found(
+                "work_item_not_found",
+                format!("work item {work_item_id} not found"),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .into(),
+        ));
     };
     Ok(Json(work_item))
 }
@@ -597,7 +605,11 @@ pub async fn timer(
         .map_err(error_response)?
         .filter(|timer| timer.agent_id == agent_id)
     else {
-        return Err(not_found(format!("timer {timer_id} not found")));
+        return Err(error_response(
+            RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))
+                .with_safe_context("timer_id", timer_id)
+                .into(),
+        ));
     };
     Ok(Json(timer))
 }
@@ -675,12 +687,13 @@ pub async fn cancel_timer(
 }
 
 fn timer_lifecycle_error(err: anyhow::Error) -> (StatusCode, Json<Value>) {
-    let message = err.to_string();
-    if message.starts_with("timer ") && message.ends_with(" not found") {
-        not_found(message)
-    } else if message.starts_with("cannot ") {
-        bad_request(message)
-    } else {
-        error_response(err)
-    }
+    error_response(err)
+}
+
+fn task_not_found_response(task_id: &str) -> (StatusCode, Json<Value>) {
+    error_response(
+        RuntimeError::not_found("task_not_found", format!("task {task_id} not found"))
+            .with_safe_context("task_id", task_id)
+            .into(),
+    )
 }

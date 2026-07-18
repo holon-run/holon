@@ -1693,7 +1693,10 @@ impl TurnExecution<'_> {
                         authority_class: authority_class.clone(),
                         status: crate::types::ToolExecutionStatus::Error,
                         input: call.input.clone(),
-                        output: serde_json::json!({ "error": audit_error }),
+                        output: serde_json::json!({
+                            "error": audit_error,
+                            "tool_error": &error,
+                        }),
                         summary: format!("Failed: {tool_name} not exposed for round"),
                         invocation_surface: None,
                     };
@@ -1956,7 +1959,10 @@ impl TurnExecution<'_> {
                             authority_class: authority_class.clone(),
                             status: crate::types::ToolExecutionStatus::Error,
                             input: call.input.clone(),
-                            output: serde_json::json!({ "error": audit_error }),
+                            output: serde_json::json!({
+                                "error": audit_error,
+                                "tool_error": &error,
+                            }),
                             summary: format!("Failed: {tool_name}"),
                             invocation_surface: None,
                         };

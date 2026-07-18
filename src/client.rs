@@ -20,6 +20,7 @@ use crate::{
     },
     http_dto::AgentStateSnapshotDto,
     model_catalog::BuiltInModelMetadata,
+    runtime_error::{RuntimeErrorContext, RuntimeErrorDomain},
     system::ExecutionSnapshot,
     types::{
         AgentListEntry, AgentSummary, AuthorityClass, BriefRecord, ExternalTriggerStateSnapshot,
@@ -220,6 +221,10 @@ pub struct LocalHttpError {
     pub message: String,
     pub code: Option<String>,
     pub hint: Option<String>,
+    pub domain: Option<RuntimeErrorDomain>,
+    pub retryable: Option<bool>,
+    pub context: std::collections::BTreeMap<String, String>,
+    pub correlation: RuntimeErrorContext,
 }
 
 impl LocalHttpError {
@@ -1393,6 +1398,14 @@ struct ErrorPayload {
     code: Option<String>,
     #[serde(default)]
     hint: Option<String>,
+    #[serde(default)]
+    domain: Option<RuntimeErrorDomain>,
+    #[serde(default)]
+    retryable: Option<bool>,
+    #[serde(default)]
+    context: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    correlation: RuntimeErrorContext,
 }
 
 fn event_stream_path(agent_id: &str, request: &EventStreamRequest) -> Result<String> {
@@ -1600,12 +1613,26 @@ fn decode_or_error(status_code: u16, body: Vec<u8>, path: &str) -> Result<Vec<u8
         .unwrap_or_else(|| String::from_utf8_lossy(&body).trim().to_string());
     let code = payload.as_ref().and_then(|value| value.code.clone());
     let hint = payload.as_ref().and_then(|value| value.hint.clone());
+    let domain = payload.as_ref().and_then(|value| value.domain);
+    let retryable = payload.as_ref().and_then(|value| value.retryable);
+    let context = payload
+        .as_ref()
+        .map(|value| value.context.clone())
+        .unwrap_or_default();
+    let correlation = payload
+        .as_ref()
+        .map(|value| value.correlation.clone())
+        .unwrap_or_default();
     Err(LocalHttpError {
         path: path.to_string(),
         status_code,
         message,
         code,
         hint,
+        domain,
+        retryable,
+        context,
+        correlation,
     }
     .into())
 }
@@ -1690,6 +1717,7 @@ mod tests {
         EventStreamRequest, EventStreamTransport, LocalEventStream, LocalHttpError,
         StreamEventEnvelope, TuiNetworkPolicy, TUI_LOCAL_NETWORK_POLICY, TUI_REMOTE_NETWORK_POLICY,
     };
+    use crate::runtime_error::RuntimeErrorDomain;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -1753,6 +1781,23 @@ mod tests {
         assert!(rendered.contains("agent default is stopped; start first"));
         assert!(rendered.contains("[agent_stopped]"));
         assert!(rendered.contains("Hint: start with `holon agent start default`"));
+    }
+
+    #[test]
+    fn decode_or_error_reads_runtime_taxonomy_and_correlation() {
+        let err = decode_or_error(
+            404,
+            br#"{"ok":false,"error":"task task_123 not found","code":"task_not_found","domain":"not_found","retryable":false,"context":{"task_id":"task_123"},"correlation":{"message_id":"msg_123","turn_id":"turn_123"}}"#.to_vec(),
+            "/agents/default/tasks/task_123",
+        )
+        .unwrap_err();
+        let typed = err.downcast_ref::<LocalHttpError>().unwrap();
+
+        assert_eq!(typed.domain, Some(RuntimeErrorDomain::NotFound));
+        assert_eq!(typed.retryable, Some(false));
+        assert_eq!(typed.context["task_id"], "task_123");
+        assert_eq!(typed.correlation.message_id.as_deref(), Some("msg_123"));
+        assert_eq!(typed.correlation.turn_id.as_deref(), Some("turn_123"));
     }
 
     #[test]

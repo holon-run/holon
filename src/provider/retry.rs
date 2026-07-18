@@ -44,6 +44,7 @@ pub(crate) struct ProviderFailureClassification {
 #[error("{message}")]
 pub(crate) struct ProviderTransportError {
     pub classification: ProviderFailureClassification,
+    pub code: Option<String>,
     pub status: Option<u16>,
     pub diagnostics: Option<ProviderTransportDiagnostics>,
     message: String,
@@ -119,8 +120,19 @@ pub(crate) fn provider_transport_error(
     diagnostics: Option<ProviderTransportDiagnostics>,
     message: impl Into<String>,
 ) -> anyhow::Error {
+    provider_transport_error_with_code(classification, None, status, diagnostics, message)
+}
+
+pub(crate) fn provider_transport_error_with_code(
+    classification: ProviderFailureClassification,
+    code: Option<&str>,
+    status: Option<u16>,
+    diagnostics: Option<ProviderTransportDiagnostics>,
+    message: impl Into<String>,
+) -> anyhow::Error {
     ProviderTransportError {
         classification,
+        code: code.map(ToString::to_string),
         status,
         diagnostics,
         message: message.into(),

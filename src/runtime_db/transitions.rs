@@ -17,6 +17,7 @@ use crate::{
         },
         RuntimeDb, RuntimeIndexChange,
     },
+    runtime_error::RuntimeError,
     types::{
         AgentState, AuditEvent, QueueEntryRecord, TaskRecord, TranscriptEntry, WaitConditionRecord,
         WorkItemContinuationFrame, WorkItemRecord, WorkItemState,
@@ -490,19 +491,34 @@ fn validate_focus_target_tx(tx: &Transaction<'_>, state: &AgentState) -> Result<
         )
         .optional()?;
     let Some((owner_agent_id, payload_json)) = target else {
-        return Err(anyhow!(
-            "cannot focus missing work item {work_item_id} for agent {}",
-            state.id
-        ));
+        return Err(RuntimeError::not_found(
+            "work_item_not_found",
+            format!(
+                "cannot focus missing work item {work_item_id} for agent {}",
+                state.id
+            ),
+        )
+        .with_safe_context("work_item_id", work_item_id)
+        .with_safe_context("agent_id", &state.id)
+        .into());
     };
     let record: WorkItemRecord = serde_json::from_str(&payload_json)?;
     if owner_agent_id != state.id || record.agent_id != state.id {
-        return Err(anyhow!(
-            "cannot focus work item {work_item_id} owned by another agent"
-        ));
+        return Err(RuntimeError::policy(
+            "work_item_access_denied",
+            format!("cannot focus work item {work_item_id} owned by another agent"),
+        )
+        .with_safe_context("work_item_id", work_item_id)
+        .with_safe_context("agent_id", &state.id)
+        .into());
     }
     if record.state != WorkItemState::Open {
-        return Err(anyhow!("cannot focus completed work item {work_item_id}"));
+        return Err(RuntimeError::validation(
+            "work_item_completed",
+            format!("cannot focus completed work item {work_item_id}"),
+        )
+        .with_safe_context("work_item_id", work_item_id)
+        .into());
     }
     Ok(())
 }

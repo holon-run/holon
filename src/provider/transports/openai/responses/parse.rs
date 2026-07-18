@@ -290,7 +290,13 @@ fn classify_openai_streaming_error(
     let detail = code
         .map(|code| format!("{code}: {message}"))
         .unwrap_or_else(|| message.to_string());
-    provider_transport_error(classification, None, None, format!("{context}: {detail}"))
+    crate::provider::retry::provider_transport_error_with_code(
+        classification,
+        code,
+        None,
+        None,
+        format!("{context}: {detail}"),
+    )
 }
 
 fn classify_openai_incomplete_response(response: &Value) -> anyhow::Error {

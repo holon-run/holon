@@ -97,6 +97,10 @@ impl RuntimeDbRetryableError {
             source: source.to_string(),
         }
     }
+
+    pub fn operation(&self) -> &'static str {
+        self.operation
+    }
 }
 
 impl fmt::Display for RuntimeDbRetryableError {
