@@ -778,7 +778,7 @@ fn prepare_runtime_storage(
         )),
     };
 
-    let workspace_entries_complete = storage_domain_complete(&runtime_db, "workspace_entries")?;
+    let workspace_entries_complete = storage.legacy_importer().workspace_entries_complete()?;
     if let Some(workspace) = initial_workspace_entry.as_ref() {
         let known = storage.latest_workspace_entries()?;
         if !known
@@ -793,82 +793,7 @@ fn prepare_runtime_storage(
         }
     }
 
-    let recovered_agent_for_import = storage.read_legacy_agent_for_import()?;
-    if !workspace_entries_complete {
-        runtime_db
-            .workspace_entries()
-            .import_legacy(storage.read_recent_workspace_entries(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "workspace_occupancies")? {
-        runtime_db
-            .workspace_occupancies()
-            .import_legacy(storage.read_recent_workspace_occupancies(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "agent_identities")? {
-        runtime_db
-            .agent_identities()
-            .import_legacy(storage.read_recent_agent_identities(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "work_items")? {
-        let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
-        for record in &mut legacy_work_items {
-            crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
-        }
-        runtime_db.work_items().import_legacy(legacy_work_items)?;
-    }
-    if !storage_domain_complete(&runtime_db, "agent_states")? {
-        runtime_db
-            .agent_states()
-            .import_legacy(recovered_agent_for_import.clone())?;
-    }
-    if !storage_domain_complete(&runtime_db, "tasks")? {
-        runtime_db
-            .tasks()
-            .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "external_triggers")? {
-        runtime_db
-            .external_triggers()
-            .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "wait_conditions")? {
-        runtime_db
-            .wait_conditions()
-            .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "queue_entries")? {
-        runtime_db
-            .queue_entries()
-            .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "timers")? {
-        runtime_db
-            .timers()
-            .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "messages")? {
-        runtime_db
-            .messages()
-            .import_legacy(storage.read_all_message_values()?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "transcript_entries")? {
-        runtime_db
-            .transcript_entries()
-            .import_legacy(storage.read_all_transcript()?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "work_item_delegations")? {
-        runtime_db
-            .work_item_delegations()
-            .import_legacy(storage.read_recent_work_item_delegations(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "work_item_continuations")? {
-        runtime_db.work_item_continuations().import_empty()?;
-    }
-    if !storage_domain_complete(&runtime_db, "context_episode_anchors")? {
-        runtime_db
-            .context_episodes()
-            .import_legacy(storage.read_recent_context_episodes(usize::MAX)?)?;
-    }
+    storage.legacy_importer().import_runtime_domains()?;
 
     let snapshot = storage.recovery_snapshot(&agent_id)?;
     let mut queue = RuntimeQueue::default();
@@ -991,37 +916,9 @@ fn prepare_runtime_storage(
         },
     );
     storage.write_agent(&state)?;
-    let turn_records_complete = storage_domain_complete(&runtime_db, "turn_records")?;
-    let evidence_complete = storage_domain_complete(&runtime_db, "evidence")?;
-    let legacy_messages =
-        (!turn_records_complete || !evidence_complete).then(|| storage.read_all_message_values());
-    let legacy_messages = legacy_messages.transpose()?;
-    if !turn_records_complete {
-        runtime_db.turn_records().import_legacy(
-            legacy_messages.clone().unwrap_or_default(),
-            storage.read_recent_tool_executions(usize::MAX)?,
-            storage.read_recent_briefs(usize::MAX)?,
-            storage.read_recent_delivery_summaries(usize::MAX)?,
-            storage.read_recent_wait_conditions(usize::MAX)?,
-        )?;
-    }
-    if !evidence_complete {
-        runtime_db.evidence().import_legacy(
-            legacy_messages.unwrap_or_default(),
-            storage.read_all_transcript()?,
-            storage.read_recent_tool_executions(usize::MAX)?,
-            storage.read_recent_briefs(usize::MAX)?,
-            storage.read_recent_delivery_summaries(usize::MAX)?,
-        )?;
-    }
-    if !storage_domain_complete(&runtime_db, "audit_events")? {
-        runtime_db
-            .audit_events()
-            .import_legacy(Some(&state.id), Vec::new())?;
-    }
-    runtime_db.validate_expected_storage_domains(
-        crate::runtime_db::RuntimeDb::expected_storage_domains(),
-    )?;
+    storage
+        .legacy_importer()
+        .import_derived_domains(&state.id)?;
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
     let projection_cache = AgentRuntimeProjectionCache::rebuild(
         state.id.clone(),
@@ -1044,14 +941,6 @@ fn prepare_runtime_storage(
         active_timers: snapshot.active_timers,
         projection_cache,
     })
-}
-
-fn storage_domain_complete(runtime_db: &RuntimeDb, domain: &str) -> Result<bool> {
-    let expected = RuntimeDb::expected_storage_domains()
-        .iter()
-        .find(|expected| expected.domain == domain)
-        .ok_or_else(|| anyhow!("unknown runtime storage domain {domain}"))?;
-    runtime_db.storage_domain_is_complete(expected.domain, expected.canonical_source)
 }
 
 fn visual_observation_response_format() -> ProviderResponseFormatRequest {
