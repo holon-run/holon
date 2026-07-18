@@ -38,6 +38,7 @@ mod index_outbox;
 mod memory;
 mod read_models;
 mod recovery;
+mod store;
 mod work_queue;
 
 pub use activity::{FileActivityMarker, PollActivityMarker};
@@ -46,9 +47,8 @@ pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAudi
 pub use index_outbox::RuntimeIndexOutbox;
 pub use read_models::RuntimeReadModels;
 pub use recovery::RecoverySnapshot;
+pub use store::RuntimeStore;
 pub use work_queue::{WorkItemCandidateClass, WorkItemSchedulingProjection, WorkQueueReadModel};
-
-// Re-import submodule functions so existing impl AppStorage method bodies compile unchanged.
 
 /// Truncate a descending-ordered Vec to `limit` items and reverse to ascending order.
 fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
@@ -62,17 +62,13 @@ fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
     records_desc
 }
 
-use recovery::external_wait_recoverability_event;
 #[derive(Debug, Clone)]
 pub struct AppStorage {
     data_dir: PathBuf,
     agent_id: Option<String>,
-    read_only: bool,
     agent_path: PathBuf,
-    append_mutex: Arc<Mutex<()>>,
     runtime_db: RuntimeDb,
-    event_log: RuntimeEventLog,
-    index_outbox: RuntimeIndexOutbox,
+    store: RuntimeStore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,24 +215,21 @@ impl AppStorage {
             shared_indexes_dir_for(&data_dir),
             append_mutex.clone(),
         );
-        Ok(Self {
-            agent_id,
+        let store = RuntimeStore::new(
+            runtime_db.clone(),
+            agent_id.clone(),
             read_only,
-            agent_path: state_dir.join("agent.json"),
             append_mutex,
-            runtime_db,
             event_log,
             index_outbox,
+        );
+        Ok(Self {
+            agent_id,
+            agent_path: state_dir.join("agent.json"),
+            runtime_db,
+            store,
             data_dir,
         })
-    }
-
-    fn ensure_writable(&self) -> Result<()> {
-        anyhow::ensure!(
-            !self.read_only,
-            "cannot write through read-only runtime storage"
-        );
-        Ok(())
     }
 
     pub(crate) fn enable_audit_event_index(
@@ -244,38 +237,39 @@ impl AppStorage {
         runtime_db: RuntimeDb,
         agent_id: Option<String>,
     ) -> Result<()> {
-        self.event_log
+        self.store
+            .event_log()
             .enable_audit_event_index(runtime_db, agent_id)
     }
 
     pub(crate) fn enable_event_bus(&self, event_bus: EventBus) -> Result<()> {
-        self.event_log.enable_event_bus(event_bus)
+        self.store.event_log().enable_event_bus(event_bus)
     }
 
     /// Attach a shared memory-index notify so the daemon-level indexer is
     /// woken immediately after new evidence is enqueued for indexing.
     pub(crate) fn enable_memory_index_notify(&self, notify: Arc<Notify>) -> Result<()> {
-        self.index_outbox.enable_notify(notify)
+        self.store.index_outbox().enable_notify(notify)
     }
 
     pub(crate) fn subscribe_events(
         &self,
     ) -> Result<Option<tokio::sync::broadcast::Receiver<PublishedAuditEvent>>> {
-        self.event_log.subscribe()
+        self.store.event_log().subscribe()
     }
 
     pub(crate) fn publish_transition_events(
         &self,
         effects: &PostCommitEffects,
     ) -> Vec<PostCommitWarning> {
-        self.event_log.publish_transition_events(effects)
+        self.store.publish_transition_events(effects)
     }
 
     pub(crate) fn notify_transition_memory_index(
         &self,
         effects: &PostCommitEffects,
     ) -> Vec<PostCommitWarning> {
-        self.index_outbox.notify_transition(effects)
+        self.store.notify_transition_memory_index(effects)
     }
 
     pub(crate) fn current_agent_id(&self) -> Result<Option<String>> {
@@ -321,11 +315,15 @@ impl AppStorage {
     }
 
     pub fn event_log(&self) -> RuntimeEventLog {
-        self.event_log.clone()
+        self.store.event_log()
     }
 
     pub fn index_outbox(&self) -> RuntimeIndexOutbox {
-        self.index_outbox.clone()
+        self.store.index_outbox()
+    }
+
+    pub fn store(&self) -> RuntimeStore {
+        self.store.clone()
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
@@ -334,7 +332,7 @@ impl AppStorage {
             briefs: empty.clone(),
             tasks: self.tasks_activity_marker()?,
             tools: empty.clone(),
-            events: self.event_log.activity_marker()?,
+            events: self.store.event_log().activity_marker()?,
             transcript: empty,
         })
     }
@@ -352,62 +350,27 @@ impl AppStorage {
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
-        self.event_log.append(event)
+        self.store.event_log().append(event)
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_brief(brief)?;
-        runtime_db
-            .evidence()
-            .append_brief_with_index_changes(brief, &changes)?;
-        self.enqueue_memory_index_brief_best_effort(brief)
+        self.store.append_brief(brief)
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        self.ensure_writable()?;
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_message(message)?;
-        let message = runtime_db
-            .messages()
-            .append_with_index_changes(message, &changes)?;
-        self.enqueue_memory_index_message_best_effort(&message)
+        self.store.append_message(message)
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_task(task)?;
-        runtime_db
-            .tasks()
-            .upsert_with_index_changes(task, &changes)?;
-        self.enqueue_memory_index_task_best_effort(task)
+        self.store.append_task(task)
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
-        self.ensure_writable()?;
-        if self.runtime_db.work_items().latest(&record.id)?.is_some() {
-            let expected_revision = record.revision.checked_sub(1).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "work item {} update has invalid revision {}",
-                    record.id,
-                    record.revision
-                )
-            })?;
-            self.update_work_item_expected(record, expected_revision)?;
-        } else {
-            self.insert_work_item(record)?;
-        }
-        Ok(())
+        self.store.append_work_item(record)
     }
 
     pub fn insert_work_item(&self, record: &WorkItemRecord) -> Result<()> {
-        self.ensure_writable()?;
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_work_item(record)?;
-        runtime_db
-            .work_items()
-            .insert_new_with_index_changes(record, &changes)?;
-        self.enqueue_memory_index_work_item_best_effort(record)
+        self.store.insert_work_item(record)
     }
 
     pub fn update_work_item_expected(
@@ -415,252 +378,108 @@ impl AppStorage {
         record: &WorkItemRecord,
         expected_revision: u64,
     ) -> Result<()> {
-        self.ensure_writable()?;
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_work_item(record)?;
-        runtime_db.work_items().update_expected_with_index_changes(
-            record,
-            expected_revision,
-            &changes,
-        )?;
-        self.enqueue_memory_index_work_item_best_effort(record)
+        self.store
+            .update_work_item_expected(record, expected_revision)
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.evidence().append_delivery_summary(record)?;
-        return Ok(());
+        self.store.append_delivery_summary(record)
     }
 
     pub fn append_work_item_delegation(&self, record: &WorkItemDelegationRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.work_item_delegations().upsert(record)?;
-        return Ok(());
+        self.store.append_work_item_delegation(record)
     }
 
     pub fn append_work_item_continuation(&self, record: &WorkItemContinuationFrame) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.work_item_continuations().upsert(record)?;
-        return Ok(());
+        self.store.append_work_item_continuation(record)
     }
 
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.timers().upsert(timer)?;
-        return Ok(());
+        self.store.append_timer(timer)
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_tool_execution(record)?;
-        runtime_db
-            .evidence()
-            .append_tool_execution_with_index_changes(record, &changes)?;
-        self.enqueue_memory_index_tool_execution_best_effort(record)
+        self.store.append_tool_execution(record)
     }
 
     pub fn append_turn(&self, record: &TurnRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.turn_records().upsert(record)?;
-        return Ok(());
+        self.store.append_turn(record)
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.ensure_writable()?;
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.transcript_entries().append(entry)?;
-        return Ok(());
+        self.store.append_transcript_entry(entry)
     }
 
     pub fn append_queue_entry(&self, record: &QueueEntryRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.queue_entries().upsert(record)?;
-        return Ok(());
+        self.store.append_queue_entry(record)
     }
 
     pub fn try_claim_queued_message(&self, record: &QueueEntryRecord) -> Result<bool> {
-        let runtime_db = self.runtime_db.clone();
-        return runtime_db.queue_entries().try_claim_queued_message(record);
+        self.store.try_claim_queued_message(record)
     }
 
     pub fn append_wait_condition(&self, record: &WaitConditionRecord) -> Result<()> {
-        let event = external_wait_recoverability_event(record);
-
-        let _guard = self
-            .append_mutex
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.wait_conditions().upsert(record)?;
-        if let Some(event) = event.as_ref() {
-            self.event_log.append_with_append_mutex_held(event)?;
-        }
-        return Ok(());
+        self.store.append_wait_condition(record)
     }
 
     pub fn append_external_trigger(&self, record: &ExternalTriggerRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.external_triggers().upsert(record)?;
-        Ok(())
+        self.store.append_external_trigger(record)
     }
 
     pub fn append_operator_notification(&self, record: &OperatorNotificationRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let agent_id = self.current_agent_id()?.ok_or_else(|| {
-            anyhow::anyhow!("agent_id is required for operator_notification persistence")
-        })?;
-        runtime_db
-            .operator_notifications()
-            .insert(&agent_id, record)
+        self.store.append_operator_notification(record)
     }
 
     pub fn append_operator_transport_binding(
         &self,
         record: &OperatorTransportBinding,
     ) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let agent_id = self.current_agent_id()?.ok_or_else(|| {
-            anyhow::anyhow!("agent_id is required for operator_transport_binding persistence")
-        })?;
-        runtime_db
-            .operator_transport_bindings()
-            .upsert(&agent_id, record)
+        self.store.append_operator_transport_binding(record)
     }
 
     pub fn append_operator_delivery_record(&self, record: &OperatorDeliveryRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let agent_id = self.current_agent_id()?.ok_or_else(|| {
-            anyhow::anyhow!("agent_id is required for operator_delivery_record persistence")
-        })?;
-        runtime_db
-            .operator_delivery_records()
-            .upsert(&agent_id, record)
+        self.store.append_operator_delivery_record(record)
     }
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_context_episode(record)?;
-        runtime_db
-            .context_episodes()
-            .upsert_with_index_changes(record, &changes)?;
-        self.enqueue_memory_index_context_episode_best_effort(record)
+        self.store.append_context_episode(record)
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        let changes = self.index_changes_for_workspace_entry(entry)?;
-        runtime_db
-            .workspace_entries()
-            .upsert_with_index_changes(entry, &changes)?;
-        self.enqueue_memory_index_workspace_entry_best_effort(entry)
+        self.store.append_workspace_entry(entry)
     }
 
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.workspace_occupancies().upsert(entry)?;
-        Ok(())
+        self.store.append_workspace_occupancy(entry)
     }
 
     pub fn append_agent_identity(&self, entry: &AgentIdentityRecord) -> Result<()> {
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.agent_identities().upsert(entry)
+        self.store.append_agent_identity(entry)
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
-        self.index_outbox.mark_dirty()
-    }
-
-    fn index_changes_for_brief(&self, brief: &BriefRecord) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(self.index_outbox.changes_for_brief(brief))
-    }
-
-    fn index_changes_for_message(
-        &self,
-        message: &MessageEnvelope,
-    ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(self.index_outbox.changes_for_message(message))
+        self.store.index_outbox().mark_dirty()
     }
 
     pub(crate) fn index_changes_for_task(
         &self,
         task: &TaskRecord,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(self.index_outbox.changes_for_task(task))
+        Ok(self.store.index_changes_for_task(task))
     }
 
     pub(crate) fn index_changes_for_work_item(
         &self,
         record: &WorkItemRecord,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(self.index_outbox.changes_for_work_item(record))
+        Ok(self.store.index_changes_for_work_item(record))
     }
 
     pub(crate) fn wait_condition_auxiliary_events(
         &self,
         record: &WaitConditionRecord,
     ) -> Vec<AuditEvent> {
-        external_wait_recoverability_event(record)
-            .into_iter()
-            .collect()
-    }
-
-    fn index_changes_for_context_episode(
-        &self,
-        record: &ContextEpisodeRecord,
-    ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(self.index_outbox.changes_for_context_episode(record))
-    }
-
-    fn index_changes_for_workspace_entry(
-        &self,
-        entry: &WorkspaceEntry,
-    ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(self.index_outbox.changes_for_workspace_entry(entry))
-    }
-
-    fn index_changes_for_tool_execution(
-        &self,
-        record: &ToolExecutionRecord,
-    ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(self.index_outbox.changes_for_tool_execution(record))
-    }
-
-    fn enqueue_memory_index_brief_best_effort(&self, brief: &BriefRecord) -> Result<()> {
-        self.index_outbox.enqueue_brief_best_effort(brief)
-    }
-
-    fn enqueue_memory_index_message_best_effort(&self, message: &MessageEnvelope) -> Result<()> {
-        self.index_outbox.enqueue_message_best_effort(message)
-    }
-
-    fn enqueue_memory_index_task_best_effort(&self, task: &TaskRecord) -> Result<()> {
-        self.index_outbox.enqueue_task_best_effort(task)
-    }
-
-    fn enqueue_memory_index_work_item_best_effort(&self, record: &WorkItemRecord) -> Result<()> {
-        self.index_outbox.enqueue_work_item_best_effort(record)
-    }
-
-    fn enqueue_memory_index_context_episode_best_effort(
-        &self,
-        record: &ContextEpisodeRecord,
-    ) -> Result<()> {
-        self.index_outbox
-            .enqueue_context_episode_best_effort(record)
-    }
-
-    fn enqueue_memory_index_workspace_entry_best_effort(
-        &self,
-        entry: &WorkspaceEntry,
-    ) -> Result<()> {
-        self.index_outbox.enqueue_workspace_entry_best_effort(entry)
-    }
-
-    fn enqueue_memory_index_tool_execution_best_effort(
-        &self,
-        record: &ToolExecutionRecord,
-    ) -> Result<()> {
-        self.index_outbox.enqueue_tool_execution_best_effort(record)
+        self.store.wait_condition_auxiliary_events(record)
     }
 
     fn storage_agent_id(&self) -> Result<String> {
@@ -670,18 +489,7 @@ impl AppStorage {
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
-        self.ensure_writable()?;
-        if let Some(storage_agent_id) = self.agent_id.as_deref() {
-            anyhow::ensure!(
-                agent.id == storage_agent_id,
-                "agent-scoped storage for `{}` cannot write agent state for `{}`",
-                storage_agent_id,
-                agent.id
-            );
-        }
-        let runtime_db = self.runtime_db.clone();
-        runtime_db.agent_states().upsert(agent)?;
-        return Ok(());
+        self.store.write_agent(agent)
     }
 
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
@@ -708,15 +516,15 @@ impl AppStorage {
     }
 
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
-        self.event_log.recent(limit)
+        self.store.event_log().recent(limit)
     }
 
     pub fn latest_event_seq(&self) -> Result<Option<u64>> {
-        self.event_log.latest_seq()
+        self.store.event_log().latest_seq()
     }
 
     pub fn event_log_epoch(&self) -> Result<String> {
-        self.event_log.epoch()
+        self.store.event_log().epoch()
     }
 
     pub(crate) fn read_event_page_matching<F>(
@@ -730,7 +538,8 @@ impl AppStorage {
     where
         F: FnMut(&AuditEvent) -> bool,
     {
-        self.event_log
+        self.store
+            .event_log()
             .page_matching(before_seq, after_seq, limit, order, matches)
     }
 
@@ -1510,10 +1319,28 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            index_outbox.changes_for_brief(&brief),
-            storage.index_changes_for_brief(&brief).unwrap()
-        );
+        let expected_changes = index_outbox.changes_for_brief(&brief);
+        storage.append_brief(&brief).unwrap();
+        let persisted_changes = storage
+            .runtime_db()
+            .unwrap()
+            .unwrap()
+            .runtime_index_outbox()
+            .read_after("agent-test", 0, 10)
+            .unwrap();
+        assert_eq!(persisted_changes.len(), expected_changes.len());
+        for (persisted, expected) in persisted_changes.iter().zip(expected_changes.iter()) {
+            assert_eq!(persisted.agent_id, expected.agent_id);
+            assert_eq!(persisted.source_kind, expected.source_kind);
+            assert_eq!(persisted.source_id, expected.source_id);
+            assert_eq!(persisted.source_ref, expected.source_ref);
+            assert_eq!(persisted.operation, expected.operation);
+            assert_eq!(
+                persisted.source_updated_at,
+                expected.source_updated_at.map(truncate_to_millis)
+            );
+            assert_eq!(persisted.reason.as_deref(), Some(expected.reason.as_str()));
+        }
 
         let notify = Arc::new(Notify::new());
         storage.enable_memory_index_notify(notify.clone()).unwrap();
