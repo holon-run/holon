@@ -122,7 +122,7 @@ export function AgentOverviewPanel({
       <CollapsibleInspectorCard
         title={t("rightPanel.agent")}
         summary={t("rightPanel.lifecycle", { value: agent.lifecycle })}
-        badge={<StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} />}
+        badge={<StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} spinIcon />}
       >
         <h2>{agent.id}</h2>
         <dl className="inspector-facts">
@@ -317,7 +317,7 @@ export function AgentOverviewPanel({
                   <button type="button" className="inspector-list-item task-button" onClick={() => onOpenTask(task)}>
                     <div className="inspector-list-head">
                     <strong>{task.summary}</strong>
-                    <StatusBadge className="state-chip" kind="connection" value={task.status} />
+                    <StatusBadge className="state-chip" kind="connection" value={task.status} spinIcon />
                     </div>
                     <small>{compactMeta([task.kind, task.command, task.workdir])}</small>
                   </button>
@@ -497,7 +497,7 @@ function WorkItemCard({
     >
       <div className="inspector-list-head">
         <strong>{workItem.objective}</strong>
-        <StatusBadge className="state-chip" kind="work" value={workItem.state} />
+        <StatusBadge className="state-chip" kind="work" value={workItem.state} spinIcon />
       </div>
       <small>{compactMeta([workItem.current ? t("status.current") : undefined, workItem.planStatus])}</small>
       <code>{workItem.id}</code>
@@ -513,7 +513,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
     <article className="work-item-detail inspector-list-item featured">
       <div className="inspector-list-head">
         <strong>{t("panel.details")}</strong>
-        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}
+        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" spinIcon /> : null}
       </div>
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
@@ -577,7 +577,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
               <li key={`${item.state}-${index}`}>
                 <div className="inspector-list-head">
                   <strong>{item.text}</strong>
-                  <StatusBadge className="state-chip" kind="work" value={item.state} />
+                  <StatusBadge className="state-chip" kind="work" value={item.state} spinIcon />
                 </div>
               </li>
             ))}
@@ -592,7 +592,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
               <li key={`${ref.kind}-${ref.ref}`}>
                 <div className="inspector-list-head">
                   <strong>{ref.title ?? ref.ref}</strong>
-                  <StatusBadge className="state-chip" kind="connection" value={ref.status ?? ref.kind} />
+                  <StatusBadge className="state-chip" kind="connection" value={ref.status ?? ref.kind} spinIcon />
                 </div>
                 <small>{compactMeta([ref.kind, ref.reason])}</small>
                 <code>{ref.ref}</code>
@@ -618,8 +618,8 @@ export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; deta
     <article className="task-detail inspector-list-item featured">
       <div className="inspector-list-head">
         <strong>{summary || t("inspector.taskOutput")}</strong>
-        <StatusBadge className="state-chip" kind="connection" value={status} />
-        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}
+        <StatusBadge className="state-chip" kind="connection" value={status} spinIcon />
+        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" spinIcon /> : null}
       </div>
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
@@ -690,7 +690,7 @@ export function ToolExecutionDetailPanel({
       ) : null}
       <div className="inspector-list-head">
         <strong>{toolName ?? record?.tool_name ?? t("inspector.toolExecution")}</strong>
-        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" /> : null}
+        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" spinIcon /> : null}
       </div>
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       <dl className="inspector-facts">
