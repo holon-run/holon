@@ -35,6 +35,7 @@ const RUNTIME_CACHE_DIR: &str = "cache";
 mod activity;
 mod events;
 mod index_outbox;
+mod legacy;
 mod memory;
 mod read_models;
 mod recovery;
@@ -45,6 +46,7 @@ pub use activity::{FileActivityMarker, PollActivityMarker};
 pub use events::RuntimeEventLog;
 pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
 pub use index_outbox::RuntimeIndexOutbox;
+pub(crate) use legacy::LegacyImporter;
 pub use read_models::RuntimeReadModels;
 pub use recovery::RecoverySnapshot;
 pub use store::RuntimeStore;
@@ -66,7 +68,6 @@ fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
 pub struct AppStorage {
     data_dir: PathBuf,
     agent_id: Option<String>,
-    agent_path: PathBuf,
     runtime_db: RuntimeDb,
     store: RuntimeStore,
 }
@@ -225,7 +226,6 @@ impl AppStorage {
         );
         Ok(Self {
             agent_id,
-            agent_path: state_dir.join("agent.json"),
             runtime_db,
             store,
             data_dir,
@@ -324,6 +324,10 @@ impl AppStorage {
 
     pub fn store(&self) -> RuntimeStore {
         self.store.clone()
+    }
+
+    pub(crate) fn legacy_importer(&self) -> LegacyImporter<'_> {
+        LegacyImporter::new(self)
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
@@ -498,21 +502,6 @@ impl AppStorage {
             return runtime_db.agent_states().latest(&agent_id);
         }
         return Ok(None);
-    }
-
-    pub(crate) fn read_legacy_agent_for_import(&self) -> Result<Option<AgentState>> {
-        self.read_agent_file()
-    }
-
-    fn read_agent_file(&self) -> Result<Option<AgentState>> {
-        let path = if self.agent_path.exists() {
-            &self.agent_path
-        } else {
-            return Ok(None);
-        };
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        Ok(Some(serde_json::from_str(&content)?))
     }
 
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
@@ -2590,7 +2579,7 @@ mod tests {
     }
 
     #[test]
-    fn read_agent_maps_legacy_paused_status_to_stopped() {
+    fn legacy_importer_maps_paused_agent_status_to_stopped() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
@@ -2603,8 +2592,55 @@ mod tests {
         )
         .unwrap();
 
-        let restored = storage.read_legacy_agent_for_import().unwrap().unwrap();
+        assert_eq!(storage.read_agent().unwrap(), None);
+        storage.legacy_importer().import_runtime_domains().unwrap();
+        let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
+    }
+
+    #[test]
+    fn legacy_importer_does_not_reopen_agent_file_after_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let agent_path = dir.path().join(".holon/state/agent.json");
+        std::fs::write(
+            &agent_path,
+            serde_json::to_string_pretty(&AgentState::new("default")).unwrap(),
+        )
+        .unwrap();
+
+        storage.legacy_importer().import_runtime_domains().unwrap();
+        std::fs::write(&agent_path, "{ invalid legacy state").unwrap();
+
+        storage.legacy_importer().import_runtime_domains().unwrap();
+        assert_eq!(
+            storage.read_agent().unwrap().map(|agent| agent.id),
+            Some("default".into())
+        );
+    }
+
+    #[test]
+    fn legacy_importer_rejects_agent_state_outside_storage_scope() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
+        std::fs::write(
+            dir.path().join(".holon/state/agent.json"),
+            serde_json::to_string_pretty(&AgentState::new("agent-b")).unwrap(),
+        )
+        .unwrap();
+
+        let error = storage
+            .legacy_importer()
+            .import_runtime_domains()
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot import agent state for `agent-b`"),
+            "{error:#}"
+        );
+        assert_eq!(storage.read_agent().unwrap(), None);
     }
 
     #[test]

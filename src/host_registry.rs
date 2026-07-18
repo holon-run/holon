@@ -44,21 +44,7 @@ impl RuntimeRegistry {
     pub(crate) fn new(config: AppConfig, runtime_db: RuntimeDb) -> Result<Self> {
         let host_storage =
             AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
-        if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
-            runtime_db
-                .workspace_entries()
-                .import_legacy(host_storage.read_recent_workspace_entries(usize::MAX)?)?;
-        }
-        if !runtime_db.storage_domain_is_complete("workspace_occupancies", "db")? {
-            runtime_db
-                .workspace_occupancies()
-                .import_legacy(host_storage.read_recent_workspace_occupancies(usize::MAX)?)?;
-        }
-        if !runtime_db.storage_domain_is_complete("agent_identities", "db")? {
-            runtime_db
-                .agent_identities()
-                .import_legacy(host_storage.read_recent_agent_identities(usize::MAX)?)?;
-        }
+        host_storage.legacy_importer().import_host_domains()?;
         let agent_identities = host_storage
             .latest_agent_identities()?
             .into_iter()
