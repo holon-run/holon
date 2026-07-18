@@ -416,6 +416,20 @@ describe("createRuntimeClient", () => {
     });
   });
 
+  it("reports a missing message_id for an empty operator prompt response", async () => {
+    const fetchImpl = async () => new Response(null, { status: 204 });
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      token: "secret-token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.sendOperatorPrompt("agent-one", "hello")).rejects.toThrow(
+      "Operator prompt response did not include message_id.",
+    );
+  });
+
   it("fetches full tool execution detail for inspector hydration", async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL) => {
