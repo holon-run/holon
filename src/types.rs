@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::config::ModelRouteRef;
+pub use crate::domain::{agent_home_workspace_id, work_item::*, AGENT_HOME_WORKSPACE_ID};
 use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;
 use crate::runtime_error::{RuntimeErrorContext, RuntimeErrorDomain};
@@ -14,12 +15,6 @@ use crate::system::{
     ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind,
 };
 use crate::tool::ToolError;
-
-pub const AGENT_HOME_WORKSPACE_ID: &str = "agent_home";
-
-pub fn agent_home_workspace_id(agent_id: &str) -> String {
-    format!("{AGENT_HOME_WORKSPACE_ID}:{agent_id}")
-}
 
 impl<'de> Deserialize<'de> for MessageEnvelope {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -92,10 +87,6 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
 
 fn default_agent_home_workspace_id() -> String {
     AGENT_HOME_WORKSPACE_ID.to_string()
-}
-
-fn default_work_item_revision() -> u64 {
-    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3730,45 +3721,6 @@ pub struct CommandTaskSpec {
     pub terminal_reentry: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemState {
-    Open,
-    Completed,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemPlanStatus {
-    Draft,
-    Ready,
-    NeedsInput,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemReadiness {
-    Runnable,
-    Yielded,
-    WaitingForOperator,
-    Blocked,
-    Completed,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemSchedulingState {
-    Runnable,
-    YieldedToWorkItem,
-    WaitingOperator,
-    WaitingTask,
-    WaitingExternal,
-    WaitingTimer,
-    WaitingSystem,
-    Blocked,
-    Completed,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSchedulingPosture {
@@ -3804,267 +3756,6 @@ impl Default for AgentPostureProjection {
             work_item_id: None,
             task_id: None,
             run_id: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct WorkItemPlanArtifact {
-    #[serde(default)]
-    pub owner_agent_id: String,
-    #[serde(default = "default_agent_home_workspace_id")]
-    pub workspace_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
-    #[serde(default)]
-    pub relative_path: PathBuf,
-    pub path: PathBuf,
-    pub hash: String,
-    pub bytes: u64,
-    pub updated_at: DateTime<Utc>,
-    pub preview: String,
-    pub preview_complete: bool,
-}
-
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemRefKind {
-    File,
-    ToolExecution,
-    Issue,
-    Pr,
-    Url,
-    Memory,
-    Task,
-    Wait,
-    Workspace,
-    Other,
-}
-
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemRefStatus {
-    Active,
-    Resolved,
-    Stale,
-    Archived,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct WorkItemRef {
-    pub kind: WorkItemRefKind,
-    #[serde(rename = "ref")]
-    pub ref_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub reason: String,
-    pub status: WorkItemRefStatus,
-    pub last_seen_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
-    pub metadata: serde_json::Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct WorkItemRecord {
-    pub id: String,
-    #[serde(alias = "session_id")]
-    pub agent_id: String,
-    #[serde(default = "default_agent_home_workspace_id")]
-    pub workspace_id: String,
-    #[serde(default = "default_work_item_revision")]
-    pub revision: u64,
-    pub objective: String,
-    pub state: WorkItemState,
-    pub plan_status: WorkItemPlanStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_artifact: Option<WorkItemPlanArtifact>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub todo_list: Vec<TodoItem>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub work_refs: Vec<WorkItemRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blocked_by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recheck_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recheck_consumed_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_brief_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_summary: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-}
-
-impl WorkItemRecord {
-    pub fn new(
-        agent_id: impl Into<String>,
-        objective: impl Into<String>,
-        state: WorkItemState,
-    ) -> Self {
-        let now = Utc::now();
-        let agent_id = agent_id.into();
-        Self {
-            id: ids::work_item_id(),
-            workspace_id: agent_home_workspace_id(&agent_id),
-            agent_id,
-            revision: 1,
-            objective: objective.into(),
-            state,
-            plan_status: WorkItemPlanStatus::Draft,
-            plan_artifact: None,
-            todo_list: Vec::new(),
-            work_refs: Vec::new(),
-            blocked_by: None,
-            recheck_at: None,
-            recheck_consumed_at: None,
-            result_brief_id: None,
-            result_summary: None,
-            created_at: now,
-            updated_at: now,
-            turn_id: None,
-        }
-    }
-
-    pub fn readiness(&self) -> WorkItemReadiness {
-        crate::work_item_scheduling::record_only_readiness(self)
-    }
-
-    pub fn is_runnable(&self) -> bool {
-        self.readiness() == WorkItemReadiness::Runnable
-    }
-
-    pub fn is_waiting_for_operator(&self) -> bool {
-        self.readiness() == WorkItemReadiness::WaitingForOperator
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemContinuationReturnPolicy {
-    OnCompleted,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemContinuationState {
-    Active,
-    Resumed,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkItemContinuationFrame {
-    pub id: String,
-    pub agent_id: String,
-    pub suspended_work_item_id: String,
-    pub active_work_item_id: String,
-    pub return_policy: WorkItemContinuationReturnPolicy,
-    pub state: WorkItemContinuationState,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cancelled_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolution_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-}
-
-impl WorkItemContinuationFrame {
-    pub fn new_on_completed(
-        agent_id: impl Into<String>,
-        suspended_work_item_id: impl Into<String>,
-        active_work_item_id: impl Into<String>,
-        turn_id: Option<String>,
-    ) -> Self {
-        let now = Utc::now();
-        Self {
-            id: ids::work_item_continuation_id(),
-            agent_id: agent_id.into(),
-            suspended_work_item_id: suspended_work_item_id.into(),
-            active_work_item_id: active_work_item_id.into(),
-            return_policy: WorkItemContinuationReturnPolicy::OnCompleted,
-            state: WorkItemContinuationState::Active,
-            created_at: now,
-            updated_at: now,
-            resolved_at: None,
-            cancelled_at: None,
-            resolution_reason: None,
-            turn_id,
-        }
-    }
-
-    pub fn resume(mut self, reason: impl Into<String>) -> Self {
-        let now = Utc::now();
-        self.state = WorkItemContinuationState::Resumed;
-        self.updated_at = now;
-        self.resolved_at = Some(now);
-        self.cancelled_at = None;
-        self.resolution_reason = Some(reason.into());
-        self
-    }
-
-    pub fn cancel(mut self, reason: impl Into<String>) -> Self {
-        let now = Utc::now();
-        self.state = WorkItemContinuationState::Cancelled;
-        self.updated_at = now;
-        self.cancelled_at = Some(now);
-        self.resolved_at = None;
-        self.resolution_reason = Some(reason.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemDelegationState {
-    Open,
-    Completed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkItemDelegationRecord {
-    pub delegation_id: String,
-    pub parent_agent_id: String,
-    pub parent_work_item_id: String,
-    pub child_agent_id: String,
-    pub child_work_item_id: String,
-    pub state: WorkItemDelegationState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_summary: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-impl WorkItemDelegationRecord {
-    pub fn new(
-        parent_agent_id: impl Into<String>,
-        parent_work_item_id: impl Into<String>,
-        child_agent_id: impl Into<String>,
-        child_work_item_id: impl Into<String>,
-    ) -> Self {
-        let now = Utc::now();
-        Self {
-            delegation_id: ids::work_item_delegation_id(),
-            parent_agent_id: parent_agent_id.into(),
-            parent_work_item_id: parent_work_item_id.into(),
-            child_agent_id: child_agent_id.into(),
-            child_work_item_id: child_work_item_id.into(),
-            state: WorkItemDelegationState::Open,
-            result_summary: None,
-            created_at: now,
-            updated_at: now,
         }
     }
 }
@@ -4108,20 +3799,6 @@ impl DeliverySummaryRecord {
             evidence,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct TodoItem {
-    pub text: String,
-    pub state: TodoItemState,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoItemState {
-    Pending,
-    InProgress,
-    Completed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
