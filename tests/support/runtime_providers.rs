@@ -815,14 +815,20 @@ pub struct UseWorkspaceProvider {
     calls: Mutex<usize>,
     workspace_path: PathBuf,
     branch_name: String,
+    base_ref: String,
 }
 
 impl UseWorkspaceProvider {
-    pub fn new(workspace_path: PathBuf, branch_name: impl Into<String>) -> Self {
+    pub fn new(
+        workspace_path: PathBuf,
+        branch_name: impl Into<String>,
+        base_ref: impl Into<String>,
+    ) -> Self {
         Self {
             calls: Mutex::new(0),
             workspace_path,
             branch_name: branch_name.into(),
+            base_ref: base_ref.into(),
         }
     }
 }
@@ -844,7 +850,7 @@ impl AgentProvider for UseWorkspaceProvider {
                     input: json!({
                         "workspace_id": holon::ids::deterministic_workspace_id(&self.workspace_path),
                         "branch": self.branch_name,
-                        "base_ref": "main"
+                        "base_ref": self.base_ref
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
                 }],
@@ -895,6 +901,7 @@ pub struct WorktreeLifecycleProvider {
     calls: Mutex<usize>,
     workspace_path: PathBuf,
     branch_name: String,
+    base_ref: String,
     expected_exit_result: String,
 }
 
@@ -902,12 +909,14 @@ impl WorktreeLifecycleProvider {
     pub fn new(
         workspace_path: PathBuf,
         branch_name: impl Into<String>,
+        base_ref: impl Into<String>,
         expected_exit_result: impl Into<String>,
     ) -> Self {
         Self {
             calls: Mutex::new(0),
             workspace_path,
             branch_name: branch_name.into(),
+            base_ref: base_ref.into(),
             expected_exit_result: expected_exit_result.into(),
         }
     }
@@ -932,7 +941,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                         input: json!({
                             "workspace_id": holon::ids::deterministic_workspace_id(&self.workspace_path),
                             "branch": self.branch_name,
-                            "base_ref": "main"
+                            "base_ref": self.base_ref
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
                     }],

@@ -105,12 +105,16 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
     let config = test_config();
     let workspace = config.workspace_dir.clone();
     std::fs::create_dir_all(&workspace)?;
-    init_git_repo(&workspace)?;
+    let base_ref = init_git_repo(&workspace)?;
     let branch_name = "feature-enter-worktree";
 
     let host = RuntimeHost::new_with_provider(
         config.clone(),
-        Arc::new(UseWorkspaceProvider::new(workspace.clone(), branch_name)),
+        Arc::new(UseWorkspaceProvider::new(
+            workspace.clone(),
+            branch_name,
+            base_ref,
+        )),
     )?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
@@ -385,7 +389,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
     let workspace = config.workspace_dir.clone();
     let agent_home_id = holon::types::agent_home_workspace_id(config.default_agent_id.as_str());
     std::fs::create_dir_all(&workspace)?;
-    init_git_repo(&workspace)?;
+    let base_ref = init_git_repo(&workspace)?;
     let branch_name = "feature-exit-keep";
 
     let host = RuntimeHost::new_with_provider(
@@ -393,6 +397,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
         Arc::new(WorktreeLifecycleProvider::new(
             workspace.clone(),
             branch_name,
+            base_ref,
             format!("\"workspace_id\":\"{agent_home_id}\""),
         )),
     )?;
@@ -467,7 +472,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
     let workspace = config.workspace_dir.clone();
     let agent_home_id = holon::types::agent_home_workspace_id(config.default_agent_id.as_str());
     std::fs::create_dir_all(&workspace)?;
-    init_git_repo(&workspace)?;
+    let base_ref = init_git_repo(&workspace)?;
     let branch_name = "feature-exit-remove";
 
     let host = RuntimeHost::new_with_provider(
@@ -475,6 +480,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
         Arc::new(WorktreeLifecycleProvider::new(
             workspace.clone(),
             branch_name,
+            base_ref,
             format!("\"workspace_id\":\"{agent_home_id}\""),
         )),
     )?;
@@ -549,7 +555,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
     let workspace = config.workspace_dir.clone();
     let agent_home_id = holon::types::agent_home_workspace_id(config.default_agent_id.as_str());
     std::fs::create_dir_all(&workspace)?;
-    init_git_repo(&workspace)?;
+    let base_ref = init_git_repo(&workspace)?;
     let branch_name = "feature-exit-refuse";
 
     let host = RuntimeHost::new_with_provider(
@@ -557,6 +563,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
         Arc::new(WorktreeLifecycleProvider::new(
             workspace.clone(),
             branch_name,
+            base_ref,
             format!("\"workspace_id\":\"{agent_home_id}\""),
         )),
     )?;
