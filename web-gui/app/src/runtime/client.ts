@@ -1050,7 +1050,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         },
         requestHeaders,
       );
-      if (!response.message_id) {
+      if (!response?.message_id) {
         throw new Error("Operator prompt response did not include message_id.");
       }
       return { messageId: response.message_id };
