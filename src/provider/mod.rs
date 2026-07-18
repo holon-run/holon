@@ -511,6 +511,10 @@ pub trait AgentProvider: Send + Sync {
         None
     }
 
+    fn resolved_image_input_support(&self) -> Option<bool> {
+        None
+    }
+
     async fn complete_turn_with_diagnostics(
         &self,
         request: ProviderTurnRequest,

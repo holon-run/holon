@@ -56,16 +56,19 @@ pub fn build_provider_turn_request(
     effective_prompt: &EffectivePrompt,
     available_tools: Vec<ToolSpec>,
     native_web_search: Option<ProviderNativeWebSearchRequest>,
+    inline_markdown_images: bool,
 ) -> ProviderTurnRequest {
     let (system_blocks, context_blocks) = build_prompt_content_blocks(
         &effective_prompt.system_sections,
         &effective_prompt.context_sections,
     );
     let mut conversation = vec![ConversationMessage::UserBlocks(context_blocks.clone())];
-    conversation.extend(markdown_image_messages_from_sections(
-        &effective_prompt.context_sections,
-        &effective_prompt.execution,
-    ));
+    if inline_markdown_images {
+        conversation.extend(markdown_image_messages_from_sections(
+            &effective_prompt.context_sections,
+            &effective_prompt.execution,
+        ));
+    }
 
     ProviderTurnRequest {
         continuation_scope_id: ContinuationScopeId::new(
@@ -425,7 +428,7 @@ mod tests {
             },
         ];
 
-        let request = build_provider_turn_request(&fixture_prompt(), tools.clone(), None);
+        let request = build_provider_turn_request(&fixture_prompt(), tools.clone(), None, true);
         assert_eq!(
             request
                 .tools
@@ -449,7 +452,7 @@ mod tests {
             freeform_grammar: None,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, tools, None);
+        let request = build_provider_turn_request(&effective_prompt, tools, None, true);
 
         assert_eq!(request.prompt_frame.system_prompt, "system prompt");
         assert_eq!(
@@ -493,7 +496,7 @@ mod tests {
         let mut effective_prompt = fixture_prompt();
         effective_prompt.cache_identity.agent_id.clear();
 
-        let request = build_provider_turn_request(&effective_prompt, vec![], None);
+        let request = build_provider_turn_request(&effective_prompt, vec![], None, true);
 
         assert_eq!(request.continuation_scope_id, None);
     }
@@ -517,7 +520,7 @@ mod tests {
             stability: PromptStability::TurnScoped,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None);
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
 
         assert_eq!(request.conversation.len(), 2);
         let ConversationMessage::UserImage {
@@ -531,6 +534,33 @@ mod tests {
         assert_eq!(prompt, "Chart");
         assert_eq!(media_type, "image/png");
         assert!(!data_base64.is_empty());
+    }
+
+    #[test]
+    fn build_provider_turn_request_skips_markdown_images_when_disabled() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut effective_prompt = fixture_prompt();
+        effective_prompt.execution.workspace_id = Some("ws_test".to_string());
+        effective_prompt.execution.workspace_anchor = workspace.path().to_path_buf();
+        effective_prompt.execution.execution_root = workspace.path().to_path_buf();
+        effective_prompt.execution.cwd = workspace.path().to_path_buf();
+        effective_prompt.context_sections = vec![PromptSection {
+            name: "current_input".to_string(),
+            id: "current_input".to_string(),
+            content: "Please inspect ![Chart](workspace://ws_test/outputs/missing.png)."
+                .to_string(),
+            stability: PromptStability::TurnScoped,
+        }];
+
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, false);
+
+        assert_eq!(request.conversation.len(), 1);
+        let ConversationMessage::UserBlocks(blocks) = &request.conversation[0] else {
+            panic!("expected original user blocks");
+        };
+        assert!(blocks[0]
+            .text
+            .contains("![Chart](workspace://ws_test/outputs/missing.png)"));
     }
 
     #[test]
@@ -552,7 +582,7 @@ mod tests {
             stability: PromptStability::TurnScoped,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None);
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
 
         assert_eq!(request.conversation.len(), 1);
     }
@@ -696,7 +726,7 @@ mod tests {
             recent_turns_reprojection: None,
         };
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None);
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
 
         let system_blocks = request.prompt_frame.system_blocks;
         assert_eq!(system_blocks[0].text, "## identity\nstable system\n\n");

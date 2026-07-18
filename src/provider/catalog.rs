@@ -16,6 +16,7 @@ use super::{build_provider_for_route, AgentProvider};
 pub(crate) struct ProviderCandidate {
     pub(crate) model_ref: String,
     pub(crate) provider_name: String,
+    pub(crate) resolved_image_input: bool,
     pub(crate) provider: Arc<dyn AgentProvider>,
 }
 
@@ -79,6 +80,7 @@ pub(crate) fn build_candidate_from_model_route(
     Ok(ProviderCandidate {
         model_ref: route.route_ref.as_string(),
         provider_name: route.provider_name().to_string(),
+        resolved_image_input: route.capabilities.image_input,
         provider,
     })
 }

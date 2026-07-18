@@ -722,6 +722,7 @@ impl TurnExecution<'_> {
                     &effective_prompt,
                     available_tools.clone(),
                     native_web_search.clone(),
+                    provider.resolved_image_input_support().unwrap_or(true),
                 );
                 crate::diagnostics::record_provider_request_build(request_build_started.elapsed());
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
