@@ -105,7 +105,7 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
     let config = test_config();
     let workspace = config.workspace_dir.clone();
     std::fs::create_dir_all(&workspace)?;
-    let original_branch = init_git_repo(&workspace)?;
+    init_git_repo(&workspace)?;
     let branch_name = "feature-enter-worktree";
 
     let host = RuntimeHost::new_with_provider(
@@ -128,23 +128,16 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
         ))
         .await?;
 
-    for _ in 0..30 {
-        if runtime.agent_state().await?.worktree_session.is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-
+    wait_for_worktree_presence(&runtime, true).await?;
     let session = runtime.agent_state().await?;
-    let worktree = session
-        .worktree_session
-        .clone()
-        .expect("missing worktree state");
-    assert_eq!(worktree.original_cwd, workspace);
-    assert_eq!(worktree.original_branch, original_branch);
-    assert_eq!(worktree.worktree_branch, branch_name);
-    assert!(worktree.worktree_path.exists());
-    assert_eq!(runtime.workspace_root(), worktree.worktree_path);
+    let worktree_path = session
+        .active_workspace_entry
+        .as_ref()
+        .expect("missing active worktree")
+        .execution_root
+        .clone();
+    assert!(worktree_path.exists());
+    assert_eq!(runtime.workspace_root(), worktree_path);
     assert_eq!(
         git(
             &runtime.workspace_root(),
@@ -159,7 +152,7 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
     let restarted_host =
         RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
     let restarted_runtime = restarted_host.default_runtime().await?;
-    assert_eq!(restarted_runtime.workspace_root(), worktree.worktree_path);
+    assert_eq!(restarted_runtime.workspace_root(), worktree_path);
     Ok(())
 }
 
@@ -221,7 +214,7 @@ pub async fn use_workspace_path_adopts_attached_parent_for_existing_git_worktree
     assert_eq!(value["projection_kind"], "git_worktree_root");
     let summary = result.summary_text().unwrap_or_default();
     assert!(summary.contains("detected an existing git worktree"));
-    assert!(summary.contains("\"mode\":\"isolated\""));
+    assert!(summary.contains("migrate to SwitchWorkspace"));
 
     let state = runtime.agent_state().await?;
     let active = state
@@ -420,12 +413,12 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
         .await?;
     wait_for_worktree_presence(&runtime, true).await?;
 
-    let worktree = runtime
+    let worktree_path = runtime
         .agent_state()
         .await?
-        .worktree_session
-        .clone()
-        .expect("missing worktree state");
+        .active_workspace_entry
+        .expect("missing active worktree")
+        .execution_root;
 
     runtime
         .enqueue(MessageEnvelope::new(
@@ -451,7 +444,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
             .as_deref(),
         Some(agent_home_id.as_str())
     );
-    assert!(worktree.worktree_path.exists());
+    assert!(worktree_path.exists());
 
     let restarted_host =
         RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
@@ -502,12 +495,12 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
         .await?;
     wait_for_worktree_presence(&runtime, true).await?;
 
-    let worktree = runtime
+    let worktree_path = runtime
         .agent_state()
         .await?
-        .worktree_session
-        .clone()
-        .expect("missing worktree state");
+        .active_workspace_entry
+        .expect("missing active worktree")
+        .execution_root;
 
     runtime
         .enqueue(MessageEnvelope::new(
@@ -533,7 +526,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
             .as_deref(),
         Some(agent_home_id.as_str())
     );
-    assert!(worktree.worktree_path.exists());
+    assert!(worktree_path.exists());
 
     let restarted_host =
         RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
@@ -584,13 +577,13 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
         .await?;
     wait_for_worktree_presence(&runtime, true).await?;
 
-    let worktree = runtime
+    let worktree_path = runtime
         .agent_state()
         .await?
-        .worktree_session
-        .clone()
-        .expect("missing worktree state");
-    std::fs::write(worktree.worktree_path.join("README.md"), "changed\n")?;
+        .active_workspace_entry
+        .expect("missing active worktree")
+        .execution_root;
+    std::fs::write(worktree_path.join("README.md"), "changed\n")?;
 
     runtime
         .enqueue(MessageEnvelope::new(
@@ -617,7 +610,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
         Some(agent_home_id.as_str())
     );
     assert!(session.active_workspace_entry.is_some());
-    assert!(worktree.worktree_path.exists());
+    assert!(worktree_path.exists());
 
     let events = runtime.recent_events(20).await?;
     assert!(events.iter().any(|event| event.kind == "workspace_used"));

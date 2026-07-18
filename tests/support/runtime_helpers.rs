@@ -11,6 +11,7 @@ use holon::{
     config::{AppConfig, ControlAuthMode},
     provider::{ConversationMessage, ProviderTurnRequest},
     runtime::RuntimeHandle,
+    system::WorkspaceProjectionKind,
     tool::ToolResult,
     types::OperatorTransportBinding,
 };
@@ -191,7 +192,12 @@ pub async fn wait_for_worktree_presence(
     expected_present: bool,
 ) -> Result<()> {
     for _ in 0..30 {
-        let present = runtime.agent_state().await?.worktree_session.is_some();
+        let present = runtime
+            .agent_state()
+            .await?
+            .active_workspace_entry
+            .as_ref()
+            .is_some_and(|entry| entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot);
         if present == expected_present {
             return Ok(());
         }

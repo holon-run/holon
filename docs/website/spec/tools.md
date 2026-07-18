@@ -36,7 +36,8 @@ Tools are grouped by capability family for authority gating:
 | Family | Tools | Authority |
 |--------|-------|-----------|
 | `CoreAgent` | `WaitFor`, `AgentGet`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
-| `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `UseWorkspace` | All profiles |
+| `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
+| `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch` | All profiles |
 | `AgentCreation` | `SpawnAgent` | All profiles |
 
@@ -84,7 +85,12 @@ registry and machine-readable schema inventory.
 
 | Tool | Purpose |
 |------|---------|
-| `UseWorkspace` | Switch active workspace |
+| `GetWorkspaceState` | Read bindings, active projection, worktrees, and occupancy |
+| `AttachWorkspace` | Attach a workspace binding without switching |
+| `DetachWorkspace` | Detach a binding; active targets fall back to agent home |
+| `SwitchWorkspace` | Activate an existing workspace or execution root |
+| `CreateWorktree` | Create or safely reuse a linked worktree |
+| `RemoveWorktree` | Safely remove a registered clean worktree |
 | `ApplyPatch` | Apply unified diff patch to files |
 
 ### Memory plane
