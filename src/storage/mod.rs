@@ -11,20 +11,18 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use crate::{
-    memory::index::enqueue_memory_index_upsert,
     runtime_db::{
         transitions::{PostCommitEffects, PostCommitWarning},
-        RuntimeDb, RuntimeIndexChange, RuntimeIndexOperation,
+        RuntimeDb, RuntimeIndexChange,
     },
-    tool::helpers::{command_output_source_ref, command_receipt_source_ref},
     types::{
-        AgentIdentityRecord, AgentPostureProjection, AgentState, AuditEvent, BriefKind,
-        BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord,
-        MessageEnvelope, OperatorDeliveryRecord, OperatorNotificationRecord,
-        OperatorTransportBinding, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord,
-        ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
-        WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemDelegationState,
-        WorkItemRecord, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentIdentityRecord, AgentPostureProjection, AgentState, AuditEvent, BriefRecord,
+        ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope,
+        OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding,
+        QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord, ToolExecutionRecord,
+        TranscriptEntry, TurnRecord, WaitConditionRecord, WorkItemContinuationFrame,
+        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -36,6 +34,7 @@ const RUNTIME_CACHE_DIR: &str = "cache";
 
 mod activity;
 mod events;
+mod index_outbox;
 mod memory;
 mod read_models;
 mod recovery;
@@ -44,6 +43,7 @@ mod work_queue;
 pub use activity::{FileActivityMarker, PollActivityMarker};
 pub use events::RuntimeEventLog;
 pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
+pub use index_outbox::RuntimeIndexOutbox;
 pub use read_models::RuntimeReadModels;
 pub use recovery::RecoverySnapshot;
 pub use work_queue::{WorkItemCandidateClass, WorkItemSchedulingProjection, WorkQueueReadModel};
@@ -62,7 +62,6 @@ fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
     records_desc
 }
 
-use memory::memory_index_agent_key;
 use recovery::external_wait_recoverability_event;
 #[derive(Debug, Clone)]
 pub struct AppStorage {
@@ -73,8 +72,7 @@ pub struct AppStorage {
     append_mutex: Arc<Mutex<()>>,
     runtime_db: RuntimeDb,
     event_log: RuntimeEventLog,
-    /// Optional shared notify for the daemon-level memory indexer.
-    memory_index_notify: Arc<Mutex<Option<Arc<Notify>>>>,
+    index_outbox: RuntimeIndexOutbox,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +213,12 @@ impl AppStorage {
             read_only,
             append_mutex.clone(),
         );
+        let index_outbox = RuntimeIndexOutbox::new(
+            agent_id.clone(),
+            read_only,
+            shared_indexes_dir_for(&data_dir),
+            append_mutex.clone(),
+        );
         Ok(Self {
             agent_id,
             read_only,
@@ -222,8 +226,8 @@ impl AppStorage {
             append_mutex,
             runtime_db,
             event_log,
+            index_outbox,
             data_dir,
-            memory_index_notify: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -251,12 +255,7 @@ impl AppStorage {
     /// Attach a shared memory-index notify so the daemon-level indexer is
     /// woken immediately after new evidence is enqueued for indexing.
     pub(crate) fn enable_memory_index_notify(&self, notify: Arc<Notify>) -> Result<()> {
-        let mut guard = self
-            .memory_index_notify
-            .lock()
-            .map_err(|_| anyhow::anyhow!("memory index notify mutex poisoned"))?;
-        *guard = Some(notify);
-        Ok(())
+        self.index_outbox.enable_notify(notify)
     }
 
     pub(crate) fn subscribe_events(
@@ -276,28 +275,7 @@ impl AppStorage {
         &self,
         effects: &PostCommitEffects,
     ) -> Vec<PostCommitWarning> {
-        let mut warnings = Vec::new();
-        if effects.notify_memory_index {
-            match self.memory_index_notify.lock() {
-                Ok(guard) => {
-                    if let Some(notify) = guard.as_ref() {
-                        notify.notify_one();
-                    }
-                }
-                Err(_) => {
-                    let message = "memory index notify mutex poisoned after transition commit";
-                    tracing::warn!(
-                        agent_id = self.agent_id.as_deref().unwrap_or("<global>"),
-                        message
-                    );
-                    warnings.push(PostCommitWarning {
-                        effect: "memory_index_notification",
-                        message: message.into(),
-                    });
-                }
-            }
-        }
-        warnings
+        self.index_outbox.notify_transition(effects)
     }
 
     pub(crate) fn current_agent_id(&self) -> Result<Option<String>> {
@@ -327,12 +305,7 @@ impl AppStorage {
     // Shared search projections live at host data scope. They are rebuildable
     // indexes, not canonical runtime state.
     pub fn shared_indexes_dir(&self) -> PathBuf {
-        self.data_dir
-            .parent()
-            .filter(|agents_dir| agents_dir.file_name().is_some_and(|name| name == "agents"))
-            .and_then(|agents_dir| agents_dir.parent())
-            .map(|host_data_dir| host_data_dir.join(RUNTIME_DIR).join(RUNTIME_INDEXES_DIR))
-            .unwrap_or_else(|| self.indexes_dir())
+        shared_indexes_dir_for(&self.data_dir)
     }
 
     pub fn cache_dir(&self) -> PathBuf {
@@ -349,6 +322,10 @@ impl AppStorage {
 
     pub fn event_log(&self) -> RuntimeEventLog {
         self.event_log.clone()
+    }
+
+    pub fn index_outbox(&self) -> RuntimeIndexOutbox {
+        self.index_outbox.clone()
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
@@ -590,93 +567,32 @@ impl AppStorage {
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
-        self.ensure_writable()?;
-        let agent_id = self.storage_agent_id()?;
-        let dirty_path = self.shared_indexes_dir().join(format!(
-            "memory.{}.dirty",
-            memory_index_agent_key(&agent_id)
-        ));
-        if dirty_path.exists() {
-            return Ok(());
-        }
-        fs::create_dir_all(self.shared_indexes_dir())?;
-        fs::write(&dirty_path, b"dirty").with_context(|| "failed to mark memory index dirty")
-    }
-
-    fn runtime_index_upsert(
-        &self,
-        agent_id: impl Into<String>,
-        source_kind: impl Into<String>,
-        source_id: impl Into<String>,
-        source_ref: impl Into<String>,
-        source_updated_at: Option<DateTime<Utc>>,
-        reason: &'static str,
-    ) -> Result<RuntimeIndexChange> {
-        Ok(RuntimeIndexChange {
-            agent_id: agent_id.into(),
-            source_kind: source_kind.into(),
-            source_id: source_id.into(),
-            source_ref: source_ref.into(),
-            operation: RuntimeIndexOperation::Upsert,
-            source_updated_at,
-            reason: reason.into(),
-        })
+        self.index_outbox.mark_dirty()
     }
 
     fn index_changes_for_brief(&self, brief: &BriefRecord) -> Result<Vec<RuntimeIndexChange>> {
-        if brief.kind == BriefKind::Ack || brief.text.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(vec![self.runtime_index_upsert(
-            brief.agent_id.clone(),
-            "brief",
-            brief.id.clone(),
-            format!("brief:{}", brief.id),
-            Some(brief.created_at),
-            "brief_written",
-        )?])
+        Ok(self.index_outbox.changes_for_brief(brief))
     }
 
     fn index_changes_for_message(
         &self,
         message: &MessageEnvelope,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(vec![self.runtime_index_upsert(
-            message.agent_id.clone(),
-            "message",
-            message.id.clone(),
-            format!("message:{}", message.id),
-            Some(message.created_at),
-            "message_written",
-        )?])
+        Ok(self.index_outbox.changes_for_message(message))
     }
 
     pub(crate) fn index_changes_for_task(
         &self,
         task: &TaskRecord,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(vec![self.runtime_index_upsert(
-            task.agent_id.clone(),
-            "task",
-            task.id.clone(),
-            format!("task:{}", task.id),
-            Some(task.updated_at),
-            "task_written",
-        )?])
+        Ok(self.index_outbox.changes_for_task(task))
     }
 
     pub(crate) fn index_changes_for_work_item(
         &self,
         record: &WorkItemRecord,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(vec![self.runtime_index_upsert(
-            record.agent_id.clone(),
-            "work_item",
-            record.id.clone(),
-            format!("work_item:{}", record.id),
-            Some(record.updated_at),
-            "work_item_written",
-        )?])
+        Ok(self.index_outbox.changes_for_work_item(record))
     }
 
     pub(crate) fn wait_condition_auxiliary_events(
@@ -692,277 +608,59 @@ impl AppStorage {
         &self,
         record: &ContextEpisodeRecord,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        Ok(vec![self.runtime_index_upsert(
-            record.agent_id.clone(),
-            "context_episode",
-            record.id.clone(),
-            format!("episode:{}", record.id),
-            Some(record.finalized_at),
-            "context_episode_written",
-        )?])
+        Ok(self.index_outbox.changes_for_context_episode(record))
     }
 
     fn index_changes_for_workspace_entry(
         &self,
         entry: &WorkspaceEntry,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        let Some(agent_id) = entry
-            .owner_agent_id
-            .clone()
-            .or_else(|| self.storage_agent_id().ok())
-        else {
-            return Ok(Vec::new());
-        };
-        Ok(vec![self.runtime_index_upsert(
-            agent_id,
-            "workspace_profile",
-            entry.workspace_id.clone(),
-            format!("workspace_profile:{}", entry.workspace_id),
-            Some(entry.updated_at),
-            "workspace_profile_written",
-        )?])
+        Ok(self.index_outbox.changes_for_workspace_entry(entry))
     }
 
     fn index_changes_for_tool_execution(
         &self,
         record: &ToolExecutionRecord,
     ) -> Result<Vec<RuntimeIndexChange>> {
-        let mut changes = Vec::new();
-        match record.tool_name.as_str() {
-            crate::tool::names::EXEC_COMMAND => {
-                if record.input.get("cmd").and_then(Value::as_str).is_some() {
-                    let source_ref = command_receipt_source_ref(&record.id, None);
-                    changes.push(self.runtime_index_upsert(
-                        record.agent_id.clone(),
-                        "tool_command_receipt",
-                        source_ref.clone(),
-                        source_ref,
-                        record.completed_at.or(Some(record.created_at)),
-                        "tool_command_receipt_written",
-                    )?);
-                }
-            }
-            crate::tool::names::EXEC_COMMAND_BATCH => {
-                if let Some(items) = record.input.get("items").and_then(Value::as_array) {
-                    for (offset, item) in items.iter().enumerate() {
-                        if item.get("cmd").and_then(Value::as_str).is_some() {
-                            let index = offset + 1;
-                            let source_ref = command_receipt_source_ref(&record.id, Some(index));
-                            changes.push(self.runtime_index_upsert(
-                                record.agent_id.clone(),
-                                "tool_command_receipt",
-                                source_ref.clone(),
-                                source_ref,
-                                record.completed_at.or(Some(record.created_at)),
-                                "tool_command_receipt_written",
-                            )?);
-                        }
-                    }
-                }
-            }
-            _ => {
-                let source_ref = command_output_source_ref(&record.id, None, "output");
-                changes.push(self.runtime_index_upsert(
-                    record.agent_id.clone(),
-                    "tool_execution_output_preview",
-                    source_ref.clone(),
-                    source_ref,
-                    record.completed_at.or(Some(record.created_at)),
-                    "tool_execution_output_preview_written",
-                )?);
-            }
-        }
-        Ok(changes)
-    }
-
-    fn enqueue_memory_index_brief(&self, brief: &BriefRecord) -> Result<()> {
-        self.enqueue_memory_index_source("brief", &brief.id, &format!("brief:{}", brief.id))
+        Ok(self.index_outbox.changes_for_tool_execution(record))
     }
 
     fn enqueue_memory_index_brief_best_effort(&self, brief: &BriefRecord) -> Result<()> {
-        let result = self.enqueue_memory_index_brief(brief);
-        self.finish_memory_index_enqueue(result, "brief", &brief.id, &format!("brief:{}", brief.id))
-    }
-
-    fn enqueue_memory_index_message(&self, message: &MessageEnvelope) -> Result<()> {
-        self.enqueue_memory_index_source("message", &message.id, &format!("message:{}", message.id))
+        self.index_outbox.enqueue_brief_best_effort(brief)
     }
 
     fn enqueue_memory_index_message_best_effort(&self, message: &MessageEnvelope) -> Result<()> {
-        let result = self.enqueue_memory_index_message(message);
-        self.finish_memory_index_enqueue(
-            result,
-            "message",
-            &message.id,
-            &format!("message:{}", message.id),
-        )
-    }
-
-    fn enqueue_memory_index_task(&self, task: &TaskRecord) -> Result<()> {
-        self.enqueue_memory_index_source("task", &task.id, &format!("task:{}", task.id))
+        self.index_outbox.enqueue_message_best_effort(message)
     }
 
     fn enqueue_memory_index_task_best_effort(&self, task: &TaskRecord) -> Result<()> {
-        let result = self.enqueue_memory_index_task(task);
-        self.finish_memory_index_enqueue(result, "task", &task.id, &format!("task:{}", task.id))
-    }
-
-    fn enqueue_memory_index_work_item(&self, record: &WorkItemRecord) -> Result<()> {
-        self.enqueue_memory_index_source(
-            "work_item",
-            &record.id,
-            &format!("work_item:{}", record.id),
-        )
+        self.index_outbox.enqueue_task_best_effort(task)
     }
 
     fn enqueue_memory_index_work_item_best_effort(&self, record: &WorkItemRecord) -> Result<()> {
-        let result = self.enqueue_memory_index_work_item(record);
-        self.finish_memory_index_enqueue(
-            result,
-            "work_item",
-            &record.id,
-            &format!("work_item:{}", record.id),
-        )
-    }
-
-    fn enqueue_memory_index_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
-        self.enqueue_memory_index_source(
-            "context_episode",
-            &record.id,
-            &format!("episode:{}", record.id),
-        )
+        self.index_outbox.enqueue_work_item_best_effort(record)
     }
 
     fn enqueue_memory_index_context_episode_best_effort(
         &self,
         record: &ContextEpisodeRecord,
     ) -> Result<()> {
-        let result = self.enqueue_memory_index_context_episode(record);
-        self.finish_memory_index_enqueue(
-            result,
-            "context_episode",
-            &record.id,
-            &format!("episode:{}", record.id),
-        )
-    }
-
-    fn enqueue_memory_index_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
-        self.enqueue_memory_index_source(
-            "workspace_profile",
-            &entry.workspace_id,
-            &format!("workspace_profile:{}", entry.workspace_id),
-        )
+        self.index_outbox
+            .enqueue_context_episode_best_effort(record)
     }
 
     fn enqueue_memory_index_workspace_entry_best_effort(
         &self,
         entry: &WorkspaceEntry,
     ) -> Result<()> {
-        let result = self.enqueue_memory_index_workspace_entry(entry);
-        self.finish_memory_index_enqueue(
-            result,
-            "workspace_profile",
-            &entry.workspace_id,
-            &format!("workspace_profile:{}", entry.workspace_id),
-        )
-    }
-
-    fn enqueue_memory_index_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        match record.tool_name.as_str() {
-            crate::tool::names::EXEC_COMMAND => {
-                if record.input.get("cmd").and_then(Value::as_str).is_some() {
-                    let source_ref = command_receipt_source_ref(&record.id, None);
-                    self.enqueue_memory_index_source(
-                        "tool_command_receipt",
-                        &source_ref,
-                        &source_ref,
-                    )?;
-                }
-            }
-            crate::tool::names::EXEC_COMMAND_BATCH => {
-                if let Some(items) = record.input.get("items").and_then(Value::as_array) {
-                    for (offset, item) in items.iter().enumerate() {
-                        if item.get("cmd").and_then(Value::as_str).is_some() {
-                            let source_ref =
-                                command_receipt_source_ref(&record.id, Some(offset + 1));
-                            self.enqueue_memory_index_source(
-                                "tool_command_receipt",
-                                &source_ref,
-                                &source_ref,
-                            )?;
-                        }
-                    }
-                }
-            }
-            _ => {
-                let source_ref = command_output_source_ref(&record.id, None, "output");
-                self.enqueue_memory_index_source(
-                    "tool_execution_output",
-                    &source_ref,
-                    &source_ref,
-                )?;
-            }
-        }
-        Ok(())
+        self.index_outbox.enqueue_workspace_entry_best_effort(entry)
     }
 
     fn enqueue_memory_index_tool_execution_best_effort(
         &self,
         record: &ToolExecutionRecord,
     ) -> Result<()> {
-        let result = self.enqueue_memory_index_tool_execution(record);
-        self.finish_memory_index_enqueue(result, &record.tool_name, &record.id, &record.id)
-    }
-
-    fn finish_memory_index_enqueue(
-        &self,
-        result: Result<()>,
-        source_kind: &str,
-        source_id: &str,
-        source_ref: &str,
-    ) -> Result<()> {
-        if let Err(error) = result {
-            tracing::warn!(
-                error = %error,
-                agent_id = self.agent_id.as_deref().unwrap_or("<global>"),
-                source_kind,
-                source_id,
-                source_ref,
-                "memory index enqueue failed after canonical storage write"
-            );
-            if let Err(dirty_error) = self.mark_memory_index_dirty() {
-                tracing::warn!(
-                    error = %dirty_error,
-                    agent_id = self.agent_id.as_deref().unwrap_or("<global>"),
-                    source_kind,
-                    source_id,
-                    source_ref,
-                    "failed to mark memory index dirty after enqueue failure"
-                );
-            }
-        }
-
-        // Wake the daemon-level memory indexer if one is attached so it can
-        // pick up the newly enqueued outbox rows without waiting for a poll.
-        if let Ok(guard) = self.memory_index_notify.lock() {
-            if let Some(notify) = guard.as_ref() {
-                notify.notify_one();
-            }
-        }
-        Ok(())
-    }
-
-    fn enqueue_memory_index_source(
-        &self,
-        source_kind: &str,
-        source_id: &str,
-        source_ref: &str,
-    ) -> Result<()> {
-        let _guard = self
-            .append_mutex
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        enqueue_memory_index_upsert(self, source_kind, source_id, source_ref)
+        self.index_outbox.enqueue_tool_execution_best_effort(record)
     }
 
     fn storage_agent_id(&self) -> Result<String> {
@@ -1653,6 +1351,15 @@ fn infer_agent_id_from_data_dir(data_dir: &Path) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn shared_indexes_dir_for(data_dir: &Path) -> PathBuf {
+    data_dir
+        .parent()
+        .filter(|agents_dir| agents_dir.file_name().is_some_and(|name| name == "agents"))
+        .and_then(|agents_dir| agents_dir.parent())
+        .map(|host_data_dir| host_data_dir.join(RUNTIME_DIR).join(RUNTIME_INDEXES_DIR))
+        .unwrap_or_else(|| data_dir.join(RUNTIME_DIR).join(RUNTIME_INDEXES_DIR))
+}
+
 pub(crate) fn is_active_task_status(status: &TaskStatus) -> bool {
     matches!(
         status,
@@ -1667,7 +1374,7 @@ pub fn to_json_value<T: Serialize>(value: &T) -> Value {
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
-    use tokio::sync::broadcast;
+    use tokio::sync::{broadcast, Notify};
 
     use chrono::Utc;
 
@@ -1788,6 +1495,37 @@ mod tests {
         assert_eq!(facade_published.agent_id.as_deref(), Some("agent-test"));
         assert_eq!(facade_published.event.kind, "facade_event");
         assert_eq!(facade_published.event.event_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn runtime_index_outbox_preserves_app_storage_facade_contract() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
+        let index_outbox = storage.index_outbox();
+        let brief = BriefRecord::new(
+            "agent-test",
+            BriefKind::Result,
+            "index through collaborator",
+            None,
+            None,
+        );
+
+        assert_eq!(
+            index_outbox.changes_for_brief(&brief),
+            storage.index_changes_for_brief(&brief).unwrap()
+        );
+
+        let notify = Arc::new(Notify::new());
+        storage.enable_memory_index_notify(notify.clone()).unwrap();
+        let warnings = index_outbox.notify_transition(&PostCommitEffects {
+            notify_memory_index: true,
+            ..PostCommitEffects::default()
+        });
+
+        assert!(warnings.is_empty());
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("direct collaborator should share the facade's memory index notify");
     }
 
     #[test]
