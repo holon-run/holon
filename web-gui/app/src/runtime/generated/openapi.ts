@@ -2001,6 +2001,20 @@ export interface components {
                         failure_artifact?: {
                             /** @enum {string} */
                             category: "transport" | "protocol" | "runtime" | "task" | "unknown";
+                            context?: {
+                                causation_id?: string | null;
+                                correlation_id?: string | null;
+                                message_id?: string | null;
+                                model_ref?: string | null;
+                                provider?: string | null;
+                                run_id?: string | null;
+                                task_id?: string | null;
+                                tool_execution_id?: string | null;
+                                turn_id?: string | null;
+                                work_item_id?: string | null;
+                            };
+                            /** @enum {string|null} */
+                            domain?: "runtime" | "storage" | "policy" | "io" | "conflict" | "not_found" | "validation" | "provider" | "tool" | "task" | "http" | "unknown" | null;
                             /** Format: int32 */
                             exit_status?: number | null;
                             kind: string;
@@ -2009,6 +2023,8 @@ export interface components {
                             };
                             model_ref?: string | null;
                             provider?: string | null;
+                            recovery_hint?: string | null;
+                            retryable?: boolean | null;
                             source_chain?: string[];
                             /** Format: uint16 */
                             status?: number | null;
@@ -3381,6 +3397,20 @@ export interface components {
                 failure_artifact?: {
                     /** @enum {string} */
                     category: "transport" | "protocol" | "runtime" | "task" | "unknown";
+                    context?: {
+                        causation_id?: string | null;
+                        correlation_id?: string | null;
+                        message_id?: string | null;
+                        model_ref?: string | null;
+                        provider?: string | null;
+                        run_id?: string | null;
+                        task_id?: string | null;
+                        tool_execution_id?: string | null;
+                        turn_id?: string | null;
+                        work_item_id?: string | null;
+                    };
+                    /** @enum {string|null} */
+                    domain?: "runtime" | "storage" | "policy" | "io" | "conflict" | "not_found" | "validation" | "provider" | "tool" | "task" | "http" | "unknown" | null;
                     /** Format: int32 */
                     exit_status?: number | null;
                     kind: string;
@@ -3389,6 +3419,8 @@ export interface components {
                     };
                     model_ref?: string | null;
                     provider?: string | null;
+                    recovery_hint?: string | null;
+                    retryable?: boolean | null;
                     source_chain?: string[];
                     /** Format: uint16 */
                     status?: number | null;
