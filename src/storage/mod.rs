@@ -18,14 +18,13 @@ use crate::{
     },
     tool::helpers::{command_output_source_ref, command_receipt_source_ref},
     types::{
-        AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
-        AgentStatus, AuditEvent, BriefKind, BriefRecord, ContextEpisodeRecord,
-        DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope, OperatorDeliveryRecord,
-        OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, TaskRecord,
-        TaskStatus, TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord,
-        WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WorkItemContinuationFrame,
-        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkItemSchedulingState,
-        WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentIdentityRecord, AgentPostureProjection, AgentState, AuditEvent, BriefKind,
+        BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord,
+        MessageEnvelope, OperatorDeliveryRecord, OperatorNotificationRecord,
+        OperatorTransportBinding, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord,
+        ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
+        WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemDelegationState,
+        WorkItemRecord, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -38,11 +37,13 @@ const RUNTIME_CACHE_DIR: &str = "cache";
 mod activity;
 mod events;
 mod memory;
+mod read_models;
 mod recovery;
 mod work_queue;
 
 pub use activity::{FileActivityMarker, PollActivityMarker};
 pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
+pub use read_models::RuntimeReadModels;
 pub use recovery::RecoverySnapshot;
 pub use work_queue::{WorkItemCandidateClass, WorkItemSchedulingProjection, WorkQueueReadModel};
 
@@ -62,8 +63,6 @@ fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
 
 use memory::memory_index_agent_key;
 use recovery::external_wait_recoverability_event;
-use work_queue::{compare_queue_display_order, compare_scheduling_projection_order};
-
 #[derive(Debug, Clone)]
 pub struct AppStorage {
     data_dir: PathBuf,
@@ -405,6 +404,10 @@ impl AppStorage {
 
     pub(crate) fn runtime_db(&self) -> Result<Option<RuntimeDb>> {
         Ok(Some(self.runtime_db.clone()))
+    }
+
+    pub fn read_models(&self) -> RuntimeReadModels {
+        RuntimeReadModels::new(self.runtime_db.clone(), self.agent_id.clone())
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
@@ -1561,288 +1564,19 @@ impl AppStorage {
     }
 
     pub fn work_queue_read_model(&self) -> Result<WorkQueueReadModel> {
-        let current_work_item_id = self
-            .read_agent()?
-            .and_then(|agent| agent.current_work_item_id);
-        let mut latest = std::collections::HashMap::<String, WorkItemRecord>::new();
-        let runtime_db = self.runtime_db.clone();
-        if let Some(agent_id) = self.current_agent_id()? {
-            for record in runtime_db
-                .work_items()
-                .latest_for_agent(&agent_id, usize::MAX)?
-            {
-                latest.insert(record.id.clone(), record);
-            }
-        }
-
-        let current = current_work_item_id
-            .as_deref()
-            .and_then(|id| latest.get(id))
-            .filter(|item| item.state == WorkItemState::Open)
-            .cloned();
-
-        let trigger_delivery_by_id = self
-            .latest_external_triggers()?
-            .into_iter()
-            .filter(|trigger| trigger.status == crate::types::ExternalTriggerStatus::Active)
-            .filter_map(|trigger| {
-                trigger
-                    .last_delivered_at
-                    .map(|delivered_at| (trigger.external_trigger_id, delivered_at))
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let active_wait_conditions = self
-            .active_wait_conditions()?
-            .into_iter()
-            .filter_map(|condition| condition.work_item_id.clone().map(|id| (id, condition)))
-            .fold(
-                std::collections::BTreeMap::<String, Vec<WaitConditionRecord>>::new(),
-                |mut acc, (id, condition)| {
-                    acc.entry(id).or_default().push(condition);
-                    acc
-                },
-            );
-        let active_continuation_suspended_ids = self
-            .latest_active_work_item_continuations_for_agent(
-                self.current_agent_id()?.as_deref().unwrap_or_default(),
-            )?
-            .into_iter()
-            .map(|frame| frame.suspended_work_item_id)
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut items = latest
-            .values()
-            .cloned()
-            .map(|item| {
-                let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
-                    && item.state == WorkItemState::Open;
-                let yielded = item.state == WorkItemState::Open
-                    && active_continuation_suspended_ids.contains(&item.id);
-                crate::work_item_scheduling::derive_work_item_scheduling(
-                    crate::work_item_scheduling::WorkItemSchedulingFacts {
-                        work_item: &item,
-                        is_current,
-                        is_yielded: yielded,
-                        active_wait_conditions: active_wait_conditions
-                            .get(&item.id)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]),
-                        trigger_delivery_by_id: &trigger_delivery_by_id,
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-
-        items.sort_by(compare_scheduling_projection_order);
-        let current_runnable = items
-            .iter()
-            .find(|item| item.candidate_class == WorkItemCandidateClass::CurrentRunnable)
-            .cloned();
-        let triggered_blocked = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::TriggeredBlocked)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        let queued_runnable = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::QueuedRunnable)
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>();
-        let yielded = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::Yielded)
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>();
-        let waiting_for_operator = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        let blocked = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::Blocked)
-            .filter(|item| item.scheduling_state != WorkItemSchedulingState::WaitingTask)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        let completed_recent = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::CompletedRecent)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let mut queued_blocked = latest
-            .values()
-            .filter(|item| {
-                item.state == WorkItemState::Open
-                    && Some(item.id.as_str()) != current_work_item_id.as_deref()
-                    && !active_continuation_suspended_ids.contains(&item.id)
-                    && !active_wait_conditions
-                        .get(&item.id)
-                        .is_some_and(|conditions| {
-                            conditions
-                                .iter()
-                                .any(|condition| condition.kind == WaitConditionKind::Task)
-                        })
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        queued_blocked.sort_by(compare_queue_display_order);
-
-        Ok(WorkQueueReadModel {
-            current,
-            queued_blocked,
-            items,
-            current_runnable,
-            triggered_blocked,
-            queued_runnable,
-            yielded,
-            waiting_for_operator,
-            blocked,
-            completed_recent,
-        })
+        self.read_models().work_queue()
     }
 
     pub fn work_queue_prompt_projection(&self) -> Result<WorkQueueReadModel> {
-        self.work_queue_read_model()
+        self.read_models().work_queue()
     }
 
     pub fn agent_posture_projection(&self, agent: &AgentState) -> Result<AgentPostureProjection> {
-        if matches!(agent.status, AgentStatus::Stopped) {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::Archived,
-                reason: "agent lifecycle is stopped".into(),
-                work_item_id: None,
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        if let Some(run_id) = agent.current_run_id.clone() {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::ActiveTurn,
-                reason: "agent has an active turn".into(),
-                work_item_id: agent.current_turn_work_item_id.clone(),
-                task_id: None,
-                run_id: Some(run_id),
-            });
-        }
-
-        let runtime_db = self.runtime_db.clone();
-        let has_queued = runtime_db.queue_entries().has_queued_for_agent(&agent.id)?;
-        if has_queued {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::HasQueuedInput,
-                reason: "agent has queued input".into(),
-                work_item_id: None,
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        let work_queue = self.work_queue_prompt_projection()?;
-        if let Some(item) = work_queue
-            .current_runnable
-            .as_ref()
-            .or_else(|| work_queue.queued_runnable.first())
-        {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::HasRunnableWork,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        if let Some(item) = work_queue
-            .items
-            .iter()
-            .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingTask)
-        {
-            let task_id = self
-                .active_wait_conditions()?
-                .into_iter()
-                .find(|condition| {
-                    condition.status == WaitConditionStatus::Active
-                        && condition.kind == WaitConditionKind::Task
-                        && condition.work_item_id.as_deref() == Some(item.work_item.id.as_str())
-                })
-                .and_then(|condition| condition.subject_ref);
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::WaitingForTask,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id,
-                run_id: None,
-            });
-        }
-
-        if let Some(item) = work_queue
-            .items
-            .iter()
-            .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingExternal)
-        {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::WaitingForExternal,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        if let Some(item) = work_queue.waiting_for_operator.first() {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::WaitingForOperator,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        if let Some(item) = work_queue
-            .blocked
-            .first()
-            .or_else(|| work_queue.triggered_blocked.first())
-        {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::Blocked,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        Ok(AgentPostureProjection {
-            posture: AgentSchedulingPosture::Idle,
-            reason: "no queued input, active turn, runnable work, or active waits".into(),
-            work_item_id: None,
-            task_id: None,
-            run_id: None,
-        })
+        self.read_models().agent_posture(agent)
     }
 
     pub fn waiting_contract_anchor(&self) -> Result<Option<WorkItemRecord>> {
-        let projection = self.work_queue_prompt_projection()?;
-        Ok(projection.current.or_else(|| {
-            projection
-                .queued_blocked
-                .into_iter()
-                .filter(|item| item.blocked_by.is_some())
-                .max_by(|left, right| {
-                    left.updated_at
-                        .cmp(&right.updated_at)
-                        .then_with(|| left.created_at.cmp(&right.created_at))
-                        .then_with(|| left.id.cmp(&right.id))
-                })
-        }))
+        self.read_models().waiting_contract_anchor()
     }
 
     pub fn due_blocked_work_item_rechecks(
@@ -1966,47 +1700,16 @@ impl AppStorage {
         return runtime_db.timers().latest(timer_id);
     }
 
+    pub fn active_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
+        self.read_models().active_wait_conditions()
+    }
+
     pub fn active_wait_conditions_for_agent(
         &self,
         agent_id: &str,
     ) -> Result<Vec<WaitConditionRecord>> {
-        let runtime_db = self.runtime_db.clone();
-        let records = runtime_db.wait_conditions().active_for_agent(agent_id)?;
-        self.filter_active_wait_conditions_for_live_scope(records)
-    }
-
-    pub fn active_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
-        let runtime_db = self.runtime_db.clone();
-        let records = runtime_db.wait_conditions().active_all()?;
-        self.filter_active_wait_conditions_for_live_scope(records)
-    }
-
-    fn filter_active_wait_conditions_for_live_scope(
-        &self,
-        records: Vec<WaitConditionRecord>,
-    ) -> Result<Vec<WaitConditionRecord>> {
-        let mut work_item_is_open = std::collections::BTreeMap::<String, bool>::new();
-        let mut live = Vec::new();
-        for record in records {
-            let Some(work_item_id) = record.work_item_id.as_deref() else {
-                live.push(record);
-                continue;
-            };
-            let is_open = match work_item_is_open.get(work_item_id) {
-                Some(is_open) => *is_open,
-                None => {
-                    let is_open = self
-                        .latest_work_item(work_item_id)?
-                        .is_some_and(|item| item.state == WorkItemState::Open);
-                    work_item_is_open.insert(work_item_id.to_string(), is_open);
-                    is_open
-                }
-            };
-            if is_open {
-                live.push(record);
-            }
-        }
-        Ok(live)
+        self.read_models()
+            .active_wait_conditions_for_agent(agent_id)
     }
 
     pub fn active_wait_conditions_for_work_item(
@@ -2100,44 +1803,7 @@ impl AppStorage {
     }
 
     pub fn recovery_snapshot(&self, agent_id: &str) -> Result<RecoverySnapshot> {
-        let agent = self.read_agent()?;
-        let mut messages_by_id = std::collections::BTreeMap::new();
-        for message in self.read_all_messages()? {
-            messages_by_id.insert(message.id.clone(), message);
-        }
-
-        let runtime_db = self.runtime_db.clone();
-        let queued_entries = runtime_db.queue_entries().queued_for_agent(agent_id)?;
-        let mut replay_messages = queued_entries
-            .into_iter()
-            .filter_map(|entry| messages_by_id.get(&entry.message_id).cloned())
-            .collect::<Vec<_>>();
-        replay_messages.sort_by(|left, right| match (left.message_seq, right.message_seq) {
-            (Some(left_seq), Some(right_seq)) => left_seq
-                .cmp(&right_seq)
-                .then_with(|| left.created_at.cmp(&right.created_at)),
-            _ => left.created_at.cmp(&right.created_at),
-        });
-
-        let active_tasks = self.latest_active_task_records_for_agent(agent_id, usize::MAX)?;
-        let active_timers = self
-            .latest_timer_records()?
-            .into_iter()
-            .filter(|record| {
-                record.agent_id == agent_id && record.status == crate::types::TimerStatus::Active
-            })
-            .collect();
-        let work_items = self.latest_work_items()?;
-        let work_item_delegations = self.latest_work_item_delegations()?;
-
-        Ok(RecoverySnapshot {
-            agent,
-            replay_messages,
-            active_tasks,
-            active_timers,
-            work_items,
-            work_item_delegations,
-        })
+        self.read_models().recovery_snapshot(agent_id)
     }
 
     pub fn count_briefs(&self) -> Result<usize> {
@@ -2194,12 +1860,13 @@ mod tests {
     }
 
     use crate::types::{
-        AgentState, AgentStatus, AuthorityClass, BriefKind, CallbackDeliveryMode,
-        EpisodeBoundaryReason, ExternalTriggerScope, ExternalTriggerStatus,
+        AgentSchedulingPosture, AgentState, AgentStatus, AuthorityClass, BriefKind,
+        CallbackDeliveryMode, EpisodeBoundaryReason, ExternalTriggerScope, ExternalTriggerStatus,
         ExternalWaitRecoverability, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         Priority, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec,
         TaskStatus, TodoItem, TodoItemState, ToolExecutionStatus, TranscriptEntry,
-        TranscriptEntryKind, WakeSource, WorkItemPlanStatus, WorkItemState,
+        TranscriptEntryKind, WaitConditionKind, WaitConditionStatus, WakeSource,
+        WorkItemPlanStatus, WorkItemSchedulingState, WorkItemState,
     };
 
     use super::*;
@@ -4470,6 +4137,66 @@ mod tests {
             .queued_blocked
             .iter()
             .all(|item| item.objective != "task wait"));
+    }
+
+    #[test]
+    fn runtime_read_models_preserve_app_storage_facade_contract() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let current = WorkItemRecord::new("default", "current", WorkItemState::Open);
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        agent.current_work_item_id = Some(current.id.clone());
+        storage.append_work_item(&current).unwrap();
+        storage.write_agent(&agent).unwrap();
+
+        let read_models = storage.read_models();
+        let direct_queue = read_models.work_queue().unwrap();
+        let facade_queue = storage.work_queue_read_model().unwrap();
+        assert_eq!(direct_queue.current, facade_queue.current);
+        assert_eq!(direct_queue.queued_blocked, facade_queue.queued_blocked);
+        assert_eq!(direct_queue.items, facade_queue.items);
+        assert_eq!(direct_queue.current_runnable, facade_queue.current_runnable);
+        assert_eq!(
+            direct_queue.triggered_blocked,
+            facade_queue.triggered_blocked
+        );
+        assert_eq!(direct_queue.queued_runnable, facade_queue.queued_runnable);
+        assert_eq!(direct_queue.yielded, facade_queue.yielded);
+        assert_eq!(
+            direct_queue.waiting_for_operator,
+            facade_queue.waiting_for_operator
+        );
+        assert_eq!(direct_queue.blocked, facade_queue.blocked);
+        assert_eq!(direct_queue.completed_recent, facade_queue.completed_recent);
+
+        assert_eq!(
+            read_models.agent_posture(&agent).unwrap(),
+            storage.agent_posture_projection(&agent).unwrap()
+        );
+        assert_eq!(
+            read_models.waiting_contract_anchor().unwrap(),
+            storage.waiting_contract_anchor().unwrap()
+        );
+        assert_eq!(
+            read_models.active_wait_conditions().unwrap(),
+            storage.active_wait_conditions().unwrap()
+        );
+
+        let direct_recovery = read_models.recovery_snapshot("default").unwrap();
+        let facade_recovery = storage.recovery_snapshot("default").unwrap();
+        assert_eq!(direct_recovery.agent, facade_recovery.agent);
+        assert_eq!(
+            direct_recovery.replay_messages,
+            facade_recovery.replay_messages
+        );
+        assert_eq!(direct_recovery.active_tasks, facade_recovery.active_tasks);
+        assert_eq!(direct_recovery.active_timers, facade_recovery.active_timers);
+        assert_eq!(direct_recovery.work_items, facade_recovery.work_items);
+        assert_eq!(
+            direct_recovery.work_item_delegations,
+            facade_recovery.work_item_delegations
+        );
     }
 
     #[test]
