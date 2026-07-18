@@ -492,7 +492,7 @@ async fn filtered_tool_specs_hide_agent_creation_family_for_private_child() {
 }
 
 #[tokio::test]
-async fn filtered_tool_specs_keep_use_workspace_visible_for_private_child() {
+async fn filtered_tool_specs_keep_workspace_lifecycle_visible_for_private_child() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -510,7 +510,10 @@ async fn filtered_tool_specs_keep_use_workspace_visible_for_private_child() {
         .filtered_tool_specs(&private_child_identity("tmp_child_demo"))
         .unwrap();
 
-    assert!(tools.iter().any(|tool| tool.name == "UseWorkspace"));
+    assert!(tools.iter().any(|tool| tool.name == "SwitchWorkspace"));
+    assert!(tools.iter().any(|tool| tool.name == "CreateWorktree"));
+    assert!(!tools.iter().any(|tool| tool.name == "RemoveWorktree"));
+    assert!(!tools.iter().any(|tool| tool.name == "UseWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "EnterWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "ExitWorkspace"));
 }
@@ -522,7 +525,9 @@ async fn filtered_tool_specs_keep_agent_creation_family_for_public_named_agent()
     let tools = runtime.filtered_tool_specs(&identity).unwrap();
 
     assert!(tools.iter().any(|tool| tool.name == "SpawnAgent"));
-    assert!(tools.iter().any(|tool| tool.name == "UseWorkspace"));
+    assert!(tools.iter().any(|tool| tool.name == "SwitchWorkspace"));
+    assert!(tools.iter().any(|tool| tool.name == "AttachWorkspace"));
+    assert!(!tools.iter().any(|tool| tool.name == "UseWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "EnterWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "ExitWorkspace"));
 }

@@ -29,7 +29,7 @@ use crate::{
     callbacks::hash_callback_token,
     config::{AppConfig, RuntimeModelCatalog},
     context::ContextConfig,
-    host_registry::RuntimeRegistry,
+    host_registry::{RuntimeRegistry, WorkspaceCleanupLeaseGuard},
     ids,
     prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{build_provider_from_config, AgentProvider},
@@ -978,6 +978,15 @@ impl RuntimeHost {
         self.inner
             .registry
             .release_workspace_occupancy(occupancy_id)
+    }
+
+    fn acquire_workspace_cleanup_lease(
+        &self,
+        execution_root_id: &str,
+    ) -> Result<WorkspaceCleanupLeaseGuard> {
+        self.inner
+            .registry
+            .acquire_workspace_cleanup_lease(execution_root_id)
     }
 
     pub fn ensure_workspace_entry(&self, workspace_anchor: PathBuf) -> Result<WorkspaceEntry> {
@@ -2264,6 +2273,18 @@ impl RuntimeHostBridge {
         occupancy_id: &str,
     ) -> Result<Option<WorkspaceOccupancyRecord>> {
         self.host()?.workspace_occupancy_by_id(occupancy_id)
+    }
+
+    pub(crate) async fn workspace_occupancies(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
+        self.host()?.workspace_occupancies()
+    }
+
+    pub(crate) async fn acquire_workspace_cleanup_lease(
+        &self,
+        execution_root_id: &str,
+    ) -> Result<WorkspaceCleanupLeaseGuard> {
+        self.host()?
+            .acquire_workspace_cleanup_lease(execution_root_id)
     }
 
     pub(crate) async fn workspace_entry_by_id(

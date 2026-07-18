@@ -34,16 +34,6 @@ pub(crate) struct ExistingGitWorktreeWorkspace {
     pub(crate) suggested_isolation_label: Option<String>,
 }
 
-fn workspace_paths_match(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
 impl RuntimeHandle {
     pub(super) async fn maybe_commit_turn_end_work_item_transition(
         &self,
@@ -924,42 +914,37 @@ impl RuntimeHandle {
         if workspace_id.is_empty() {
             return Err(anyhow!("workspace_id is required"));
         }
-
-        let detached_agent_id = {
-            let mut guard = self.inner.agent.lock().await;
-            let canonical_agent_home_id = crate::types::agent_home_workspace_id(&guard.state.id);
-            if workspace_id == AGENT_HOME_WORKSPACE_ID || workspace_id == canonical_agent_home_id {
-                let redundant_legacy_agent_home = guard
-                    .state
+        let state = self.agent_state().await?;
+        let canonical_agent_home_id = crate::types::agent_home_workspace_id(&state.id);
+        if workspace_id == AGENT_HOME_WORKSPACE_ID || workspace_id == canonical_agent_home_id {
+            let redundant_legacy_agent_home = workspace_id == AGENT_HOME_WORKSPACE_ID
+                && state
                     .attached_workspaces
                     .iter()
                     .any(|id| id == AGENT_HOME_WORKSPACE_ID)
-                    && guard
-                        .state
-                        .attached_workspaces
-                        .iter()
-                        .any(|id| id == &canonical_agent_home_id)
-                    && !guard
-                        .state
-                        .active_workspace_entry
-                        .as_ref()
-                        .is_some_and(|entry| entry.workspace_id == AGENT_HOME_WORKSPACE_ID);
-                if workspace_id != AGENT_HOME_WORKSPACE_ID || !redundant_legacy_agent_home {
-                    return Err(anyhow!("AgentHome cannot be detached"));
-                }
+                && state
+                    .attached_workspaces
+                    .iter()
+                    .any(|id| id == &canonical_agent_home_id)
+                && !state
+                    .active_workspace_entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.workspace_id == AGENT_HOME_WORKSPACE_ID);
+            if !redundant_legacy_agent_home {
+                return Err(anyhow!("AgentHome cannot be detached"));
             }
+        }
+        if state
+            .active_workspace_entry
+            .as_ref()
+            .is_some_and(|entry| entry.workspace_id == workspace_id)
+        {
+            self.activate_agent_home(WorkspaceAccessMode::SharedRead, None)
+                .await?;
+        }
 
-            if guard
-                .state
-                .active_workspace_entry
-                .as_ref()
-                .is_some_and(|entry| entry.workspace_id == workspace_id)
-            {
-                return Err(anyhow!(
-                    "workspace {workspace_id} is active; use UseWorkspace with another workspace_id first, then retry DetachWorkspace"
-                ));
-            }
-
+        let detached_agent_id = {
+            let mut guard = self.inner.agent.lock().await;
             let before_len = guard.state.attached_workspaces.len();
             guard
                 .state
@@ -1117,29 +1102,31 @@ impl RuntimeHandle {
         &self,
         path: &Path,
     ) -> Result<Option<ExistingGitWorktreeWorkspace>> {
-        let Some(detected) = crate::system::workspace::detect_existing_git_worktree(path)? else {
+        let discovery = crate::system::workspace::discover_workspace_path(path)?;
+        if discovery.projection_kind != WorkspaceProjectionKind::GitWorktreeRoot {
             return Ok(None);
-        };
+        }
         let state = self.agent_state().await?;
-        let known = self.inner.storage.latest_workspace_entries()?;
-        let Some(workspace) = known.into_iter().find(|entry| {
-            workspace_paths_match(&entry.workspace_anchor, &detected.parent_workspace_anchor)
-                && state
-                    .attached_workspaces
-                    .iter()
-                    .any(|id| id == &entry.workspace_id)
-        }) else {
-            return Ok(None);
-        };
-        let suggested_isolation_label = detected
-            .worktree_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(ToString::to_string);
-        Ok(Some(ExistingGitWorktreeWorkspace {
+        let workspace = self
+            .inner
+            .storage
+            .latest_workspace_entries()?
+            .into_iter()
+            .find(|entry| {
+                entry.workspace_anchor == discovery.workspace_anchor
+                    && state
+                        .attached_workspaces
+                        .iter()
+                        .any(|id| id == &entry.workspace_id)
+            });
+        Ok(workspace.map(|workspace| ExistingGitWorktreeWorkspace {
+            suggested_isolation_label: discovery
+                .execution_root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToString::to_string),
             workspace,
-            worktree_root: detected.worktree_root,
-            suggested_isolation_label,
+            worktree_root: discovery.execution_root,
         }))
     }
 
@@ -1346,19 +1333,22 @@ impl RuntimeHandle {
         // Register the execution root in the durable registry so that
         // workspace:// URIs with ?root= can resolve even after the agent
         // switches to a different root.
-        if let Err(error) =
-            self.inner
-                .runtime_db
-                .execution_root_entries()
-                .upsert(&ExecutionRootEntry {
-                    execution_root_id: execution_root_id.clone(),
-                    workspace_id: workspace.workspace_id.clone(),
-                    filesystem_path: execution_root.clone(),
-                    root_kind: projection_kind,
-                    created_at: chrono::Utc::now(),
-                    removed_at: None,
-                })
-        {
+        let execution_root_repo = self.inner.runtime_db.execution_root_entries();
+        let existing_execution_root = execution_root_repo.get(&execution_root_id).ok().flatten();
+        if let Err(error) = execution_root_repo.upsert(&ExecutionRootEntry {
+            execution_root_id: execution_root_id.clone(),
+            workspace_id: workspace.workspace_id.clone(),
+            filesystem_path: execution_root.clone(),
+            root_kind: projection_kind,
+            worktree: existing_execution_root
+                .as_ref()
+                .and_then(|entry| entry.worktree.clone()),
+            created_at: existing_execution_root
+                .as_ref()
+                .map(|entry| entry.created_at)
+                .unwrap_or_else(chrono::Utc::now),
+            removed_at: None,
+        }) {
             tracing::warn!(
                 execution_root_id,
                 workspace_id = %workspace.workspace_id,
@@ -1424,6 +1414,41 @@ impl RuntimeHandle {
         access_mode: WorkspaceAccessMode,
         cwd: Option<PathBuf>,
     ) -> Result<()> {
+        let execution_root = crate::system::workspace::normalize_path(&worktree_root)?;
+        let base_execution_root_id = Self::build_execution_root_id(
+            &workspace.workspace_id,
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            &execution_root,
+        )?;
+        let execution_root_id = match self
+            .inner
+            .runtime_db
+            .execution_root_entries()
+            .get(&base_execution_root_id)?
+        {
+            Some(entry) if entry.removed_at.is_some() => {
+                format!("{base_execution_root_id}:{}", crate::ids::runtime_id("gen"))
+            }
+            _ => base_execution_root_id,
+        };
+        self.enter_existing_git_worktree_with_id(
+            workspace,
+            worktree_root,
+            access_mode,
+            cwd,
+            execution_root_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn enter_existing_git_worktree_with_id(
+        &self,
+        workspace: &WorkspaceEntry,
+        worktree_root: PathBuf,
+        access_mode: WorkspaceAccessMode,
+        cwd: Option<PathBuf>,
+        execution_root_id: String,
+    ) -> Result<()> {
         let agent_id = self.agent_id().await?;
         let existing_state = self.agent_state().await?;
         if !existing_state
@@ -1459,11 +1484,6 @@ impl RuntimeHandle {
 
         let execution_root = crate::system::workspace::normalize_path(&worktree_root)?;
         let selected_cwd = resolve_enter_cwd(&execution_root, cwd.as_deref())?;
-        let execution_root_id = Self::build_execution_root_id(
-            &workspace.workspace_id,
-            WorkspaceProjectionKind::GitWorktreeRoot,
-            &execution_root,
-        )?;
         let occupancy = self
             .acquire_workspace_occupancy(
                 &workspace.workspace_id,
@@ -1492,19 +1512,22 @@ impl RuntimeHandle {
         let new_occupancy_id = entry.occupancy_id.clone();
 
         // Register the execution root in the durable registry.
-        if let Err(error) =
-            self.inner
-                .runtime_db
-                .execution_root_entries()
-                .upsert(&ExecutionRootEntry {
-                    execution_root_id: execution_root_id.clone(),
-                    workspace_id: workspace.workspace_id.clone(),
-                    filesystem_path: execution_root.clone(),
-                    root_kind: WorkspaceProjectionKind::GitWorktreeRoot,
-                    created_at: chrono::Utc::now(),
-                    removed_at: None,
-                })
-        {
+        let execution_root_repo = self.inner.runtime_db.execution_root_entries();
+        let existing_execution_root = execution_root_repo.get(&execution_root_id).ok().flatten();
+        if let Err(error) = execution_root_repo.upsert(&ExecutionRootEntry {
+            execution_root_id: execution_root_id.clone(),
+            workspace_id: workspace.workspace_id.clone(),
+            filesystem_path: execution_root.clone(),
+            root_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+            worktree: existing_execution_root
+                .as_ref()
+                .and_then(|entry| entry.worktree.clone()),
+            created_at: existing_execution_root
+                .as_ref()
+                .map(|entry| entry.created_at)
+                .unwrap_or_else(chrono::Utc::now),
+            removed_at: None,
+        }) {
             tracing::warn!(
                 execution_root_id,
                 workspace_id = %workspace.workspace_id,
@@ -2062,35 +2085,5 @@ mod tests {
         // "sub/.." resolves to root itself, which is valid
         let result = resolve_enter_cwd(&root, Some(Path::new("sub/.."))).unwrap();
         assert_eq!(result, root.join("sub/.."));
-    }
-
-    // --- workspace_paths_match ---
-
-    #[test]
-    fn workspace_paths_match_identical() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("workspace");
-        std::fs::create_dir_all(&path).unwrap();
-        assert!(workspace_paths_match(&path, &path));
-    }
-
-    #[test]
-    fn workspace_paths_match_different() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a");
-        let b = dir.path().join("b");
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
-        assert!(!workspace_paths_match(&a, &b));
-    }
-
-    #[test]
-    fn workspace_paths_match_symlink() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().join("real");
-        std::fs::create_dir_all(&real).unwrap();
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert!(workspace_paths_match(&real, &link));
     }
 }

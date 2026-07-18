@@ -92,19 +92,24 @@ fn tool_success_result_contract(name: &str) -> &'static str {
     match name {
         tn::AGENT_GET => "AgentGetResult",
         tn::APPLY_PATCH => "ApplyPatchResult",
+        tn::ATTACH_WORKSPACE => "AttachWorkspaceResult",
         tn::COMPLETE_WORK_ITEM | tn::CREATE_WORK_ITEM | tn::UPDATE_WORK_ITEM => {
             "WorkItemMutationResult"
         }
+        tn::CREATE_WORKTREE => "CreateWorktreeResult",
+        tn::DETACH_WORKSPACE => "DetachWorkspaceResult",
         tn::ENQUEUE => "EnqueueResult",
         tn::EXEC_COMMAND => "ExecCommandResult",
         tn::EXEC_COMMAND_BATCH => "ExecCommandBatchResult",
         tn::GET_WORK_ITEM => "GetWorkItemResult",
+        tn::GET_WORKSPACE_STATE => "WorkspaceStateResult",
         tn::LIST_MODEL_PROVIDERS => "ListModelProvidersResult",
         tn::LIST_PROVIDER_MODELS => "ListProviderModelsResult",
         tn::LIST_WORK_ITEMS => "ListWorkItemsResult",
         tn::MEMORY_GET => "MemoryGetResponse",
         tn::MEMORY_SEARCH => "MemorySearchResponse",
         tn::PICK_WORK_ITEM => "PickWorkItemResult",
+        tn::REMOVE_WORKTREE => "RemoveWorktreeResult",
         tn::SLEEP => "SleepResult",
         tn::WAIT_FOR => "WaitForResult",
         tn::SPAWN_AGENT => "SpawnAgentResult",
@@ -113,6 +118,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::TASK_OUTPUT => "TaskOutputResult",
         tn::TASK_STATUS => "TaskStatusResult",
         tn::TASK_STOP => "TaskStopResult",
+        tn::SWITCH_WORKSPACE => "SwitchWorkspaceResult",
         tn::USE_WORKSPACE => "UseWorkspaceResult",
         tn::WEB_FETCH => "WebFetchResult",
         tn::WEB_SEARCH => "WebSearchResult",
@@ -151,7 +157,15 @@ fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
         tn::SLEEP | tn::WAIT_FOR | tn::ENQUEUE | tn::AGENT_GET | tn::SPAWN_AGENT => {
             vec!["runtime agent lifecycle APIs"]
         }
-        tn::APPLY_PATCH | tn::USE_WORKSPACE => vec!["workspace/runtime file APIs"],
+        tn::APPLY_PATCH
+        | tn::GET_WORKSPACE_STATE
+        | tn::SWITCH_WORKSPACE
+        | tn::CREATE_WORKTREE
+        | tn::REMOVE_WORKTREE
+        | tn::USE_WORKSPACE => vec!["workspace/runtime file APIs"],
+        tn::ATTACH_WORKSPACE | tn::DETACH_WORKSPACE => {
+            vec!["workspace binding control APIs"]
+        }
         tn::WEB_FETCH | tn::WEB_SEARCH => vec!["web adapter APIs"],
         tn::X_SEARCH => vec!["xAI hosted search adapter"],
         tn::MEMORY_SEARCH | tn::MEMORY_GET => vec!["memory/runtime APIs"],

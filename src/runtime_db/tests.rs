@@ -3399,6 +3399,7 @@ CREATE TABLE working_memory_deltas (
             workspace_id: "ws_abc".into(),
             filesystem_path: PathBuf::from("/tmp/wt"),
             root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            worktree: None,
             created_at: Utc::now(),
             removed_at: None,
         };
@@ -3423,6 +3424,7 @@ CREATE TABLE working_memory_deltas (
             workspace_id: "ws_xyz".into(),
             filesystem_path: PathBuf::from("/tmp/wt2"),
             root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            worktree: None,
             created_at: Utc::now(),
             removed_at: None,
         };
@@ -3450,6 +3452,7 @@ CREATE TABLE working_memory_deltas (
                 workspace_id: "ws_multi".into(),
                 filesystem_path: PathBuf::from(path),
                 root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+                worktree: None,
                 created_at: Utc::now(),
                 removed_at: None,
             })?;
@@ -3461,6 +3464,7 @@ CREATE TABLE working_memory_deltas (
             workspace_id: "ws_other".into(),
             filesystem_path: PathBuf::from("/tmp/wt_c"),
             root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            worktree: None,
             created_at: Utc::now(),
             removed_at: None,
         })?;

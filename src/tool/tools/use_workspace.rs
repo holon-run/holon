@@ -192,7 +192,7 @@ pub(crate) async fn execute(
                         mode: mode_arg_label(mode).to_string(),
                         projection_kind: projection_kind_label.to_string(),
                         summary_text: Some(format!(
-                            "detected an existing git worktree for workspace {}; using it as an external execution root. Prefer UseWorkspace with {{\"workspace_id\":\"{}\",\"mode\":\"isolated\",\"isolation_label\":\"{}\"}} so the runtime manages lifecycle.",
+                            "deprecated UseWorkspace compatibility path detected an existing git worktree for workspace {}; migrate to SwitchWorkspace with the returned execution_root_id. Legacy isolation hint: workspace_id={}, isolation_label={}.",
                             existing_worktree.workspace.workspace_id,
                             existing_worktree.workspace.workspace_id,
                             isolation_label
@@ -224,7 +224,7 @@ pub(crate) async fn execute(
             mode: mode_label.to_string(),
             projection_kind: projection_kind_label.to_string(),
             summary_text: Some(format!(
-                "using workspace with {mode_label} mode and {projection_kind_label} projection"
+                "deprecated UseWorkspace compatibility path used {mode_label} mode and {projection_kind_label} projection; migrate to AttachWorkspace/SwitchWorkspace/CreateWorktree"
             )),
         },
     )

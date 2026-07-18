@@ -50,6 +50,54 @@ pub struct ExistingGitWorktree {
     pub gitdir: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspacePathDiscovery {
+    pub workspace_anchor: PathBuf,
+    pub execution_root: PathBuf,
+    pub cwd: PathBuf,
+    pub projection_kind: WorkspaceProjectionKind,
+    pub gitdir: Option<PathBuf>,
+}
+
+pub fn discover_workspace_path(path: &Path) -> Result<WorkspacePathDiscovery> {
+    let normalized_path = normalize_path(path)?;
+    if let Some(worktree) = detect_existing_git_worktree(&normalized_path)? {
+        return Ok(WorkspacePathDiscovery {
+            workspace_anchor: worktree.parent_workspace_anchor,
+            execution_root: worktree.worktree_root,
+            cwd: normalized_path,
+            projection_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+            gitdir: Some(worktree.gitdir),
+        });
+    }
+
+    let mut candidate = normalized_path.as_path();
+    loop {
+        let git_dir = candidate.join(".git");
+        if git_dir.is_dir() {
+            return Ok(WorkspacePathDiscovery {
+                workspace_anchor: candidate.to_path_buf(),
+                execution_root: candidate.to_path_buf(),
+                cwd: normalized_path,
+                projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+                gitdir: Some(git_dir),
+            });
+        }
+        let Some(parent) = candidate.parent() else {
+            break;
+        };
+        candidate = parent;
+    }
+
+    Ok(WorkspacePathDiscovery {
+        workspace_anchor: normalized_path.clone(),
+        execution_root: normalized_path.clone(),
+        cwd: normalized_path,
+        projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+        gitdir: None,
+    })
+}
+
 pub fn detect_existing_git_worktree(path: &Path) -> Result<Option<ExistingGitWorktree>> {
     let normalized_path = normalize_path(path)?;
     let mut candidate = normalized_path.as_path();
@@ -372,5 +420,24 @@ mod tests {
         .unwrap();
 
         assert!(detect_existing_git_worktree(&submodule).unwrap().is_none());
+    }
+
+    #[test]
+    fn discovers_repository_root_from_subdirectory() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let subdir = repo.join("src/nested");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let discovered = discover_workspace_path(&subdir).unwrap();
+
+        assert_eq!(discovered.workspace_anchor, repo);
+        assert_eq!(discovered.execution_root, repo);
+        assert_eq!(discovered.cwd, subdir);
+        assert_eq!(
+            discovered.projection_kind,
+            WorkspaceProjectionKind::CanonicalRoot
+        );
     }
 }

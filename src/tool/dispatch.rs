@@ -323,6 +323,12 @@ mod tests {
             "CompleteWorkItem",
             "MemorySearch",
             "MemoryGet",
+            "GetWorkspaceState",
+            "AttachWorkspace",
+            "DetachWorkspace",
+            "SwitchWorkspace",
+            "CreateWorktree",
+            "RemoveWorktree",
             "ApplyPatch",
             "ExecCommand",
             "ViewImage",
@@ -557,6 +563,13 @@ mod tests {
         assert!(names.iter().all(|name| name != "CreateExternalTrigger"));
         assert!(names.iter().all(|name| name != "CancelExternalTrigger"));
         assert!(names.iter().all(|name| name != "TaskList"));
+        assert!(names.iter().all(|name| name != "UseWorkspace"));
+        assert!(names.iter().any(|name| name == "GetWorkspaceState"));
+        assert!(names.iter().any(|name| name == "AttachWorkspace"));
+        assert!(names.iter().any(|name| name == "DetachWorkspace"));
+        assert!(names.iter().any(|name| name == "SwitchWorkspace"));
+        assert!(names.iter().any(|name| name == "CreateWorktree"));
+        assert!(names.iter().any(|name| name == "RemoveWorktree"));
         assert!(names.iter().any(|name| name == "ApplyPatch"));
         assert!(names.iter().any(|name| name == "ViewImage"));
         assert!(names.iter().any(|name| name == "WebFetch"));
@@ -609,6 +622,30 @@ mod tests {
             ToolCapabilityFamily::LocalEnvironment
         );
         assert_eq!(
+            family_for("GetWorkspaceState"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("SwitchWorkspace"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("CreateWorktree"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("RemoveWorktree"),
+            ToolCapabilityFamily::AuthorityExpanding
+        );
+        assert_eq!(
+            family_for("AttachWorkspace"),
+            ToolCapabilityFamily::AuthorityExpanding
+        );
+        assert_eq!(
+            family_for("DetachWorkspace"),
+            ToolCapabilityFamily::AuthorityExpanding
+        );
+        assert_eq!(
             family_for("ViewImage"),
             ToolCapabilityFamily::LocalEnvironment
         );
@@ -628,9 +665,14 @@ mod tests {
 
         assert!(names.iter().all(|name| name != "Sleep"));
         assert!(names.iter().all(|name| name != "TaskList"));
+        assert!(names.iter().all(|name| name != "UseWorkspace"));
         assert_eq!(
             registry.family_for_tool("Sleep").unwrap(),
             Some(ToolCapabilityFamily::CoreAgent)
+        );
+        assert_eq!(
+            registry.family_for_tool("UseWorkspace").unwrap(),
+            Some(ToolCapabilityFamily::LocalEnvironment)
         );
     }
 

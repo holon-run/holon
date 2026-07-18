@@ -232,9 +232,55 @@ pub struct ExecutionRootEntry {
     pub workspace_id: String,
     pub filesystem_path: PathBuf,
     pub root_kind: WorkspaceProjectionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeArtifactMetadata>,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeProvenance {
+    RuntimeCreated,
+    Discovered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeCleanupEvidence {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub inspected_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeArtifactMetadata {
+    pub provenance: WorktreeProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registered_by_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorized_agent_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_commit: Option<String>,
+    #[serde(default)]
+    pub detached: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_base_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_base_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_common_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cleanup: Option<WorktreeCleanupEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -3434,6 +3480,101 @@ pub struct UseWorkspaceResult {
     pub cwd: PathBuf,
     pub mode: String,
     pub projection_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceStateResult {
+    pub agent_id: String,
+    pub attached_workspace_ids: Vec<String>,
+    pub workspaces: Vec<WorkspaceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<ActiveWorkspaceEntry>,
+    pub execution_roots: Vec<ExecutionRootEntry>,
+    pub occupancies: Vec<WorkspaceOccupancyRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttachWorkspaceResult {
+    pub workspace: WorkspaceEntry,
+    pub already_attached: bool,
+    pub active_unchanged: bool,
+    pub discovered_projection_kind: WorkspaceProjectionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovered_execution_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetachWorkspaceResult {
+    pub workspace_id: String,
+    pub detached: bool,
+    pub switched_to_agent_home: bool,
+    pub retained_execution_roots: Vec<ExecutionRootEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwitchWorkspaceResult {
+    pub disposition: String,
+    pub workspace_id: String,
+    pub workspace_anchor: PathBuf,
+    pub execution_root_id: String,
+    pub execution_root: PathBuf,
+    pub cwd: PathBuf,
+    pub projection_kind: WorkspaceProjectionKind,
+    pub access_mode: WorkspaceAccessMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateWorktreeResult {
+    pub disposition: String,
+    pub created: bool,
+    pub reused: bool,
+    pub activated: bool,
+    pub base_ref_applied: bool,
+    pub requested_base_ref: String,
+    pub resolved_base_commit: String,
+    pub branch: String,
+    pub branch_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_tip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_root_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<ExecutionRootEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoveWorktreeResult {
+    pub execution_root_id: String,
+    pub disposition: String,
+    pub switched: bool,
+    pub removed: bool,
+    pub branch_deleted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_tip: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
 }

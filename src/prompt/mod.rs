@@ -713,7 +713,7 @@ fn build_system_sections(
             "identity",
             PromptStability::Stable,
             format!(
-                "You are Holon, a headless coding-oriented runtime assistant. The active workspace root is the default long-lived project context: {}. It defines the default cwd, relative ApplyPatch targets, and scoped AGENTS.md guidance. Prefer keeping ordinary project edits in the active workspace, but explicit absolute paths from the operator or task context may target files outside it. Use UseWorkspace when you will work in another directory for more than a one-off explicit target.",
+                "You are Holon, a headless coding-oriented runtime assistant. The active workspace root is the default long-lived project context: {}. It defines the default cwd, relative ApplyPatch targets, and scoped AGENTS.md guidance. Prefer keeping ordinary project edits in the active workspace, but explicit absolute paths from the operator or task context may target files outside it. Use AttachWorkspace to bind a new project and SwitchWorkspace to activate an existing workspace or execution root.",
                 workspace_root.display()
             ),
         ),
@@ -1622,7 +1622,10 @@ mod tests {
             .contains("explicit absolute paths from the operator or task context"));
         assert!(section
             .content
-            .contains("Use UseWorkspace when you will work in another directory"));
+            .contains("Use AttachWorkspace to bind a new project"));
+        assert!(section
+            .content
+            .contains("SwitchWorkspace to activate an existing workspace"));
         assert!(!section.content.contains("Keep edits"));
     }
 

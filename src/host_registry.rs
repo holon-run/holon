@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
@@ -21,10 +21,23 @@ pub(crate) struct RuntimeRegistry {
     inner: Arc<RuntimeRegistryInner>,
 }
 
+pub(crate) struct WorkspaceCleanupLeaseGuard {
+    registry: RuntimeRegistry,
+    execution_root_id: String,
+}
+
+impl Drop for WorkspaceCleanupLeaseGuard {
+    fn drop(&mut self) {
+        self.registry
+            .release_workspace_cleanup_lease(&self.execution_root_id);
+    }
+}
+
 struct RuntimeRegistryInner {
     config: ArcSwap<AppConfig>,
     host_storage: AppStorage,
     agent_identities: StdRwLock<HashMap<String, AgentIdentityRecord>>,
+    workspace_cleanup_leases: StdMutex<HashSet<String>>,
 }
 
 impl RuntimeRegistry {
@@ -56,6 +69,7 @@ impl RuntimeRegistry {
                 config: ArcSwap::from_pointee(config),
                 host_storage,
                 agent_identities: StdRwLock::new(agent_identities),
+                workspace_cleanup_leases: StdMutex::new(HashSet::new()),
             }),
         })
     }
@@ -149,6 +163,17 @@ impl RuntimeRegistry {
         holder_agent_id: &str,
         access_mode: WorkspaceAccessMode,
     ) -> Result<Option<WorkspaceOccupancyRecord>> {
+        let cleanup_leases = self
+            .inner
+            .workspace_cleanup_leases
+            .lock()
+            .expect("workspace cleanup lease set poisoned");
+        if cleanup_leases.contains(execution_root_id) {
+            return Err(anyhow!(
+                "execution root {} is being removed",
+                execution_root_id
+            ));
+        }
         let active = self.active_workspace_occupancies_for_root(execution_root_id)?;
         if let Some(existing) = active.iter().find(|record| {
             record.holder_agent_id == holder_agent_id && record.access_mode == access_mode
@@ -176,7 +201,47 @@ impl RuntimeRegistry {
             released_at: None,
         };
         self.append_workspace_occupancy(&record)?;
+        drop(cleanup_leases);
         Ok(Some(record))
+    }
+
+    pub(crate) fn acquire_workspace_cleanup_lease(
+        &self,
+        execution_root_id: &str,
+    ) -> Result<WorkspaceCleanupLeaseGuard> {
+        let mut cleanup_leases = self
+            .inner
+            .workspace_cleanup_leases
+            .lock()
+            .expect("workspace cleanup lease set poisoned");
+        if cleanup_leases.contains(execution_root_id) {
+            return Err(anyhow!(
+                "execution root {} already has an active cleanup lease",
+                execution_root_id
+            ));
+        }
+        if !self
+            .active_workspace_occupancies_for_root(execution_root_id)?
+            .is_empty()
+        {
+            return Err(anyhow!(
+                "execution root {} still has active occupancy",
+                execution_root_id
+            ));
+        }
+        cleanup_leases.insert(execution_root_id.to_string());
+        Ok(WorkspaceCleanupLeaseGuard {
+            registry: self.clone(),
+            execution_root_id: execution_root_id.to_string(),
+        })
+    }
+
+    fn release_workspace_cleanup_lease(&self, execution_root_id: &str) {
+        self.inner
+            .workspace_cleanup_leases
+            .lock()
+            .expect("workspace cleanup lease set poisoned")
+            .remove(execution_root_id);
     }
 
     pub(crate) fn release_workspace_occupancy(
@@ -455,6 +520,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(r1.occupancy_id, r2.occupancy_id);
+    }
+
+    #[test]
+    fn cleanup_lease_blocks_new_occupancy_until_released() {
+        let (_home, registry) = test_registry();
+
+        let lease = registry.acquire_workspace_cleanup_lease(ROOT_ID).unwrap();
+        let error = registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                ROOT_ID,
+                "agent-a",
+                WorkspaceAccessMode::ExclusiveWrite,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("is being removed"));
+
+        drop(lease);
+        assert!(registry
+            .acquire_workspace_occupancy(
+                WS_ID,
+                ROOT_ID,
+                "agent-a",
+                WorkspaceAccessMode::ExclusiveWrite,
+            )
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn cleanup_lease_rejects_any_active_occupancy() {
+        let (_home, registry) = test_registry();
+
+        registry
+            .acquire_workspace_occupancy(WS_ID, ROOT_ID, "agent-a", WorkspaceAccessMode::SharedRead)
+            .unwrap();
+
+        let error = registry
+            .acquire_workspace_cleanup_lease(ROOT_ID)
+            .err()
+            .expect("active occupancy should block cleanup lease");
+        assert!(error.to_string().contains("still has active occupancy"));
     }
 
     #[test]

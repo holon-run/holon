@@ -354,6 +354,18 @@ impl ExecutionRootEntryRepository<'_> {
         rows.map(|row| decode_execution_root_entry_payload(&row?))
             .collect()
     }
+
+    /// Return all entries, including removed tombstones, in stable order.
+    pub fn latest_all(&self) -> Result<Vec<ExecutionRootEntry>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json FROM execution_root_entries
+             ORDER BY created_at ASC, execution_root_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_execution_root_entry_payload(&row?))
+            .collect()
+    }
 }
 
 impl AgentIdentityRepository<'_> {
