@@ -816,7 +816,7 @@ pub struct SensitiveRuntimeFailureProvider;
 #[async_trait]
 impl AgentProvider for SensitiveRuntimeFailureProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        anyhow::bail!(r#"provider failed: {"access_token":"short-secret"}"#)
+        anyhow::bail!("{}", r#"provider failed: {"access_token":"short-secret"}"#)
     }
 }
 

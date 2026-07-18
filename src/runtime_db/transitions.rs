@@ -15,7 +15,7 @@ use crate::{
             upsert_task_tx, upsert_wait_condition_tx, upsert_work_item_continuation_tx,
             wait_condition_transition,
         },
-        RuntimeDb, RuntimeIndexChange,
+        RuntimeDb, RuntimeIndexChange, RuntimeStateTransitionConflict,
     },
     runtime_error::RuntimeError,
     types::{
