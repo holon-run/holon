@@ -14,7 +14,8 @@ fn tool_schema_inventory_snapshot_matches_generated_inventory() {
     let live = serde_json::to_string_pretty(
         &holon::tool::model_tool_schema_inventory().expect("generate tool schema inventory"),
     )
-    .expect("serialize generated tool schema inventory");
+    .expect("serialize generated tool schema inventory")
+        + "\n";
     let stored = std::fs::read_to_string(SNAPSHOT_PATH)
         .unwrap_or_else(|err| panic!("failed to read {SNAPSHOT_PATH}: {err}"));
 
@@ -34,6 +35,7 @@ fn refresh_tool_schema_inventory_snapshot() {
     let live = serde_json::to_string_pretty(
         &holon::tool::model_tool_schema_inventory().expect("generate tool schema inventory"),
     )
-    .expect("serialize generated tool schema inventory");
+    .expect("serialize generated tool schema inventory")
+        + "\n";
     std::fs::write(SNAPSHOT_PATH, live).expect("write tool schema inventory snapshot");
 }
