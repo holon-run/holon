@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
+    /// Captured once per scheduling decision and included in derived equality.
     now: DateTime<Utc>,
     pub status: AgentStatus,
     pub queue_len: usize,
