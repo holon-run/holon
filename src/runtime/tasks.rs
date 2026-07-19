@@ -3,7 +3,8 @@ use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
 use crate::runtime_error::{
-    sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
+    collect_runtime_error_source_chain, sanitize_runtime_error_text, RuntimeError,
+    RuntimeErrorContext, RuntimeErrorDomain,
 };
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
@@ -441,14 +442,38 @@ impl RuntimeHandle {
                 {
                     Ok(spawned) => spawned,
                     Err(err) => {
+                        let source_chain = collect_runtime_error_source_chain(&err);
+                        let direct_cause = source_chain
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| "child agent initialization failed".to_string());
+                        let mut detail =
+                            task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+                        detail["error"] = serde_json::json!(direct_cause);
                         let failed_task = TaskRecord {
                             status: TaskStatus::Failed,
                             updated_at: Utc::now(),
+                            detail: Some(detail),
                             ..task.clone()
                         };
                         self.persist_task_status_direct(&failed_task, "task_spawn_failed")
                             .await?;
-                        return Err(err.context("failed to spawn child agent"));
+                        return Err(anyhow::Error::from(
+                            ToolError::new(
+                                "spawn_agent_failed",
+                                format!("failed to spawn child agent: {direct_cause}"),
+                            )
+                            .with_domain(RuntimeErrorDomain::Task)
+                            .with_details(serde_json::json!({
+                                "task_id": task.id,
+                                "preset": AgentProfilePreset::PrivateChild,
+                                "workspace_mode": if worktree { "worktree" } else { "inherit" },
+                            }))
+                            .with_recovery_hint(
+                                "correct the child template, model, or workspace configuration and retry SpawnAgent",
+                            )
+                            .with_source_chain(source_chain),
+                        ));
                     }
                 };
 
