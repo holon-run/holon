@@ -28,10 +28,8 @@ export function useRuntimeDashboard(): RuntimeDashboardState {
     };
 
     const interval = window.setInterval(refreshIfVisible, DASHBOARD_AUTO_REFRESH_MS);
-    document.addEventListener("visibilitychange", refreshIfVisible);
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", refreshIfVisible);
     };
   }, [refresh]);
 

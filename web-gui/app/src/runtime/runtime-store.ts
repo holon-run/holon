@@ -8,6 +8,7 @@ import {
 } from "./client";
 import { EventGapRecoveryTracker, recoverEventGap } from "./event-gap-recovery";
 import { cacheClearRemote } from "./idb-cache";
+import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import {
   currentRemoteKey,
   hydrateAllSessions,
@@ -75,6 +76,7 @@ export type { AgentLiveStatus, AgentSessionState };
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
+  syncEvents?: boolean;
 }
 
 function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | null {
@@ -87,8 +89,8 @@ function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | n
   };
 }
 
-function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummary): AgentSummary {
-  const merged: AgentSummary = {
+export function mergeBootstrapAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummary): AgentSummary {
+  return {
     ...httpAgent,
     currentWork: cachedAgent.currentWork ?? httpAgent.currentWork,
     workItems: cachedAgent.workItems?.length ? cachedAgent.workItems : httpAgent.workItems,
@@ -97,9 +99,6 @@ function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummar
     // "tasks not included" (from /agents/list). Only overwrite cached tasks
     // when the HTTP source actually carries task data.
     tasks: httpAgent.tasks?.length ? httpAgent.tasks : (cachedAgent.tasks ?? []),
-    activeTaskCount: httpAgent.tasks?.length ? httpAgent.activeTaskCount : Math.max(cachedAgent.activeTaskCount ?? 0, httpAgent.activeTaskCount ?? 0),
-    waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
-    pending: Math.max(httpAgent.pending, cachedAgent.pending),
     // Trust HTTP state for workspace — it changes via UseWorkspace and must reflect fresh data.
     workspaceSummary: httpAgent.workspaceSummary ?? cachedAgent.workspaceSummary,
     // Unified workspaces array from /state endpoint; fall back to cache when
@@ -108,7 +107,10 @@ function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummar
       ? httpAgent.attachedWorkspaces
       : cachedAgent.attachedWorkspaces,
   };
+}
 
+function mergeNewerLiveAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummary): AgentSummary {
+  const merged = mergeBootstrapAgentState(httpAgent, cachedAgent);
   if (!isLiveRunningAgent(cachedAgent)) return merged;
   return {
     ...merged,
@@ -130,7 +132,7 @@ function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, Age
   for (const session of Object.values(state.sessionsByAgentId)) {
     const agent = session.detail?.agent;
     if (!agent) continue;
-    agentsById[agent.id] = agentsById[agent.id] ? mergeCachedAgentState(agentsById[agent.id], agent) : agent;
+    agentsById[agent.id] = agentsById[agent.id] ? mergeBootstrapAgentState(agentsById[agent.id], agent) : agent;
   }
   return agentsById;
 }
@@ -287,6 +289,7 @@ export interface RuntimeStoreState {
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   sessionsByAgentId: Record<string, AgentSessionState>;
   skillInstallJobs: SkillInstallJob[];
+  resumeRevision: number;
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string, targetEventSeq?: number) => void;
@@ -318,6 +321,7 @@ export interface RuntimeStoreState {
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
+  reconcileAfterResume: () => Promise<void>;
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
@@ -439,15 +443,76 @@ const workItemRefreshInFlight = new Set<string>();
 const workItemDetailInFlight = new Set<string>();
 const taskDetailInFlight = new Set<string>();
 const toolExecutionDetailInFlight = new Set<string>();
-const agentStateRefreshInFlight = new Set<string>();
+const agentStateRefreshInFlight = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
+let clientGeneration = 0;
+let resumeReconciliationInFlight: Promise<void> | undefined;
+let resumeReconciliationCoordinator: ResumeReconciliationCoordinator | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
 const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
 const GLOBAL_BACKFILL_LIMIT = 100;
+
+function nextClientGeneration(): number {
+  clientGeneration += 1;
+  return clientGeneration;
+}
+
+function isCurrentClientGeneration(generation: number): boolean {
+  return generation === clientGeneration;
+}
+
+function clearInFlightHydration(): void {
+  messageHydrationInFlight.clear();
+  transcriptHydrationInFlight.clear();
+  briefHydrationInFlight.clear();
+}
+
+function cancelClientGenerationWork(): void {
+  bootstrapRefreshInFlight = undefined;
+  if (bootstrapRefreshTimer != null) {
+    window.clearTimeout(bootstrapRefreshTimer);
+    bootstrapRefreshTimer = undefined;
+  }
+  agentStateRefreshInFlight.clear();
+  clearInFlightHydration();
+}
+
+function closeEventStreamsForResume(set: StoreSet): void {
+  stopGlobalEventStream(set);
+  for (const agentId of Array.from(activeEventStreams.keys())) {
+    stopAgentEventStream(agentId, set);
+  }
+  for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
+  streamFlushTimers.clear();
+  pendingStreamEvents.clear();
+  for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
+  reconnectTimers.clear();
+  for (const timer of staleTimers.values()) window.clearTimeout(timer);
+  staleTimers.clear();
+  globalStreamSubscribedAgents.clear();
+  globalEventRecovery.clear();
+}
+
+export function resetSessionsForResume(
+  sessionsByAgentId: Record<string, AgentSessionState>,
+): Record<string, AgentSessionState> {
+  return Object.fromEntries(
+    Object.entries(sessionsByAgentId).map(([agentId, session]) => [
+      agentId,
+      {
+        ...session,
+        loading: false,
+        loadingOlder: false,
+        liveStatus: "stale" as const,
+        reconnectAttempt: 0,
+      },
+    ]),
+  );
+}
 
 // ─── Session cache (IndexedDB persistence) ──────────────────────────
 let sessionCacheWriter: SessionCacheWriter | null = null;
@@ -888,6 +953,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
   sessionsByAgentId: {},
   skillInstallJobs: loadSkillInstallJobs(),
+  resumeRevision: 0,
 
   setRoute: (route) => set({ route }),
   openSkill: (skillId) => set({ route: "skillDetail", selectedSkillId: skillId }),
@@ -1051,6 +1117,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 
   setRuntimeConnection: async (config) => {
+    nextClientGeneration();
     const normalizedBaseUrl = config.mode === "remote" ? normalizeConnectionBaseUrl(config.baseUrl) : "";
     const retainedToken =
       config.mode === "remote" &&
@@ -1073,6 +1140,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
     writeStoredRuntimeConnectionConfig(normalizedConfig);
     bootstrapRefreshInFlight = undefined;
+    resumeReconciliationInFlight = undefined;
     for (const subscription of activeEventStreams.values()) subscription.close();
     activeEventStreams.clear();
     pendingStreamEvents.clear();
@@ -1141,6 +1209,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       selectedSkillId: "",
       selectedTemplateId: "",
       route: "dashboard",
+      resumeRevision: get().resumeRevision + 1,
     });
     await get().refreshBootstrap();
     // Initialize cache for the new remote (async, non-blocking).
@@ -1149,15 +1218,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   refreshBootstrap: async (options = {}) => {
     if (bootstrapRefreshInFlight) return bootstrapRefreshInFlight;
+    const generation = clientGeneration;
     if (options.background) {
       set({ bootstrapError: undefined });
     } else {
       set({ bootstrapLoading: true, bootstrapError: undefined });
     }
 
-    bootstrapRefreshInFlight = (async () => {
+    const request = (async () => {
       try {
         const bootstrap = await runtimeClient.getBootstrap();
+        if (!isCurrentClientGeneration(generation)) return;
         set((state) => {
           if (bootstrap.connection.source === "fixture" && state.bootstrap.connection.source === "http") {
             return {
@@ -1169,7 +1240,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           const cachedAgentsById = cachedAgentsByIdFromState(state);
           const agents = bootstrap.agents.map((agent) => {
             const cachedAgent = cachedAgentsById[agent.id];
-            return cachedAgent ? mergeCachedAgentState(agent, cachedAgent) : agent;
+            return cachedAgent ? mergeBootstrapAgentState(agent, cachedAgent) : agent;
           });
           return {
             bootstrap: sortBootstrapAgents(
@@ -1194,18 +1265,64 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           );
           return updated ? { sessionsByAgentId: updated } : {};
         });
-        syncGlobalEventRoster(get, set);
+        if (options.syncEvents !== false) {
+          syncGlobalEventRoster(get, set);
+        }
       } catch (error) {
+        if (!isCurrentClientGeneration(generation)) return;
         set({
           bootstrapLoading: false,
           bootstrapError: error instanceof Error ? error.message : String(error),
         });
-      } finally {
-        bootstrapRefreshInFlight = undefined;
       }
     })();
+    bootstrapRefreshInFlight = request;
+    void request.then(() => {
+      if (bootstrapRefreshInFlight === request) {
+        bootstrapRefreshInFlight = undefined;
+      }
+    });
 
-    return bootstrapRefreshInFlight;
+    return request;
+  },
+
+  reconcileAfterResume: async () => {
+    if (resumeReconciliationInFlight) return resumeReconciliationInFlight;
+
+    const generation = nextClientGeneration();
+    cancelClientGenerationWork();
+    closeEventStreamsForResume(set);
+    set((state) => ({
+      resumeRevision: state.resumeRevision + 1,
+      sessionsByAgentId: resetSessionsForResume(state.sessionsByAgentId),
+    }));
+
+    const request = (async () => {
+      try {
+        await get().refreshBootstrap({ background: true, syncEvents: false });
+        if (!isCurrentClientGeneration(generation)) return;
+        await Promise.all(get().bootstrap.agents.map((agent) => get().refreshAgentState(agent.id)));
+        if (!isCurrentClientGeneration(generation)) return;
+        syncGlobalEventRoster(get, set);
+        const selectedAgentId = get().selectedAgentId;
+        if (selectedAgentId) {
+          await get().refreshAgentDetail(selectedAgentId, get().displayLevel);
+        }
+      } finally {
+        if (isCurrentClientGeneration(generation)) {
+          set((state) => ({ resumeRevision: state.resumeRevision + 1 }));
+        }
+      }
+    })();
+    resumeReconciliationInFlight = request;
+    const clearRequest = () => {
+      if (resumeReconciliationInFlight === request) {
+        resumeReconciliationInFlight = undefined;
+      }
+    };
+    void request.then(clearRequest, clearRequest);
+
+    return request;
   },
 
   refreshModelCatalog: async () => {
@@ -1846,6 +1963,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return;
     }
 
+    const generation = clientGeneration;
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -1860,13 +1978,16 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
     try {
       const detail = await runtimeClient.getAgentDetail(agentId, displayLevel);
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
       await loadTargetAgentEventWindow(get, set, agentId, displayLevel);
+      if (!isCurrentClientGeneration(generation)) return;
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
       scheduleCacheWrite(get, agentId);
     } catch (error) {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -1906,14 +2027,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   refreshAgentState: async (agentId) => {
     if (!agentId || agentStateRefreshInFlight.has(agentId)) return;
-    agentStateRefreshInFlight.add(agentId);
+    const generation = clientGeneration;
+    agentStateRefreshInFlight.set(agentId, generation);
     try {
       const freshAgent = await runtimeClient.getAgentState(agentId);
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => mergeAgentStateIntoState(state, agentId, freshAgent));
     } catch {
       // Swallow — state refresh is best-effort; the next full detail refresh will recover.
     } finally {
-      agentStateRefreshInFlight.delete(agentId);
+      if (agentStateRefreshInFlight.get(agentId) === generation) {
+        agentStateRefreshInFlight.delete(agentId);
+      }
     }
   },
 
@@ -2010,6 +2135,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
     if (session.loadingOlder || !session.hasOlder || session.oldestSeq == null) return;
 
+    const generation = clientGeneration;
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -2029,6 +2155,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         order: "desc",
         displayLevel,
       });
+      if (!isCurrentClientGeneration(generation)) return;
 
       set((state) =>
         mergeEventPageIntoSession(
@@ -2045,6 +2172,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
     } catch (error) {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -2245,6 +2373,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 // Initialize session cache on first load.
 if (typeof window !== "undefined") {
   initSessionCacheForRemote((partial) => useRuntimeStore.setState(partial), () => useRuntimeStore.getState());
+  resumeReconciliationCoordinator = installResumeReconciliationListeners();
+  void resumeReconciliationCoordinator;
 }
 
 // Resume polling for any skill install jobs persisted from a previous session.
@@ -2254,6 +2384,22 @@ if (typeof window !== "undefined") {
       void pollSkillInstallJob(useRuntimeStore.setState, useRuntimeStore.getState, job.jobId);
     }
   }
+}
+
+function installResumeReconciliationListeners(): ResumeReconciliationCoordinator {
+  const coordinator = new ResumeReconciliationCoordinator(
+    () => useRuntimeStore.getState().reconcileAfterResume(),
+    window,
+    100,
+  );
+  const scheduleIfVisible = () => {
+    if (document.visibilityState === "visible") coordinator.schedule();
+  };
+  const schedule = () => coordinator.schedule();
+  document.addEventListener("visibilitychange", scheduleIfVisible);
+  window.addEventListener("pageshow", schedule);
+  window.addEventListener("online", schedule);
+  return coordinator;
 }
 
 function emptyAgentSession(): AgentSessionState {
@@ -2504,6 +2650,7 @@ function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto)
 }
 
 async function backfillAgentEvents(set: StoreSet, agentId: string, force = false): Promise<void> {
+  const generation = clientGeneration;
   try {
     await recoverEventGap(globalEventRecovery, agentId, {
       force,
@@ -2514,6 +2661,7 @@ async function backfillAgentEvents(set: StoreSet, agentId: string, force = false
           order: "asc",
           limit: GLOBAL_BACKFILL_LIMIT,
         });
+        if (!isCurrentClientGeneration(generation)) return { eventLogEpoch: page.event_log_epoch, events: [] };
         return {
           eventLogEpoch: page.event_log_epoch,
           events: (page.events ?? [])
@@ -2521,7 +2669,11 @@ async function backfillAgentEvents(set: StoreSet, agentId: string, force = false
             .map((event) => streamEventFromBackfill(event, agentId, page.event_log_epoch)),
         };
       },
-      applyEvents: (events) => applyStreamEvents(set, agentId, events),
+      applyEvents: (events) => {
+        if (isCurrentClientGeneration(generation)) {
+          applyStreamEvents(set, agentId, events);
+        }
+      },
     });
   } catch {
     // Silently ignore backfill errors; the stream will retry.
@@ -3296,7 +3448,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     ? resetSessionForEventConflict(epochSession, detail.eventLogEpoch)
     : epochSession;
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
-  const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
+  const agent = liveDetailIsNewer && current.detail ? mergeNewerLiveAgentState(detail.agent, current.detail.agent) : detail.agent;
   const detailBase: AgentDetail = {
     ...detail,
     agent,
@@ -3350,12 +3502,14 @@ async function catchUpAgentEvents(
   agentId: string,
   _displayLevel: DisplayLevel,
 ): Promise<void> {
+  const generation = clientGeneration;
   const afterSeq = get().sessionsByAgentId[agentId]?.newestSeq;
   const page = await runtimeClient.getAgentEvents(agentId, {
     afterSeq,
     limit: 100,
     order: "asc",
   });
+  if (!isCurrentClientGeneration(generation)) return;
   set((state) =>
     mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq ?? undefined, page.has_older, "debug", {
       newestSeq: page.cursor_seq ?? page.newest_seq ?? undefined,
@@ -3509,12 +3663,15 @@ function scheduleMessageHydration(
   if (!requestIds.length) return;
   requestIds.forEach((messageId) => inFlight.add(messageId));
 
+  const generation = clientGeneration;
   void runtimeClient
     .getAgentMessagesBatch(agentId, requestIds)
     .then((response) => {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => mergeHydratedMessagesIntoSession(state, agentId, response.messages ?? [], response.missing_message_ids ?? [], displayLevel));
     })
     .catch((error) => {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -3526,6 +3683,7 @@ function scheduleMessageHydration(
       }));
     })
     .finally(() => {
+      if (!isCurrentClientGeneration(generation)) return;
       const current = messageHydrationInFlight.get(agentId);
       if (!current) return;
       requestIds.forEach((messageId) => current.delete(messageId));
@@ -3552,9 +3710,11 @@ function scheduleTranscriptHydration(
   if (!requestIds.length) return;
   requestIds.forEach((entryId) => inFlight.add(entryId));
 
+  const generation = clientGeneration;
   void runtimeClient
     .getAgentTranscriptEntriesBatch(agentId, requestIds)
     .then((response) => {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) =>
         mergeHydratedTranscriptEntriesIntoSession(
           state,
@@ -3566,6 +3726,7 @@ function scheduleTranscriptHydration(
       );
     })
     .catch((error) => {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -3577,6 +3738,7 @@ function scheduleTranscriptHydration(
       }));
     })
     .finally(() => {
+      if (!isCurrentClientGeneration(generation)) return;
       const current = transcriptHydrationInFlight.get(agentId);
       if (!current) return;
       requestIds.forEach((entryId) => current.delete(entryId));
@@ -3603,12 +3765,15 @@ function scheduleBriefHydration(
   if (!requestIds.length) return;
   requestIds.forEach((briefId) => inFlight.add(briefId));
 
+  const generation = clientGeneration;
   void runtimeClient
     .getAgentBriefsById(agentId, requestIds)
     .then(({ recordsById, notFoundIds }) => {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, notFoundIds, displayLevel));
     })
     .catch((error) => {
+      if (!isCurrentClientGeneration(generation)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -3620,6 +3785,7 @@ function scheduleBriefHydration(
       }));
     })
     .finally(() => {
+      if (!isCurrentClientGeneration(generation)) return;
       const current = briefHydrationInFlight.get(agentId);
       if (!current) return;
       requestIds.forEach((briefId) => current.delete(briefId));
@@ -3844,6 +4010,7 @@ async function loadTargetAgentEventWindow(
   agentId: string,
   displayLevel: DisplayLevel,
 ): Promise<void> {
+  const generation = clientGeneration;
   const session = get().sessionsByAgentId[agentId];
   const targetEventSeq = session?.targetEventSeq;
   if (targetEventSeq == null || session?.eventsBySeq[targetEventSeq]) return;
@@ -3867,6 +4034,7 @@ async function loadTargetAgentEventWindow(
       order: "asc",
       displayLevel,
     });
+    if (!isCurrentClientGeneration(generation)) return;
     set((state) =>
       mergeEventPageIntoSession(
         state,
@@ -3883,6 +4051,7 @@ async function loadTargetAgentEventWindow(
       ),
     );
   } catch (error) {
+    if (!isCurrentClientGeneration(generation)) return;
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
