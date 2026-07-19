@@ -27,7 +27,7 @@
 use crate::{
     prompt::{render_section, EffectivePrompt, PromptSection, PromptStability},
     provider::{
-        ContinuationScopeId, ConversationMessage, PromptContentBlock,
+        AgentProvider, ContinuationScopeId, ConversationMessage, PromptContentBlock,
         ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
         ProviderTurnRequest,
     },
@@ -85,6 +85,20 @@ pub fn build_provider_turn_request(
         native_web_search,
         response_format: None,
     }
+}
+
+pub fn build_initial_provider_turn_request(
+    provider: &dyn AgentProvider,
+    effective_prompt: &EffectivePrompt,
+    available_tools: Vec<ToolSpec>,
+    native_web_search: Option<ProviderNativeWebSearchRequest>,
+) -> ProviderTurnRequest {
+    build_provider_turn_request(
+        effective_prompt,
+        available_tools,
+        native_web_search,
+        provider.resolved_image_input_support().unwrap_or(true),
+    )
 }
 
 /// Builds a provider turn request from accumulated conversation state.
@@ -394,7 +408,9 @@ fn mark_last_cache_breakpoint(
 mod tests {
     use super::*;
     use crate::{
+        config::{AppConfig, ModelRouteRef},
         prompt::{PromptCacheIdentity, PromptSection, PromptStability},
+        provider::build_provider_from_model_chain,
         system::ExecutionProfile,
         system::ExecutionRootRef,
         system::ExecutionSnapshot,
@@ -564,6 +580,60 @@ mod tests {
     }
 
     #[test]
+    fn initial_request_recomputes_markdown_image_gate_after_fallback_promotion() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir(workspace.path().join("outputs")).expect("outputs dir");
+        std::fs::write(workspace.path().join("outputs/chart.png"), fixture_png())
+            .expect("write png");
+
+        let mut effective_prompt = fixture_prompt();
+        effective_prompt.execution.workspace_id = Some("ws_test".to_string());
+        effective_prompt.execution.workspace_anchor = workspace.path().to_path_buf();
+        effective_prompt.execution.execution_root = workspace.path().to_path_buf();
+        effective_prompt.execution.cwd = workspace.path().to_path_buf();
+        effective_prompt.context_sections = vec![PromptSection {
+            name: "current_input".to_string(),
+            id: "current_input".to_string(),
+            content: "Please inspect ![Chart](workspace://ws_test/outputs/chart.png).".to_string(),
+            stability: PromptStability::TurnScoped,
+        }];
+
+        let config = codex_image_fallback_config();
+        let chain = config.provider_chain();
+        let text_only_provider =
+            build_provider_from_model_chain(&config, &chain).expect("text-only provider chain");
+        let text_only_request = build_initial_provider_turn_request(
+            text_only_provider.as_ref(),
+            &effective_prompt,
+            Vec::new(),
+            None,
+        );
+        assert_eq!(text_only_request.conversation.len(), 1);
+        let ConversationMessage::UserBlocks(blocks) = &text_only_request.conversation[0] else {
+            panic!("expected original user blocks");
+        };
+        assert!(blocks[0]
+            .text
+            .contains("![Chart](workspace://ws_test/outputs/chart.png)"));
+
+        let image_provider = build_provider_from_model_chain(&config, &chain[1..])
+            .expect("promoted image-capable provider chain");
+        let image_request = build_initial_provider_turn_request(
+            image_provider.as_ref(),
+            &effective_prompt,
+            Vec::new(),
+            None,
+        );
+        assert!(matches!(
+            image_request.conversation.as_slice(),
+            [
+                ConversationMessage::UserBlocks(_),
+                ConversationMessage::UserImage { .. }
+            ]
+        ));
+    }
+
+    #[test]
     fn markdown_image_resolver_ignores_remote_urls_and_workspace_escapes() {
         let workspace = tempfile::tempdir().expect("workspace");
         let mut effective_prompt = fixture_prompt();
@@ -595,6 +665,34 @@ mod tests {
             0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
             0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
         ]
+    }
+
+    fn codex_image_fallback_config() -> AppConfig {
+        let home = tempfile::tempdir().expect("home").keep();
+        std::fs::write(
+            home.join("config.json"),
+            r#"{"model":{"default":"openai-codex/gpt-5.3-codex-spark","fallbacks":["openai-codex/gpt-5.5"]}}"#,
+        )
+        .expect("write config");
+        let mut config =
+            AppConfig::load_with_home(Some(home)).expect("load fallback provider config");
+        let provider = config
+            .providers
+            .get_mut(&crate::config::ProviderId::openai_codex())
+            .expect("openai-codex provider");
+        provider.credential = Some(
+            r#"{"tokens":{"access_token":"test-token","refresh_token":"test-refresh","account_id":"test-account"}}"#
+                .to_string(),
+        );
+        assert_eq!(
+            config.provider_chain(),
+            vec![
+                ModelRouteRef::parse_compatible("openai-codex/gpt-5.3-codex-spark")
+                    .expect("text-only route"),
+                ModelRouteRef::parse_compatible("openai-codex/gpt-5.5").expect("image route"),
+            ]
+        );
+        config
     }
 
     fn fixture_prompt() -> EffectivePrompt {
