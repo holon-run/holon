@@ -5,62 +5,19 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use holon::{
-    config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
     provider::{AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{AuthorityClass, TaskStatus},
 };
-use tempfile::tempdir;
 use tokio::time::{sleep, Duration};
 
-fn test_config() -> AppConfig {
-    let home_dir = tempdir().unwrap().keep();
-    AppConfig {
-        default_agent_id: "default".into(),
-        http_addr: "127.0.0.1:0".into(),
-        callback_base_url: "http://127.0.0.1:0".into(),
-        home_dir: home_dir.clone(),
-        data_dir: home_dir.clone(),
-        socket_path: home_dir.join("run").join("holon.sock"),
-        workspace_dir: tempdir().unwrap().keep(),
-        context_window_messages: 8,
-        context_window_briefs: 8,
-        compaction_trigger_messages: 10,
-        compaction_keep_recent_messages: 4,
-        prompt_budget_estimated_tokens: 4096,
-        compaction_trigger_estimated_tokens: 2048,
-        compaction_keep_recent_estimated_tokens: 768,
-        recent_episode_candidates: 12,
-        max_relevant_episodes: 3,
-        control_token: Some("secret".into()),
-        control_auth_mode: ControlAuthMode::Auto,
-        api_cors: Default::default(),
-        config_file_path: home_dir.join("config.json"),
-        stored_config: Default::default(),
-        default_model: holon::config::ModelRouteRef::parse_compatible(
-            "anthropic/claude-sonnet-4-6",
-        )
-        .unwrap(),
-        fallback_models: Vec::new(),
-        vision_model: None,
-        image_generation_model: None,
-        vision_candidate_models: Vec::new(),
-        runtime_max_output_tokens: 8192,
-        default_tool_output_tokens: 8_000,
-        max_tool_output_tokens: 64_000,
-        disable_provider_fallback: false,
-        tui_alternate_screen: holon::config::AltScreenMode::Auto,
-        validated_model_overrides: std::collections::HashMap::new(),
-        validated_unknown_model_fallback: None,
-        model_discovery_cache: Default::default(),
-        providers: holon::config::provider_registry_for_tests(
-            None,
-            Some("dummy"),
-            home_dir.join(".codex"),
-        ),
-        web_config: holon::web::WebConfig::default(),
-    }
+mod support;
+
+use support::{TestConfig, TestConfigBuilder};
+
+fn test_config() -> TestConfig {
+    TestConfigBuilder::new().build()
 }
 
 fn git(path: &Path, args: &[&str]) -> Result<String> {
@@ -216,11 +173,12 @@ fn task_worktree_metadata(
 #[tokio::test]
 async fn wt203_task_owned_cleanup_removes_clean_terminal_worktree_and_branch() -> Result<()> {
     let config = test_config();
-    let workspace = config.workspace_dir.clone();
+    let workspace = config.workspace_dir().to_path_buf();
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
-    let host = RuntimeHost::new_with_provider(config, Arc::new(DelayedTextProvider))?;
+    let host =
+        RuntimeHost::new_with_provider(config.config().clone(), Arc::new(DelayedTextProvider))?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 
@@ -254,11 +212,12 @@ async fn wt203_task_owned_cleanup_removes_clean_terminal_worktree_and_branch() -
 #[tokio::test]
 async fn wt203_task_owned_cleanup_treats_already_removed_worktree_as_completed() -> Result<()> {
     let config = test_config();
-    let workspace = config.workspace_dir.clone();
+    let workspace = config.workspace_dir().to_path_buf();
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
-    let host = RuntimeHost::new_with_provider(config, Arc::new(DelayedTextProvider))?;
+    let host =
+        RuntimeHost::new_with_provider(config.config().clone(), Arc::new(DelayedTextProvider))?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 
@@ -303,11 +262,12 @@ async fn wt203_task_owned_cleanup_treats_already_removed_worktree_as_completed()
 #[tokio::test]
 async fn wt203_task_owned_cleanup_records_branch_mismatch_without_blocking() -> Result<()> {
     let config = test_config();
-    let workspace = config.workspace_dir.clone();
+    let workspace = config.workspace_dir().to_path_buf();
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
-    let host = RuntimeHost::new_with_provider(config, Arc::new(DelayedTextProvider))?;
+    let host =
+        RuntimeHost::new_with_provider(config.config().clone(), Arc::new(DelayedTextProvider))?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 
@@ -349,11 +309,11 @@ async fn wt203_task_owned_cleanup_records_branch_mismatch_without_blocking() -> 
 #[tokio::test]
 async fn wt203_task_stop_cleans_clean_task_owned_worktree() -> Result<()> {
     let config = test_config();
-    let workspace = config.workspace_dir.clone();
+    let workspace = config.workspace_dir().to_path_buf();
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
-    let host = RuntimeHost::new_with_provider(config, Arc::new(SlowTextProvider))?;
+    let host = RuntimeHost::new_with_provider(config.config().clone(), Arc::new(SlowTextProvider))?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 

@@ -1,4 +1,4 @@
-.PHONY: help web web-ci transport-types transport-types-check snapshots-check snapshots-refresh build all test test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
@@ -63,6 +63,9 @@ all: web build ## Build everything: web GUI then Rust
 
 test: ## Run the full Rust test suite serially
 	cargo test --all-targets -- --test-threads=1
+
+test-resource-lint: ## Audit permanent test temp directories against the reasoned allowlist
+	python3 scripts/check-test-temp-resources.py
 
 test-concurrent: ## Run runtime lifecycle integration tests with Rust's default test threads
 	@set -eu; \
@@ -150,7 +153,7 @@ lint: ## Run clippy
 check: ## Quick local check (formatting + clippy + compile check)
 	RUSTFLAGS="-D warnings" cargo check --all-targets
 
-ci: web-ci fmt-check lint build snapshots-check test ## Run the full CI checks locally
+ci: web-ci fmt-check lint build snapshots-check test-resource-lint test ## Run the full CI checks locally
 
 run:
 	cargo run -- serve

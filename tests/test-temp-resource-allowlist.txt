@@ -1,0 +1,15 @@
+# PATH<TAB>COUNT<TAB>REASON
+tests/live_anthropic.rs	1	Live trace data is retained for provider diagnostics after an explicit live run.
+tests/scripted_agent_provider.rs	2	Legacy standalone config helper; migrate to shared TestConfig ownership.
+tests/support/http_callback.rs	2	Explicit-path HTTP helper still returns AppConfig without a resource owner.
+tests/support/http_client.rs	5	Tests exercise external cwd/worktree paths and legacy explicit-path server helpers.
+tests/support/http_control.rs	12	Legacy explicit-path HTTP configs cross restart and control-plane test boundaries.
+tests/support/http_events.rs	4	Legacy explicit-path HTTP configs cross restart and event-delivery boundaries.
+tests/support/http_ingress.rs	2	Legacy explicit-path HTTP config is passed into the server helper.
+tests/support/http_operator_ingress.rs	2	Legacy explicit-path HTTP config is passed into the server helper.
+tests/support/http_workspace.rs	1	Test intentionally removes a stale directory before the HTTP request.
+tests/support/mod.rs	2	Named build_retained compatibility path for legacy helpers; no default builder leak.
+tests/wt201_multiple_worktree_tasks.rs	2	Standalone worktree suite awaits migration to shared TestConfig ownership.
+tests/wt202_worktree_task_summary.rs	2	Standalone worktree suite awaits migration to shared TestConfig ownership.
+tests/wt204_parallel_worktree_workflow.rs	2	Standalone worktree suite awaits migration to shared TestConfig ownership.
+tests/wt205_worktree_lifecycle_edge_cases.rs	2	Standalone worktree suite awaits migration to shared TestConfig ownership.

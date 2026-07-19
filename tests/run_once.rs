@@ -1,9 +1,9 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use holon::{
-    config::{AppConfig, ControlAuthMode},
+    config::ControlAuthMode,
     host::RuntimeHost,
     provider::{
         AgentProvider, ConversationMessage, ModelBlock, ProviderTurnRequest, ProviderTurnResponse,
@@ -14,18 +14,15 @@ use holon::{
     types::{AuthorityClass, ControlAction, FailureArtifactCategory, TaskStatus, TokenUsage},
 };
 use serde_json::json;
-use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 mod support;
 
-use support::{assert_run_once_completed_text, init_git_repo, TestConfigBuilder};
+use support::{assert_run_once_completed_text, init_git_repo, TestConfig, TestConfigBuilder};
 
-fn test_config(workspace_dir: PathBuf, home_dir: PathBuf) -> AppConfig {
+fn test_config() -> TestConfig {
     TestConfigBuilder::new()
-        .with_workspace_dir(workspace_dir)
-        .with_data_dir(home_dir)
         .with_control_auth_mode(ControlAuthMode::Auto)
         .build()
 }
@@ -46,10 +43,9 @@ fn run_request(text: impl Into<String>) -> RunOnceRequest {
 
 #[tokio::test]
 async fn run_once_returns_completed_text_for_simple_prompt() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir.clone()),
+        test_config.config().clone(),
         Arc::new(StubProvider::new("stub result")),
     )?;
 
@@ -94,10 +90,9 @@ impl AgentProvider for TokenReportingProvider {
 
 #[tokio::test]
 async fn run_once_surfaces_structured_token_usage_when_provider_reports_it() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(TokenReportingProvider),
     )?;
 
@@ -255,11 +250,9 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
 
 #[tokio::test]
 async fn run_once_prefers_completed_work_item_result_brief_over_latest_turn_text() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let provider = Arc::new(WorkItemDeliverySummaryProvider::new());
-    let host =
-        RuntimeHost::new_with_provider(test_config(workspace_dir, home_dir), provider.clone())?;
+    let host = RuntimeHost::new_with_provider(test_config.config().clone(), provider.clone())?;
     let runtime = host.default_runtime().await?;
     let work_item = runtime
         .create_work_item(
@@ -340,12 +333,9 @@ impl AgentProvider for ErrorProvider {
 
 #[tokio::test]
 async fn run_once_surfaces_runtime_error_as_failed_delivery() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
-    let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
-        Arc::new(ErrorProvider),
-    )?;
+    let test_config = test_config();
+    let host =
+        RuntimeHost::new_with_provider(test_config.config().clone(), Arc::new(ErrorProvider))?;
 
     let response = run_once_with_host(host, run_request("explode")).await?;
 
@@ -429,10 +419,9 @@ impl AgentProvider for FileEditingProvider {
 
 #[tokio::test]
 async fn run_once_collects_changed_files_from_mutating_tools() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(FileEditingProvider::new()),
     )?;
 
@@ -518,10 +507,10 @@ impl AgentProvider for MultiMutatingToolsProvider {
 
 #[tokio::test]
 async fn run_once_collects_changed_files_from_multiple_mutating_tools() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
+    let workspace_dir = test_config.workspace_dir().to_path_buf();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir.clone(), home_dir),
+        test_config.config().clone(),
         Arc::new(MultiMutatingToolsProvider::new()),
     )?;
 
@@ -764,10 +753,9 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
 
 #[tokio::test]
 async fn run_once_uses_last_assistant_message_without_terminal_delivery_round() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(TerminalDeliveryProvider::new()),
     )?;
 
@@ -783,10 +771,9 @@ async fn run_once_uses_last_assistant_message_without_terminal_delivery_round() 
 
 #[tokio::test]
 async fn run_once_keeps_last_assistant_message_without_structured_fallback() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(EmptyTerminalDeliveryProvider::new()),
     )?;
 
@@ -802,10 +789,9 @@ async fn run_once_keeps_last_assistant_message_without_structured_fallback() -> 
 
 #[tokio::test]
 async fn run_once_leaves_final_text_empty_without_assistant_text() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(SleepOnlyTerminalProvider::new()),
     )?;
 
@@ -875,10 +861,9 @@ impl AgentProvider for SleepTaskProvider {
 
 #[tokio::test]
 async fn run_once_waits_for_background_tasks_by_default() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(SleepTaskProvider::new(50)),
     )?;
 
@@ -953,10 +938,9 @@ impl AgentProvider for CommandTaskProvider {
 
 #[tokio::test]
 async fn run_once_waits_for_command_tasks_by_default() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(CommandTaskProvider::new("sleep 0.1; printf command_ok")),
     )?;
 
@@ -972,10 +956,9 @@ async fn run_once_waits_for_command_tasks_by_default() -> Result<()> {
 
 #[tokio::test]
 async fn run_once_no_wait_does_not_interrupt_session_local_sleep() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(SleepTaskProvider::new(500)),
     )?;
 
@@ -1001,10 +984,9 @@ async fn run_once_no_wait_does_not_interrupt_session_local_sleep() -> Result<()>
 
 #[tokio::test]
 async fn run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(CommandTaskProvider::new("sleep 60")),
     )?;
 
@@ -1033,10 +1015,9 @@ async fn run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result
 
 #[tokio::test]
 async fn run_once_no_wait_allows_short_tasks_to_finish_during_quiescence() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(SleepTaskProvider::new(50)),
     )?;
 
@@ -1058,10 +1039,9 @@ async fn run_once_no_wait_allows_short_tasks_to_finish_during_quiescence() -> Re
 
 #[tokio::test]
 async fn run_once_no_wait_allows_short_command_tasks_to_finish_during_quiescence() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(CommandTaskProvider::new(
             "sleep 0.1 && printf quick_command_ok",
         )),
@@ -1086,10 +1066,9 @@ async fn run_once_no_wait_allows_short_command_tasks_to_finish_during_quiescence
 
 #[tokio::test]
 async fn run_once_prefers_parent_final_result_over_delegated_task_briefs() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(DelegatedRunOnceProvider::new()),
     )?;
 
@@ -1227,10 +1206,9 @@ impl AgentProvider for TwoRoundProvider {
 
 #[tokio::test]
 async fn run_once_reports_completed_when_final_result_is_below_max_turns() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(StubProvider::new("stub result")),
     )?;
 
@@ -1251,10 +1229,9 @@ async fn run_once_reports_completed_when_final_result_is_below_max_turns() -> Re
 
 #[tokio::test]
 async fn run_once_reports_completed_when_final_result_lands_on_max_turn_boundary() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(StubProvider::new("stub result")),
     )?;
 
@@ -1276,10 +1253,9 @@ async fn run_once_reports_completed_when_final_result_lands_on_max_turn_boundary
 #[tokio::test]
 async fn run_once_reports_completed_when_final_text_arrives_after_last_allowed_model_round(
 ) -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(TwoRoundProvider::new()),
     )?;
 
@@ -1306,10 +1282,9 @@ async fn run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<
     // consumed, regardless of the number of model rounds within that turn.
     // Before the fix, the counter used total_model_rounds, which would
     // incorrectly report MaxTurnsExceeded for this scenario.
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(TwoRoundProvider::new()),
     )?;
 
@@ -1333,10 +1308,9 @@ async fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<(
     // With max_turns=1, the single turn is the last allowed turn.
     // The budget warning is injected via the runtime_reminder projection path
     // on round 2+ within that turn.
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(BudgetWarningCheckProvider::new()),
     )?;
 
@@ -1356,10 +1330,9 @@ async fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<(
 
 #[tokio::test]
 async fn run_once_max_turns_respects_wait_for_command_tasks() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(CommandTaskProvider::new("sleep 0.5; printf command_ok")),
     )?;
 
@@ -1512,11 +1485,11 @@ impl AgentProvider for WorktreeTaskProvider {
 
 #[tokio::test]
 async fn run_once_includes_worktree_task_metadata() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
+    let workspace_dir = test_config.workspace_dir().to_path_buf();
     init_git_repo(&workspace_dir)?;
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(WorktreeTaskProvider::new()),
     )?;
 
@@ -1538,13 +1511,11 @@ async fn run_once_includes_worktree_task_metadata() -> Result<()> {
 
 #[tokio::test]
 async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
+    let home_dir = test_config.data_dir().to_path_buf();
     let provider = Arc::new(StubProvider::new("persistent result"));
-    let first_host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir.clone(), home_dir.clone()),
-        provider.clone(),
-    )?;
+    let first_host =
+        RuntimeHost::new_with_provider(test_config.config().clone(), provider.clone())?;
 
     let first = run_once_with_host(
         first_host.clone(),
@@ -1563,8 +1534,7 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
         .expect("persistent agent state should be stored after the first run");
     assert!(first_state.total_message_count > 0);
 
-    let second_host =
-        RuntimeHost::new_with_provider(test_config(workspace_dir, home_dir.clone()), provider)?;
+    let second_host = RuntimeHost::new_with_provider(test_config.config().clone(), provider)?;
     let listed_agents = second_host
         .list_agents()
         .await?
@@ -1595,10 +1565,9 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
 
 #[tokio::test]
 async fn run_once_rejects_template_without_create_agent() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(StubProvider::new("ignored")),
     )?;
 
@@ -1621,10 +1590,10 @@ async fn run_once_rejects_template_without_create_agent() -> Result<()> {
 
 #[tokio::test]
 async fn run_once_preserves_existing_workspace_binding_for_persistent_agents() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
+    let workspace_dir = test_config.workspace_dir().to_path_buf();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir.clone(), home_dir.clone()),
+        test_config.config().clone(),
         Arc::new(StubProvider::new("continued in existing workspace")),
     )?;
 
@@ -1697,10 +1666,9 @@ async fn run_once_preserves_existing_workspace_binding_for_persistent_agents() -
 
 #[tokio::test]
 async fn run_once_rejects_stopped_persistent_agent() -> Result<()> {
-    let home_dir = tempdir()?.keep();
-    let workspace_dir = tempdir()?.keep();
+    let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
-        test_config(workspace_dir, home_dir),
+        test_config.config().clone(),
         Arc::new(StubProvider::new("persistent result")),
     )?;
 
