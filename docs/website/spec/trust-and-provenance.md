@@ -12,8 +12,8 @@ policy — and how those labels flow through the runtime.
 
 > **Last verified:** 2026-05-27 against `src/types.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
-> `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http.rs`,
-> `src/context.rs`, `src/prompt/mod.rs`, `src/operator_event.rs`,
+> `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
+> `src/context/mod.rs`, `src/prompt/mod.rs`, `src/operator_event.rs`,
 > `src/presentation.rs`, `src/runtime/message_dispatch.rs`, and
 > `src/runtime/operator_dispatch.rs`.
 
@@ -148,7 +148,8 @@ public contract. Current code keeps compatibility in two places:
   `trusted_operator`, `trusted_system`, `trusted_integration`, and
   `untrusted_external`.
 
-`src/context.rs` still renders a `trust=` label in model context for backward
+[`src/context/mod.rs`](../../../src/context/mod.rs) still renders a `trust=`
+label in model context for backward
 readability, but it is derived from `authority_class`. New docs and new
 contracts should name `authority_class` directly.
 
@@ -225,14 +226,18 @@ Validated implementation points:
   compatibility.
 - `src/policy.rs` defines default authority by origin and kind/origin admission
   checks.
-- `src/http.rs` prevents public enqueue from using runtime-owned kinds,
+- [`src/http/mod.rs`](../../../src/http/mod.rs) prevents public enqueue from
+  using runtime-owned kinds,
   `Interject` priority, privileged origins, or authority overrides.
-- `src/context.rs` and `src/prompt/mod.rs` expose authority/provenance labels to
-  the model and preserve the external-evidence trust boundary in prompt
-  instructions.
-- `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
-  `src/runtime/turn.rs` include provenance labels in queue, processing,
-  transcript, and interjection events.
+- [`src/context/mod.rs`](../../../src/context/mod.rs) and
+  [`src/prompt/mod.rs`](../../../src/prompt/mod.rs) expose
+  authority/provenance labels to the model and preserve the external-evidence
+  trust boundary in prompt instructions.
+- [`src/runtime/message_dispatch.rs`](../../../src/runtime/message_dispatch.rs),
+  [`src/runtime/operator_dispatch.rs`](../../../src/runtime/operator_dispatch.rs),
+  and [`src/runtime/turn/execution.rs`](../../../src/runtime/turn/execution.rs)
+  include provenance labels in queue, processing, transcript, and interjection
+  events.
 - `src/operator_event.rs` and `src/presentation.rs` keep raw event provenance
   available while rendering operator-origin messages as user messages.
 

@@ -58,7 +58,7 @@ Each spec page follows a consistent shape:
   <!-- mdorigin:index kind=article -->
 
 - [Tasks](./tasks.md)
-  Current task lifecycle, background blocking, terminal re-entry, and command/child-agent supervision contract.
+  Current task lifecycle, terminal re-entry, and command/child-agent supervision contract.
   <!-- mdorigin:index kind=article -->
 
 - [Tools](./tools.md)
@@ -70,7 +70,7 @@ Each spec page follows a consistent shape:
   <!-- mdorigin:index kind=article -->
 
 - [Trust and provenance](./trust-and-provenance.md)
-  Current origin classification, admission/authentication, authority, and provenance tracking contract.
+  Current provenance, admission/authentication, instruction authority, and execution policy contract.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -4,6 +4,19 @@ on:
   push:
     branches: [main]
     paths:
+      - 'README.md'
+      - 'docs/architecture-overview.md'
+      - 'docs/runtime-spec.md'
+      - 'docs/rfcs/**'
+      - 'docs/website/**'
+      - '.github/workflows/docs-site.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'docs/architecture-overview.md'
+      - 'docs/runtime-spec.md'
+      - 'docs/rfcs/**'
       - 'docs/website/**'
       - '.github/workflows/docs-site.yml'
   workflow_dispatch:
@@ -36,8 +49,11 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefix .tools
 
-      - name: Check internal links
-        run: python3 .tools/check-links.py
+      - name: Check internal links and contract references
+        run: |
+          python3 .tools/check-links.py
+          python3 .tools/test-check-contract-refs.py
+          python3 .tools/check-contract-refs.py
 
       - name: Build directory indexes
         run: npm --prefix .tools run build:index
@@ -55,6 +71,7 @@ jobs:
           path: docs/website/dist/cloudflare
 
       - name: Deploy to Cloudflare Workers
+        if: github.event_name != 'pull_request'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

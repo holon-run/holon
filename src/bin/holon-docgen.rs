@@ -65,7 +65,9 @@ generated: auto-generated from holon source — do not edit directly
 Holon includes built-in configuration for **{provider_account_count} provider accounts**
 across **{endpoint_count} endpoints** and **{model_count} models**.
 
-This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
+This page is auto-generated from the Holon source code
+([`src/model_catalog.rs`](../../../src/model_catalog.rs) and
+[`src/config/mod.rs`](../../../src/config/mod.rs)).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
 
 Note: subscription-scoped providers such as `dashscope-token-plan` and
