@@ -1,0 +1,99 @@
+{
+  "enums": [
+    {
+      "name": "AgentStatus",
+      "serialized_values": [
+        "booting",
+        "awake_idle",
+        "awake_running",
+        "awaiting_task",
+        "asleep",
+        "stopped"
+      ],
+      "source": "src/types.rs"
+    },
+    {
+      "name": "WorkItemState",
+      "serialized_values": [
+        "open",
+        "completed"
+      ],
+      "source": "src/domain/work_item.rs"
+    },
+    {
+      "name": "WorkItemPlanStatus",
+      "serialized_values": [
+        "draft",
+        "ready",
+        "needs_input"
+      ],
+      "source": "src/domain/work_item.rs"
+    },
+    {
+      "name": "WorkItemReadiness",
+      "serialized_values": [
+        "runnable",
+        "yielded",
+        "waiting_for_operator",
+        "blocked",
+        "completed"
+      ],
+      "source": "src/domain/work_item.rs"
+    },
+    {
+      "name": "TaskStatus",
+      "serialized_values": [
+        "queued",
+        "running",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ],
+      "source": "src/types.rs"
+    },
+    {
+      "name": "WaitConditionStatus",
+      "serialized_values": [
+        "active",
+        "resolved",
+        "cancelled",
+        "expired"
+      ],
+      "source": "src/types.rs"
+    },
+    {
+      "name": "TimerStatus",
+      "serialized_values": [
+        "active",
+        "completed",
+        "cancelled"
+      ],
+      "source": "src/types.rs"
+    },
+    {
+      "name": "QueueEntryStatus",
+      "serialized_values": [
+        "queued",
+        "dequeued",
+        "processed",
+        "interjected",
+        "aborted",
+        "dropped",
+        "interrupted"
+      ],
+      "source": "src/types.rs"
+    },
+    {
+      "name": "ToolResultStatus",
+      "serialized_values": [
+        "success",
+        "error"
+      ],
+      "source": "src/tool/spec.rs"
+    }
+  ],
+  "source_of_truth": "typed Rust enums deriving schemars::JsonSchema",
+  "version": 1
+}

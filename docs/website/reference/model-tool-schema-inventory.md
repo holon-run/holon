@@ -27,8 +27,17 @@ Each built-in tool entry records:
 - model-facing input schema
 - freeform grammar, when the tool accepts non-JSON input
 - result envelope family and model rendering contract
+- a typed success-result JSON Schema when that stable result surface is in the
+  current coverage set
 - related HTTP or CLI surfaces when commands wrap tool or runtime APIs
 - model-visible tool description
+
+The version 2 inventory starts result-schema coverage with `Enqueue`,
+`GenerateImage`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, and
+`TaskStop`. Uncovered tools keep their result type name and an explicit
+`null` schema; this avoids presenting an inferred or partial shape as a stable
+contract. Coverage can expand only when the concrete Rust result type derives
+`schemars::JsonSchema`.
 
 ## Capability families
 

@@ -103,10 +103,11 @@ The generated `dist/` directory is ignored and should not be committed.
 
 ## Refresh generated contract snapshots
 
-OpenAPI, HTTP route, CLI, and model tool schema snapshots are checked
-separately by the main CI. Run `make snapshots-check` before publishing a
-contract change. When a change is intentional, run `make snapshots-refresh`,
-review the generated diff, and then rerun `make snapshots-check`.
+OpenAPI, HTTP route, CLI, runtime status enum, and model tool schema snapshots
+are checked separately by the main CI. Run `make snapshots-check` before
+publishing a contract change. When a change is intentional, run
+`make snapshots-refresh`, review the generated diff, and then rerun
+`make snapshots-check`.
 
 ## Publishing note
 

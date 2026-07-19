@@ -6,14 +6,23 @@ use std::any::TypeId;
 use crate::tool::tools::spawn_agent::SpawnAgentArgs;
 
 pub(crate) fn tool_input_schema<T: JsonSchema + 'static>() -> Result<Value> {
+    let mut schema = normalized_schema::<T>()?;
+    if TypeId::of::<T>() == TypeId::of::<SpawnAgentArgs>() {
+        enforce_public_named_spawn_contract(&mut schema);
+    }
+    Ok(schema)
+}
+
+pub(crate) fn tool_result_schema<T: JsonSchema>() -> Result<Value> {
+    normalized_schema::<T>()
+}
+
+fn normalized_schema<T: JsonSchema>() -> Result<Value> {
     let mut schema = serde_json::to_value(root_schema_for::<T>())
         .map_err(|error| anyhow!("tool schema should serialize: {error}"))?;
     normalize_object_defaults(&mut schema);
     normalize_numeric_bound_literals(&mut schema);
     prune_schema_metadata(&mut schema);
-    if TypeId::of::<T>() == TypeId::of::<SpawnAgentArgs>() {
-        enforce_public_named_spawn_contract(&mut schema);
-    }
     Ok(schema)
 }
 

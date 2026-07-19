@@ -10,6 +10,7 @@ pub mod cli;
 pub mod client;
 pub mod config;
 pub mod context;
+pub mod contract_inventory;
 pub mod daemon;
 pub mod diagnostics;
 pub mod domain;
