@@ -265,6 +265,8 @@ struct RuntimeInner {
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
+    #[cfg(test)]
+    transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
 }
 
 #[derive(Debug, Clone)]
@@ -606,6 +608,36 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
+    fn take_transition_fault(&self) -> Option<TransitionFaultPoint> {
+        #[cfg(test)]
+        {
+            return self
+                .inner
+                .transition_faults
+                .lock()
+                .expect("transition fault plan lock poisoned")
+                .pop_front();
+        }
+        #[cfg(not(test))]
+        {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_transition_fault(&self, fault: TransitionFaultPoint) {
+        let mut faults = self
+            .inner
+            .transition_faults
+            .lock()
+            .expect("transition fault plan lock poisoned");
+        assert!(
+            faults.is_empty(),
+            "a transition fault is already armed for this runtime fixture"
+        );
+        faults.push_back(fault);
+    }
+
     pub(crate) async fn apply_transition_commit(
         &self,
         commit: TransitionCommit,
@@ -1533,7 +1565,7 @@ impl RuntimeHandle {
                 transcript_entries: Vec::new(),
                 audit_events,
                 notify_scheduler,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         Ok(self.apply_transition_commit(commit).await.applied)

@@ -1,4 +1,5 @@
 mod agent_and_tools;
+mod contracts;
 mod message_dispatch;
 mod runtime_state;
 mod scheduler;

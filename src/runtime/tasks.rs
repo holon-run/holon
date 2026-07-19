@@ -2231,7 +2231,7 @@ impl RuntimeHandle {
                 audit_events: vec![self.work_item_written_event("created", &record, Value::Null)],
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: true,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;
@@ -2484,7 +2484,7 @@ impl RuntimeHandle {
                 audit_events,
                 index_changes,
                 notify_scheduler: true,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;
@@ -2644,7 +2644,7 @@ impl RuntimeHandle {
                     audit_events,
                     index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                     notify_scheduler: true,
-                    fault: None,
+                    fault: self.take_transition_fault(),
                 },
             )?;
             self.apply_transition_commit(commit).await;
@@ -2710,7 +2710,7 @@ impl RuntimeHandle {
                 audit_events,
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: true,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;
@@ -2900,7 +2900,7 @@ impl RuntimeHandle {
                 audit_events,
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: true,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;
@@ -3002,7 +3002,7 @@ impl RuntimeHandle {
                 )],
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: false,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;

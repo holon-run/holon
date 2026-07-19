@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::Mutex as StdMutex;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -315,6 +317,8 @@ impl RuntimeHandle {
                 recovered_timers: Mutex::new(Some(active_timers)),
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
+                #[cfg(test)]
+                transition_faults: StdMutex::new(std::collections::VecDeque::new()),
             }),
         };
         Ok(runtime)

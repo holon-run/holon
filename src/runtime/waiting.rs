@@ -264,7 +264,7 @@ impl RuntimeHandle {
                 audit_events,
                 index_changes,
                 notify_scheduler: true,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;

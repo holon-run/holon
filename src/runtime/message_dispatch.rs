@@ -265,7 +265,7 @@ impl RuntimeHandle {
                 )],
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: false,
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;
