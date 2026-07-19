@@ -24,7 +24,7 @@ pub(crate) struct ListTasksArgs {
     pub(crate) limit: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub(crate) struct ListTasksResult {
     pub(crate) total_active: usize,
     pub(crate) returned: usize,

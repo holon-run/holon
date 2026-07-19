@@ -1,5 +1,6 @@
 {
   "source_of_truth": {
+    "covered_result_schemas": "typed stable result structs deriving schemars::JsonSchema",
     "input_schemas": "typed Rust argument structs deriving schemars::JsonSchema",
     "model_rendering": "src/tool/tools/mod.rs render_tool_result_for_model()",
     "result_envelope": "src/tool/spec.rs ToolResultEnvelope",
@@ -60,7 +61,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "WaitForResult"
+        "success_result": "WaitForResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -89,7 +91,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "AgentGetResult"
+        "success_result": "AgentGetResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -130,7 +133,38 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "EnqueueResult"
+        "success_result": "EnqueueResult",
+        "success_result_schema": {
+          "properties": {
+            "enqueued": {
+              "type": "boolean"
+            },
+            "follow_up_text": {
+              "type": "string"
+            },
+            "priority": {
+              "enum": [
+                "interject",
+                "next",
+                "normal",
+                "background"
+              ],
+              "type": "string"
+            },
+            "summary_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "enqueued",
+            "priority",
+            "follow_up_text"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -289,7 +323,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "SpawnAgentResult"
+        "success_result": "SpawnAgentResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -322,7 +357,170 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "ListTasksResult"
+        "success_result": "ListTasksResult",
+        "success_result_schema": {
+          "properties": {
+            "limit": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "returned": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "tasks": {
+              "items": {
+                "properties": {
+                  "command": {
+                    "properties": {
+                      "accepts_input": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "cmd": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cmd_digest": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "exit_status": {
+                        "format": "int32",
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "input_target": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "login": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "output_path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "promoted_from_exec_command": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "result_summary": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "shell": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "terminal_reentry": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "tty": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "workdir": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "queued",
+                      "running",
+                      "cancelling",
+                      "completed",
+                      "failed",
+                      "cancelled",
+                      "interrupted"
+                    ],
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "wait_policy": {
+                    "enum": [
+                      "background"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "status",
+                  "updated_at",
+                  "wait_policy"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "total_active": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "total_active",
+            "returned",
+            "limit",
+            "tasks"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -351,7 +549,470 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "TaskStatusResult"
+        "success_result": "TaskStatusResult",
+        "success_result_schema": {
+          "properties": {
+            "summary_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task": {
+              "properties": {
+                "child_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "child_observability": {
+                  "properties": {
+                    "blocked_reason": {
+                      "enum": [
+                        "managed_task_queued",
+                        "managed_task_running",
+                        "managed_task_cancelling",
+                        "awaiting_managed_task",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "current_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_progress_brief": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_result_brief": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "phase": {
+                      "enum": [
+                        "running",
+                        "blocked",
+                        "waiting",
+                        "terminal"
+                      ],
+                      "type": "string"
+                    },
+                    "waiting_reason": {
+                      "enum": [
+                        "awaiting_operator_input",
+                        "awaiting_external_change",
+                        "awaiting_task_result",
+                        "awaiting_timer",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "work_summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "phase"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "child_supervision": {
+                  "properties": {
+                    "child_agent_id": {
+                      "type": "string"
+                    },
+                    "child_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cleanup_owner": {
+                      "type": "string"
+                    },
+                    "cleanup_status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "delegation_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "followup_target": {
+                      "type": "string"
+                    },
+                    "parent_agent_id": {
+                      "type": "string"
+                    },
+                    "parent_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "supervision_task_id": {
+                      "type": "string"
+                    },
+                    "workspace_mode": {
+                      "enum": [
+                        "inherit",
+                        "worktree",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "worktree": {
+                      "properties": {
+                        "actual_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "auto_cleaned_up": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "changed_files": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_cwd": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "projection_kind": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained_for_review": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "worktree_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "worktree_path": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "parent_agent_id",
+                    "child_agent_id",
+                    "supervision_task_id",
+                    "cleanup_owner",
+                    "followup_target"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "command": {
+                  "properties": {
+                    "accepts_input": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "cmd": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cmd_digest": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "exit_status": {
+                      "format": "int32",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "input_target": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "login": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "output_path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "promoted_from_exec_command": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "result_summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "shell": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "terminal_reentry": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "tty": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "workdir": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "parent_message_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "cancelling",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_id": {
+                  "type": "string"
+                },
+                "token_usage": {
+                  "properties": {
+                    "last_turn": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "total": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": "object"
+                    },
+                    "total_model_rounds": {
+                      "format": "uint64",
+                      "minimum": 0.0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "total_model_rounds"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "wait_policy": {
+                  "enum": [
+                    "background"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "kind",
+                "status",
+                "created_at",
+                "updated_at",
+                "wait_policy"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "task"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -384,7 +1045,488 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "TaskInputResult"
+        "success_result": "TaskInputResult",
+        "success_result_schema": {
+          "properties": {
+            "accepted_input": {
+              "type": "boolean"
+            },
+            "bytes_written": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "input_target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task": {
+              "properties": {
+                "child_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "child_observability": {
+                  "properties": {
+                    "blocked_reason": {
+                      "enum": [
+                        "managed_task_queued",
+                        "managed_task_running",
+                        "managed_task_cancelling",
+                        "awaiting_managed_task",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "current_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_progress_brief": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_result_brief": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "phase": {
+                      "enum": [
+                        "running",
+                        "blocked",
+                        "waiting",
+                        "terminal"
+                      ],
+                      "type": "string"
+                    },
+                    "waiting_reason": {
+                      "enum": [
+                        "awaiting_operator_input",
+                        "awaiting_external_change",
+                        "awaiting_task_result",
+                        "awaiting_timer",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "work_summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "phase"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "child_supervision": {
+                  "properties": {
+                    "child_agent_id": {
+                      "type": "string"
+                    },
+                    "child_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cleanup_owner": {
+                      "type": "string"
+                    },
+                    "cleanup_status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "delegation_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "followup_target": {
+                      "type": "string"
+                    },
+                    "parent_agent_id": {
+                      "type": "string"
+                    },
+                    "parent_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "supervision_task_id": {
+                      "type": "string"
+                    },
+                    "workspace_mode": {
+                      "enum": [
+                        "inherit",
+                        "worktree",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "worktree": {
+                      "properties": {
+                        "actual_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "auto_cleaned_up": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "changed_files": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_cwd": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "projection_kind": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained_for_review": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "worktree_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "worktree_path": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "parent_agent_id",
+                    "child_agent_id",
+                    "supervision_task_id",
+                    "cleanup_owner",
+                    "followup_target"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "command": {
+                  "properties": {
+                    "accepts_input": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "cmd": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cmd_digest": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "exit_status": {
+                      "format": "int32",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "input_target": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "login": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "output_path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "promoted_from_exec_command": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "result_summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "shell": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "terminal_reentry": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "tty": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "workdir": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "parent_message_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "cancelling",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_id": {
+                  "type": "string"
+                },
+                "token_usage": {
+                  "properties": {
+                    "last_turn": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "total": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": "object"
+                    },
+                    "total_model_rounds": {
+                      "format": "uint64",
+                      "minimum": 0.0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "total_model_rounds"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "wait_policy": {
+                  "enum": [
+                    "background"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "kind",
+                "status",
+                "created_at",
+                "updated_at",
+                "wait_policy"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "task",
+            "accepted_input"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -427,7 +1569,505 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "custom_text_receipt",
-        "success_result": "TaskOutputResult"
+        "success_result": "TaskOutputResult",
+        "success_result_schema": {
+          "properties": {
+            "retrieval_status": {
+              "enum": [
+                "success",
+                "timeout",
+                "not_ready"
+              ],
+              "type": "string"
+            },
+            "task": {
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "child_supervision": {
+                  "properties": {
+                    "child_agent_id": {
+                      "type": "string"
+                    },
+                    "child_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cleanup_owner": {
+                      "type": "string"
+                    },
+                    "cleanup_status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "delegation_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "followup_target": {
+                      "type": "string"
+                    },
+                    "parent_agent_id": {
+                      "type": "string"
+                    },
+                    "parent_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "supervision_task_id": {
+                      "type": "string"
+                    },
+                    "workspace_mode": {
+                      "enum": [
+                        "inherit",
+                        "worktree",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "worktree": {
+                      "properties": {
+                        "actual_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "auto_cleaned_up": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "changed_files": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_cwd": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "projection_kind": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained_for_review": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "worktree_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "worktree_path": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "parent_agent_id",
+                    "child_agent_id",
+                    "supervision_task_id",
+                    "cleanup_owner",
+                    "followup_target"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "exit_status": {
+                  "format": "int32",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "failure_artifact": {
+                  "properties": {
+                    "category": {
+                      "enum": [
+                        "transport",
+                        "protocol",
+                        "runtime",
+                        "task",
+                        "unknown"
+                      ],
+                      "type": "string"
+                    },
+                    "context": {
+                      "properties": {
+                        "causation_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "correlation_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "message_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "model_ref": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "provider": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "run_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "task_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tool_execution_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "turn_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "work_item_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "domain": {
+                      "enum": [
+                        "runtime",
+                        "storage",
+                        "policy",
+                        "io",
+                        "conflict",
+                        "not_found",
+                        "validation",
+                        "provider",
+                        "tool",
+                        "task",
+                        "http",
+                        "unknown",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "exit_status": {
+                      "format": "int32",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "metadata": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "properties": {},
+                      "required": [],
+                      "type": "object"
+                    },
+                    "model_ref": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "recovery_hint": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retryable": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "source_chain": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "status": {
+                      "format": "uint16",
+                      "maximum": 65535.0,
+                      "minimum": 0.0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "task_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "category",
+                    "kind",
+                    "summary"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "output_artifact": {
+                  "format": "uint",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "output_preview": {
+                  "type": "string"
+                },
+                "output_truncated": {
+                  "type": "boolean"
+                },
+                "result_summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "cancelling",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_id": {
+                  "type": "string"
+                },
+                "token_usage": {
+                  "properties": {
+                    "last_turn": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "total": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": "object"
+                    },
+                    "total_model_rounds": {
+                      "format": "uint64",
+                      "minimum": 0.0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "total_model_rounds"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "task_id",
+                "kind",
+                "status",
+                "output_preview",
+                "output_truncated"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "retrieval_status",
+            "task"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -456,7 +2096,478 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "TaskStopResult"
+        "success_result": "TaskStopResult",
+        "success_result_schema": {
+          "properties": {
+            "force_stop_requested": {
+              "type": "boolean"
+            },
+            "stop_requested": {
+              "type": "boolean"
+            },
+            "summary_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task": {
+              "properties": {
+                "child_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "child_observability": {
+                  "properties": {
+                    "blocked_reason": {
+                      "enum": [
+                        "managed_task_queued",
+                        "managed_task_running",
+                        "managed_task_cancelling",
+                        "awaiting_managed_task",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "current_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_progress_brief": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_result_brief": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "phase": {
+                      "enum": [
+                        "running",
+                        "blocked",
+                        "waiting",
+                        "terminal"
+                      ],
+                      "type": "string"
+                    },
+                    "waiting_reason": {
+                      "enum": [
+                        "awaiting_operator_input",
+                        "awaiting_external_change",
+                        "awaiting_task_result",
+                        "awaiting_timer",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "work_summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "phase"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "child_supervision": {
+                  "properties": {
+                    "child_agent_id": {
+                      "type": "string"
+                    },
+                    "child_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cleanup_owner": {
+                      "type": "string"
+                    },
+                    "cleanup_status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "delegation_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "followup_target": {
+                      "type": "string"
+                    },
+                    "parent_agent_id": {
+                      "type": "string"
+                    },
+                    "parent_work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "supervision_task_id": {
+                      "type": "string"
+                    },
+                    "workspace_mode": {
+                      "enum": [
+                        "inherit",
+                        "worktree",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "worktree": {
+                      "properties": {
+                        "actual_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "auto_cleaned_up": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "branch_cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "changed_files": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "cleanup_error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cleanup_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "original_cwd": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "projection_kind": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retained_for_review": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "worktree_branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "worktree_path": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "parent_agent_id",
+                    "child_agent_id",
+                    "supervision_task_id",
+                    "cleanup_owner",
+                    "followup_target"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "command": {
+                  "properties": {
+                    "accepts_input": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "cmd": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cmd_digest": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "exit_status": {
+                      "format": "int32",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "input_target": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "login": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "output_path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "promoted_from_exec_command": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "result_summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "shell": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "terminal_reentry": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "tty": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "workdir": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "parent_message_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "cancelling",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_id": {
+                  "type": "string"
+                },
+                "token_usage": {
+                  "properties": {
+                    "last_turn": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "total": {
+                      "properties": {
+                        "input_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        },
+                        "total_tokens": {
+                          "format": "uint64",
+                          "minimum": 0.0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens"
+                      ],
+                      "type": "object"
+                    },
+                    "total_model_rounds": {
+                      "format": "uint64",
+                      "minimum": 0.0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "total_model_rounds"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "wait_policy": {
+                  "enum": [
+                    "background"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_id",
+                "kind",
+                "status",
+                "created_at",
+                "updated_at",
+                "wait_policy"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "task",
+            "stop_requested",
+            "force_stop_requested"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -482,7 +2593,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "ListModelProvidersResult"
+        "success_result": "ListModelProvidersResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -529,7 +2641,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "ListProviderModelsResult"
+        "success_result": "ListProviderModelsResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -605,7 +2718,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "WorkItemMutationResult"
+        "success_result": "WorkItemMutationResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -645,7 +2759,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "PickWorkItemResult"
+        "success_result": "PickWorkItemResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -678,7 +2793,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "GetWorkItemResult"
+        "success_result": "GetWorkItemResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -732,7 +2848,136 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "custom_text_receipt",
-        "success_result": "tool-specific JSON payload"
+        "success_result": "GenerateImageResult",
+        "success_result_schema": {
+          "properties": {
+            "images": {
+              "items": {
+                "properties": {
+                  "byte_count": {
+                    "format": "uint64",
+                    "minimum": 0.0,
+                    "type": "integer"
+                  },
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "mime": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  },
+                  "size": {
+                    "properties": {
+                      "height": {
+                        "format": "uint32",
+                        "minimum": 0.0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "width": {
+                        "format": "uint32",
+                        "minimum": 0.0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [],
+                    "type": "object"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "workspace_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "workspace_id",
+                  "path",
+                  "uri",
+                  "sha256",
+                  "mime",
+                  "byte_count",
+                  "size",
+                  "created_at"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "model": {
+              "type": "string"
+            },
+            "parameters": {
+              "properties": {
+                "background": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "output_format": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "size": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [],
+              "type": "object"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "summary_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "images",
+            "provider",
+            "model",
+            "prompt",
+            "parameters"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -788,7 +3033,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "ListWorkItemsResult"
+        "success_result": "ListWorkItemsResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -864,7 +3110,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "WorkItemMutationResult"
+        "success_result": "WorkItemMutationResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -893,7 +3140,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "WorkItemMutationResult"
+        "success_result": "WorkItemMutationResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -933,7 +3181,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "MemorySearchResponse"
+        "success_result": "MemorySearchResponse",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -970,7 +3219,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "MemoryGetResponse"
+        "success_result": "MemoryGetResponse",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -992,7 +3242,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "WorkspaceStateResult"
+        "success_result": "WorkspaceStateResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1020,7 +3271,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "AttachWorkspaceResult"
+        "success_result": "AttachWorkspaceResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1048,7 +3300,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "DetachWorkspaceResult"
+        "success_result": "DetachWorkspaceResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1095,7 +3348,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "SwitchWorkspaceResult"
+        "success_result": "SwitchWorkspaceResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1152,7 +3406,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "CreateWorktreeResult"
+        "success_result": "CreateWorktreeResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1203,7 +3458,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "RemoveWorktreeResult"
+        "success_result": "RemoveWorktreeResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1231,7 +3487,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "custom_text_receipt",
-        "success_result": "ApplyPatchResult"
+        "success_result": "ApplyPatchResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1314,7 +3571,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "custom_text_receipt",
-        "success_result": "ExecCommandResult"
+        "success_result": "ExecCommandResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1429,7 +3687,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "custom_text_receipt",
-        "success_result": "ExecCommandBatchResult"
+        "success_result": "ExecCommandBatchResult",
+        "success_result_schema": null
       },
       "stability": "stable"
     },
@@ -1459,7 +3718,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "custom_text_receipt",
-        "success_result": "tool-specific JSON payload"
+        "success_result": "tool-specific JSON payload",
+        "success_result_schema": null
       },
       "stability": "experimental"
     },
@@ -1504,7 +3764,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "WebFetchResult"
+        "success_result": "WebFetchResult",
+        "success_result_schema": null
       },
       "stability": "experimental"
     },
@@ -1546,7 +3807,8 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "WebSearchResult"
+        "success_result": "WebSearchResult",
+        "success_result_schema": null
       },
       "stability": "experimental"
     },
@@ -1600,10 +3862,11 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "XSearchResult"
+        "success_result": "XSearchResult",
+        "success_result_schema": null
       },
       "stability": "experimental"
     }
   ],
-  "version": 1
+  "version": 2
 }

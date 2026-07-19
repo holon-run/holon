@@ -7,6 +7,10 @@
 //! - `tools`: Builtin tool modules, one per tool
 
 use crate::tool::names as tn;
+use crate::types::{
+    EnqueueResult, GenerateImageResult, TaskInputResult, TaskOutputResult, TaskStatusResult,
+    TaskStopResult,
+};
 use anyhow::Result;
 use serde_json::{json, Value};
 
@@ -45,7 +49,8 @@ pub fn model_tool_schema_inventory() -> Result<Value> {
         .filter(|definition| model_facing_names.contains(&definition.spec.name))
         .map(|definition| {
             let name = definition.spec.name.clone();
-            json!({
+            let success_result_schema = tool_success_result_schema(&definition.spec.name)?;
+            Ok(json!({
                 "name": name,
                 "family": definition.family.label(),
                 "stability": tool_stability_level(&definition.spec.name),
@@ -54,21 +59,23 @@ pub fn model_tool_schema_inventory() -> Result<Value> {
                 "result_envelope": {
                     "canonical": "ToolResultEnvelope",
                     "success_result": tool_success_result_contract(&definition.spec.name),
+                    "success_result_schema": success_result_schema,
                     "error_result": "ToolError",
                     "model_rendering": tool_model_rendering_contract(&definition.spec.name),
                 },
                 "related_surfaces": related_surfaces_for_tool(&definition.spec.name),
                 "description": definition.spec.description,
-            })
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(json!({
-        "version": 1,
+        "version": 2,
         "source_of_truth": {
             "tool_definitions": "src/tool/tools/mod.rs builtin_tool_definitions()",
             "input_schemas": "typed Rust argument structs deriving schemars::JsonSchema",
             "result_envelope": "src/tool/spec.rs ToolResultEnvelope",
+            "covered_result_schemas": "typed stable result structs deriving schemars::JsonSchema",
             "model_rendering": "src/tool/tools/mod.rs render_tool_result_for_model()",
         },
         "stability_policy": {
@@ -101,6 +108,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::ENQUEUE => "EnqueueResult",
         tn::EXEC_COMMAND => "ExecCommandResult",
         tn::EXEC_COMMAND_BATCH => "ExecCommandBatchResult",
+        tn::GENERATE_IMAGE => "GenerateImageResult",
         tn::GET_WORK_ITEM => "GetWorkItemResult",
         tn::GET_WORKSPACE_STATE => "WorkspaceStateResult",
         tn::LIST_MODEL_PROVIDERS => "ListModelProvidersResult",
@@ -125,6 +133,20 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::X_SEARCH => "XSearchResult",
         _ => "tool-specific JSON payload",
     }
+}
+
+fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
+    let schema = match name {
+        tn::ENQUEUE => schema::tool_result_schema::<EnqueueResult>()?,
+        tn::GENERATE_IMAGE => schema::tool_result_schema::<GenerateImageResult>()?,
+        tn::LIST_TASKS => schema::tool_result_schema::<tools::task_list::ListTasksResult>()?,
+        tn::TASK_INPUT => schema::tool_result_schema::<TaskInputResult>()?,
+        tn::TASK_OUTPUT => schema::tool_result_schema::<TaskOutputResult>()?,
+        tn::TASK_STATUS => schema::tool_result_schema::<TaskStatusResult>()?,
+        tn::TASK_STOP => schema::tool_result_schema::<TaskStopResult>()?,
+        _ => return Ok(None),
+    };
+    Ok(Some(schema))
 }
 
 fn tool_model_rendering_contract(name: &str) -> &'static str {

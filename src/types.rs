@@ -1217,7 +1217,7 @@ pub enum MessageKind {
     InternalFollowup,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
     // TODO: remove `interrupt` alias after older ledgers and request clients have migrated.
@@ -2138,7 +2138,7 @@ fn default_external_trigger_scope() -> ExternalTriggerScope {
     ExternalTriggerScope::Agent
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitConditionStatus {
     Active,
@@ -2472,7 +2472,7 @@ pub struct OperatorNotificationRecord {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct EnqueueResult {
     pub enqueued: bool,
     pub priority: Priority,
@@ -3836,7 +3836,7 @@ impl Default for TimerStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueEntryStatus {
     Queued,

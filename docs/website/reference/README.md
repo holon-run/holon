@@ -54,6 +54,10 @@ behavior changes.
   Versioned inventory for Holon's model-facing built-in tool schemas, result envelopes, and stability labels.
   <!-- mdorigin:index kind=article -->
 
+- [Runtime status enum inventory](./runtime-status-enum-inventory.md)
+  Machine-readable baseline for stable serialized runtime lifecycle and status enums.
+  <!-- mdorigin:index kind=article -->
+
 - [Supported Models](./models.md)
   Complete reference of all built-in models and providers supported by Holon.
   <!-- mdorigin:index kind=article -->
