@@ -15,7 +15,7 @@ use crate::provider::{
     ToolResultBlock,
 };
 use crate::runtime::provider_turn::{
-    build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
+    build_continuation_request, build_initial_provider_turn_request, build_provider_prompt_frame,
 };
 use crate::storage::to_json_value;
 use crate::tool::{ToolCall, ToolError};
@@ -718,11 +718,11 @@ impl TurnExecution<'_> {
                 provider_round_ms,
             ) = if round == 1 {
                 let request_build_started = std::time::Instant::now();
-                let request = build_provider_turn_request(
+                let request = build_initial_provider_turn_request(
+                    provider.as_ref(),
                     &effective_prompt,
                     available_tools.clone(),
                     native_web_search.clone(),
-                    provider.resolved_image_input_support().unwrap_or(true),
                 );
                 crate::diagnostics::record_provider_request_build(request_build_started.elapsed());
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
