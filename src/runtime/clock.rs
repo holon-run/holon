@@ -23,6 +23,9 @@ impl Clock for SystemClock {
 
 #[cfg(test)]
 #[derive(Debug)]
+/// Test wall clock whose inherited `sleep_until` uses Tokio time.
+///
+/// Tests that exercise sleeping must pause Tokio time and advance it alongside this clock.
 pub(crate) struct TestClock {
     now: std::sync::Mutex<DateTime<Utc>>,
 }

@@ -7,13 +7,34 @@ pub(crate) const PRE_COMMIT_FAULTS: [crate::runtime_db::transitions::TransitionF
     crate::runtime_db::transitions::TransitionFaultPoint::BeforeCommit,
 ];
 
+pub(crate) const POST_COMMIT_FAULTS: [(
+    crate::runtime_db::transitions::TransitionFaultPoint,
+    &str,
+); 3] = [
+    (
+        crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate,
+        "projection_cache_update",
+    ),
+    (
+        crate::runtime_db::transitions::TransitionFaultPoint::BeforeEventPublication,
+        "event_publication",
+    ),
+    (
+        crate::runtime_db::transitions::TransitionFaultPoint::BeforeSchedulerNotification,
+        "scheduler_notification",
+    ),
+];
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DurableLifecycleSnapshot {
     pub(crate) agent_state: Option<AgentState>,
     pub(crate) work_items: Vec<WorkItemRecord>,
+    pub(crate) work_item_continuations: Vec<crate::types::WorkItemContinuationFrame>,
     pub(crate) wait_conditions: Vec<crate::types::WaitConditionRecord>,
     pub(crate) queue_entries: Vec<QueueEntryRecord>,
     pub(crate) tasks: Vec<TaskRecord>,
+    pub(crate) messages: Vec<crate::types::MessageEnvelope>,
+    pub(crate) briefs: Vec<BriefRecord>,
     pub(crate) audit_events: Vec<AuditEvent>,
     pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
     pub(crate) index_outbox_high_watermark: i64,
@@ -40,19 +61,25 @@ pub(crate) struct LifecycleHarness {
     data_dir: TempDir,
     workspace: TempDir,
     clock: Arc<crate::runtime::clock::TestClock>,
+    provider: Arc<dyn AgentProvider>,
     runtime: RuntimeHandle,
 }
 
 impl LifecycleHarness {
     pub(crate) fn new() -> Self {
+        Self::with_provider(Arc::new(StubProvider::new("unused")))
+    }
+
+    pub(crate) fn with_provider(provider: Arc<dyn AgentProvider>) -> Self {
         let data_dir = tempdir().expect("create lifecycle data dir");
         let workspace = tempdir().expect("create lifecycle workspace");
         let clock = controlled_clock();
-        let runtime = Self::open_runtime(&data_dir, &workspace, clock.clone());
+        let runtime = Self::open_runtime(&data_dir, &workspace, clock.clone(), provider.clone());
         Self {
             data_dir,
             workspace,
             clock,
+            provider,
             runtime,
         }
     }
@@ -61,13 +88,14 @@ impl LifecycleHarness {
         data_dir: &TempDir,
         workspace: &TempDir,
         clock: Arc<crate::runtime::clock::TestClock>,
+        provider: Arc<dyn AgentProvider>,
     ) -> RuntimeHandle {
         RuntimeHandle::new_with_clock(
             "default",
             data_dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
             "http://127.0.0.1:7878".into(),
-            Arc::new(StubProvider::new("unused")),
+            provider,
             "default".into(),
             context_config(),
             clock,
@@ -84,7 +112,12 @@ impl LifecycleHarness {
     }
 
     pub(crate) fn restart(&mut self) {
-        self.runtime = Self::open_runtime(&self.data_dir, &self.workspace, self.clock.clone());
+        self.runtime = Self::open_runtime(
+            &self.data_dir,
+            &self.workspace,
+            self.clock.clone(),
+            self.provider.clone(),
+        );
     }
 
     pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
@@ -106,6 +139,10 @@ impl LifecycleHarness {
                 .work_items()
                 .latest_all()
                 .expect("read work items"),
+            work_item_continuations: runtime_db
+                .work_item_continuations()
+                .latest_all()
+                .expect("read work item continuations"),
             wait_conditions: runtime_db
                 .wait_conditions()
                 .latest_all()
@@ -115,6 +152,16 @@ impl LifecycleHarness {
                 .latest_all()
                 .expect("read queue entries"),
             tasks: runtime_db.tasks().latest_all().expect("read tasks"),
+            messages: self
+                .runtime
+                .storage()
+                .read_recent_messages(usize::MAX)
+                .expect("read messages"),
+            briefs: self
+                .runtime
+                .storage()
+                .read_recent_briefs(usize::MAX)
+                .expect("read briefs"),
             audit_events: self
                 .runtime
                 .storage()
@@ -134,6 +181,20 @@ impl LifecycleHarness {
 
     pub(crate) fn assert_unchanged(&self, before: &DurableLifecycleSnapshot) {
         assert_eq!(&self.snapshot(), before);
+    }
+
+    pub(crate) fn assert_post_commit_warning(&self, expected_effect: &str) {
+        let warnings = self
+            .runtime
+            .take_transition_warnings()
+            .into_iter()
+            .filter(|warning| warning.effect == expected_effect)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected one durable post-commit warning for {expected_effect}"
+        );
     }
 }
 

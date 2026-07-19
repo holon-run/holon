@@ -359,6 +359,8 @@ impl RuntimeHandle {
                 shutdown_requested: AtomicBool::new(false),
                 #[cfg(test)]
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
+                #[cfg(test)]
+                transition_warnings: StdMutex::new(Vec::new()),
             }),
         };
         Ok(runtime)

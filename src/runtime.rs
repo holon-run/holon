@@ -269,6 +269,8 @@ struct RuntimeInner {
     shutdown_requested: AtomicBool,
     #[cfg(test)]
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
+    #[cfg(test)]
+    transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
 #[derive(Debug, Clone)]
@@ -644,6 +646,17 @@ impl RuntimeHandle {
         faults.push_back(fault);
     }
 
+    #[cfg(test)]
+    pub(crate) fn take_transition_warnings(&self) -> Vec<PostCommitWarning> {
+        std::mem::take(
+            &mut *self
+                .inner
+                .transition_warnings
+                .lock()
+                .expect("transition warning lock poisoned"),
+        )
+    }
+
     pub(crate) async fn apply_transition_commit(
         &self,
         commit: TransitionCommit,
@@ -714,6 +727,12 @@ impl RuntimeHandle {
                 "runtime transition committed with post-commit warning"
             );
         }
+        #[cfg(test)]
+        self.inner
+            .transition_warnings
+            .lock()
+            .expect("transition warning lock poisoned")
+            .extend(result.warnings.iter().cloned());
         result
     }
 
