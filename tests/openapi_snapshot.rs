@@ -3,8 +3,8 @@
 //! Refresh workflow for intentional HTTP surface changes:
 //!
 //! ```bash
-//! cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored
-//! cargo test --test openapi_snapshot
+//! make snapshots-refresh
+//! make snapshots-check
 //! ```
 
 const SNAPSHOT_PATH: &str = "docs/website/reference/openapi.json";
@@ -18,7 +18,7 @@ fn openapi_snapshot_matches_generated_schema() {
 
     if live.replace("\r\n", "\n") != stored.replace("\r\n", "\n") {
         eprintln!(
-            "OpenAPI snapshot drift detected. Refresh intentionally with:\n  cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored\n"
+            "OpenAPI snapshot drift detected. Refresh intentionally with:\n  make snapshots-refresh\n"
         );
         eprintln!("=== GENERATED OPENAPI ===");
         eprintln!("{live}");

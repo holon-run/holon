@@ -11,22 +11,13 @@
 //! When a deliberate CLI change is made, regenerate the snapshot file:
 //!
 //! ```bash
-//! cargo test --test cli_snapshot test_cli_snapshot_matches -- --include-ignored
+//! make snapshots-refresh
 //! ```
 //!
-//! The test will fail and print the expected JSON. Copy the printed JSON into
-//! `tests/snapshots/cli_command_tree.json`, then run again to confirm:
+//! Review the generated diff, then run the unified check:
 //!
 //! ```bash
-//! cargo test --test cli_snapshot
-//! ```
-//!
-//! The `--refresh` helper (hidden behind `--ignored`) overwrites the snapshot
-//! file automatically. Use it only when you are sure the new shape is
-//! intentional:
-//!
-//! ```bash
-//! cargo test --test cli_snapshot refresh_cli_snapshot -- --ignored
+//! make snapshots-check
 //! ```
 
 use holon::cli;
@@ -39,9 +30,12 @@ fn test_cli_snapshot_matches() {
     let entries = cli::collect_snapshot();
     let live = serde_json::to_string_pretty(&entries).expect("serialize snapshot");
 
-    let stored = std::fs::read_to_string(SNAPSHOT_PATH)
-        .unwrap_or_else(|e| panic!("failed to read snapshot at {SNAPSHOT_PATH}: {e}\n\
-            Hint: create the initial snapshot by running `cargo test --test cli_snapshot refresh_cli_snapshot -- --ignored`"));
+    let stored = std::fs::read_to_string(SNAPSHOT_PATH).unwrap_or_else(|e| {
+        panic!(
+            "failed to read snapshot at {SNAPSHOT_PATH}: {e}\n\
+            Hint: create the initial snapshot by running `make snapshots-refresh`"
+        )
+    });
 
     // Normalise line endings so the test works cross-platform.
     let live_normalised = live.replace("\r\n", "\n");
@@ -54,7 +48,7 @@ fn test_cli_snapshot_matches() {
             +++ LIVE\n\
             \n\
             If the live version is correct, refresh the snapshot:\n\
-              cargo test --test cli_snapshot refresh_cli_snapshot -- --ignored\n"
+              make snapshots-refresh\n"
         );
         // Print the live version so it can be used as the new snapshot.
         eprintln!("=== EXPECTED SNAPSHOT ===");
@@ -68,7 +62,7 @@ fn test_cli_snapshot_matches() {
 /// Marked `#[ignore]` so it only runs on explicit request:
 ///
 /// ```bash
-/// cargo test --test cli_snapshot refresh_cli_snapshot -- --ignored
+/// make snapshots-refresh
 /// ```
 #[test]
 #[ignore]

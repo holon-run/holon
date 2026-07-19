@@ -13,7 +13,7 @@ tool surface**. The machine-readable inventory is checked in as
 - **Primary source:** `src/tool/tools/mod.rs` `builtin_tool_definitions()` and
   the typed Rust argument structs deriving `schemars::JsonSchema`.
 - **Generated inventory:** `holon::tool::model_tool_schema_inventory()`.
-- **Drift check:** `cargo test --test tool_schema_inventory_snapshot`.
+- **Drift check:** `make snapshots-check`.
 - **Current status:** pre-1.0 baseline. Treat stable labels as the intended
   compatibility boundary for the current track, not as a final 1.0 promise.
 
@@ -78,6 +78,6 @@ schema independently.
 ## Refresh workflow
 
 ```bash
-cargo test --test tool_schema_inventory_snapshot refresh_tool_schema_inventory_snapshot -- --ignored
-cargo test --test tool_schema_inventory_snapshot
+make snapshots-refresh
+make snapshots-check
 ```

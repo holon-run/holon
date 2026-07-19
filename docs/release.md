@@ -42,7 +42,8 @@ Before pushing the tag, verify:
   `cargo run -- ...` commands
 - when provider, context projection, compaction, or prompt-cache behavior
   changed, the ignored live LLM baseline in
-  `docs/testing/live-llm-baseline.md` has been run manually
+  `docs/testing/live-llm-baseline.md` has been run manually with
+  `make test-live` or the relevant focused live target
 - when the version number or HTTP API surface changed, regenerate the OpenAPI
   snapshot (see below) — never edit `openapi.json` by hand
 
@@ -55,16 +56,17 @@ the schema generated from the current crate version. Any version bump or HTTP
 API change will cause drift.
 
 **Do not edit `openapi.json` by hand.** After bumping the version in
-`Cargo.toml`, regenerate the snapshot:
+`Cargo.toml`, refresh the checked-in Rust-generated snapshots and verify them:
 
 ```bash
-cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored
-cargo test --test openapi_snapshot
+make snapshots-refresh
+make snapshots-check
 ```
 
-The first command regenerates the file; the second verifies it matches. The
-generated output has no trailing newline — adding one manually causes the
-snapshot test to fail.
+The first command regenerates the CLI, OpenAPI, HTTP route, and model tool schema
+snapshots; the second verifies they match. Review every generated diff before
+committing. The OpenAPI output has no trailing newline — adding one manually
+causes the snapshot test to fail.
 
 The Web GUI transport types are generated from the same snapshot. Refresh both
 artifacts together and verify drift with:

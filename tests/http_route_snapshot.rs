@@ -3,8 +3,8 @@
 //! Refresh workflow for intentional HTTP surface changes:
 //!
 //! ```bash
-//! cargo test --test http_route_snapshot refresh_http_route_inventory_snapshot -- --ignored
-//! cargo test --test http_route_snapshot
+//! make snapshots-refresh
+//! make snapshots-check
 //! ```
 
 use serde::Serialize;
@@ -53,7 +53,7 @@ fn http_route_inventory_snapshot_matches_router_and_openapi() {
 
     if live.replace("\r\n", "\n") != stored.replace("\r\n", "\n") {
         eprintln!(
-            "HTTP route inventory drift detected. Refresh intentionally with:\n  cargo test --test http_route_snapshot refresh_http_route_inventory_snapshot -- --ignored\n"
+            "HTTP route inventory drift detected. Refresh intentionally with:\n  make snapshots-refresh\n"
         );
         eprintln!("=== GENERATED HTTP ROUTE INVENTORY ===");
         eprintln!("{live}");
