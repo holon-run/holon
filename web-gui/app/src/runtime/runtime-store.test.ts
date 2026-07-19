@@ -4,6 +4,7 @@ import {
   agentBriefPatchFromEvents,
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
+  isSessionCacheContextCurrent,
   isLoopbackWebHostname,
   materializeProjectionDetail,
   mergeBootstrapAgentState,
@@ -11,9 +12,11 @@ import {
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
   resetSessionsForResume,
+  resetTransientRuntimeStateForResume,
   readStoredRuntimeConnectionConfig,
   sessionForEventLogEpoch,
   streamEventFromBackfill,
+  useRuntimeStore,
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
 import type { StreamEventEnvelopeDto } from "./client";
@@ -139,16 +142,73 @@ describe("resume session reset", () => {
       "agent-a": sessionState({
         loading: true,
         loadingOlder: true,
+        sendingPrompt: true,
         liveStatus: "recovering",
         reconnectAttempt: 4,
+        workItemDetailsById: { "work-1": { loading: true } },
+        taskDetailsById: { "task-1": { loading: true } },
+        toolExecutionDetailsById: { "tool-1": { loading: true } },
       }),
     });
 
     expect(reset["agent-a"]).toMatchObject({
       loading: false,
       loadingOlder: false,
+      sendingPrompt: false,
       liveStatus: "stale",
       reconnectAttempt: 0,
+      workItemDetailsById: { "work-1": { loading: false } },
+      taskDetailsById: { "task-1": { loading: false } },
+      toolExecutionDetailsById: { "tool-1": { loading: false } },
+    });
+  });
+
+  it("clears global transient loading state invalidated by the new generation", () => {
+    const patch = resetTransientRuntimeStateForResume({
+      ...useRuntimeStore.getState(),
+      modelCatalogLoading: true,
+      runtimeConfigLoading: true,
+      runtimeConfigSaving: true,
+      skillCatalogLoading: true,
+      skillDetailLoadingById: { skill: true },
+      templateCatalogLoading: true,
+      templateSyncInProgress: true,
+      templateDetailLoadingById: { template: true },
+      agentSkillCatalogLoadingByAgentId: { agent: true },
+      credentialStoreLoading: true,
+      codexDeviceLogin: { status: "waiting", jobId: "job-1" },
+      searchLoading: true,
+      searchResultContentLoadingBySourceRef: { source: true },
+      rightPanelView: {
+        kind: "task_detail",
+        agentId: "agent-a",
+        task: { id: "task-current", kind: "command", status: "running", summary: "Current" },
+        detailState: { loading: true },
+      },
+      rightPanelViewStack: [{
+        kind: "tool_execution_detail",
+        agentId: "agent-a",
+        toolExecutionId: "tool-stacked",
+        detailState: { loading: true },
+      }],
+    });
+
+    expect(patch).toMatchObject({
+      modelCatalogLoading: false,
+      runtimeConfigLoading: false,
+      runtimeConfigSaving: false,
+      skillCatalogLoading: false,
+      skillDetailLoadingById: { skill: false },
+      templateCatalogLoading: false,
+      templateSyncInProgress: false,
+      templateDetailLoadingById: { template: false },
+      agentSkillCatalogLoadingByAgentId: { agent: false },
+      credentialStoreLoading: false,
+      codexDeviceLogin: { status: "idle" },
+      searchLoading: false,
+      searchResultContentLoadingBySourceRef: { source: false },
+      rightPanelView: { detailState: { loading: false } },
+      rightPanelViewStack: [{ detailState: { loading: false } }],
     });
   });
 });
@@ -249,6 +309,14 @@ describe("runtime event epoch", () => {
 });
 
 describe("session cache restoration", () => {
+  it("rejects cache hydration captured for an older remote or generation", () => {
+    const captured = { remoteKey: "https://old.example", generation: 7 };
+
+    expect(isSessionCacheContextCurrent(captured, "https://old.example", 7)).toBe(true);
+    expect(isSessionCacheContextCurrent(captured, "https://new.example", 7)).toBe(false);
+    expect(isSessionCacheContextCurrent(captured, "https://old.example", 8)).toBe(false);
+  });
+
   it("does not overwrite HTTP or SSE state that arrived while cache was loading", () => {
     const current = sessionState({
       eventLogEpoch: "epoch-live",
@@ -617,3 +685,58 @@ describe("optimistic operator prompt reconciliation", () => {
     ]));
   });
 });
+
+describe("runtime client generation", () => {
+  it("drops an old work-item response after switching clients with the same agent id", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+
+    let resolveOldWorkItems!: (response: Response) => void;
+    const oldWorkItems = new Promise<Response>((resolve) => {
+      resolveOldWorkItems = resolve;
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/agents/agent-a/work-items")) return oldWorkItems;
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/agents/list")) {
+        return Promise.resolve(jsonResponse([{ id: "agent-a", lifecycle: "asleep" }]));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+      const staleRefresh = useRuntimeStore.getState().refreshAgentWorkItems("agent-a");
+      await vi.waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining("/agents/agent-a/work-items"),
+          expect.anything(),
+        );
+      });
+
+      await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+      resolveOldWorkItems(jsonResponse([{ id: "old-work", objective: "old remote", state: "open" }]));
+      await staleRefresh;
+
+      expect(useRuntimeStore.getState().bootstrap.agents[0]?.workItems).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}

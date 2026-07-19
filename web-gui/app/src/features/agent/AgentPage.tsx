@@ -22,6 +22,7 @@ import type {
   AgentDetail,
   AgentSummary,
   AgentTimelineActivity,
+  AgentTimelineItem,
   DisplayLevel,
   RuntimeModelCatalog,
   RuntimeModelOption,
@@ -115,22 +116,27 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
 
 export interface ScrollAnchor {
   key: VirtualItem["key"];
+  index: number;
   offset: number;
 }
 
-export function captureScrollAnchor(virtualItems: Pick<VirtualItem, "key" | "start" | "size">[], scrollTop: number): ScrollAnchor | null {
+export function captureScrollAnchor(virtualItems: Pick<VirtualItem, "key" | "index" | "start" | "size">[], scrollTop: number): ScrollAnchor | null {
   const anchorItem = virtualItems.find((item) => item.start + item.size > scrollTop);
-  return anchorItem ? { key: anchorItem.key, offset: Math.max(0, scrollTop - anchorItem.start) } : null;
+  return anchorItem
+    ? { key: anchorItem.key, index: anchorItem.index, offset: Math.max(0, scrollTop - anchorItem.start) }
+    : null;
 }
 
 export function restoredScrollTop(
   anchor: ScrollAnchor | null,
-  measuredItems: Pick<VirtualItem, "key" | "start">[],
+  anchorIndex: number | undefined,
+  offsetForIndex: (index: number) => number | undefined,
   fallbackTop: number,
+  contentOffset = 0,
 ): number {
-  if (!anchor) return fallbackTop;
-  const measured = measuredItems.find((item) => item.key === anchor.key);
-  return measured ? Math.max(0, measured.start + anchor.offset) : fallbackTop;
+  if (!anchor || anchorIndex == null) return fallbackTop;
+  const start = offsetForIndex(anchorIndex);
+  return start == null ? fallbackTop : Math.max(0, contentOffset + start + anchor.offset);
 }
 
 export function timelineLayoutRevision(turns: TimelineTurn[]): string {
@@ -141,6 +147,27 @@ export function timelineLayoutRevision(turns: TimelineTurn[]): string {
     fieldCount += 1;
     hash = fnv1a(`${text.length}:${text}`, hash);
   };
+  const addItem = (item: AgentTimelineItem | AgentTimelineActivity) => {
+    add(item.id);
+    add(item.kind);
+    add(item.label);
+    add(item.body);
+    add(item.meta);
+    add(item.minDisplayLevel);
+    add(item.detail?.label);
+    add(item.detail?.text);
+    add(item.detail?.tone);
+    add(item.executionMeta?.outcome);
+    add(item.executionMeta?.exitStatus);
+    add(item.executionMeta?.durationMs);
+    add(item.executionMeta?.outputTruncated);
+    add(item.executionMeta?.taskId);
+    add(item.statusTrail?.length ?? 0);
+    for (const step of item.statusTrail ?? []) {
+      add(step.status);
+      add(step.timestamp);
+    }
+  };
 
   for (const turn of turns) {
     add(turn.id);
@@ -149,46 +176,10 @@ export function timelineLayoutRevision(turns: TimelineTurn[]): string {
     add(turn.timestamp);
     add(turn.items.length);
     for (const item of turn.items) {
-      add(item.id);
-      add(item.kind);
-      add(item.label);
-      add(item.body);
-      add(item.meta);
-      add(item.minDisplayLevel);
-      add(item.detail?.label);
-      add(item.detail?.text);
-      add(item.detail?.tone);
-      add(item.executionMeta?.outcome);
-      add(item.executionMeta?.exitStatus);
-      add(item.executionMeta?.durationMs);
-      add(item.executionMeta?.outputTruncated);
-      add(item.executionMeta?.taskId);
-      add(item.statusTrail?.length ?? 0);
-      for (const step of item.statusTrail ?? []) {
-        add(step.status);
-        add(step.timestamp);
-      }
+      addItem(item);
       add(item.activities?.length ?? 0);
       for (const activity of item.activities ?? []) {
-        add(activity.id);
-        add(activity.kind);
-        add(activity.label);
-        add(activity.body);
-        add(activity.meta);
-        add(activity.minDisplayLevel);
-        add(activity.detail?.label);
-        add(activity.detail?.text);
-        add(activity.detail?.tone);
-        add(activity.executionMeta?.outcome);
-        add(activity.executionMeta?.exitStatus);
-        add(activity.executionMeta?.durationMs);
-        add(activity.executionMeta?.outputTruncated);
-        add(activity.executionMeta?.taskId);
-        add(activity.statusTrail?.length ?? 0);
-        for (const step of activity.statusTrail ?? []) {
-          add(step.status);
-          add(step.timestamp);
-        }
+        addItem(activity);
       }
     }
   }
@@ -208,14 +199,20 @@ function fnv1a(text: string, initialHash: number): number {
 function useReconciledVirtualMeasurements({
   virtualizer,
   scrollElementRef,
+  contentElementRef,
   layoutRevision,
   stickToBottomRef,
+  pendingAnchorRef,
+  anchorIndexByKey,
   scrollToBottom,
 }: {
   virtualizer: Virtualizer<HTMLDivElement, Element>;
   scrollElementRef: RefObject<HTMLDivElement | null>;
+  contentElementRef: RefObject<HTMLDivElement | null>;
   layoutRevision: string;
   stickToBottomRef: MutableRefObject<boolean>;
+  pendingAnchorRef: MutableRefObject<ScrollAnchor | null>;
+  anchorIndexByKey: ReadonlyMap<string, number>;
   scrollToBottom: () => void;
 }) {
   const scrollToBottomRef = useRef(scrollToBottom);
@@ -230,7 +227,13 @@ function useReconciledVirtualMeasurements({
     if (!list) return;
 
     const wasAtBottom = stickToBottomRef.current || isScrolledNearBottom(list);
-    const anchor = wasAtBottom ? null : captureScrollAnchor(virtualizer.getVirtualItems(), list.scrollTop);
+    const contentOffset = contentElementRef.current?.offsetTop ?? 0;
+    const virtualScrollTop = Math.max(0, list.scrollTop - contentOffset);
+    const measuredAnchor = virtualizer.getVirtualItemForOffset(virtualScrollTop);
+    const anchor =
+      pendingAnchorRef.current ??
+      (wasAtBottom || !measuredAnchor ? null : captureScrollAnchor([measuredAnchor], virtualScrollTop));
+    pendingAnchorRef.current = null;
     const fallbackTop = list.scrollTop;
     cancelReconciledMeasurement(rafRef.current);
 
@@ -246,12 +249,19 @@ function useReconciledVirtualMeasurements({
           return;
         }
         stickToBottomRef.current = false;
-        currentList.scrollTop = restoredScrollTop(anchor, virtualizer.getVirtualItems(), fallbackTop);
+        const anchorIndex = anchor ? anchorIndexByKey.get(String(anchor.key)) ?? anchor.index : undefined;
+        currentList.scrollTop = restoredScrollTop(
+          anchor,
+          anchorIndex,
+          (index) => virtualizer.getOffsetForIndex(index, "start")?.[0],
+          fallbackTop,
+          contentElementRef.current?.offsetTop ?? 0,
+        );
       });
     });
 
     return () => cancelReconciledMeasurement(rafRef.current);
-  }, [layoutRevision, scrollElementRef, stickToBottomRef, virtualizer]);
+  }, [anchorIndexByKey, contentElementRef, layoutRevision, pendingAnchorRef, scrollElementRef, stickToBottomRef, virtualizer]);
 }
 
 function cancelReconciledMeasurement(raf: { measure: number | null; restore: number | null }): void {
@@ -300,10 +310,11 @@ export function AgentPage({
   const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
   const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const virtualWrapperRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragCounterRef = useRef(0);
-  const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const preserveScrollRef = useRef<ScrollAnchor | null>(null);
   const stickToBottomRef = useRef(true);
   const autoStickToBottomRef = useRef(false);
   const scheduledBottomScrollRef = useRef<number | null>(null);
@@ -326,6 +337,10 @@ export function AgentPage({
   const isWorking = isAgentWorking(activeAgent, sendingPrompt, t);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
+  const timelineTurnIndexById = useMemo(
+    () => new Map(timelineTurns.map((turn, index) => [turn.id, index])),
+    [timelineTurns],
+  );
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
   const rowVirtualizer = useVirtualizer({
     count: timelineTurns.length,
@@ -430,13 +445,6 @@ export function AgentPage({
     const list = messageListRef.current;
     if (!list) return;
 
-    const preserved = preserveScrollRef.current;
-    if (preserved) {
-      list.scrollTop = list.scrollHeight - preserved.height + preserved.top;
-      preserveScrollRef.current = null;
-      return;
-    }
-
     if (stickToBottomRef.current) {
       scrollToConversationBottom();
     }
@@ -445,8 +453,11 @@ export function AgentPage({
   useReconciledVirtualMeasurements({
     virtualizer: rowVirtualizer,
     scrollElementRef: messageListRef,
+    contentElementRef: virtualWrapperRef,
     layoutRevision: timelineLayoutVersion,
     stickToBottomRef,
+    pendingAnchorRef: preserveScrollRef,
+    anchorIndexByKey: timelineTurnIndexById,
     scrollToBottom: scrollToConversationBottom,
   });
 
@@ -570,17 +581,19 @@ export function AgentPage({
   async function handleLoadOlderEvents() {
     const list = messageListRef.current;
     if (list) {
+      const contentOffset = virtualWrapperRef.current?.offsetTop ?? 0;
+      const virtualScrollTop = Math.max(0, list.scrollTop - contentOffset);
+      const anchorItem = rowVirtualizer.getVirtualItemForOffset(virtualScrollTop);
       preserveScrollRef.current =
-        list.scrollTop > TOP_SCROLL_THRESHOLD ? { height: list.scrollHeight, top: list.scrollTop } : null;
+        list.scrollTop > TOP_SCROLL_THRESHOLD && anchorItem
+          ? captureScrollAnchor([anchorItem], virtualScrollTop)
+          : null;
       stickToBottomRef.current = false;
     }
-    setVisibleTimelineItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
     try {
       await onLoadOlderEvents();
+      setVisibleTimelineItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
     } catch {
-      setVisibleTimelineItemLimit((limit) =>
-        Math.max(defaultTimelineItemLimit(displayLevel), limit - HISTORY_PAGE_VISIBLE_INCREMENT),
-      );
       preserveScrollRef.current = null;
     }
   }
@@ -660,6 +673,7 @@ export function AgentPage({
             ) : null}
             {timelineTurns.length > 0 ? (
               <div
+                ref={virtualWrapperRef}
                 className="message-list-virtual-wrapper"
                 style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}
               >
