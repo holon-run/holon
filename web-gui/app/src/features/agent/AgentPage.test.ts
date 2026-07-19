@@ -115,24 +115,36 @@ describe("timeline virtual layout reconciliation", () => {
   it("keeps the same visible turn offset after measurements change", () => {
     const anchor = captureScrollAnchor(
       [
-        { key: "turn:a", start: 0, size: 120 },
-        { key: "turn:b", start: 120, size: 200 },
+        { key: "turn:a", index: 0, start: 0, size: 120 },
+        { key: "turn:b", index: 1, start: 120, size: 200 },
       ],
       164,
     );
 
-    expect(anchor).toEqual({ key: "turn:b", offset: 44 });
-    expect(restoredScrollTop(anchor, [{ key: "turn:b", start: 180 }], 164)).toBe(224);
+    expect(anchor).toEqual({ key: "turn:b", index: 1, offset: 44 });
+    expect(restoredScrollTop(anchor, 1, (index) => index === 1 ? 180 : undefined, 164)).toBe(224);
   });
 
-  it("falls back to the original scroll top when the anchored turn is no longer measured", () => {
-    const anchor = captureScrollAnchor([{ key: "turn:a", start: 20, size: 80 }], 44);
+  it("restores an anchored turn even when it is outside the current virtual overscan", () => {
+    const anchor = captureScrollAnchor([{ key: "turn:a", index: 0, start: 20, size: 80 }], 44);
 
-    expect(restoredScrollTop(anchor, [{ key: "turn:b", start: 120 }], 44)).toBe(44);
+    expect(restoredScrollTop(anchor, 8, (index) => index === 8 ? 1_900 : undefined, 44)).toBe(1_924);
+  });
+
+  it("accounts for history controls before the virtual wrapper when restoring an anchor", () => {
+    const anchor = captureScrollAnchor([{ key: "turn:a", index: 0, start: 20, size: 80 }], 44);
+
+    expect(restoredScrollTop(anchor, 8, (index) => index === 8 ? 1_900 : undefined, 84, 32)).toBe(1_956);
+  });
+
+  it("falls back to the original scroll top when the virtualizer cannot resolve the anchored index", () => {
+    const anchor = captureScrollAnchor([{ key: "turn:a", index: 0, start: 20, size: 80 }], 44);
+
+    expect(restoredScrollTop(anchor, 8, () => undefined, 44)).toBe(44);
   });
 
   it("does not capture an anchor when only overscan rows before the viewport are measured", () => {
-    expect(captureScrollAnchor([{ key: "turn:a", start: 0, size: 80 }], 120)).toBeNull();
+    expect(captureScrollAnchor([{ key: "turn:a", index: 0, start: 0, size: 80 }], 120)).toBeNull();
   });
 });
 
