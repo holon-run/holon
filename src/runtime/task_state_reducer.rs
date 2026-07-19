@@ -207,7 +207,7 @@ impl RuntimeHandle {
                 commit_on_idempotent: emit_event
                     && !task_will_change
                     && is_terminal_task_status(&task.status),
-                fault: None,
+                fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;

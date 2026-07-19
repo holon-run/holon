@@ -424,7 +424,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         }),
                     )],
                     notify_scheduler: false,
-                    fault: None,
+                    fault: self.runtime.take_transition_fault(),
                 },
             )?;
             if !commit.applied {

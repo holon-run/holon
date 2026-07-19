@@ -37,6 +37,11 @@ pub(crate) use crate::{
 
 use super::super::*;
 
+mod lifecycle;
+pub(crate) use lifecycle::{
+    assert_injected_transition_fault, DurableLifecycleSnapshot, LifecycleHarness, PRE_COMMIT_FAULTS,
+};
+
 pub(crate) fn context_config() -> ContextConfig {
     let available_tools =
         crate::tool::ToolRegistry::new(PathBuf::from("/tmp/holon-test-workspace"))
