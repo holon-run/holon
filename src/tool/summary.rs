@@ -104,7 +104,11 @@ fn summarize_task_output_result(result: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let task = result.get("task").unwrap_or(result);
-    let task_id = task.get("id").and_then(Value::as_str).unwrap_or("unknown");
+    let task_id = task
+        .get("task_id")
+        .or_else(|| task.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     let truncated = task
         .get("output_truncated")
         .and_then(Value::as_bool)
@@ -242,6 +246,44 @@ mod tests {
         assert_eq!(
             tool_result_summary(&result.envelope),
             "completed exit_status=2 truncated=false"
+        );
+    }
+
+    #[test]
+    fn task_output_summary_uses_task_id_and_keeps_legacy_id_compatibility() {
+        let result = ToolResult::success(
+            "TaskOutput",
+            json!({
+                "retrieval_status": "timeout",
+                "task": {
+                    "task_id": "task-current",
+                    "id": "task-legacy",
+                    "output_truncated": false,
+                    "exit_status": null
+                }
+            }),
+            None,
+        );
+        assert_eq!(
+            tool_result_summary(&result.envelope),
+            "retrieval_status=timeout task_id=task-current output_truncated=false exit_status=unknown"
+        );
+
+        let legacy = ToolResult::success(
+            "TaskOutput",
+            json!({
+                "retrieval_status": "success",
+                "task": {
+                    "id": "task-legacy",
+                    "output_truncated": true,
+                    "exit_status": 0
+                }
+            }),
+            None,
+        );
+        assert_eq!(
+            tool_result_summary(&legacy.envelope),
+            "retrieval_status=success task_id=task-legacy output_truncated=true exit_status=0"
         );
     }
 

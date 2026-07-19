@@ -698,7 +698,10 @@ function toolExecutionRelatedStateObjectRef(
   }
   // Task tools: TaskOutput, TaskStatus, TaskStop, TaskInput
   if (isTaskOperationTool(toolName)) {
-    const taskId = stringField(payload, "task_id");
+    const taskId =
+      toolName === "TaskOutput"
+        ? extractTaskFromOutput(payload).taskId
+        : stringField(payload, "task_id") ?? stringField(asRecord(payload?.input), "task_id");
     if (taskId) return { kind: "task", id: `task:${taskId}`, status: "unknown" };
   }
   return undefined;
@@ -879,16 +882,28 @@ function extractTaskFromOutput(payload: Record<string, unknown> | undefined): {
   outputPreview?: string;
   truncated?: boolean;
 } {
-  const result = asRecord(payload?.task_output_result) ?? unwrapToolResult(payload);
+  const explicitResult = asRecord(payload?.task_output_result);
+  const result = explicitResult ?? unwrapToolResult(payload);
+  const rootAuditPayload = explicitResult == null && result === payload;
   const task = asRecord(result.task) ?? asRecord(result.task_record);
-  const taskId = firstStringField(task, ["task_id", "id"]) ?? stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const input = asRecord(payload?.input);
+  const taskId =
+    firstStringField(task, ["task_id", "id"]) ??
+    stringField(result, "task_id") ??
+    stringField(payload, "task_id") ??
+    stringField(input, "task_id") ??
+    taskOutputAuditSummaryField(payload, "task_id");
   const resultStatus = stringField(result, "status");
   const taskStatus =
     firstStringField(task, ["status"]) ?? (resultStatus && !isTaskOutputRetrievalStatus(resultStatus) ? resultStatus : undefined);
   const retrievalStatus =
-    stringField(result, "retrieval_status") ?? (resultStatus && isTaskOutputRetrievalStatus(resultStatus) ? resultStatus : undefined);
+    stringField(result, "retrieval_status") ??
+    (resultStatus && isTaskOutputRetrievalStatus(resultStatus) ? resultStatus : undefined) ??
+    taskOutputAuditSummaryField(payload, "retrieval_status");
   const kind = stringField(task, "kind") ?? stringField(result, "kind");
-  const summary = stringField(task, "summary") ?? stringField(result, "summary") ?? stringField(result, "result_summary");
+  const summary =
+    stringField(task, "summary") ??
+    (rootAuditPayload ? undefined : stringField(result, "summary") ?? stringField(result, "result_summary"));
   const exitStatus = numberField(task, "exit_status") ?? numberField(result, "exit_status");
   const outputPreview =
     stringField(task, "output_preview") ??
@@ -898,6 +913,21 @@ function extractTaskFromOutput(payload: Record<string, unknown> | undefined): {
     stringField(result, "stderr");
   const truncated = task?.output_truncated === true || result.output_truncated === true || result.truncated === true;
   return { task, taskId, taskStatus, retrievalStatus, kind, summary, exitStatus, outputPreview, truncated };
+}
+
+function taskOutputAuditSummaryField(
+  payload: Record<string, unknown> | undefined,
+  field: "task_id" | "retrieval_status",
+): string | undefined {
+  // Keep this parser aligned with Rust's summarize_task_output_result key=value summary format.
+  const summary = stringField(payload, "summary");
+  if (!summary) return undefined;
+  const prefix = `${field}=`;
+  const value = summary
+    .split(/\s+/)
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length);
+  return value && value !== "unknown" ? value : undefined;
 }
 
 function isTaskOutputRetrievalStatus(status: string): boolean {
