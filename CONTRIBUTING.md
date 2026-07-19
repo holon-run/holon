@@ -12,6 +12,8 @@ Thanks for contributing to Holon. This file captures the baseline expectations f
     check used by the main CI job.
   - Runtime lifecycle, task, wait, SSE, or HTTP task changes:
     `make test-concurrent`
+  - CLI, HTTP, OpenAPI, or model tool contract changes:
+    `make snapshots-refresh`, review the diff, then run `make snapshots-check`.
   - Run focused `cargo test ...` commands for the Rust modules or integration
     tests touched by the change when a full test run is too broad.
   - If you cannot run a required check, state why in the PR description.
@@ -41,8 +43,22 @@ make test-concurrent
 # Stress the core concurrent lifecycle suite; stops at the first failure
 make test-concurrent-repeat CONCURRENT_REPEATS=3
 
-# Run live-provider tests when credentials are configured
+# Check all checked-in Rust-generated snapshots
+make snapshots-check
+
+# Refresh all checked-in Rust-generated snapshots after an intentional change
+make snapshots-refresh
+
+# Run the baseline and configured-provider live smoke tests
 make test-live
+
+# Run focused provider/runtime live suites when their credentials are configured
+make test-live-openai
+make test-live-anthropic
+make test-live-codex
+make test-live-xai
+make test-live-images
+make test-live-runtime
 
 # Check formatting
 make fmt

@@ -10,15 +10,19 @@ projection, compaction, or prompt-cache strategy.
 Run the baseline explicitly:
 
 ```bash
-cargo test --test live_llm_baseline -- --ignored --nocapture
+make test-live
 ```
 
-The suite requires configured provider credentials and network access. By
-default it exercises the first configured provider model in the runtime model
-chain. Set `HOLON_LIVE_BASELINE_MAX_MODELS` to include more configured models:
+This runs the configured-chain smoke and tool-roundtrip tests from
+`live_llm_baseline`, followed by `live_provider_smoke`. The Anthropic-only
+prompt-cache probe stays in `make test-live-anthropic` so the baseline does not
+silently require Anthropic credentials. The suite requires configured provider
+credentials and network access. By default, the baseline exercises the first
+configured provider model in the runtime model chain. Set
+`HOLON_LIVE_BASELINE_MAX_MODELS` to include more configured models:
 
 ```bash
-HOLON_LIVE_BASELINE_MAX_MODELS=3 cargo test --test live_llm_baseline -- --ignored --nocapture
+HOLON_LIVE_BASELINE_MAX_MODELS=3 make test-live
 ```
 
 ## Coverage
@@ -33,6 +37,25 @@ Provider-specific live tests remain in files such as `tests/live_anthropic.rs`,
 `tests/live_codex.rs`, and `tests/live_anthropic_cache.rs`. The baseline suite
 is the release-oriented entry point that should stay small, actionable, and
 representative.
+
+Use the focused targets when validating one provider family or runtime surface:
+
+```bash
+make test-live-openai
+make test-live-anthropic
+make test-live-codex
+make test-live-xai
+make test-live-images
+make test-live-runtime
+```
+
+Each target prints its credential boundary and exact test binaries before
+running ignored tests. Live targets are manual and are not part of the
+credential-free default CI.
+
+`make test-live-anthropic` includes the Anthropic prompt-cache baseline and the
+broader Anthropic-compatible provider matrix. It may require multiple
+provider-specific credentials and incur higher cost than the baseline target.
 
 ## Required configuration
 

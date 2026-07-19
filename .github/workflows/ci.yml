@@ -12,6 +12,7 @@ on:
       - "agent_templates/**"
       - "builtin_templates/**"
       - "docs/website/reference/openapi.json"
+      - "docs/website/reference/model-tool-schema-inventory.json"
       - "web-gui/**"
       - "Makefile"
       - "build.rs"
@@ -26,6 +27,7 @@ on:
       - "agent_templates/**"
       - "builtin_templates/**"
       - "docs/website/reference/openapi.json"
+      - "docs/website/reference/model-tool-schema-inventory.json"
       - "web-gui/**"
       - "Makefile"
       - "build.rs"
@@ -64,6 +66,9 @@ jobs:
 
       - name: Build
         run: make build
+
+      - name: Check generated snapshots
+        run: make snapshots-check
 
       - name: Test
         run: make test

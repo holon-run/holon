@@ -3,8 +3,8 @@
 //! Refresh workflow for intentional tool surface changes:
 //!
 //! ```bash
-//! cargo test --test tool_schema_inventory_snapshot refresh_tool_schema_inventory_snapshot -- --ignored
-//! cargo test --test tool_schema_inventory_snapshot
+//! make snapshots-refresh
+//! make snapshots-check
 //! ```
 
 const SNAPSHOT_PATH: &str = "docs/website/reference/model-tool-schema-inventory.json";
@@ -20,7 +20,7 @@ fn tool_schema_inventory_snapshot_matches_generated_inventory() {
 
     if live.replace("\r\n", "\n") != stored.replace("\r\n", "\n") {
         eprintln!(
-            "Tool schema inventory drift detected. Refresh intentionally with:\n  cargo test --test tool_schema_inventory_snapshot refresh_tool_schema_inventory_snapshot -- --ignored\n"
+            "Tool schema inventory drift detected. Refresh intentionally with:\n  make snapshots-refresh\n"
         );
         eprintln!("=== GENERATED TOOL SCHEMA INVENTORY ===");
         eprintln!("{live}");
