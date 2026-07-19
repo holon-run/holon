@@ -6,9 +6,11 @@ import {
   hasEventIdentityConflict,
   isLoopbackWebHostname,
   materializeProjectionDetail,
+  mergeBootstrapAgentState,
   mergeCachedSessionIntoCurrent,
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
+  resetSessionsForResume,
   readStoredRuntimeConnectionConfig,
   sessionForEventLogEpoch,
   streamEventFromBackfill,
@@ -17,6 +19,7 @@ import {
 import type { StreamEventEnvelopeDto } from "./client";
 import type { AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState, reduceSessionProjection } from "./session-projection";
+import type { AgentSummary } from "./types";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -60,6 +63,95 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
     ...overrides,
   };
 }
+
+function agentSummary(overrides: Partial<AgentSummary> = {}): AgentSummary {
+  return {
+    id: "agent-a",
+    badge: "A",
+    profile: "default",
+    lifecycle: "asleep",
+    focusSummary: "",
+    workspace: "",
+    attention: "",
+    model: "default",
+    footer: "",
+    subtitle: "",
+    lastBrief: "",
+    lastTurnTime: "",
+    pending: 0,
+    activeTaskCount: 0,
+    waitingCount: 0,
+    posture: "",
+    postureReason: "",
+    ...overrides,
+  };
+}
+
+describe("agent snapshot merging", () => {
+  it("lets a fresh bootstrap snapshot clear cached running state and counts", () => {
+    const cached = agentSummary({
+      lifecycle: "awake-running",
+      currentRunId: "run-old",
+      pending: 3,
+      activeTaskCount: 2,
+      waitingCount: 1,
+      tasks: [{ id: "task-old", kind: "command", status: "running", summary: "old" }],
+    });
+    const fresh = agentSummary({
+      lifecycle: "asleep",
+      currentRunId: null,
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 0,
+      tasks: [],
+    });
+
+    expect(mergeBootstrapAgentState(fresh, cached)).toMatchObject({
+      lifecycle: "asleep",
+      currentRunId: null,
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 0,
+    });
+  });
+
+  it("preserves rich detail omitted by the bootstrap snapshot", () => {
+    const cachedWorkItem = { id: "work-1", objective: "Preserve me", state: "open", current: true };
+    const cached = agentSummary({
+      currentWork: cachedWorkItem,
+      workItems: [cachedWorkItem],
+      tasks: [{ id: "task-old", kind: "command", status: "completed", summary: "cached" }],
+      attachedWorkspaces: [{ workspaceId: "ws-1", name: "repo", anchor: "/repo" }],
+    });
+
+    expect(mergeBootstrapAgentState(agentSummary(), cached)).toMatchObject({
+      currentWork: cachedWorkItem,
+      workItems: [cachedWorkItem],
+      tasks: cached.tasks,
+      attachedWorkspaces: cached.attachedWorkspaces,
+    });
+  });
+});
+
+describe("resume session reset", () => {
+  it("clears stale transport loading state before reconciliation restarts", () => {
+    const reset = resetSessionsForResume({
+      "agent-a": sessionState({
+        loading: true,
+        loadingOlder: true,
+        liveStatus: "recovering",
+        reconnectAttempt: 4,
+      }),
+    });
+
+    expect(reset["agent-a"]).toMatchObject({
+      loading: false,
+      loadingOlder: false,
+      liveStatus: "stale",
+      reconnectAttempt: 0,
+    });
+  });
+});
 
 describe("runtime event epoch", () => {
   it("drops seq-indexed history and hydration caches when the epoch changes", () => {

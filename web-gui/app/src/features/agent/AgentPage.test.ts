@@ -2,11 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   attachmentKindForFile,
+  captureScrollAnchor,
   readStoredComposerDraft,
   resizeComposerTextarea,
+  restoredScrollTop,
   storedComposerDraftKey,
+  timelineLayoutRevision,
   writeStoredComposerDraft,
 } from "./AgentPage";
+import type { TimelineTurn } from "./timeline-utils";
 
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
@@ -99,3 +103,56 @@ describe("composer attachments", () => {
     expect(attachmentKindForFile({ type: "" })).toBe("file");
   });
 });
+
+describe("timeline virtual layout reconciliation", () => {
+  it("changes the layout revision when hydrated content replaces a preview under the same turn id", () => {
+    const preview = timelineTurn("turn:assistant", "Short preview");
+    const hydrated = timelineTurn("turn:assistant", "Short preview\n\nExpanded hydrated transcript body.");
+
+    expect(timelineLayoutRevision([hydrated])).not.toBe(timelineLayoutRevision([preview]));
+  });
+
+  it("keeps the same visible turn offset after measurements change", () => {
+    const anchor = captureScrollAnchor(
+      [
+        { key: "turn:a", start: 0, size: 120 },
+        { key: "turn:b", start: 120, size: 200 },
+      ],
+      164,
+    );
+
+    expect(anchor).toEqual({ key: "turn:b", offset: 44 });
+    expect(restoredScrollTop(anchor, [{ key: "turn:b", start: 180 }], 164)).toBe(224);
+  });
+
+  it("falls back to the original scroll top when the anchored turn is no longer measured", () => {
+    const anchor = captureScrollAnchor([{ key: "turn:a", start: 20, size: 80 }], 44);
+
+    expect(restoredScrollTop(anchor, [{ key: "turn:b", start: 120 }], 44)).toBe(44);
+  });
+
+  it("does not capture an anchor when only overscan rows before the viewport are measured", () => {
+    expect(captureScrollAnchor([{ key: "turn:a", start: 0, size: 80 }], 120)).toBeNull();
+  });
+});
+
+function timelineTurn(turnId: string, body: string): TimelineTurn {
+  return {
+    id: turnId,
+    kind: "runtime",
+    label: "Turn",
+    timestamp: "2026-07-19T00:00:00.000Z",
+    items: [
+      {
+        id: "assistant-message",
+        kind: "assistant",
+        label: "Assistant",
+        body,
+        timestamp: "2026-07-19T00:00:00.000Z",
+        meta: "assistant",
+        minDisplayLevel: "info",
+        sourceIds: ["event:1"],
+      },
+    ],
+  };
+}

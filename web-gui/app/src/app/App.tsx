@@ -66,6 +66,7 @@ export function App() {
   const displayLevel = useRuntimeStore((state) =>
     state.displayLevelsByAgentId[selectedAgentId] ?? "info",
   );
+  const resumeRevision = useRuntimeStore((state) => state.resumeRevision);
   const rightPanelOpen = useRuntimeStore((state) => state.rightPanelOpen);
   const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
   const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
@@ -589,6 +590,7 @@ export function App() {
             loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
             historyError={selectedAgentSession?.historyError}
             targetEventSeq={selectedAgentSession?.targetEventSeq}
+            resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}
             onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, displayLevel, reasoningEffort)}
             onClearModel={() => clearAgentModel(activeAgent.id, displayLevel)}
