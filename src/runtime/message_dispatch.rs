@@ -53,8 +53,12 @@ impl RuntimeHandle {
             guard.state.clone()
         };
         let plan = self.build_message_dispatch_plan(&message, prior_closure, &scheduler_state)?;
-        let scheduler_projection =
-            scheduler::SchedulerProjection::from_state(&self.inner.storage, &scheduler_state)?;
+        let scheduler_projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+            &self.inner.storage,
+            &scheduler_state,
+            scheduler_state.pending,
+            self.now(),
+        )?;
         let scheduler_decision = scheduler::decide_next_action(
             &scheduler_projection,
             scheduler::SchedulerBoundary::MessageProcessing,

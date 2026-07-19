@@ -270,6 +270,7 @@ async fn malformed_task_message_does_not_exit_runtime_loop() {
 async fn runtime_interrupts_inflight_task_after_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
+    let now = Utc::now();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     storage
         .append_task(&TaskRecord {
@@ -277,8 +278,8 @@ async fn runtime_interrupts_inflight_task_after_restart() {
             agent_id: "default".into(),
             kind: TaskKind::CommandTask,
             status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: now - chrono::Duration::seconds(1),
+            updated_at: now - chrono::Duration::seconds(1),
             parent_message_id: None,
             work_item_id: None,
             summary: Some("recoverable command".into()),
@@ -313,7 +314,17 @@ async fn runtime_interrupts_inflight_task_after_restart() {
     )
     .unwrap();
     let runtime_task = tokio::spawn(runtime.clone().run());
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    wait_for_audit_events(
+        &runtime,
+        100,
+        |events| {
+            events
+                .iter()
+                .any(|event| event.kind == "task_interrupted_on_restart")
+        },
+        "task interruption on restart",
+    )
+    .await;
 
     let task = runtime
         .latest_task_records()

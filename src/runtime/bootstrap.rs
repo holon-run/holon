@@ -39,6 +39,7 @@ use crate::{
 };
 
 use super::{
+    clock::{Clock, SystemClock},
     scheduler_executor, workspace, AgentRuntimeProjectionCache, InitialWorkspaceBinding,
     RuntimeAgent, RuntimeHandle, RuntimeInner,
 };
@@ -134,6 +135,41 @@ impl RuntimeHandle {
             None,
             None,
             None,
+            Arc::new(SystemClock),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_clock(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        callback_base_url: String,
+        provider: Arc<dyn AgentProvider>,
+        default_agent_id: String,
+        context_config: ContextConfig,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        let base_context_config = context_config.clone();
+        Self::new_internal(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            callback_base_url,
+            provider,
+            default_agent_id,
+            base_context_config,
+            context_config,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            clock,
         )
     }
 
@@ -169,6 +205,7 @@ impl RuntimeHandle {
             Some(runtime_db),
             Some(host_bridge),
             Some(event_bus),
+            Arc::new(SystemClock),
         )
     }
 
@@ -213,6 +250,7 @@ impl RuntimeHandle {
             Some(runtime_db),
             Some(host_bridge),
             Some(event_bus),
+            Arc::new(SystemClock),
         )
     }
 
@@ -234,6 +272,7 @@ impl RuntimeHandle {
         runtime_db: Option<RuntimeDb>,
         host_bridge: Option<RuntimeHostBridge>,
         event_bus: Option<EventBus>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self> {
         let x_search_config = provider_reconfig
             .as_ref()
@@ -301,6 +340,7 @@ impl RuntimeHandle {
                 notify: Notify::new(),
                 storage,
                 runtime_db,
+                clock,
                 provider: RwLock::new(provider),
                 config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),

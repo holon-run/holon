@@ -1,5 +1,6 @@
 mod bootstrap;
 mod callback;
+mod clock;
 mod closure;
 mod command_task;
 mod continuation;
@@ -247,6 +248,7 @@ struct RuntimeInner {
     notify: Notify,
     storage: AppStorage,
     runtime_db: RuntimeDb,
+    clock: Arc<dyn clock::Clock>,
     provider: RwLock<Arc<dyn AgentProvider>>,
     context_config: RwLock<ContextConfig>,
     config_snapshot: ArcSwap<ConfigSnapshot>,
@@ -608,6 +610,10 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
+    pub(super) fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.inner.clock.now()
+    }
+
     fn take_transition_fault(&self) -> Option<TransitionFaultPoint> {
         #[cfg(test)]
         {
@@ -1612,10 +1618,11 @@ impl RuntimeHandle {
             let scheduled = match poll {
                 scheduler_executor::RunLoopPoll::Shutdown => return Ok(()),
                 scheduler_executor::RunLoopPoll::Stopped(state, queue_len) => {
-                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
+                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
                         &self.inner.storage,
                         &state,
                         queue_len,
+                        self.now(),
                     )?;
                     let decision = scheduler::decide_next_action(
                         &projection,
@@ -1634,10 +1641,11 @@ impl RuntimeHandle {
                         let guard = self.inner.agent.lock().await;
                         (guard.state.clone(), guard.queue.len())
                     };
-                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
+                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
                         &self.inner.storage,
                         &idle_snapshot.0,
                         idle_snapshot.1,
+                        self.now(),
                     )?;
                     let decision = scheduler::decide_next_action(
                         &projection,
@@ -1659,15 +1667,10 @@ impl RuntimeHandle {
                         self.append_state_changed_events(&idle_state)?;
                     }
                     if let Some(next_recheck_at) = next_recheck_at {
-                        let now = Utc::now();
-                        if next_recheck_at > now {
-                            if let Ok(wait) = (next_recheck_at - now).to_std() {
-                                tokio::select! {
-                                    _ = self.inner.notify.notified() => {}
-                                    _ = tokio::time::sleep(wait) => {}
-                                }
-                            } else {
-                                self.inner.notify.notified().await;
+                        if next_recheck_at > self.now() {
+                            tokio::select! {
+                                _ = self.inner.notify.notified() => {}
+                                _ = self.inner.clock.sleep_until(next_recheck_at) => {}
                             }
                         }
                     } else {

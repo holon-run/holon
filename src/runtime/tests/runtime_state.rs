@@ -1343,11 +1343,12 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
     }));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sleep_wake_task_ignores_stale_sleeping_until() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -1358,16 +1359,21 @@ async fn sleep_wake_task_ignores_stale_sleeping_until() {
         }),
         "default".into(),
         context_config(),
+        clock.clone(),
     )
     .unwrap();
 
     runtime.transition_to_sleep(Some(25)).await.unwrap();
+    assert_eq!(
+        runtime.agent_state().await.unwrap().sleeping_until,
+        Some(clock.now() + chrono::Duration::milliseconds(25))
+    );
     {
         let mut guard = runtime.inner.agent.lock().await;
-        guard.state.sleeping_until = Some(Utc::now() + chrono::Duration::seconds(60));
+        guard.state.sleeping_until = Some(clock.now() + chrono::Duration::seconds(60));
         runtime.storage().write_agent(&guard.state).unwrap();
     }
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    advance_lifecycle_time(&clock, std::time::Duration::from_millis(25)).await;
 
     let messages = runtime.storage().read_recent_messages(10).unwrap();
     assert!(!messages.iter().any(|message| {

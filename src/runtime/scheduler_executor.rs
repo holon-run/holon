@@ -352,10 +352,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             prior_closure,
             &candidate.prior_state,
         )?;
-        let projection = scheduler::SchedulerProjection::from_state_with_queue_len(
+        let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
             &self.runtime.inner.storage,
             &candidate.prior_state,
             candidate.queue_len,
+            self.runtime.now(),
         )?;
         let decision = scheduler::decide_next_action(
             &projection,

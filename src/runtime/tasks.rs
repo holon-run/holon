@@ -2561,6 +2561,7 @@ impl RuntimeHandle {
             wrote_item = true;
         }
         if let Some(blocked_by) = blocked_by {
+            let now = self.now();
             record.blocked_by = blocked_by;
             match record.blocked_by {
                 Some(_) => {
@@ -2568,7 +2569,7 @@ impl RuntimeHandle {
                     let recheck_after_ms = i64::try_from(recheck_after_ms).unwrap_or(i64::MAX);
                     let recheck_after = chrono::Duration::try_milliseconds(recheck_after_ms)
                         .unwrap_or(chrono::Duration::MAX);
-                    record.recheck_at = Some(Utc::now() + recheck_after);
+                    record.recheck_at = Some(now + recheck_after);
                     record.recheck_consumed_at = None;
                 }
                 None => {
@@ -2576,7 +2577,7 @@ impl RuntimeHandle {
                     record.recheck_consumed_at = None;
                 }
             }
-            record.updated_at = Utc::now();
+            record.updated_at = now;
             wrote_item = true;
         }
         if wrote_item {
@@ -2674,10 +2675,11 @@ impl RuntimeHandle {
             return Ok(Some(existing));
         }
 
+        let consumed_at = self.now();
         let mut record = WorkItemRecord {
             revision: existing.revision + 1,
-            recheck_consumed_at: Some(Utc::now()),
-            updated_at: Utc::now(),
+            recheck_consumed_at: Some(consumed_at),
+            updated_at: consumed_at,
             ..existing
         };
         let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(

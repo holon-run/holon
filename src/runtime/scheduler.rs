@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
+    now: DateTime<Utc>,
     pub status: AgentStatus,
     pub queue_len: usize,
     pub active_run_id: Option<String>,
@@ -70,38 +71,53 @@ impl SchedulerProjection {
         state: &AgentState,
         queue_len: usize,
     ) -> Result<Self> {
-        let snapshot = SchedulerAgentSnapshot::from_state(state);
-        Self::from_snapshot_with_queue_len(storage, &snapshot, queue_len)
+        Self::from_state_with_queue_len_at(storage, state, queue_len, Utc::now())
     }
 
-    pub(crate) fn from_snapshot_with_queue_len(
+    pub(crate) fn from_state_with_queue_len_at(
+        storage: &AppStorage,
+        state: &AgentState,
+        queue_len: usize,
+        now: DateTime<Utc>,
+    ) -> Result<Self> {
+        let snapshot = SchedulerAgentSnapshot::from_state(state);
+        Self::from_snapshot_with_queue_len_at(storage, &snapshot, queue_len, now)
+    }
+
+    pub(crate) fn from_snapshot_with_queue_len_at(
         storage: &AppStorage,
         snapshot: &SchedulerAgentSnapshot,
         queue_len: usize,
+        now: DateTime<Utc>,
     ) -> Result<Self> {
         let work_queue = storage.work_queue_prompt_projection()?;
-        Self::from_snapshot_with_queue_len_and_work_queue(storage, snapshot, queue_len, work_queue)
+        Self::from_snapshot_with_queue_len_and_work_queue_at(
+            storage, snapshot, queue_len, work_queue, now,
+        )
     }
 
-    pub(crate) fn from_state_with_work_queue(
+    pub(crate) fn from_state_with_work_queue_at(
         storage: &AppStorage,
         state: &AgentState,
         work_queue: WorkQueueReadModel,
+        now: DateTime<Utc>,
     ) -> Result<Self> {
         let snapshot = SchedulerAgentSnapshot::from_state(state);
-        Self::from_snapshot_with_queue_len_and_work_queue(
+        Self::from_snapshot_with_queue_len_and_work_queue_at(
             storage,
             &snapshot,
             state.pending,
             work_queue,
+            now,
         )
     }
 
-    pub(crate) fn from_snapshot_with_queue_len_and_work_queue(
+    pub(crate) fn from_snapshot_with_queue_len_and_work_queue_at(
         storage: &AppStorage,
         snapshot: &SchedulerAgentSnapshot,
         queue_len: usize,
         work_queue: WorkQueueReadModel,
+        now: DateTime<Utc>,
     ) -> Result<Self> {
         let active_tasks =
             storage.latest_active_task_records_for_agent(&snapshot.id, usize::MAX)?;
@@ -154,6 +170,7 @@ impl SchedulerProjection {
             .filter(|timer| timer.agent_id == snapshot.id && timer.status == TimerStatus::Active)
             .count();
         Ok(Self {
+            now,
             status: snapshot.status.clone(),
             queue_len,
             active_run_id: snapshot.active_run_id.clone(),
@@ -850,7 +867,7 @@ pub(crate) fn wait_decision_for_projection(
                 // a recheck_after_ms fallback. (#1989)
                 if item
                     .recheck_at
-                    .is_some_and(|recheck_at| recheck_at <= Utc::now())
+                    .is_some_and(|recheck_at| recheck_at <= projection.now)
                     && item
                         .recheck_consumed_at
                         .zip(item.recheck_at)
