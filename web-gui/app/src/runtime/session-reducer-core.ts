@@ -919,6 +919,7 @@ function taskOutputAuditSummaryField(
   payload: Record<string, unknown> | undefined,
   field: "task_id" | "retrieval_status",
 ): string | undefined {
+  // Keep this parser aligned with Rust's summarize_task_output_result key=value summary format.
   const summary = stringField(payload, "summary");
   if (!summary) return undefined;
   const prefix = `${field}=`;
