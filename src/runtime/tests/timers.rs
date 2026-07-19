@@ -1,28 +1,30 @@
 use super::super::*;
 use super::support::*;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn runtime_fires_overdue_timer_after_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let now = clock.now();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     storage
         .append_timer(&TimerRecord {
             id: "timer-recover".into(),
             agent_id: "default".into(),
-            created_at: Utc::now(),
+            created_at: now - chrono::Duration::milliseconds(10),
             duration_ms: 10,
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Active,
             summary: Some("timer recovered".into()),
-            next_fire_at: Some(Utc::now() - chrono::Duration::milliseconds(5)),
+            next_fire_at: Some(now - chrono::Duration::milliseconds(5)),
             last_fired_at: None,
             fire_count: 0,
         })
         .unwrap();
 
-    let runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -30,10 +32,17 @@ async fn runtime_fires_overdue_timer_after_restart() {
         Arc::new(StubProvider::new("timer done")),
         "default".into(),
         context_config(),
+        clock,
     )
     .unwrap();
     let runtime_task = tokio::spawn(runtime.clone().run());
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_for_audit_events(
+        &runtime,
+        100,
+        |events| events.iter().any(|event| event.kind == "timer_fired"),
+        "recovered overdue timer",
+    )
+    .await;
 
     let timer = runtime
         .recent_timers(10)
@@ -46,16 +55,18 @@ async fn runtime_fires_overdue_timer_after_restart() {
     runtime_task.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn runtime_recovers_active_timer_without_next_fire_at() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let now = clock.now();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     storage
         .append_timer(&TimerRecord {
             id: "timer-missing-next-fire".into(),
             agent_id: "default".into(),
-            created_at: Utc::now() - chrono::Duration::milliseconds(20),
+            created_at: now - chrono::Duration::milliseconds(20),
             duration_ms: 10,
             interval_ms: None,
             repeat: false,
@@ -67,7 +78,7 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
         })
         .unwrap();
 
-    let runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -75,10 +86,17 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
         Arc::new(StubProvider::new("timer fallback done")),
         "default".into(),
         context_config(),
+        clock,
     )
     .unwrap();
     let runtime_task = tokio::spawn(runtime.clone().run());
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_for_audit_events(
+        &runtime,
+        100,
+        |events| events.iter().any(|event| event.kind == "timer_fired"),
+        "recovered timer without next_fire_at",
+    )
+    .await;
 
     let timer = runtime
         .recent_timers(10)

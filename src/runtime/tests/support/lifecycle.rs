@@ -19,9 +19,27 @@ pub(crate) struct DurableLifecycleSnapshot {
     pub(crate) index_outbox_high_watermark: i64,
 }
 
+pub(crate) fn controlled_clock() -> Arc<crate::runtime::clock::TestClock> {
+    Arc::new(crate::runtime::clock::TestClock::new(
+        chrono::DateTime::parse_from_rfc3339("2026-07-19T00:00:00Z")
+            .expect("valid controlled clock timestamp")
+            .with_timezone(&Utc),
+    ))
+}
+
+pub(crate) async fn advance_lifecycle_time(
+    clock: &crate::runtime::clock::TestClock,
+    duration: std::time::Duration,
+) {
+    clock.advance(duration);
+    tokio::time::advance(duration).await;
+    tokio::task::yield_now().await;
+}
+
 pub(crate) struct LifecycleHarness {
     data_dir: TempDir,
     workspace: TempDir,
+    clock: Arc<crate::runtime::clock::TestClock>,
     runtime: RuntimeHandle,
 }
 
@@ -29,16 +47,22 @@ impl LifecycleHarness {
     pub(crate) fn new() -> Self {
         let data_dir = tempdir().expect("create lifecycle data dir");
         let workspace = tempdir().expect("create lifecycle workspace");
-        let runtime = Self::open_runtime(&data_dir, &workspace);
+        let clock = controlled_clock();
+        let runtime = Self::open_runtime(&data_dir, &workspace, clock.clone());
         Self {
             data_dir,
             workspace,
+            clock,
             runtime,
         }
     }
 
-    fn open_runtime(data_dir: &TempDir, workspace: &TempDir) -> RuntimeHandle {
-        RuntimeHandle::new(
+    fn open_runtime(
+        data_dir: &TempDir,
+        workspace: &TempDir,
+        clock: Arc<crate::runtime::clock::TestClock>,
+    ) -> RuntimeHandle {
+        RuntimeHandle::new_with_clock(
             "default",
             data_dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -46,6 +70,7 @@ impl LifecycleHarness {
             Arc::new(StubProvider::new("unused")),
             "default".into(),
             context_config(),
+            clock,
         )
         .expect("open lifecycle runtime")
     }
@@ -59,7 +84,15 @@ impl LifecycleHarness {
     }
 
     pub(crate) fn restart(&mut self) {
-        self.runtime = Self::open_runtime(&self.data_dir, &self.workspace);
+        self.runtime = Self::open_runtime(&self.data_dir, &self.workspace, self.clock.clone());
+    }
+
+    pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
+        self.runtime.now()
+    }
+
+    pub(crate) async fn advance(&self, duration: std::time::Duration) {
+        advance_lifecycle_time(&self.clock, duration).await;
     }
 
     pub(crate) fn snapshot(&self) -> DurableLifecycleSnapshot {

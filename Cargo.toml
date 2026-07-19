@@ -54,6 +54,7 @@ aide = { version = "0.15.1", features = ["axum"] }
 flate2 = "1.0"
 tempfile = "3.14"
 proptest = "1.6"
+tokio = { version = "1.43", features = ["test-util"] }
 
 [lib]
 name = "holon"

@@ -131,13 +131,14 @@ impl RuntimeHandle {
         let due_rechecks = self
             .inner
             .storage
-            .due_blocked_work_item_rechecks(scheduler_snapshot.id(), chrono::Utc::now())?;
+            .due_blocked_work_item_rechecks(scheduler_snapshot.id(), self.now())?;
         let scheduler_projection =
-            scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue(
+            scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue_at(
                 &self.inner.storage,
                 &scheduler_snapshot,
                 queue_len,
                 work_queue_projection.clone(),
+                self.now(),
             )?;
         let trigger = idle_tick_trigger_from_state(
             pending_wake_hint,
@@ -304,7 +305,7 @@ impl RuntimeHandle {
         let due_rechecks = self
             .inner
             .storage
-            .due_blocked_work_item_rechecks(agent_id, chrono::Utc::now())?;
+            .due_blocked_work_item_rechecks(agent_id, self.now())?;
         self.consume_work_item_rechecks(&due_rechecks).await
     }
 
@@ -457,10 +458,11 @@ impl RuntimeHandle {
                 guard.queue.len(),
             )
         };
-        let projection = scheduler::SchedulerProjection::from_snapshot_with_queue_len(
+        let projection = scheduler::SchedulerProjection::from_snapshot_with_queue_len_at(
             &self.inner.storage,
             &snapshot,
             queue_len,
+            self.now(),
         )?;
         let duplicate = self
             .duplicate_wake_hint_message_id(pending)?

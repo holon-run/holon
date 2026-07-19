@@ -155,10 +155,11 @@ impl RuntimeHandle {
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
         let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
-        let projection = scheduler::SchedulerProjection::from_state_with_work_queue(
+        let projection = scheduler::SchedulerProjection::from_state_with_work_queue_at(
             &self.inner.storage,
             state,
             work_queue_projection,
+            self.now(),
         )?;
         let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
         Ok(derive_closure_decision(&ClosureFacts {
@@ -1622,7 +1623,7 @@ impl RuntimeHandle {
         allow_runnable_work_override: bool,
     ) -> Result<()> {
         let sleeping_until = duration_ms.map(|duration_ms| {
-            chrono::Utc::now()
+            self.now()
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
         if sleeping_until.is_none() && allow_runnable_work_override {
@@ -1687,7 +1688,7 @@ impl RuntimeHandle {
     ) {
         let runtime = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+            runtime.inner.clock.sleep_until(sleeping_until).await;
             let should_wake = {
                 let guard = runtime.inner.agent.lock().await;
                 guard.state.status == AgentStatus::Asleep

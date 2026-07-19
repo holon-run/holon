@@ -254,7 +254,8 @@ fn work_item_record_revision_defaults_for_old_records() {
 async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -262,6 +263,7 @@ async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
         Arc::new(StubProvider::new("done")),
         "default".into(),
         context_config(),
+        clock.clone(),
     )
     .unwrap();
 
@@ -269,7 +271,6 @@ async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
         .create_work_item("wait with fallback".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let before = Utc::now();
     let blocked = runtime
         .update_work_item_fields_with_recheck(
             work.id.clone(),
@@ -283,7 +284,7 @@ async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
         .await
         .unwrap();
     let recheck_at = blocked.recheck_at.expect("blocked item has recheck_at");
-    assert!(recheck_at >= before + chrono::Duration::milliseconds(25));
+    assert_eq!(recheck_at, clock.now() + chrono::Duration::milliseconds(25));
     assert!(blocked.recheck_consumed_at.is_none());
 
     let updated = runtime
@@ -308,10 +309,11 @@ async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
     assert!(cleared.recheck_consumed_at.is_none());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut blocked = WorkItemRecord::new(
         "default",
@@ -319,10 +321,10 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
         WorkItemState::Open,
     );
     blocked.blocked_by = Some("waiting for external wake".into());
-    blocked.recheck_at = Some(Utc::now() + chrono::Duration::milliseconds(50));
+    blocked.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
     storage.append_work_item(&blocked).unwrap();
 
-    let runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -330,10 +332,24 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
         Arc::new(StubProvider::new("recheck observed")),
         "default".into(),
         context_config(),
+        clock.clone(),
     )
     .unwrap();
     let runtime_task = tokio::spawn(runtime.clone().run());
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
+    wait_for_audit_events(
+        &runtime,
+        200,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "system_tick_emitted"
+                    && event.data.get("subsystem").and_then(|value| value.as_str())
+                        == Some("work_item_recheck")
+            })
+        },
+        "work item recheck tick",
+    )
+    .await;
 
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
     assert!(

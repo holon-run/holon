@@ -573,7 +573,14 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
         })
         .unwrap();
 
-    let before = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let now = Utc::now();
+    let before = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+        &storage,
+        &agent,
+        agent.pending,
+        now,
+    )
+    .unwrap();
     storage
         .append_event(&AuditEvent::legacy(
             "turn_local_compaction_completed",
@@ -603,7 +610,13 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
         ))
         .unwrap();
 
-    let after = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let after = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+        &storage,
+        &agent,
+        agent.pending,
+        now,
+    )
+    .unwrap();
     assert_eq!(
         before, after,
         "compaction artifacts must not become scheduler truth"

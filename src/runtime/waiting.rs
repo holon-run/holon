@@ -7,7 +7,6 @@ use crate::types::{
     WorkItemRecord, WorkItemState,
 };
 use chrono::{DateTime, Utc};
-use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -78,7 +77,7 @@ impl RuntimeHandle {
             return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
         }
 
-        let now = Utc::now();
+        let now = self.now();
         let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
         let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
         let mut state = self.agent_state().await?;
@@ -475,7 +474,7 @@ impl RuntimeHandle {
         interval_ms: Option<u64>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
-        let created_at = Utc::now();
+        let created_at = self.now();
         let timer = TimerRecord {
             id: crate::ids::timer_id(),
             agent_id: self.agent_id().await?,
@@ -558,12 +557,8 @@ impl RuntimeHandle {
                 let Some(next_fire_at) = timer.next_fire_at else {
                     break;
                 };
-                let now = Utc::now();
-                if next_fire_at > now {
-                    let wait = (next_fire_at - now)
-                        .to_std()
-                        .unwrap_or_else(|_| Duration::from_millis(0));
-                    tokio::time::sleep(wait).await;
+                if next_fire_at > runtime.now() {
+                    runtime.inner.clock.sleep_until(next_fire_at).await;
                 }
                 if let Err(err) = runtime.fire_timer_record(&mut timer).await {
                     let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
@@ -583,8 +578,8 @@ impl RuntimeHandle {
     }
 
     async fn recover_timer(&self, timer: TimerRecord) -> Result<()> {
-        let timer = normalize_recovered_timer(timer);
-        let now = Utc::now();
+        let now = self.now();
+        let timer = normalize_recovered_timer(timer, now);
         if timer
             .next_fire_at
             .is_some_and(|next_fire_at| next_fire_at <= now)
@@ -632,7 +627,7 @@ impl RuntimeHandle {
         };
         self.enqueue(message).await?;
 
-        let fired_at = Utc::now();
+        let fired_at = self.now();
         timer.last_fired_at = Some(fired_at);
         timer.fire_count += 1;
         if let Some(interval_ms) = timer.interval_ms {
@@ -953,13 +948,13 @@ fn advance_time(base: chrono::DateTime<Utc>, delta_ms: u64) -> Result<chrono::Da
     Ok(base + delta)
 }
 
-fn normalize_recovered_timer(mut timer: TimerRecord) -> TimerRecord {
+fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> TimerRecord {
     if timer.next_fire_at.is_some() {
         return timer;
     }
 
     let anchor = timer.last_fired_at.unwrap_or(timer.created_at);
     let fallback_ms = timer.interval_ms.unwrap_or(timer.duration_ms);
-    timer.next_fire_at = advance_time(anchor, fallback_ms).ok().or(Some(Utc::now()));
+    timer.next_fire_at = advance_time(anchor, fallback_ms).ok().or(Some(now));
     timer
 }
