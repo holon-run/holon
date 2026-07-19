@@ -84,7 +84,7 @@ pub fn preserves_prior_tool_context(request: &ProviderTurnRequest) -> bool {
 pub fn test_config() -> AppConfig {
     TestConfigBuilder::new()
         .with_control_auth_mode(ControlAuthMode::Auto)
-        .build()
+        .build_retained()
 }
 
 /// Create an aggressive compaction configuration for testing
@@ -92,7 +92,7 @@ pub fn aggressive_compaction_config() -> AppConfig {
     let mut config = TestConfigBuilder::new()
         .with_control_auth_mode(ControlAuthMode::Auto)
         .with_compaction(2, 1, 1, 1, 4096)
-        .build();
+        .build_retained();
     let override_config = holon::model_catalog::ModelRuntimeOverride {
         prompt_budget_estimated_tokens: Some(4096),
         compaction_trigger_estimated_tokens: Some(1),

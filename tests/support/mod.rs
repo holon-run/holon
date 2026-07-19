@@ -27,7 +27,7 @@ use holon::{
         WorkItemState,
     },
 };
-pub use tempfile::tempdir;
+pub use tempfile::{tempdir, TempDir};
 use tokio::sync::watch;
 use tokio::{
     net::{TcpListener, UnixListener},
@@ -45,6 +45,40 @@ pub struct TestConfigBuilder {
     prompt_budget_estimated_tokens: usize,
     compaction_trigger_estimated_tokens: usize,
     compaction_keep_recent_estimated_tokens: usize,
+}
+
+pub struct TestConfig {
+    config: AppConfig,
+    data_dir: Option<TempDir>,
+    workspace_dir: Option<TempDir>,
+}
+
+impl TestConfig {
+    pub fn config(&self) -> &AppConfig {
+        &self.config
+    }
+
+    pub fn config_mut(&mut self) -> &mut AppConfig {
+        &mut self.config
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.config.data_dir
+    }
+
+    pub fn workspace_dir(&self) -> &Path {
+        &self.config.workspace_dir
+    }
+
+    pub fn into_retained_config(mut self) -> AppConfig {
+        if let Some(data_dir) = self.data_dir.take() {
+            let _ = data_dir.keep();
+        }
+        if let Some(workspace_dir) = self.workspace_dir.take() {
+            let _ = workspace_dir.keep();
+        }
+        self.config
+    }
 }
 
 pub async fn test_work_item(
@@ -131,14 +165,22 @@ impl TestConfigBuilder {
         self
     }
 
-    pub fn build(self) -> AppConfig {
+    pub fn build(self) -> TestConfig {
+        let data_dir_owner = self
+            .data_dir
+            .is_none()
+            .then(|| tempdir().expect("temp data dir"));
+        let workspace_dir_owner = self
+            .workspace_dir
+            .is_none()
+            .then(|| tempdir().expect("temp workspace dir"));
         let data_dir = self
             .data_dir
-            .unwrap_or_else(|| tempdir().expect("temp data dir").keep());
+            .unwrap_or_else(|| data_dir_owner.as_ref().unwrap().path().to_path_buf());
         let workspace_dir = self
             .workspace_dir
-            .unwrap_or_else(|| tempdir().expect("temp workspace dir").keep());
-        AppConfig {
+            .unwrap_or_else(|| workspace_dir_owner.as_ref().unwrap().path().to_path_buf());
+        let config = AppConfig {
             default_agent_id: "default".into(),
             http_addr: self.http_addr,
             callback_base_url: "http://127.0.0.1:0".into(),
@@ -182,7 +224,16 @@ impl TestConfigBuilder {
                 data_dir.join(".codex"),
             ),
             web_config: holon::web::WebConfig::default(),
+        };
+        TestConfig {
+            config,
+            data_dir: data_dir_owner,
+            workspace_dir: workspace_dir_owner,
         }
+    }
+
+    pub fn build_retained(self) -> AppConfig {
+        self.build().into_retained_config()
     }
 }
 
@@ -216,19 +267,27 @@ pub fn init_git_repo(path: &Path) -> Result<()> {
 
 pub struct GitWorkspaceFixture {
     pub root: PathBuf,
+    temp_dir: TempDir,
 }
 
 impl GitWorkspaceFixture {
     pub fn new() -> Result<Self> {
-        let root = tempdir()?.keep();
+        let temp_dir = tempdir()?;
+        let root = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&root)?;
         init_git_repo(&root)?;
-        Ok(Self { root })
+        Ok(Self { root, temp_dir })
     }
 
     pub fn bare() -> Result<Self> {
-        let root = tempdir()?.keep();
+        let temp_dir = tempdir()?;
+        let root = temp_dir.path().join("repo");
         std::fs::create_dir_all(&root)?;
-        Ok(Self { root })
+        Ok(Self { root, temp_dir })
+    }
+
+    pub fn temp_root(&self) -> &Path {
+        self.temp_dir.path()
     }
 }
 
@@ -288,16 +347,33 @@ pub struct RuntimeHarness {
     pub host: RuntimeHost,
     pub runtime: RuntimeHandle,
     pub workspace_dir: PathBuf,
+    _config: Option<TestConfig>,
 }
 
 impl RuntimeHarness {
     pub async fn with_provider(provider: Arc<dyn AgentProvider>) -> Result<Self> {
-        Self::with_config_and_provider(TestConfigBuilder::new().build(), provider).await
+        Self::with_test_config_and_provider(TestConfigBuilder::new().build(), provider).await
+    }
+
+    pub async fn with_test_config_and_provider(
+        test_config: TestConfig,
+        provider: Arc<dyn AgentProvider>,
+    ) -> Result<Self> {
+        let config = test_config.config().clone();
+        Self::build(config, provider, Some(test_config)).await
     }
 
     pub async fn with_config_and_provider(
         config: AppConfig,
         provider: Arc<dyn AgentProvider>,
+    ) -> Result<Self> {
+        Self::build(config, provider, None).await
+    }
+
+    async fn build(
+        config: AppConfig,
+        provider: Arc<dyn AgentProvider>,
+        test_config: Option<TestConfig>,
     ) -> Result<Self> {
         std::fs::create_dir_all(&config.workspace_dir)?;
         let host = RuntimeHost::new_with_provider(config.clone(), provider)?;
@@ -307,25 +383,65 @@ impl RuntimeHarness {
             host,
             runtime,
             workspace_dir: config.workspace_dir.clone(),
+            _config: test_config,
         })
+    }
+}
+
+pub struct TestServerHandle {
+    server: JoinHandle<anyhow::Result<()>>,
+    _config: Option<TestConfig>,
+}
+
+impl TestServerHandle {
+    fn new(server: JoinHandle<anyhow::Result<()>>, test_config: Option<TestConfig>) -> Self {
+        Self {
+            server,
+            _config: test_config,
+        }
+    }
+
+    pub fn abort(&self) {
+        self.server.abort();
+    }
+}
+
+impl Drop for TestServerHandle {
+    fn drop(&mut self) {
+        self.server.abort();
     }
 }
 
 pub struct HttpHarness {
     pub host: RuntimeHost,
     pub base_url: String,
-    pub server: JoinHandle<anyhow::Result<()>>,
+    pub server: TestServerHandle,
 }
 
 impl HttpHarness {
     pub async fn with_provider(provider: Arc<dyn AgentProvider>) -> Result<Self> {
-        let config = TestConfigBuilder::new().build();
-        Self::with_config_and_provider(config, provider).await
+        Self::with_test_config_and_provider(TestConfigBuilder::new().build(), provider).await
+    }
+
+    pub async fn with_test_config_and_provider(
+        test_config: TestConfig,
+        provider: Arc<dyn AgentProvider>,
+    ) -> Result<Self> {
+        let config = test_config.config().clone();
+        Self::build(config, provider, Some(test_config)).await
     }
 
     pub async fn with_config_and_provider(
         config: AppConfig,
         provider: Arc<dyn AgentProvider>,
+    ) -> Result<Self> {
+        Self::build(config, provider, None).await
+    }
+
+    async fn build(
+        config: AppConfig,
+        provider: Arc<dyn AgentProvider>,
+        test_config: Option<TestConfig>,
     ) -> Result<Self> {
         std::fs::create_dir_all(&config.workspace_dir)?;
         init_git_repo(&config.workspace_dir)?;
@@ -342,7 +458,7 @@ impl HttpHarness {
         Ok(Self {
             host,
             base_url: format!("http://{}", addr),
-            server,
+            server: TestServerHandle::new(server, test_config),
         })
     }
 
@@ -607,7 +723,7 @@ where
 pub fn test_config() -> AppConfig {
     TestConfigBuilder::new()
         .with_control_auth_mode(ControlAuthMode::Auto)
-        .build()
+        .build_retained()
 }
 
 pub fn test_config_with_paths(
@@ -621,15 +737,14 @@ pub fn test_config_with_paths(
         .with_workspace_dir(workspace_dir)
         .with_http_addr(http_addr)
         .with_control_auth_mode(control_auth_mode)
-        .build()
+        .build_retained()
 }
 
-pub async fn spawn_server() -> Result<(
-    RuntimeHost,
-    String,
-    tokio::task::JoinHandle<anyhow::Result<()>>,
-)> {
-    let config = test_config();
+pub async fn spawn_server() -> Result<(RuntimeHost, String, TestServerHandle)> {
+    let test_config = TestConfigBuilder::new()
+        .with_control_auth_mode(ControlAuthMode::Auto)
+        .build();
+    let config = test_config.config().clone();
     let bind_addr = config.http_addr.clone();
     std::fs::create_dir_all(&config.workspace_dir)?;
     init_git_repo(&config.workspace_dir)?;
@@ -642,12 +757,14 @@ pub async fn spawn_server() -> Result<(
         axum::serve(listener, router).await?;
         Ok(())
     });
-    Ok((host, format!("http://{}", addr), server))
+    Ok((
+        host,
+        format!("http://{}", addr),
+        TestServerHandle::new(server, Some(test_config)),
+    ))
 }
 
-pub async fn spawn_server_for_host(
-    host: RuntimeHost,
-) -> Result<(String, tokio::task::JoinHandle<anyhow::Result<()>>)> {
+pub async fn spawn_server_for_host(host: RuntimeHost) -> Result<(String, TestServerHandle)> {
     let router: Router = http::router(AppState::for_tcp(host));
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -655,16 +772,15 @@ pub async fn spawn_server_for_host(
         axum::serve(listener, router).await?;
         Ok(())
     });
-    Ok((format!("http://{}", addr), server))
+    Ok((
+        format!("http://{}", addr),
+        TestServerHandle::new(server, None),
+    ))
 }
 
 pub async fn spawn_server_with_config(
     config: AppConfig,
-) -> Result<(
-    RuntimeHost,
-    String,
-    tokio::task::JoinHandle<anyhow::Result<()>>,
-)> {
+) -> Result<(RuntimeHost, String, TestServerHandle)> {
     std::fs::create_dir_all(&config.workspace_dir)?;
     init_git_repo(&config.workspace_dir)?;
     let bind_addr = config.http_addr.clone();
@@ -677,16 +793,16 @@ pub async fn spawn_server_with_config(
         axum::serve(listener, router).await?;
         Ok(())
     });
-    Ok((host, format!("http://{}", addr), server))
+    Ok((
+        host,
+        format!("http://{}", addr),
+        TestServerHandle::new(server, None),
+    ))
 }
 
 pub async fn spawn_server_with_runtime_config(
     config: AppConfig,
-) -> Result<(
-    RuntimeHost,
-    String,
-    tokio::task::JoinHandle<anyhow::Result<()>>,
-)> {
+) -> Result<(RuntimeHost, String, TestServerHandle)> {
     std::fs::create_dir_all(&config.workspace_dir)?;
     init_git_repo(&config.workspace_dir)?;
     let bind_addr = config.http_addr.clone();
@@ -699,7 +815,11 @@ pub async fn spawn_server_with_runtime_config(
         axum::serve(listener, router).await?;
         Ok(())
     });
-    Ok((host, format!("http://{}", addr), server))
+    Ok((
+        host,
+        format!("http://{}", addr),
+        TestServerHandle::new(server, None),
+    ))
 }
 
 // HTTP route support modules

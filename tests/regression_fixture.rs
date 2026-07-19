@@ -9,7 +9,6 @@ use holon::{
     types::{AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority},
 };
 use serde::Deserialize;
-use tempfile::tempdir;
 use tokio::sync::Mutex;
 mod support;
 
@@ -91,19 +90,13 @@ async fn fixture_coding_loop_regression_stays_green() -> Result<()> {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/write_and_verify.json");
     let fixture: RegressionFixture = serde_json::from_str(&fs::read_to_string(&fixture_path)?)?;
 
-    let workspace = tempdir()?.keep();
-    let data_dir = tempdir()?.keep();
+    let test_config = TestConfigBuilder::new().build();
+    let workspace = test_config.workspace_dir().to_path_buf();
     fs::create_dir_all(&workspace)?;
     let provider = FixtureProvider::new(fixture.steps.clone());
 
-    let harness = RuntimeHarness::with_config_and_provider(
-        TestConfigBuilder::new()
-            .with_workspace_dir(workspace.clone())
-            .with_data_dir(data_dir)
-            .build(),
-        Arc::new(provider),
-    )
-    .await?;
+    let harness =
+        RuntimeHarness::with_test_config_and_provider(test_config, Arc::new(provider)).await?;
     let runtime = harness.runtime.clone();
 
     runtime
