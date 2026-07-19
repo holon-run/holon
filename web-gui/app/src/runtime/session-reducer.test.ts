@@ -366,6 +366,54 @@ describe("reduceAgentSessionTimeline", () => {
     expect(timeline[0].body).not.toBe("timeout");
   });
 
+  it("rewrites audit-only TaskOutput metadata instead of displaying raw key/value summary", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-output-audit-success", "TaskOutput", {
+            input: { task_id: "task_finished" },
+            summary:
+              "retrieval_status=success task_id=task_finished output_truncated=false exit_status=0",
+          }),
+          toolEvent("task-output-audit-timeout", "TaskOutput", {
+            input: { task_id: "task_waiting" },
+            summary:
+              "retrieval_status=timeout task_id=task_waiting output_truncated=false exit_status=unknown",
+          }),
+          toolEvent("task-output-audit-legacy", "TaskOutput", {
+            summary:
+              "retrieval_status=timeout task_id=unknown output_truncated=false exit_status=unknown",
+          }),
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(3);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        body: "Task output · task_finished",
+        executionMeta: expect.objectContaining({ taskId: "task_finished" }),
+        relatedStateObjectRef: { kind: "task", id: "task:task_finished", status: "unknown" },
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        body: "Task output · task_waiting · retrieval timeout",
+        executionMeta: expect.objectContaining({ taskId: "task_waiting" }),
+        relatedStateObjectRef: { kind: "task", id: "task:task_waiting", status: "unknown" },
+      }),
+    );
+    expect(timeline[2]).toEqual(
+      expect.objectContaining({
+        body: "Task output · retrieval timeout",
+        executionMeta: expect.objectContaining({ taskId: undefined }),
+        relatedStateObjectRef: undefined,
+      }),
+    );
+    expect(timeline.map((item) => item.body).join("\n")).not.toContain("retrieval_status=");
+    expect(timeline.map((item) => item.body).join("\n")).not.toContain("output_truncated=");
+  });
+
   it("projects TaskOutput with truncated flag", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
