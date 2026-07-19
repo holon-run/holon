@@ -13,7 +13,7 @@ as of the last review date noted below.
 > **Last verified:** 2026-05-27 against `src/types.rs` `AgentState`,
 > `AgentStatus`, `AgentIdentityView`, `AgentSchedulingPosture`,
 > `AgentPostureProjection`, `ClosureDecision`, `ContinuationResolution`,
-> `RuntimePosture`, and `AgentSummary`; `src/storage.rs`
+> `RuntimePosture`, and `AgentSummary`; `src/storage/mod.rs`
 > `agent_posture_projection`; `src/runtime/lifecycle.rs` `agent_summary`;
 > `src/runtime/closure.rs` closure derivation; and `src/tool/tools/agent_get.rs`.
 

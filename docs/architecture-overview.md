@@ -14,7 +14,7 @@ Use it to:
 
 For canonical contracts, see [RFCs](rfcs/README.md). For a user-facing
 explanation, see the [website concepts](./website/concepts/README.md).
-For the contributor reading path, see the [RFC README](rfcs/README.md#recommended-reading-path).
+For the contributor reading path, see the [RFC README](rfcs/README.md#current-runtime-specs).
 
 ## One Sentence
 

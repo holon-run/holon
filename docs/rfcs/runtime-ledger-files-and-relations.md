@@ -155,8 +155,9 @@ The current runtime storage creates the following files under
 ## Current implementation usage
 
 The current implementation centralizes ledger paths and basic append/read
-helpers in `src/storage.rs`. Higher-level runtime modules decide when each
-domain record is created and how recent or latest-state views are reconstructed.
+helpers in [`src/storage/mod.rs`](../../src/storage/mod.rs). Higher-level
+runtime modules decide when each domain record is created and how recent or
+latest-state views are reconstructed.
 
 This section describes the current implementation, not the final desired
 contract. It should be kept close to the code while the ledger refactor is in

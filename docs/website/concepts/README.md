@@ -87,16 +87,20 @@ These are maintainer-facing documents; you do not need them to use Holon.
   How Holon's memory layers preserve continuity across turns — work items, work refs, episodes, durable ledger, and indexed search.
   <!-- mdorigin:index kind=article -->
 
+- [Documentation layers](./documentation-layers.md)
+  How Holon separates product docs, current-contract reference, and maintainer design records.
+  <!-- mdorigin:index kind=article -->
+
 - [Trust boundaries](./trust-boundaries.md)
   How Holon classifies origin, trust, and priority to keep long-lived agents secure.
   <!-- mdorigin:index kind=article -->
 
-- [Security and execution boundaries](./security-and-execution-boundaries.md)
-  What Holon does and does not sandbox and how to run agents safely.
+- [External triggers](./external-triggers.md)
+  How Holon agents wait for and receive external events through webhook wake endpoints and callback URLs.
   <!-- mdorigin:index kind=article -->
 
-- [Documentation layers](./documentation-layers.md)
-  How Holon separates user-facing docs, current-contract reference, and maintainer design records — and which layer to read for which question.
+- [Security and execution boundaries](./security-and-execution-boundaries.md)
+  What Holon does and does not sandbox: local execution, workspace binding, remote access, capability secrets, and trust metadata.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

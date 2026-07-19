@@ -76,12 +76,12 @@ This is a short orientation for contributors. End users don't need to know the r
 
 <!-- INDEX:START -->
 
-- [Onboarding guide](./onboarding.md)
-  Interactive setup with `holon onboard` — provider, credential, model, and search configuration.
+- [Create your first agent](./first-agent.md)
+  From zero to your first Holon agent: install, start, TUI basics, create an agent, and configure models.
   <!-- mdorigin:index kind=article -->
 
-- [Create your first agent](./first-agent.md)
-  From zero to your first Holon agent: build, start, TUI basics, create an agent, and configure models.
+- [Onboarding guide](./onboarding.md)
+  Interactive setup with `holon onboard` — provider, credential, model, and search configuration.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -13,7 +13,8 @@ gaps that still need stabilization before scripts and integrations can rely on
 the API long term.
 
 - **Last reviewed against:** `holon` v0.14.1, `main` at `bff2293`.
-- **Primary source:** `src/http.rs` Axum router and request/response structs.
+- **Primary source:** [`src/http/mod.rs`](../../../src/http/mod.rs) Axum router
+  and request/response structs.
 - **Generated schema:** [`openapi.json`](./openapi.json), produced by
   `holon::openapi::generate_openapi_json()` and checked by
   `make snapshots-check`.
@@ -41,7 +42,7 @@ the API long term.
 
 | Surface | Current behavior | Stability |
 |---------|------------------|-----------|
-| HTTP TCP | Routes are served by the Axum router in `src/http.rs`. | Candidate stable |
+| HTTP TCP | Routes are served by the Axum router in [`src/http/mod.rs`](../../../src/http/mod.rs). | Candidate stable |
 | Unix socket client fallback | `LocalClient` tries the configured Unix socket first when present, then falls back to HTTP. | Candidate stable for local clients; not documented as a general remote API |
 | Bearer auth | When `require_control_token` is true, read routes and `/control/*` routes require `Authorization: Bearer <token>`. | Candidate stable |
 | Local mode | When no control token is required, the server trusts the local process boundary. | Candidate stable, but should be tied to explicit deployment guidance |

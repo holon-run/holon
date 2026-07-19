@@ -19,7 +19,7 @@ behavior changes.
 <!-- INDEX:START -->
 
 - [CLI reference](./cli.md)
-  Holon's current command-line interface — verified against holon --help (v0.14.1).
+  Holon's command-line interface — verified against holon --help (v0.30.0).
   <!-- mdorigin:index kind=article -->
 
 - [CLI contract inventory](./cli-contract-inventory.md)
@@ -52,6 +52,10 @@ behavior changes.
 
 - [Model tool schema inventory](./model-tool-schema-inventory.md)
   Versioned inventory for Holon's model-facing built-in tool schemas, result envelopes, and stability labels.
+  <!-- mdorigin:index kind=article -->
+
+- [Supported Models](./models.md)
+  Complete reference of all built-in models and providers supported by Holon.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
