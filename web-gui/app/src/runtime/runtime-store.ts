@@ -368,6 +368,38 @@ export interface RuntimeStoreState {
   unregisterAgentForEvents: (agentId: string) => void;
 }
 
+export function resetTransientRuntimeStateForResume(
+  state: RuntimeStoreState,
+): Partial<RuntimeStoreState> {
+  return {
+    modelCatalogLoading: false,
+    runtimeConfigLoading: false,
+    runtimeConfigSaving: false,
+    skillCatalogLoading: false,
+    skillDetailLoadingById: resetBooleanMap(state.skillDetailLoadingById),
+    templateCatalogLoading: false,
+    templateSyncInProgress: false,
+    templateDetailLoadingById: resetBooleanMap(state.templateDetailLoadingById),
+    agentSkillCatalogLoadingByAgentId: resetBooleanMap(state.agentSkillCatalogLoadingByAgentId),
+    credentialStoreLoading: false,
+    codexDeviceLogin: { status: "idle" },
+    searchLoading: false,
+    searchResultContentLoadingBySourceRef: resetBooleanMap(state.searchResultContentLoadingBySourceRef),
+    rightPanelView: resetRightPanelLoading(state.rightPanelView),
+    rightPanelViewStack: state.rightPanelViewStack.map(resetRightPanelLoading).filter((view): view is RightPanelView => view !== undefined),
+    sessionsByAgentId: resetSessionsForResume(state.sessionsByAgentId),
+  };
+}
+
+function resetBooleanMap(values: Record<string, boolean>): Record<string, boolean> {
+  return Object.fromEntries(Object.keys(values).map((key) => [key, false]));
+}
+
+function resetRightPanelLoading(view: RightPanelView | undefined): RightPanelView | undefined {
+  if (!view || !("detailState" in view) || !view.detailState?.loading) return view;
+  return { ...view, detailState: { ...view.detailState, loading: false } };
+}
+
 const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
 const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
 const RUNTIME_CONNECTION_PROFILES_STORAGE_KEY = "holon.webGui.runtimeConnectionProfiles.v1";
@@ -465,6 +497,21 @@ function isCurrentClientGeneration(generation: number): boolean {
   return generation === clientGeneration;
 }
 
+type RuntimeClient = ReturnType<typeof createRuntimeClient>;
+
+interface ClientRequest {
+  client: RuntimeClient;
+  generation: number;
+}
+
+function captureClientRequest(): ClientRequest {
+  return { client: runtimeClient, generation: clientGeneration };
+}
+
+function isCurrentClientRequest(request: ClientRequest): boolean {
+  return request.client === runtimeClient && isCurrentClientGeneration(request.generation);
+}
+
 function clearInFlightHydration(): void {
   messageHydrationInFlight.clear();
   transcriptHydrationInFlight.clear();
@@ -478,6 +525,11 @@ function cancelClientGenerationWork(): void {
     bootstrapRefreshTimer = undefined;
   }
   agentStateRefreshInFlight.clear();
+  inspectorDetailInFlight.clear();
+  workItemRefreshInFlight.clear();
+  workItemDetailInFlight.clear();
+  taskDetailInFlight.clear();
+  toolExecutionDetailInFlight.clear();
   clearInFlightHydration();
 }
 
@@ -507,16 +559,51 @@ export function resetSessionsForResume(
         ...session,
         loading: false,
         loadingOlder: false,
+        sendingPrompt: false,
         liveStatus: "stale" as const,
         reconnectAttempt: 0,
+        workItemDetailsById: resetDetailLoading(session.workItemDetailsById),
+        taskDetailsById: resetDetailLoading(session.taskDetailsById),
+        toolExecutionDetailsById: resetDetailLoading(session.toolExecutionDetailsById),
       },
     ]),
+  );
+}
+
+function resetDetailLoading<T extends { loading?: boolean }>(detailsById: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(detailsById).map(([id, detail]) => [id, detail.loading ? { ...detail, loading: false } : detail]),
   );
 }
 
 // ─── Session cache (IndexedDB persistence) ──────────────────────────
 let sessionCacheWriter: SessionCacheWriter | null = null;
 let sessionCacheInitPromise: Promise<void> | null = null;
+
+interface SessionCacheContext {
+  remoteKey: string;
+  generation: number;
+}
+
+export function isSessionCacheContextCurrent(
+  context: SessionCacheContext,
+  remoteKey: string,
+  generation: number,
+): boolean {
+  return context.remoteKey === remoteKey && context.generation === generation;
+}
+
+function currentSessionCacheContext(): SessionCacheContext {
+  return {
+    remoteKey: currentRemoteKey(runtimeConnectionConfig),
+    generation: clientGeneration,
+  };
+}
+
+function sessionCacheContextIsCurrent(context: SessionCacheContext): boolean {
+  const current = currentSessionCacheContext();
+  return isSessionCacheContextCurrent(context, current.remoteKey, current.generation);
+}
 
 function runtimeClientOptions(config: RuntimeConnectionConfig) {
   return config.mode === "remote"
@@ -837,49 +924,64 @@ function filterDismissedDiagnostics(
  */
 function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState): void {
   if (sessionCacheInitPromise) return;
-  const remoteKey = currentRemoteKey(runtimeConnectionConfig);
-
-  sessionCacheInitPromise = (async () => {
-    const ok = await initSessionCache();
-    if (!ok) {
-      sessionCacheWriter = null;
-      return;
-    }
-
-    // Set up writer for this remote.
-    sessionCacheWriter?.cancel();
-    sessionCacheWriter = new SessionCacheWriter(remoteKey);
-
-    // Hydrate cached sessions into store.
-    const cached = await hydrateAllSessions(remoteKey);
-    if (Object.keys(cached).length === 0) return;
-
-    const restoredAgentIds: string[] = [];
-    set((state) => {
-      const sessionsByAgentId = { ...state.sessionsByAgentId };
-      for (const [agentId, partial] of Object.entries(cached)) {
-        const current = sessionsByAgentId[agentId] ?? emptyAgentSession();
-        const restored = mergeCachedSessionIntoCurrent(current, partial);
-        if (restored === current) continue;
-        sessionsByAgentId[agentId] = restored;
-        restoredAgentIds.push(agentId);
+  const context = currentSessionCacheContext();
+  const initialization = (async () => {
+    try {
+      const ok = await initSessionCache();
+      if (!sessionCacheContextIsCurrent(context)) return;
+      if (!ok) {
+        sessionCacheWriter = null;
+        return;
       }
-      const withProvisional = rebuildProvisionalDetailsWithAgents(
-        state.bootstrap.agents,
-        sessionsByAgentId,
-      );
-      return { sessionsByAgentId: withProvisional ?? sessionsByAgentId };
-    });
 
-    if (get) {
-      const displayLevel = get().displayLevel;
-      for (const agentId of restoredAgentIds) {
-        scheduleMessageHydration(get, set, agentId, displayLevel);
-        scheduleTranscriptHydration(get, set, agentId, displayLevel);
-        scheduleBriefHydration(get, set, agentId, displayLevel);
+      // Set up writer for this remote.
+      sessionCacheWriter?.cancel();
+      const writer = new SessionCacheWriter(context.remoteKey);
+      sessionCacheWriter = writer;
+
+      // Hydrate cached sessions into store.
+      const cached = await hydrateAllSessions(context.remoteKey);
+      if (!sessionCacheContextIsCurrent(context) || sessionCacheWriter !== writer) return;
+      if (Object.keys(cached).length === 0) return;
+
+      const restoredAgentIds: string[] = [];
+      set((state) => {
+        const sessionsByAgentId = { ...state.sessionsByAgentId };
+        for (const [agentId, partial] of Object.entries(cached)) {
+          const current = sessionsByAgentId[agentId] ?? emptyAgentSession();
+          const restored = mergeCachedSessionIntoCurrent(current, partial);
+          if (restored === current) continue;
+          sessionsByAgentId[agentId] = restored;
+          restoredAgentIds.push(agentId);
+        }
+        const withProvisional = rebuildProvisionalDetailsWithAgents(
+          state.bootstrap.agents,
+          sessionsByAgentId,
+        );
+        return { sessionsByAgentId: withProvisional ?? sessionsByAgentId };
+      });
+
+      if (get && sessionCacheContextIsCurrent(context)) {
+        const displayLevel = get().displayLevel;
+        for (const agentId of restoredAgentIds) {
+          scheduleMessageHydration(get, set, agentId, displayLevel);
+          scheduleTranscriptHydration(get, set, agentId, displayLevel);
+          scheduleBriefHydration(get, set, agentId, displayLevel);
+        }
       }
+    } catch {
+      if (sessionCacheContextIsCurrent(context)) sessionCacheWriter = null;
     }
   })();
+  sessionCacheInitPromise = initialization;
+  void initialization.then(
+    () => {
+      if (sessionCacheInitPromise === initialization) sessionCacheInitPromise = null;
+    },
+    () => {
+      if (sessionCacheInitPromise === initialization) sessionCacheInitPromise = null;
+    },
+  );
 }
 
 export function mergeCachedSessionIntoCurrent(
@@ -1118,6 +1220,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   setRuntimeConnection: async (config) => {
     nextClientGeneration();
+    cancelClientGenerationWork();
     const normalizedBaseUrl = config.mode === "remote" ? normalizeConnectionBaseUrl(config.baseUrl) : "";
     const retainedToken =
       config.mode === "remote" &&
@@ -1176,8 +1279,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       bootstrapLoading: true,
       bootstrapError: undefined,
       modelCatalog: emptyModelCatalog,
+      modelCatalogLoading: false,
       modelCatalogError: undefined,
       runtimeConfig: emptyRuntimeConfig,
+      runtimeConfigLoading: false,
+      runtimeConfigSaving: false,
       runtimeConfigError: undefined,
       skillCatalog: emptySkillCatalog,
       skillCatalogLoading: false,
@@ -1202,7 +1308,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       credentialStoreError: undefined,
       codexDeviceLogin: { status: "idle" as const },
       search: null,
+      searchLoading: false,
       searchError: undefined,
+      searchResultContentBySourceRef: {},
+      searchResultContentLoadingBySourceRef: {},
+      searchResultContentErrorBySourceRef: {},
       sessionsByAgentId: {},
       rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
       selectedAgentId: "",
@@ -1292,10 +1402,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     const generation = nextClientGeneration();
     cancelClientGenerationWork();
     closeEventStreamsForResume(set);
+    // First invalidate transient layout/loading state before fresh projections arrive.
     set((state) => ({
+      ...resetTransientRuntimeStateForResume(state),
       resumeRevision: state.resumeRevision + 1,
-      sessionsByAgentId: resetSessionsForResume(state.sessionsByAgentId),
     }));
+    resumeSkillInstallJobPolling(set, get);
 
     const request = (async () => {
       try {
@@ -1310,6 +1422,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         }
       } finally {
         if (isCurrentClientGeneration(generation)) {
+          // Then remeasure once more after the reconciled projections and hydration are scheduled.
           set((state) => ({ resumeRevision: state.resumeRevision + 1 }));
         }
       }
@@ -1326,11 +1439,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   refreshModelCatalog: async () => {
+    const request = captureClientRequest();
     set({ modelCatalogLoading: true, modelCatalogError: undefined });
     try {
-      const modelCatalog = await runtimeClient.getModels();
+      const modelCatalog = await request.client.getModels();
+      if (!isCurrentClientRequest(request)) return;
       set({ modelCatalog, modelCatalogLoading: false, modelCatalogError: modelCatalog.error });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         modelCatalog: { ...state.modelCatalog, error: message },
@@ -1341,11 +1457,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   refreshRuntimeConfig: async () => {
+    const request = captureClientRequest();
     set({ runtimeConfigLoading: true, runtimeConfigError: undefined });
     try {
-      const runtimeConfig = await runtimeClient.getRuntimeConfig();
+      const runtimeConfig = await request.client.getRuntimeConfig();
+      if (!isCurrentClientRequest(request)) return;
       set({ runtimeConfig, runtimeConfigLoading: false, runtimeConfigError: runtimeConfig.error });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         runtimeConfig: { ...state.runtimeConfig, error: message },
@@ -1356,16 +1475,20 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   updateRuntimeConfig: async (updates) => {
+    const request = captureClientRequest();
     set({ runtimeConfigSaving: true, runtimeConfigError: undefined });
     try {
-      const runtimeConfig = await runtimeClient.updateRuntimeConfig(updates);
+      const runtimeConfig = await request.client.updateRuntimeConfig(updates);
+      if (!isCurrentClientRequest(request)) return undefined;
       set({ runtimeConfig, runtimeConfigSaving: false, runtimeConfigError: runtimeConfig.error });
       if (runtimeConfig.changed && !runtimeConfig.error) {
         set({ modelCatalogLoading: true, modelCatalogError: undefined });
         try {
-          const modelCatalog = await runtimeClient.getModels();
+          const modelCatalog = await request.client.getModels();
+          if (!isCurrentClientRequest(request)) return runtimeConfig;
           set({ modelCatalog, modelCatalogLoading: false, modelCatalogError: modelCatalog.error });
         } catch (modelError) {
+          if (!isCurrentClientRequest(request)) return runtimeConfig;
           const message = modelError instanceof Error ? modelError.message : String(modelError);
           set((state) => ({
             modelCatalog: { ...state.modelCatalog, error: message },
@@ -1376,6 +1499,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       }
       return runtimeConfig;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return undefined;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         runtimeConfig: { ...state.runtimeConfig, error: message },
@@ -1387,11 +1511,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   refreshSkillCatalog: async () => {
+    const request = captureClientRequest();
     set({ skillCatalogLoading: true, skillCatalogError: undefined });
     try {
-      const skillCatalog = await runtimeClient.getSkillCatalog();
+      const skillCatalog = await request.client.getSkillCatalog();
+      if (!isCurrentClientRequest(request)) return;
       set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         skillCatalog: { ...state.skillCatalog, source: "http", error: message },
@@ -1403,19 +1530,22 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   refreshSkillDetail: async (skillId) => {
     if (!skillId) return;
+    const request = captureClientRequest();
     set((state) => ({
       skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: true },
       skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: undefined },
     }));
     try {
       // The backend resolves scope from the skill_id prefix automatically.
-      const detail = await runtimeClient.getSkillDetail(skillId);
+      const detail = await request.client.getSkillDetail(skillId);
+      if (!isCurrentClientRequest(request)) return;
       set((state) => ({
         skillDetailById: { ...state.skillDetailById, [skillId]: detail },
         skillDetailLoadingById: { ...state.skillDetailLoadingById, [skillId]: false },
         skillDetailErrorById: { ...state.skillDetailErrorById, [skillId]: detail.error },
       }));
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         skillDetailById: {
@@ -1429,13 +1559,16 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   refreshTemplateCatalog: async () => {
+    const request = captureClientRequest();
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
       const templateCatalog = filterDismissedDiagnostics(
-        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+        await request.client.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
       );
+      if (!isCurrentClientRequest(request)) return;
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         templateCatalog: { ...state.templateCatalog, source: "http", error: message },
@@ -1447,18 +1580,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   refreshTemplateDetail: async (catalogId) => {
     if (!catalogId) return;
+    const request = captureClientRequest();
     set((state) => ({
       templateDetailLoadingById: { ...state.templateDetailLoadingById, [catalogId]: true },
       templateDetailErrorById: { ...state.templateDetailErrorById, [catalogId]: undefined },
     }));
     try {
-      const detail = await runtimeClient.getTemplateDetail(catalogId);
+      const detail = await request.client.getTemplateDetail(catalogId);
+      if (!isCurrentClientRequest(request)) return;
       set((state) => ({
         templateDetailById: { ...state.templateDetailById, [catalogId]: detail },
         templateDetailLoadingById: { ...state.templateDetailLoadingById, [catalogId]: false },
         templateDetailErrorById: { ...state.templateDetailErrorById, [catalogId]: detail.error },
       }));
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         templateDetailById: {
@@ -1472,15 +1608,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   installTemplate: async (githubUrl) => {
+    const request = captureClientRequest();
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
-      await runtimeClient.installTemplate(githubUrl);
+      await request.client.installTemplate(githubUrl);
       const templateCatalog = filterDismissedDiagnostics(
-        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+        await request.client.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
       );
+      if (!isCurrentClientRequest(request)) return false;
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         templateCatalog: { ...state.templateCatalog, error: message },
@@ -1492,15 +1631,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   removeTemplate: async (templateId) => {
+    const request = captureClientRequest();
     set({ templateCatalogLoading: true, templateCatalogError: undefined });
     try {
-      await runtimeClient.removeTemplate(templateId);
+      await request.client.removeTemplate(templateId);
       const templateCatalog = filterDismissedDiagnostics(
-        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+        await request.client.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
       );
+      if (!isCurrentClientRequest(request)) return false;
       set({ templateCatalog, templateCatalogLoading: false, templateCatalogError: templateCatalog.error });
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         templateCatalog: { ...state.templateCatalog, error: message },
@@ -1512,19 +1654,22 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   syncTemplateRemoteSources: async () => {
+    const request = captureClientRequest();
     set({ templateCatalogLoading: true, templateCatalogError: undefined, templateSyncMessage: undefined });
     try {
       set({ templateSyncInProgress: true });
-      const jobId = await runtimeClient.syncTemplateRemoteSources();
-      await pollTemplateSyncJob(set, get, jobId);
+      const jobId = await request.client.syncTemplateRemoteSources();
+      await pollTemplateSyncJob(request, jobId);
       const templateCatalog = filterDismissedDiagnostics(
-        await runtimeClient.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
+        await request.client.getTemplateCatalog(), get().dismissedTemplateDiagnostics,
       );
+      if (!isCurrentClientRequest(request)) return false;
       const sourceCount = templateCatalog.sources.length;
       const templateCount = templateCatalog.catalog.length;
       set({ templateCatalog, templateCatalogLoading: false, templateSyncInProgress: false, templateCatalogError: templateCatalog.error, templateSyncMessage: `Synced ${sourceCount} source(s), ${templateCount} template(s).` });
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         templateCatalog: { ...state.templateCatalog, error: message },
@@ -1538,12 +1683,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   createAgentFromTemplate: async (agentId, template) => {
+    const request = captureClientRequest();
     set({ templateCatalogError: undefined });
     try {
-      await runtimeClient.createAgentFromTemplate(agentId, template);
+      await request.client.createAgentFromTemplate(agentId, template);
+      if (!isCurrentClientRequest(request)) return false;
       await get().refreshBootstrap({ background: true });
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set({ templateCatalogError: message });
       return false;
@@ -1568,9 +1716,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   addSkillToCatalog: async (input) => {
+    const request = captureClientRequest();
     set({ skillCatalogError: undefined });
     try {
-      const jobId = await runtimeClient.addSkillToCatalog(input);
+      const jobId = await request.client.addSkillToCatalog(input);
+      if (!isCurrentClientRequest(request)) return false;
       const source = "package" in input ? input.package : "path" in input ? input.path : "name" in input ? input.name : "unknown";
       const job: SkillInstallJob = { jobId, source, status: "queued" };
       set((state) => {
@@ -1578,9 +1728,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         saveSkillInstallJobs(jobs);
         return { skillInstallJobs: jobs };
       });
-      void pollSkillInstallJob(set, get, jobId);
+      void pollSkillInstallJob(set, get, request, jobId);
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set({ skillCatalogError: message });
       return false;
@@ -1588,13 +1739,16 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   removeSkillFromCatalog: async (name) => {
+    const request = captureClientRequest();
     set({ skillCatalogLoading: true, skillCatalogError: undefined });
     try {
-      await runtimeClient.removeSkillFromCatalog(name);
-      const skillCatalog = await runtimeClient.getSkillCatalog();
+      await request.client.removeSkillFromCatalog(name);
+      const skillCatalog = await request.client.getSkillCatalog();
+      if (!isCurrentClientRequest(request)) return false;
       set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         skillCatalog: { ...state.skillCatalog, error: message },
@@ -1606,9 +1760,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   updateSkillCatalog: async (name) => {
+    const request = captureClientRequest();
     set({ skillCatalogError: undefined });
     try {
-      const jobId = await runtimeClient.updateSkillCatalog(name);
+      const jobId = await request.client.updateSkillCatalog(name);
+      if (!isCurrentClientRequest(request)) return false;
       const job: SkillInstallJob = {
         jobId,
         source: name ?? "all skills",
@@ -1620,9 +1776,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         saveSkillInstallJobs(jobs);
         return { skillInstallJobs: jobs };
       });
-      void pollSkillInstallJob(set, get, jobId);
+      void pollSkillInstallJob(set, get, request, jobId);
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         skillCatalog: { ...state.skillCatalog, error: message },
@@ -1635,13 +1792,16 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   dismissSkillJob: (jobId) => removeSkillInstallJob(set, get, jobId),
 
   checkSkillCatalog: async (name) => {
+    const request = captureClientRequest();
     set({ skillCatalogLoading: true, skillCatalogError: undefined });
     try {
-      await runtimeClient.checkSkillCatalog(name);
-      const skillCatalog = await runtimeClient.getSkillCatalog();
+      await request.client.checkSkillCatalog(name);
+      const skillCatalog = await request.client.getSkillCatalog();
+      if (!isCurrentClientRequest(request)) return false;
       set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         skillCatalog: { ...state.skillCatalog, error: message },
@@ -1654,6 +1814,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   refreshAgentSkillCatalog: async (agentId) => {
     if (!agentId) return;
+    const request = captureClientRequest();
     set((state) => ({
       agentSkillCatalogLoadingByAgentId: {
         ...state.agentSkillCatalogLoadingByAgentId,
@@ -1665,7 +1826,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       },
     }));
     try {
-      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      const catalog = await request.client.getSkillCatalog(agentId);
+      if (!isCurrentClientRequest(request)) return;
       set((state) => ({
         agentSkillCatalogByAgentId: {
           ...state.agentSkillCatalogByAgentId,
@@ -1677,6 +1839,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         },
       }));
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         agentSkillCatalogLoadingByAgentId: {
@@ -1693,6 +1856,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   enableAgentSkill: async (agentId, name) => {
     if (!agentId) return false;
+    const request = captureClientRequest();
     set((state) => ({
       agentSkillCatalogLoadingByAgentId: {
         ...state.agentSkillCatalogLoadingByAgentId,
@@ -1704,8 +1868,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       },
     }));
     try {
-      await runtimeClient.enableAgentSkill(agentId, name);
-      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      await request.client.enableAgentSkill(agentId, name);
+      const catalog = await request.client.getSkillCatalog(agentId);
+      if (!isCurrentClientRequest(request)) return false;
       set((state) => ({
         agentSkillCatalogByAgentId: {
           ...state.agentSkillCatalogByAgentId,
@@ -1718,6 +1883,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       }));
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         agentSkillCatalogLoadingByAgentId: {
@@ -1735,6 +1901,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   disableAgentSkill: async (agentId, name) => {
     if (!agentId) return false;
+    const request = captureClientRequest();
     set((state) => ({
       agentSkillCatalogLoadingByAgentId: {
         ...state.agentSkillCatalogLoadingByAgentId,
@@ -1746,8 +1913,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       },
     }));
     try {
-      await runtimeClient.disableAgentSkill(agentId, name);
-      const catalog = await runtimeClient.getSkillCatalog(agentId);
+      await request.client.disableAgentSkill(agentId, name);
+      const catalog = await request.client.getSkillCatalog(agentId);
+      if (!isCurrentClientRequest(request)) return false;
       set((state) => ({
         agentSkillCatalogByAgentId: {
           ...state.agentSkillCatalogByAgentId,
@@ -1760,6 +1928,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       }));
       return true;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         agentSkillCatalogLoadingByAgentId: {
@@ -1777,24 +1946,29 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
 
   refreshCredentialStore: async () => {
+    const request = captureClientRequest();
     set({ credentialStoreLoading: true, credentialStoreError: undefined });
     try {
-      const credentialStore = await runtimeClient.listCredentials();
+      const credentialStore = await request.client.listCredentials();
+      if (!isCurrentClientRequest(request)) return;
       set({ credentialStore, credentialStoreLoading: false });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set({ credentialStoreLoading: false, credentialStoreError: message });
     }
   },
 
   setCredential: async (profile, kind, material) => {
+    const request = captureClientRequest();
     try {
-      const result = await runtimeClient.setCredential(profile, kind, material);
+      const result = await request.client.setCredential(profile, kind, material);
       const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
-        runtimeClient.listCredentials(),
-        runtimeClient.getRuntimeConfig(),
-        runtimeClient.getModels(),
+        request.client.listCredentials(),
+        request.client.getRuntimeConfig(),
+        request.client.getModels(),
       ]);
+      if (!isCurrentClientRequest(request)) return undefined;
       set({
         credentialStore,
         credentialStoreError: undefined,
@@ -1805,6 +1979,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       });
       return result;
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return undefined;
       const message = error instanceof Error ? error.message : String(error);
       set({ credentialStoreError: message });
       return undefined;
@@ -1812,13 +1987,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 
   deleteCredential: async (profile) => {
+    const request = captureClientRequest();
     try {
-      await runtimeClient.deleteCredential(profile);
+      await request.client.deleteCredential(profile);
       const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
-        runtimeClient.listCredentials(),
-        runtimeClient.getRuntimeConfig(),
-        runtimeClient.getModels(),
+        request.client.listCredentials(),
+        request.client.getRuntimeConfig(),
+        request.client.getModels(),
       ]);
+      if (!isCurrentClientRequest(request)) return;
       set({
         credentialStore,
         credentialStoreError: undefined,
@@ -1828,14 +2005,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         modelCatalogError: modelCatalog.error,
       });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set({ credentialStoreError: message });
     }
   },
   startCodexDeviceLogin: async (providerId = "openai-codex") => {
+    const request = captureClientRequest();
     set({ codexDeviceLogin: { status: "starting" } });
     try {
-      const resp = await runtimeClient.startCodexDeviceLogin(providerId);
+      const resp = await request.client.startCodexDeviceLogin(providerId);
+      if (!isCurrentClientRequest(request)) return;
       set({
         codexDeviceLogin: {
           status: "waiting",
@@ -1851,6 +2031,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       const expiresAt = resp.expiresAt ? new Date(resp.expiresAt).getTime() : Date.now() + 300_000;
 
       const poll = async (): Promise<void> => {
+        if (!isCurrentClientRequest(request)) return;
         const current = get().codexDeviceLogin;
         if (current.status !== "waiting" || current.jobId !== jobId) return;
         if (Date.now() > expiresAt) {
@@ -1858,13 +2039,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           return;
         }
         try {
-          const job = await runtimeClient.getJob(jobId);
+          const job = await request.client.getJob(jobId);
+          if (!isCurrentClientRequest(request)) return;
           if (job.status === "completed") {
             const [credentialStore, runtimeConfig, modelCatalog] = await Promise.all([
-              runtimeClient.listCredentials(),
-              runtimeClient.getRuntimeConfig(),
-              runtimeClient.getModels(),
+              request.client.listCredentials(),
+              request.client.getRuntimeConfig(),
+              request.client.getModels(),
             ]);
+            if (!isCurrentClientRequest(request)) return;
             set({
               codexDeviceLogin: { status: "completed" },
               credentialStore,
@@ -1888,6 +2071,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
       setTimeout(() => { void poll(); }, pollInterval);
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set({ codexDeviceLogin: { status: "failed", error: message } });
     }
@@ -1901,9 +2085,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set({ search: null, searchLoading: false, searchError: undefined });
       return;
     }
+    const request = captureClientRequest();
     set({ searchLoading: true, searchError: undefined });
     try {
-      const search = await runtimeClient.search(trimmed, options);
+      const search = await request.client.search(trimmed, options);
+      if (!isCurrentClientRequest(request)) return;
       set({
         search,
         searchLoading: false,
@@ -1912,12 +2098,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         searchResultContentErrorBySourceRef: {},
       });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       set({ searchLoading: false, searchError: error instanceof Error ? error.message : String(error) });
     }
   },
   loadSearchResultContent: async (sourceRef) => {
     const trimmed = sourceRef.trim();
     if (!trimmed) return;
+    const request = captureClientRequest();
     const state = get();
     if (state.searchResultContentBySourceRef[trimmed] || state.searchResultContentLoadingBySourceRef[trimmed]) {
       return;
@@ -1933,7 +2121,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       },
     }));
     try {
-      const content = await runtimeClient.getMemorySource(trimmed);
+      const content = await request.client.getMemorySource(trimmed);
+      if (!isCurrentClientRequest(request)) return;
       set((current) => ({
         searchResultContentBySourceRef: {
           ...current.searchResultContentBySourceRef,
@@ -1945,6 +2134,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         },
       }));
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       set((current) => ({
         searchResultContentLoadingBySourceRef: {
           ...current.searchResultContentLoadingBySourceRef,
@@ -1963,7 +2153,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return;
     }
 
-    const generation = clientGeneration;
+    const request = captureClientRequest();
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -1977,17 +2167,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }));
 
     try {
-      const detail = await runtimeClient.getAgentDetail(agentId, displayLevel);
-      if (!isCurrentClientGeneration(generation)) return;
+      const detail = await request.client.getAgentDetail(agentId, displayLevel);
+      if (!isCurrentClientRequest(request)) return;
       set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
       await loadTargetAgentEventWindow(get, set, agentId, displayLevel);
-      if (!isCurrentClientGeneration(generation)) return;
+      if (!isCurrentClientRequest(request)) return;
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
       scheduleCacheWrite(get, agentId);
     } catch (error) {
-      if (!isCurrentClientGeneration(generation)) return;
+      if (!isCurrentClientRequest(request)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -2005,11 +2195,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   refreshAgentWorkItems: async (agentId) => {
     if (!agentId || workItemRefreshInFlight.has(agentId)) return;
+    const request = captureClientRequest();
     workItemRefreshInFlight.add(agentId);
     try {
-      const workItems = await runtimeClient.getAgentWorkItems(agentId, { limit: 50 });
+      const workItems = await request.client.getAgentWorkItems(agentId, { limit: 50 });
+      if (!isCurrentClientRequest(request)) return;
       set((state) => mergeAgentWorkItemsIntoState(state, agentId, workItems));
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -2021,22 +2214,27 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         },
       }));
     } finally {
-      workItemRefreshInFlight.delete(agentId);
+      if (isCurrentClientRequest(request)) {
+        workItemRefreshInFlight.delete(agentId);
+      }
     }
   },
 
   refreshAgentState: async (agentId) => {
     if (!agentId || agentStateRefreshInFlight.has(agentId)) return;
-    const generation = clientGeneration;
-    agentStateRefreshInFlight.set(agentId, generation);
+    const request = captureClientRequest();
+    agentStateRefreshInFlight.set(agentId, request.generation);
     try {
-      const freshAgent = await runtimeClient.getAgentState(agentId);
-      if (!isCurrentClientGeneration(generation)) return;
+      const freshAgent = await request.client.getAgentState(agentId);
+      if (!isCurrentClientRequest(request)) return;
       set((state) => mergeAgentStateIntoState(state, agentId, freshAgent));
     } catch {
       // Swallow — state refresh is best-effort; the next full detail refresh will recover.
     } finally {
-      if (agentStateRefreshInFlight.get(agentId) === generation) {
+      if (
+        isCurrentClientRequest(request) &&
+        agentStateRefreshInFlight.get(agentId) === request.generation
+      ) {
         agentStateRefreshInFlight.delete(agentId);
       }
     }
@@ -2044,40 +2242,51 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   loadAgentWorkItemDetail: async (agentId, workItemId) => {
     if (!agentId || !workItemId) return;
+    const request = captureClientRequest();
     const key = `${agentId}:${workItemId}`;
     const cached = get().sessionsByAgentId[agentId]?.workItemDetailsById[workItemId];
     if (cached?.workItem || cached?.loading || workItemDetailInFlight.has(key)) return;
     workItemDetailInFlight.add(key);
     setWorkItemDetailState(set, agentId, workItemId, { loading: true, error: undefined });
     try {
-      const workItem = await runtimeClient.getAgentWorkItem(agentId, workItemId);
+      const workItem = await request.client.getAgentWorkItem(agentId, workItemId);
+      if (!isCurrentClientRequest(request)) return;
       setWorkItemDetailState(set, agentId, workItemId, { loading: false, workItem });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       setWorkItemDetailState(set, agentId, workItemId, {
         loading: false,
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      workItemDetailInFlight.delete(key);
+      if (isCurrentClientRequest(request)) {
+        workItemDetailInFlight.delete(key);
+      }
     }
   },
 
   loadAgentTaskDetail: async (agentId, taskId) => {
     if (!agentId || !taskId) return;
+    const request = captureClientRequest();
     const key = `${agentId}:${taskId}`;
     const cached = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
     if (cached?.output || cached?.loading || taskDetailInFlight.has(key)) return;
     taskDetailInFlight.add(key);
     setTaskDetailState(set, agentId, taskId, { loading: true, error: undefined });
     try {
-      const output = await runtimeClient.getTaskOutput(agentId, taskId);
+      const output = await request.client.getTaskOutput(agentId, taskId);
+      if (!isCurrentClientRequest(request)) return;
       setTaskDetailState(set, agentId, taskId, { loading: false, output });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       setTaskDetailState(set, agentId, taskId, {
         loading: false,
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      if (!isCurrentClientRequest(request)) {
+        return;
+      }
       taskDetailInFlight.delete(key);
       const selection = get().rightPanelView;
       if (selection?.kind === "task_detail" && selection.agentId === agentId && selection.task.id === taskId) {
@@ -2091,15 +2300,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   loadAgentToolExecutionDetail: async (agentId, toolExecutionId, fallbackActivity) => {
     if (!agentId || !toolExecutionId) return;
+    const request = captureClientRequest();
     const key = `${agentId}:${toolExecutionId}`;
     const cached = get().sessionsByAgentId[agentId]?.toolExecutionDetailsById[toolExecutionId];
     if (cached?.toolExecution || cached?.loading || toolExecutionDetailInFlight.has(key)) return;
     toolExecutionDetailInFlight.add(key);
     setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: true, error: undefined });
     try {
-      const toolExecution = await runtimeClient.getToolExecution(agentId, toolExecutionId);
+      const toolExecution = await request.client.getToolExecution(agentId, toolExecutionId);
+      if (!isCurrentClientRequest(request)) return;
       setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: false, toolExecution });
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       // If the tool execution record doesn't exist (e.g. historical events
       // without tool_execution_id), fall back to the activity inspector
       // which renders structured detail from the raw event payload.
@@ -2119,6 +2331,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      if (!isCurrentClientRequest(request)) {
+        return;
+      }
       toolExecutionDetailInFlight.delete(key);
       const selection = get().rightPanelView;
       if (selection?.kind === "tool_execution_detail" && selection.agentId === agentId && selection.toolExecutionId === toolExecutionId) {
@@ -2135,7 +2350,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
     if (session.loadingOlder || !session.hasOlder || session.oldestSeq == null) return;
 
-    const generation = clientGeneration;
+    const request = captureClientRequest();
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -2149,13 +2364,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }));
 
     try {
-      const page = await runtimeClient.getAgentEvents(agentId, {
+      const page = await request.client.getAgentEvents(agentId, {
         beforeSeq: session.oldestSeq,
         limit: 80,
         order: "desc",
         displayLevel,
       });
-      if (!isCurrentClientGeneration(generation)) return;
+      if (!isCurrentClientRequest(request)) return;
 
       set((state) =>
         mergeEventPageIntoSession(
@@ -2172,7 +2387,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
     } catch (error) {
-      if (!isCurrentClientGeneration(generation)) return;
+      if (!isCurrentClientRequest(request)) return;
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -2194,6 +2409,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return;
     }
 
+    const request = captureClientRequest();
     const clientId = crypto.randomUUID();
     set((state) => {
       const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
@@ -2222,7 +2438,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     });
 
     try {
-      const { messageId } = await runtimeClient.sendOperatorPrompt(agentId, prompt, attachments);
+      const { messageId } = await request.client.sendOperatorPrompt(agentId, prompt, attachments);
+      if (!isCurrentClientRequest(request)) return;
       scheduleBootstrapRefresh(get, 250);
       set((state) => ({
         sessionsByAgentId: {
@@ -2244,6 +2461,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         void catchUpAgentEvents(get, set, agentId, displayLevel);
       }
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         sessionsByAgentId: {
@@ -2262,10 +2480,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   setAgentModel: async (agentId, model, displayLevel, reasoningEffort) => {
     if (!agentId || !model) return;
+    const request = captureClientRequest();
     const previousAgent = get().sessionsByAgentId[agentId]?.detail?.agent;
     setSessionModelError(set, agentId, undefined);
     try {
-      const modelState = await runtimeClient.setAgentModel(agentId, model, reasoningEffort);
+      const modelState = await request.client.setAgentModel(agentId, model, reasoningEffort);
+      if (!isCurrentClientRequest(request)) return;
       set((state) =>
         updateAgentModelInState(state, agentId, {
           model: modelState?.active_model ?? modelState?.effective_model ?? model,
@@ -2275,6 +2495,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       );
       await get().refreshAgentDetail(agentId, displayLevel);
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       setSessionModelError(set, agentId, message);
       if (previousAgent) {
@@ -2286,10 +2507,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   clearAgentModel: async (agentId, displayLevel) => {
     if (!agentId) return;
+    const request = captureClientRequest();
     const previousAgent = get().sessionsByAgentId[agentId]?.detail?.agent;
     setSessionModelError(set, agentId, undefined);
     try {
-      const modelState = await runtimeClient.clearAgentModel(agentId);
+      const modelState = await request.client.clearAgentModel(agentId);
+      if (!isCurrentClientRequest(request)) return;
       set((state) =>
         updateAgentModelInState(state, agentId, {
           model: modelState?.active_model ?? modelState?.effective_model ?? "runtime default",
@@ -2299,6 +2522,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       );
       await get().refreshAgentDetail(agentId, displayLevel);
     } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       setSessionModelError(set, agentId, message);
       if (previousAgent) {
@@ -2311,6 +2535,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   startAgentEventStream: (agentId, displayLevel) => {
     if (!agentId) return;
     stopAgentEventStream(agentId, set);
+    const request = captureClientRequest();
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
     if (session.detail?.error) return;
 
@@ -2319,10 +2544,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       reconnectAttempt,
       error: undefined,
     });
-    const subscription = runtimeClient.streamAgentEvents(agentId, {
+    const subscription = request.client.streamAgentEvents(agentId, {
       afterSeq: highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0,
       limit: 100,
       onOpen: () => {
+        if (!isCurrentClientRequest(request)) return;
         markStreamActivity(set, agentId);
         setStreamState(set, agentId, reconnectAttempt > 0 ? "recovering" : "streaming", {
           reconnectAttempt: 0,
@@ -2334,16 +2560,26 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         }
       },
       onActivity: () => {
+        if (!isCurrentClientRequest(request)) return;
         markStreamActivity(set, agentId);
         scheduleStaleWatchdog(get, set, agentId, displayLevel);
       },
       onEvent: (event) => {
+        if (!isCurrentClientRequest(request)) return;
         markStreamActivity(set, agentId);
         enqueueStreamEvent(set, agentId, event);
         scheduleBootstrapRefresh(get);
       },
-      onClose: () => scheduleStreamReconnect(get, set, agentId, displayLevel, "event stream closed"),
-      onError: (error) => scheduleStreamReconnect(get, set, agentId, displayLevel, error.message),
+      onClose: () => {
+        if (isCurrentClientRequest(request)) {
+          scheduleStreamReconnect(get, set, agentId, displayLevel, "event stream closed");
+        }
+      },
+      onError: (error) => {
+        if (isCurrentClientRequest(request)) {
+          scheduleStreamReconnect(get, set, agentId, displayLevel, error.message);
+        }
+      },
     });
     if (!subscription) {
       setAgentLiveStatus(set, agentId, "idle");
@@ -2379,11 +2615,7 @@ if (typeof window !== "undefined") {
 
 // Resume polling for any skill install jobs persisted from a previous session.
 if (typeof window !== "undefined") {
-  for (const job of useRuntimeStore.getState().skillInstallJobs) {
-    if (job.status === "queued" || job.status === "running") {
-      void pollSkillInstallJob(useRuntimeStore.setState, useRuntimeStore.getState, job.jobId);
-    }
-  }
+  resumeSkillInstallJobPolling(useRuntimeStore.setState, useRuntimeStore.getState);
 }
 
 function installResumeReconciliationListeners(): ResumeReconciliationCoordinator {
@@ -2556,8 +2788,10 @@ function scheduleCacheWrite(get: () => RuntimeStoreState, agentId: string): void
 function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): void {
   if (globalEventStream) return;
 
-  const subscription = runtimeClient.streamGlobalEvents({
+  const request = captureClientRequest();
+  const subscription = request.client.streamGlobalEvents({
     onOpen: () => {
+      if (!isCurrentClientRequest(request)) return;
       globalStreamReconnectAttempt = 0;
       scheduleGlobalStaleWatchdog(get, set);
       // Backfill all registered agents on (re)connect.
@@ -2566,14 +2800,24 @@ function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): vo
       }
     },
     onActivity: () => {
+      if (!isCurrentClientRequest(request)) return;
       scheduleGlobalStaleWatchdog(get, set);
     },
     onEvent: (event) => {
+      if (!isCurrentClientRequest(request)) return;
       scheduleGlobalStaleWatchdog(get, set);
       dispatchGlobalStreamEvent(set, event);
     },
-    onClose: () => scheduleGlobalStreamReconnect(get, set, "global event stream closed"),
-    onError: (error) => scheduleGlobalStreamReconnect(get, set, error.message),
+    onClose: () => {
+      if (isCurrentClientRequest(request)) {
+        scheduleGlobalStreamReconnect(get, set, "global event stream closed");
+      }
+    },
+    onError: (error) => {
+      if (isCurrentClientRequest(request)) {
+        scheduleGlobalStreamReconnect(get, set, error.message);
+      }
+    },
   });
   if (!subscription) return;
   globalEventStream = subscription;
@@ -2764,16 +3008,18 @@ function hydrateInspectorActivityDetail(
 
   const key = `${agentId}:${activity.id}:${refs.toolExecutionId ?? ""}:${refs.taskId ?? ""}`;
   if (inspectorDetailInFlight.has(key)) return;
+  const request = captureClientRequest();
   inspectorDetailInFlight.add(key);
   setInspectorActivityDetailState(set, agentId, activity.id, { loading: true });
 
   // Use allSettled so a 404 on one fetch (e.g. historical tool execution
   // without a persisted record) doesn't wipe out the other detail.
   void Promise.allSettled([
-    refs.toolExecutionId ? runtimeClient.getToolExecution(agentId, refs.toolExecutionId) : Promise.resolve(undefined),
-    refs.taskId ? runtimeClient.getTaskOutput(agentId, refs.taskId) : Promise.resolve(undefined),
+    refs.toolExecutionId ? request.client.getToolExecution(agentId, refs.toolExecutionId) : Promise.resolve(undefined),
+    refs.taskId ? request.client.getTaskOutput(agentId, refs.taskId) : Promise.resolve(undefined),
   ])
     .then(([toolExecResult, taskOutputResult]) => {
+      if (!isCurrentClientRequest(request)) return;
       const toolExecution = toolExecResult.status === "fulfilled" ? toolExecResult.value : undefined;
       const taskOutput = taskOutputResult.status === "fulfilled" ? taskOutputResult.value : undefined;
       setInspectorActivityDetailState(set, agentId, activity.id, {
@@ -2783,12 +3029,14 @@ function hydrateInspectorActivityDetail(
       });
     })
     .catch((error) => {
+      if (!isCurrentClientRequest(request)) return;
       setInspectorActivityDetailState(set, agentId, activity.id, {
         loading: false,
         error: error instanceof Error ? error.message : String(error),
       });
     })
     .finally(() => {
+      if (!isCurrentClientRequest(request)) return;
       inspectorDetailInFlight.delete(key);
       const selection = get().rightPanelView;
       if (selection?.kind === "activity_inspector" && selection.agentId === agentId && selection.activity.id === activity.id) {
@@ -3068,16 +3316,32 @@ function scheduleBootstrapRefresh(get: () => RuntimeStoreState, delayMs = 1_000)
 const SKILL_JOB_POLL_INTERVAL_MS = 1_000;
 const SKILL_JOB_POLL_TIMEOUT_MS = 180_000;
 
+function resumeSkillInstallJobPolling(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+): void {
+  const request = captureClientRequest();
+  for (const job of get().skillInstallJobs) {
+    if (job.status === "queued" || job.status === "running") {
+      void pollSkillInstallJob(set, get, request, job.jobId);
+    }
+  }
+}
+
 async function pollSkillInstallJob(
   set: StoreSet,
   get: () => RuntimeStoreState,
+  request: ClientRequest,
   jobId: string,
 ): Promise<void> {
   const deadline = Date.now() + SKILL_JOB_POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (!isCurrentClientRequest(request)) return;
     try {
       await new Promise((resolve) => globalThis.setTimeout(resolve, SKILL_JOB_POLL_INTERVAL_MS));
-      const job = await runtimeClient.getJob(jobId);
+      if (!isCurrentClientRequest(request)) return;
+      const job = await request.client.getJob(jobId);
+      if (!isCurrentClientRequest(request)) return;
       if (job.status === "completed") {
         updateSkillInstallJob(set, jobId, "completed", undefined, job.summary);
         await get().refreshSkillCatalog();
@@ -3110,14 +3374,16 @@ const TEMPLATE_SYNC_POLL_TIMEOUT_MS = 120_000;
  * surface the error via `templateCatalogError`.
  */
 async function pollTemplateSyncJob(
-  _set: StoreSet,
-  _get: () => RuntimeStoreState,
+  request: ClientRequest,
   jobId: string,
 ): Promise<void> {
   const deadline = Date.now() + TEMPLATE_SYNC_POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (!isCurrentClientRequest(request)) return;
     await new Promise((resolve) => globalThis.setTimeout(resolve, TEMPLATE_SYNC_POLL_INTERVAL_MS));
-    const job = await runtimeClient.getJob(jobId);
+    if (!isCurrentClientRequest(request)) return;
+    const job = await request.client.getJob(jobId);
+    if (!isCurrentClientRequest(request)) return;
     if (job.status === "completed") {
       return;
     }
