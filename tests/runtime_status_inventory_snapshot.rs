@@ -11,9 +11,12 @@ const SNAPSHOT_PATH: &str = "docs/website/reference/runtime-status-enum-inventor
 
 #[test]
 fn runtime_status_enum_inventory_snapshot_matches_generated_inventory() {
-    let live =
-        serde_json::to_string_pretty(&holon::contract_inventory::runtime_status_enum_inventory())
-            .expect("serialize generated runtime status enum inventory");
+    let live = serde_json::to_string_pretty(
+        &holon::contract_inventory::runtime_status_enum_inventory()
+            .expect("generate runtime status enum inventory"),
+    )
+    .expect("serialize generated runtime status enum inventory")
+        + "\n";
     let stored = std::fs::read_to_string(SNAPSHOT_PATH)
         .unwrap_or_else(|err| panic!("failed to read {SNAPSHOT_PATH}: {err}"));
 
@@ -30,8 +33,11 @@ fn runtime_status_enum_inventory_snapshot_matches_generated_inventory() {
 #[test]
 #[ignore]
 fn refresh_runtime_status_enum_inventory_snapshot() {
-    let live =
-        serde_json::to_string_pretty(&holon::contract_inventory::runtime_status_enum_inventory())
-            .expect("serialize generated runtime status enum inventory");
+    let live = serde_json::to_string_pretty(
+        &holon::contract_inventory::runtime_status_enum_inventory()
+            .expect("generate runtime status enum inventory"),
+    )
+    .expect("serialize generated runtime status enum inventory")
+        + "\n";
     std::fs::write(SNAPSHOT_PATH, live).expect("write runtime status enum inventory snapshot");
 }
