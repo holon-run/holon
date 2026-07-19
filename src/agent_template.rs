@@ -1701,6 +1701,20 @@ fn validate_template_install_id(install_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_template_catalog_selector_id(
+    source: AgentTemplateSourceKind,
+    selector_id: &str,
+) -> Result<()> {
+    match source {
+        AgentTemplateSourceKind::UserGlobal | AgentTemplateSourceKind::AgentHome => {
+            validate_template_install_id(selector_id)
+        }
+        AgentTemplateSourceKind::Builtin | AgentTemplateSourceKind::Remote => {
+            validate_template_id(selector_id)
+        }
+    }
+}
+
 fn resolve_template_catalog_entry(
     template: &str,
     home_dir: &Path,
@@ -1714,7 +1728,7 @@ fn resolve_template_catalog_entry(
                 catalog_agent_home,
             ));
         };
-        validate_template_id(template_id)?;
+        validate_template_catalog_selector_id(source, template_id)?;
         return resolve_prefixed_template_catalog_entry(
             source,
             template_id,
@@ -3648,6 +3662,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(agent.agents_md, "# Agent worker\n\nAgent-home worker\n");
+    }
+
+    #[tokio::test]
+    async fn local_catalog_ids_with_install_suffix_resolve_unchanged() {
+        let user_home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+        let install_id = "holon-reviewer@official";
+
+        let user_template = templates_root_for_home(user_home.path()).join(install_id);
+        fs::create_dir_all(&user_template).unwrap();
+        fs::write(
+            user_template.join(TEMPLATE_AGENTS_FILENAME),
+            "# User reviewer\n\nOfficial user-global reviewer\n",
+        )
+        .unwrap();
+
+        let agent_template = agent_home.path().join("agent_templates").join(install_id);
+        fs::create_dir_all(&agent_template).unwrap();
+        fs::write(
+            agent_template.join(TEMPLATE_AGENTS_FILENAME),
+            "# Agent reviewer\n\nOfficial agent-home reviewer\n",
+        )
+        .unwrap();
+
+        let catalog = discover_agent_templates_catalog(Some(user_home.path()), agent_home.path());
+        assert!(catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "agent_home:holon-reviewer@official"));
+
+        let user = resolve_template(
+            "user_global:holon-reviewer@official",
+            user_home.path(),
+            agent_home.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            user.agents_md,
+            "# User reviewer\n\nOfficial user-global reviewer\n"
+        );
+
+        let agent = resolve_template(
+            "agent_home:holon-reviewer@official",
+            user_home.path(),
+            agent_home.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            agent.agents_md,
+            "# Agent reviewer\n\nOfficial agent-home reviewer\n"
+        );
+    }
+
+    #[test]
+    fn local_prefixed_selectors_still_reject_path_like_install_ids() {
+        let user_home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+
+        let error = resolve_template_catalog_entry(
+            "user_global:../reviewer@official",
+            user_home.path(),
+            agent_home.path(),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("template install_id must not be path-like"));
     }
 
     #[test]

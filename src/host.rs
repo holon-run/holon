@@ -2954,6 +2954,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_child_spawn_accepts_user_global_catalog_id_with_install_suffix() {
+        let (home, host) = test_host();
+        let template_dir = home
+            .path()
+            .join(".agents/agent_templates/holon-reviewer@official");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(
+            template_dir.join("AGENTS.md"),
+            "# Official reviewer\n\nSynced reviewer template\n",
+        )
+        .unwrap();
+        let parent = host.default_runtime().await.unwrap();
+
+        let spawned = parent
+            .spawn_agent(
+                Some("review the implementation".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                Some("user_global:holon-reviewer@official".into()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let child_home = host.agent_data_dir(&spawned.agent_id);
+        assert!(fs::read_to_string(child_home.join("AGENTS.md"))
+            .unwrap()
+            .starts_with("# Official reviewer\n\nSynced reviewer template\n"));
+        assert!(spawned.supervision_task_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn private_child_spawn_failure_preserves_safe_cause_in_tool_and_task_diagnostics() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let error = parent
+            .spawn_agent(
+                Some("review the implementation".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                Some("user_global:reviewer%official".into()),
+                None,
+            )
+            .await
+            .expect_err("invalid template selector should fail after task creation");
+        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+
+        assert_eq!(tool_error.kind, "spawn_agent_failed");
+        assert_eq!(
+            tool_error.domain,
+            Some(crate::runtime_error::RuntimeErrorDomain::Task)
+        );
+        assert!(tool_error
+            .message
+            .contains("template install_id contains unsupported characters"));
+        assert!(tool_error
+            .source_chain
+            .iter()
+            .any(|cause| cause.contains("template install_id contains unsupported characters")));
+        let task_id = tool_error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("task_id"))
+            .and_then(Value::as_str)
+            .expect("tool error should identify the failed supervision task");
+        let rendered = tool_error.render_for_model(Some(crate::tool::names::SPAWN_AGENT));
+        assert!(rendered.contains("template install_id contains unsupported characters"));
+
+        let task = parent
+            .storage()
+            .latest_task_record(task_id)
+            .unwrap()
+            .expect("failed supervision task should remain persisted");
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(
+            task.detail.as_ref().unwrap()["error"],
+            "template install_id contains unsupported characters"
+        );
+
+        let output = parent.task_output(task_id, false, 0).await.unwrap();
+        let failure = output
+            .task
+            .failure_artifact
+            .expect("failed supervision task should expose a failure artifact");
+        assert!(failure
+            .source_chain
+            .iter()
+            .any(|cause| cause.contains("template install_id contains unsupported characters")));
+    }
+
+    #[tokio::test]
     async fn private_child_spawn_accepts_explicit_model_selection() {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();
