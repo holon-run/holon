@@ -1111,22 +1111,86 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    // Tool execution with promoted status has relatedStateObjectRef pointing to the task
-    const toolItem = timeline.find((item) => item.id === "tool-promoted");
-    expect(toolItem).toEqual(
-      expect.objectContaining({
-        relatedStateObjectRef: { kind: "task", id: "task:task_xyz", status: "running", summary: undefined },
-        stateObjectRef: { kind: "tool_execution", id: "tool-promoted", toolName: "ExecCommand", status: "promoted" },
-      }),
-    );
-    // Task card exists and has stateObjectRef
+    // The promoted tool launch is merged into the task lifecycle card.
+    expect(timeline.find((item) => item.id === "tool-promoted")).toBeUndefined();
     const taskCard = timeline.find((item) => item.id === "task:task_xyz");
     expect(taskCard).toEqual(
       expect.objectContaining({
         kind: "tool",
         label: "Task queued",
         body: "cargo build",
+        sourceIds: ["exec-promoted", "task-created-xyz"],
         stateObjectRef: { kind: "task", id: "task:task_xyz", status: "queued", summary: "cargo build" },
+      }),
+    );
+  });
+
+  it("merges promoted command and task lifecycle rows for the same task", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "exec-promoted-review",
+            event_seq: 60,
+            type: "tool_executed",
+            payload: {
+              tool_execution_id: "tool-promoted-review",
+              tool_name: "ExecCommand",
+              exec_command_cmd: "review issue #1850",
+              exec_command_disposition: "promoted_to_task",
+              task_handle: { task_id: "task_733b992" },
+            },
+          }),
+          event({
+            id: "task-created-review",
+            event_seq: 61,
+            type: "task_created",
+            payload: {
+              task_id: "task_733b992",
+              status: "queued",
+              summary: "review issue #1850",
+            },
+          }),
+          event({
+            id: "task-running-review",
+            event_seq: 62,
+            type: "task_status_updated",
+            payload: {
+              task_id: "task_733b992",
+              status: "running",
+              summary: "review issue #1850",
+            },
+          }),
+          event({
+            id: "task-result-review",
+            event_seq: 63,
+            type: "task_result_received",
+            payload: {
+              task_id: "task_733b992",
+              status: "completed",
+              summary: "review issue #1850",
+              exit_status: 0,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "task:task_733b992",
+        label: "Task completed",
+        body: "review issue #1850",
+        stateObjectRef: {
+          kind: "task",
+          id: "task:task_733b992",
+          status: "completed",
+          summary: "review issue #1850",
+        },
+        executionMeta: expect.objectContaining({ outcome: "completed", exitStatus: 0, taskId: "task_733b992" }),
+        sourceIds: ["exec-promoted-review", "task-created-review", "task-running-review", "task-result-review"],
+        statusTrail: [{ status: "queued" }, { status: "running" }, { status: "completed" }],
       }),
     );
   });
