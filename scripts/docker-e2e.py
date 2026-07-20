@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility entry point for the renamed Docker E2E suite."""
+"""Stable CLI entry point for the Holon release Docker E2E suite."""
 
 from docker_e2e.runner import main
 
