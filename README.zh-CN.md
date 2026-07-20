@@ -77,6 +77,31 @@ holon --help
 
 下文示例假设 `holon` 已在 `PATH` 中。
 
+### Docker
+
+发布镜像会推送到 GitHub Container Registry。容器以前台方式运行
+`holon serve`；由于监听非 loopback 地址，必须配置 control token：
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:7878:7878 \
+  -e HOLON_CONTROL_TOKEN='replace-with-a-long-random-token' \
+  -e HOLON_MODEL='openai/gpt-5.4' \
+  -e OPENAI_API_KEY \
+  -v holon-home:/var/lib/holon \
+  ghcr.io/holon-run/holon:latest
+```
+
+使用其他 provider 时，请替换模型和凭据环境变量。Holon 会在服务启动前校验
+配置的模型 provider 是否可用。
+
+基础镜像包含 Git 和常用 shell/网络工具。需要操作项目时，请把可写 workspace
+挂载到 `/workspace`；如果 Agent 需要额外开发工具链，可以基于该镜像派生项目镜像。
+当前发布镜像仅支持 Linux amd64。
+
+容器发布级 smoke，以及可选的真实 LLM workspace/WorkItem 验收用例，请参考
+[Docker 发布验收](docs/testing/docker-acceptance.md)。
+
 ## Provider 配置
 
 Holon 需要配置模型提供商后才能运行 Agent。推荐方式：

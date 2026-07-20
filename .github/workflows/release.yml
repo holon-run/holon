@@ -7,7 +7,7 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -66,6 +66,8 @@ jobs:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -147,6 +149,12 @@ jobs:
           \`\`\`
 
           Replace \`holon-linux-amd64.tar.gz\` with \`holon-darwin-amd64.tar.gz\` or \`holon-darwin-arm64.tar.gz\` on macOS.
+
+          Docker:
+
+          \`\`\`bash
+          docker pull ghcr.io/holon-run/holon:${GITHUB_REF_NAME#v}
+          \`\`\`
           EOF
 
       - name: Publish GitHub release
@@ -182,3 +190,43 @@ jobs:
           fi
           git commit -m "Update Holon formula for ${GITHUB_REF_NAME}"
           git push origin main
+
+  container:
+    name: Publish container image
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=holon-docker
+          cache-to: type=gha,mode=max,scope=holon-docker

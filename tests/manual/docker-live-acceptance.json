@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "workspace-restart-lifecycle",
+      "description": "Create a managed worktree through a real model, restart holon serve, then recover and remove the persisted worktree.",
+      "phases": [
+        {
+          "id": "create",
+          "expected_tools": [
+            "GetWorkspaceState",
+            "SwitchWorkspace",
+            "CreateWorktree"
+          ],
+          "prompt": "Live Docker acceptance case {case_id}. Use the named Holon tools, not shell git/worktree commands. First call GetWorkspaceState. Switch to workspace_id {workspace_id}. Create a linked worktree from base_ref main with branch {branch}, activate=true, and keep the returned execution_root_id. Call GetWorkspaceState while that worktree is active. Switch back to workspace_id {workspace_id}, call GetWorkspaceState again, and finish without removing the worktree. Do not modify files and do not create a WorkItem."
+        },
+        {
+          "id": "recover",
+          "expected_tools": [
+            "GetWorkspaceState",
+            "SwitchWorkspace",
+            "RemoveWorktree"
+          ],
+          "prompt": "Continue live Docker acceptance case {case_id} after a real holon serve restart. Call GetWorkspaceState and confirm execution_root_id {execution_root_id} is still registered. Switch to that exact execution_root_id and call GetWorkspaceState. Switch back to canonical workspace_id {workspace_id}. Remove execution_root_id {execution_root_id} with branch_policy keep. Call GetWorkspaceState one final time and only then report completion. Do not use shell git/worktree commands and do not create a WorkItem."
+        }
+      ]
+    },
+    {
+      "id": "workitem-wait-restart-complete",
+      "description": "Create and focus a durable WorkItem through a real model, wait for operator input, restart holon serve, then resume and complete the same item.",
+      "phases": [
+        {
+          "id": "wait",
+          "expected_tools": [
+            "CreateWorkItem",
+            "PickWorkItem",
+            "WaitFor"
+          ],
+          "prompt": "Live Docker acceptance case {case_id}. Create exactly one WorkItem with objective {objective}. Seed its plan with the literal marker {plan_marker}, set plan_status needs_input, and use exactly these todos: phase-one completed, phase-two in_progress, phase-three pending. Pick the new WorkItem so it is current. Then call WaitFor with wake operator_input and a concrete reason that includes {plan_marker}. Do not modify project files and do not complete the WorkItem in this turn."
+        },
+        {
+          "id": "complete",
+          "expected_tools": [
+            "ListWorkItems",
+            "GetWorkItem",
+            "UpdateWorkItem",
+            "CompleteWorkItem"
+          ],
+          "prompt": "Resume live Docker acceptance case {case_id} after a real holon serve restart. Call ListWorkItems with filter current and include_todo_list=true, then GetWorkItem for {work_item_id} with include_todo_list=true. Confirm it is the same item whose plan contains {plan_marker}. Update that WorkItem to plan_status ready with all three existing todos completed. Complete exactly WorkItem {work_item_id}. In the same round, report a concise completion result containing the literal marker {completion_marker}. Do not create another WorkItem and do not modify project files."
+        }
+      ]
+    }
+  ]
+}
