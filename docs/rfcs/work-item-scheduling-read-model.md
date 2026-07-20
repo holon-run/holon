@@ -33,7 +33,9 @@ The read model may use only:
 - `AgentActivation` state and binding, plus matching settlement identity or
   durable settlement-missing evidence;
 - active continuation frames in which the WorkItem is suspended;
-- `agent_states.current_work_item_id`;
+- the mode-selected canonical focus fact:
+  `agent_states.current_work_item_id` in legacy or shadow mode and
+  `scheduler_agent_focus` after guarded scheduler-protocol cutover;
 - external-trigger delivery evidence associated with active waits; and
 - todo/timestamps for display and ordering only.
 

@@ -579,10 +579,19 @@ Three relations are independent:
 
 ### Durable Focus
 
-`agent_states.current_work_item_id` remains the canonical attention pointer.
+Durable focus is one canonical single-valued relation from agent to open
+WorkItem. During legacy and shadow operation,
+`agent_states.current_work_item_id` remains the production-authoritative
+storage location. Phase 2 imports the same fact into
+`scheduler_agent_focus`; once a scenario is authoritative, that normalized row
+is the protocol authority and `agent_states.current_work_item_id` is an
+atomically dual-written compatibility projection. The guarded cutover requires
+the two locations to agree and rollback reverses the projection direction
+without inventing a focus value.
+
 Ordinary turn completion and WorkItem-scoped waiting do not implicitly clear
-it. Completion, explicit focus replacement, or continuation policy may change
-it.
+focus. Completion, explicit focus replacement, or continuation policy may
+change it.
 
 ### Execution Ownership
 
@@ -678,6 +687,217 @@ notifications occur after the database commit.
 
 Expected-state conflicts are business conflicts and are not retried as
 transient SQLite failures.
+
+## Phase 2 Persistence Layout
+
+The existing runtime database remains the only authoritative transactional
+store. `runtime_db::transitions` already owns `BEGIN IMMEDIATE`, revision
+checks, audit and index-outbox writes, rollback, and post-commit effects.
+`RuntimeStore`, scheduler read models, `AgentState.status`, and WorkItem
+readiness remain adapters or rebuildable projections. Phase 2 extends that
+transaction domain; it does not introduce a second event store or make a
+serialized protocol `Snapshot` authoritative.
+
+The additive schema separates current fenced state from immutable protocol
+records:
+
+- `scheduler_agent_slots`: one row per agent, containing either the idle slot
+  or the exact running activation identity, WorkItem, admitted generation, and
+  optional recovery target;
+- `scheduler_agent_dispatch`: one row per agent containing `Open` or the exact
+  awaited wait identity plus the monotonically increasing dispatch revision;
+- `scheduler_agent_focus`: one row per agent containing the nullable focused
+  WorkItem and a monotonically increasing focus revision; an explicit row with
+  a null target means initialized with no focus;
+- `scheduler_work_demands`: one row per `(agent_id, work_item_id)` containing
+  metadata revision, scheduling generation, current protocol status,
+  capabilities, locks, locality, and cost class;
+- `scheduler_waits`: one row per `(agent_id, wait_id)` containing owner and
+  current generation;
+- `scheduler_wait_generations`: one immutable-identity row per
+  `(agent_id, wait_id, generation)`, with lifecycle state, trigger identity,
+  and consuming activation;
+- `scheduler_activation_authorities`: one row per
+  `(agent_id, authority_id)`, uniquely bound to the full activation identity
+  and recording its one allowed consumer;
+- `scheduler_activations`: one row per `(agent_id, activation_id)`, including
+  the authority, canonical admission fence, cause, binding, provenance,
+  lifecycle state, admitted WorkItem generation, and optional recovery target;
+- `scheduler_activation_settlements`: one immutable settlement record per
+  `(agent_id, settlement_id)`, with a uniqueness fence on the same-agent
+  activation identity;
+- `scheduler_missing_settlements`: the canonical recovery requirement for an
+  agent activation that left execution without a valid settlement;
+- `scheduler_continuation_admissions`: the immutable completion-to-caller
+  generation transition record, with both WorkItems in the same agent
+  partition;
+- `scheduler_protocol_command_results`: one immutable first-seen command
+  result per canonical command identity, including command kind, versioned
+  payload hash, decision, typed conflict or rejection, result fact
+  references, and pre- and post-state fences;
+- `scheduler_protocol_migrations`: one immutable import result per migration
+  identity and legacy source identity, including migration version,
+  provenance, payload hash, decision, typed rejection, and imported fact
+  references; and
+- rollout preflight, manifest, scenario-authority, and hard-blocker records
+  required before any scenario becomes authoritative.
+
+Every agent-local protocol row has a non-null `agent_id`. Primary keys and
+foreign keys carry that partition even when an identifier is globally unique.
+Authorities, activations, settlements, missing-settlement records, waits,
+continuations, focus, and WorkItem demands cannot reference a row from another
+agent. Rollout configuration and approved manifests may remain global or
+tenant-scoped immutable inputs, but they are never discovered by scanning
+another agent's protocol facts.
+
+Foreign keys and unique indexes reinforce, but do not replace, reducer
+validation. Required database constraints include:
+
+- at most one running slot per agent;
+- at most one admitted activation for an authority;
+- at most one consumer for an authority;
+- one focus row per agent, whose non-null target is an open same-agent demand;
+- for ordinary `Scheduling` and `WaitResume`, one shared admission fence per
+  `(agent_id, work_item_id, scheduling_generation)`;
+- for `SettlementRecovery`, one admission fence per
+  `(agent_id, work_item_id, scheduling_generation, missing_activation_id)`;
+- at most one settlement for an activation;
+- one wait-generation row for each `(agent_id, wait_id, generation)`; and
+- a dispatch `Awaiting` identity that names a persisted wait generation owned
+  by the same agent.
+
+The database stores the reducer's canonical admission-fence value or an
+equivalent pair of partial unique indexes. Admission cause is descriptive data
+and is not part of the ordinary uniqueness key: `Scheduling` and `WaitResume`
+must collide for the same WorkItem generation. Only settlement recovery adds
+the missing activation identity, exactly matching `admission_fence` in the
+protocol kernel.
+
+`WorkDispatchIntent` is not a second authoritative table in Phase 2. It is a
+typed proposal or command input. Once validated, its authoritative result is
+the `scheduler_work_demands` generation and status transition plus the audit
+record. Persisting both an intent row and a demand row as independently mutable
+authority would create an avoidable reconciliation problem.
+
+### Restricted Transition Repository
+
+The activation-specific repository always receives an `agent_id`. Inside the
+same database transaction it reconstructs exactly one agent's minimum protocol
+`Snapshot` from `scheduler_agent_focus` and rows carrying that partition,
+combines only the applicable immutable rollout inputs, executes the pure
+reducer, calls `assert_invariants`, and persists the resulting row diff before
+commit. It never scans unpartitioned WorkItem demands and never consults a
+legacy WorkItem or `AgentState` projection to fill a missing canonical field.
+An absent required partition row is corruption or incomplete migration, not an
+empty default.
+
+The first command surface is:
+
+```text
+IssueActivationAuthorityCommand
+AdmitActivationCommand
+SettleActivationCommand
+RecordMissingSettlementCommand
+TriggerWaitCommand
+```
+
+Each command type has a stable canonical identity:
+
+- authority issuance uses `authority_id`;
+- admission uses `activation_id`, with activation idempotency key retained as
+  an additional uniqueness fence;
+- settlement uses `settlement_id`;
+- missing-settlement recording uses the missing-settlement record identity;
+  and
+- wait trigger uses `(wait_id, wait_generation)`; trigger identity and
+  generation are payload, so a different trigger for the same wait generation
+  is a payload conflict rather than a second command.
+
+Before evaluating mutable state, the repository looks up
+`scheduler_protocol_command_results` by `(agent_id, command_kind,
+command_identity)`. The payload hash is computed from a versioned canonical
+encoding, never from ad hoc JSON field order. Canonicalization first decodes
+the declared wire version into the typed command, rejects unknown or ambiguous
+fields, expands accepted aliases and defaults, validates the resulting typed
+shape, and then encodes that normalized command with its canonical schema
+version for hashing. Semantically equivalent accepted wire payloads therefore
+produce one hash; a default, alias, or field-order variation cannot manufacture
+a second command meaning. An equal hash returns the stored canonical result
+without rerunning the reducer. A different hash returns a typed identity or
+payload conflict against the immutable first-seen command and records the
+conflicting attempt in audit evidence without replacing that result.
+
+For a new command, the reducer decision and command-result row commit in the
+same transaction as all produced protocol facts. The result row is also
+committed for deterministic business rejection, including stale revision,
+stale generation, stale authority, invalid binding, duplicate identity, and
+unsupported transition. Its bounded outcome envelope stores the original
+decision, conflict, transition or result references, and state fences; it is
+not an authoritative serialized `Snapshot`. A caller that needs current state
+performs a separate projection read.
+
+SQLite busy, lock, process loss, or commit failure before a durable
+command-result row may use the existing transient retry path. Once a result row
+exists, the command is never re-evaluated against newer state. This prevents a
+stale command rejected before restart from becoming successful after restart,
+and prevents successful replay from duplicating audit, delivery, consume, or
+outbox facts.
+
+The transaction writes protocol facts, required legacy compatibility facts,
+audit events, completion or delivery intents, and durable outbox entries
+together. Scheduler notification, in-memory `AgentState` refresh, metrics,
+logs, and index notification remain post-commit effects. A post-commit effect
+failure therefore cannot invalidate the commit and recovery must rebuild those
+effects from canonical rows and outboxes.
+
+### Migration And Recovery
+
+The schema migration is additive and creates no production authority. Legacy
+WorkItem, wait, queue, Turn, and agent-state rows remain readable and writable
+until the corresponding scenario class completes guarded cutover and rollback
+drills.
+
+Legacy import uses an explicit, versioned migration command with original
+provenance. `scheduler_protocol_migrations` is keyed by both migration identity
+and `(agent_id, source_kind, source_id)` so one legacy source cannot be
+silently imported twice under a new command identity. Its versioned payload
+hash and canonical outcome are written in the same transaction as imported
+facts, including rejected outcomes. Equivalent replay returns the stored
+result; a changed version, payload, source ownership, or provenance is a typed
+conflict that requires an explicit repair or superseding migration rather than
+reinterpretation.
+
+The import allocates or records scheduling and wait generations once and
+creates the agent slot, dispatch, and focus rows required for an independently
+rebuildable partition. It rejects ambiguous legacy shapes rather than
+inferring authority from plan text, readiness, blocker display text,
+`AgentStatus`, or a synthetic tick. An existing explicit zero generation is
+canonical data and is never treated as a missing legacy value.
+
+Restart reconstructs each agent independently from its normalized partition,
+validates the full snapshot at the deserialization boundary, and then derives
+compatibility projections. A missing focus row, cross-agent reference, or
+partition invariant failure blocks that scenario from authority; restart never
+falls back to `work_items.agent_id`,
+`agent_states.current_work_item_id`, or another legacy projection to repair the
+snapshot.
+
+Restart never replays provider turns or tool calls merely because an
+activation is incomplete. A running activation without a durable terminal
+settlement becomes a canonical missing-settlement recovery candidate; a
+consumed wait retains its exact consuming activation and cannot be re-consumed
+after restart. Command and migration result ledgers are loaded before accepting
+new commands so previously rejected stale commands and successful commands
+retain their original outcome.
+
+An optional serialized snapshot may be stored only as a versioned,
+checksummed recovery cache. Canonical rows remain the source of truth, and the
+cache must be discarded and rebuilt when its schema version, checksum, or
+invariant validation fails. Its cache envelope and typed decoder must
+distinguish an omitted required field from an explicitly present nullable
+value. In particular, a missing focus field is invalid while an explicit null
+means initialized with no focus; the cache path must not reuse legacy serde
+defaults that collapse those states.
 
 ## Completion Boundary
 
@@ -1114,7 +1334,6 @@ overhead without weakening correctness gates.
 
 The protocol deliberately defers:
 
-- whether `WorkDispatchIntent` is a separate table or a canonical projection;
 - whether interaction affinity becomes a separate persisted record initially;
 - whether public WorkItem lifecycle exposes `Completing` or `Failed`;
 - final configuration key spelling and storage representation, but not the
