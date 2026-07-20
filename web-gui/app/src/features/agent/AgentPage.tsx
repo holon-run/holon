@@ -337,24 +337,24 @@ export function AgentPage({
   const isWorking = isAgentWorking(activeAgent, sendingPrompt, t);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
-  const timelineTurnIndexById = useMemo(
-    () => new Map(timelineTurns.map((turn, index) => [turn.id, index])),
-    [timelineTurns],
-  );
   const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
+  const trimmedPrompt = prompt.trim();
+  const canSendPrompt = (trimmedPrompt.length > 0 || attachments.length > 0) && !sendingPrompt;
+  const newestTimelineItem = timeline[timeline.length - 1];
+  const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
+  const timelineLayoutVersion = useMemo(() => `${resumeRevision}:${timelineLayoutRevision(timelineTurns)}`, [resumeRevision, timelineTurns]);
+  const timelineTurnIndexById = useMemo(
+    () => new Map(timelineTurns.flatMap((turn, index) => [[turn.id, index], [`${timelineLayoutVersion}:${turn.id}`, index]])),
+    [timelineLayoutVersion, timelineTurns],
+  );
   const rowVirtualizer = useVirtualizer({
     count: timelineTurns.length,
     getScrollElement: () => messageListRef.current,
     estimateSize: () => 320,
     paddingEnd: MESSAGE_LIST_BOTTOM_SAFE_SPACE,
     overscan: 4,
-    getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
+    getItemKey: (index) => `${timelineLayoutVersion}:${timelineTurns[index]?.id ?? `empty:${index}`}`,
   });
-  const trimmedPrompt = prompt.trim();
-  const canSendPrompt = (trimmedPrompt.length > 0 || attachments.length > 0) && !sendingPrompt;
-  const newestTimelineItem = timeline[timeline.length - 1];
-  const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
-  const timelineLayoutVersion = useMemo(() => `${resumeRevision}:${timelineLayoutRevision(timelineTurns)}`, [resumeRevision, timelineTurns]);
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);

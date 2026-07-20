@@ -79,7 +79,8 @@ function statusIcon(kind: StatusKind, value: string): IconResult {
   }
   if (kind === "stream") {
     if (value === "streaming" || value === "live") return { Icon: Radio, spin: false };
-    if (value === "error" || value === "stale") return { Icon: TriangleAlert, spin: false };
+    if (value === "error") return { Icon: TriangleAlert, spin: false };
+    if (value === "stale") return { Icon: Clock, spin: false };
     if (value === "connecting" || value === "reconnecting" || value === "recovering") return { Icon: RefreshCw, spin: true };
   }
   if (kind === "runtime") {
