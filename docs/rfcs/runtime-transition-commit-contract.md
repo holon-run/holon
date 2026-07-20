@@ -25,6 +25,11 @@ The first transition families covered by this contract are:
 - queue claim and terminal settlement;
 - task lifecycle transitions, including terminal wait release.
 
+[Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
+extends this contract with activation admission, claim, wait consume, and
+terminal settlement. Those commands use the same restricted transaction,
+expected-state, replay, commit-result, and post-commit effect rules.
+
 This contract does not change operator-facing tools or transport payloads.
 
 ## Problem
@@ -118,6 +123,14 @@ unbounded command enum:
 - `WaitTransitionCommand`;
 - `QueueTransitionCommand`;
 - `TaskTransitionCommand`.
+
+The activation protocol adds focused command families rather than widening one
+generic enum:
+
+- `AdmitActivationCommand`;
+- `ClaimActivationCommand`;
+- `SettleActivationCommand`; and
+- `TriggerWaitCommand`.
 
 Each command contains:
 

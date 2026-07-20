@@ -97,6 +97,7 @@ track meaningful work; child agents and tasks perform bounded execution.
 Canonical RFCs:
 
 - [Work Item Runtime Model](./rfcs/work-item-runtime-model.md)
+- [Agent Activation, Settlement, and Dispatch](./rfcs/agent-activation-settlement-and-dispatch.md)
 - [Agent Delegation Tool Plane](./rfcs/agent-delegation-tool-plane.md)
 - [Task Surface Narrowing](./rfcs/task-surface-narrowing.md)
 

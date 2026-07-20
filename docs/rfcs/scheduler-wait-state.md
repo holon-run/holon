@@ -1,10 +1,22 @@
 ---
 title: RFC: Scheduler Wait State And Recoverable Agent Continuation
 date: 2026-05-19
-status: updated
+updated: 2026-07-20
+status: partially superseded
+superseded_by:
+  - rfc-agent-activation-settlement-and-dispatch
 ---
 
 # RFC: Scheduler Wait State And Recoverable Agent Continuation
+
+> The `WaitFor` tool, wake-source mapping, and compatibility persistence
+> behavior in this RFC remain applicable during migration. The target
+> scheduling derivation below is superseded by
+> [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
+> and
+> [WorkItem Scheduling Read Model](./work-item-scheduling-read-model.md).
+> In particular, `plan_status` and generic `blocked_by` text are planning or
+> display data, not target scheduler authority.
 
 ## Summary
 
@@ -128,10 +140,11 @@ has no open WorkItems and no other runnable runtime work.
 
 ### Runnable
 
-A WorkItem is runnable when it is open, ready for execution, not blocked, and
-not covered by an active wait condition.
+A target WorkItem is runnable only when the shared read model observes an
+offered scheduling generation and all lifecycle, activation, wait, yield, and
+manual-hold gates permit it.
 
-Example derivation:
+The earlier compatibility implementation approximated this as:
 
 ```text
 open
@@ -140,24 +153,30 @@ blocked_by == None
 no active WaitCondition
 ```
 
+That approximation is not the target authority contract. In particular,
+changing `plan_status` or clearing display-only `blocked_by` must not create a
+scheduling generation.
+
 Runnable WorkItems should cause the runtime to continue agent execution. If a
 turn closes while runnable WorkItems exist, the runtime must not treat the
 agent as truly idle. It should enqueue or schedule continuation.
 
 ### WaitingOperator
 
-A WorkItem is waiting for the operator when it explicitly requires operator
-input.
+A WorkItem is waiting for the operator when it has an active operator
+`WaitCondition`.
 
-Example derivation:
+The earlier compatibility implementation also projected:
 
 ```text
 open
 plan_status == needs_input
 ```
 
-The scheduler should not auto-continue this work without operator input unless
-a future explicit policy says otherwise.
+That projection is superseded. `plan_status=needs_input` records planning
+posture but does not create a wait or suppress already-authorized demand. The
+agent must use `WaitFor(wake=operator_input)` when execution must pause for
+operator input.
 
 ### WaitingTask
 
@@ -196,13 +215,15 @@ operator input, task completion, a wall-clock timer, or an external callback.
 
 ### Blocked
 
-A WorkItem is blocked when it has an explicit blocker that is not represented
-as a structured active wait.
+A target WorkItem is paused when it has a typed manual hold. During migration,
+legacy records with an explicit blocker that is not represented as a
+structured active wait may still project a compatibility `Blocked` state.
 
 Natural-language blockers remain useful for operator visibility, but they are
-not enough for reliable automatic continuation. In the first implementation
-phase, blocked WorkItems may carry a `recheck_at` deadline so the runtime can
-remind the owning agent to inspect the blocker later.
+not target scheduler authority and are not enough for reliable automatic
+continuation. Compatibility blocked WorkItems may carry a `recheck_at`
+deadline so the runtime can remind the owning agent to inspect the blocker
+later.
 
 The deadline does not change WorkItem readiness:
 
@@ -257,9 +278,9 @@ WorkItem-scoped `WaitFor` replaces active waits on that WorkItem, writes
 `recheck_after_ms` is present, clears `recheck_at` otherwise, clears
 `recheck_consumed_at`, and releases only the current turn binding. The durable
 `current_work_item_id` remains the focused WorkItem so the agent can resume or
-inspect the same long-lived objective after the wait wakes. Scheduler readiness
-comes from the active wait condition and WorkItem blocker, not from clearing the
-agent's current focus.
+inspect the same long-lived objective after the wait wakes. Scheduler waiting
+comes from the active wait condition, not from clearing the agent's current
+focus or from the display blocker text.
 
 Agent-scoped `WaitFor` has no WorkItem record to mutate. When
 `recheck_after_ms` is present, the wait condition continuation records both the
@@ -649,12 +670,16 @@ reached a terminal state.
 Surface weak external waits that have no timer, durable queue, or explicit
 `no_fallback` reason.
 
+## Resolved target boundaries
+
+- `plan_status=needs_input` remains a separate planning posture. It does not
+  become a waiting fact; pausing for input requires
+  `WaitCondition(kind = operator)`.
+- `blocked_by` remains compatibility/display data during migration. The target
+  scheduler uses typed waits and manual holds rather than blocker prose.
+
 ## Open questions
 
-- Should `plan_status=needs_input` eventually be migrated into
-  `WaitCondition(kind = operator)`, or remain a separate planning posture?
-- Should `blocked_by` remain a separate WorkItem display field forever, or
-  eventually become display text derived only from active wait records?
 - What is the minimum continuation payload needed for reliable wake
   reconciliation?
 - Should system tick be a first-class `WakeSource` for agent-facing waits, or

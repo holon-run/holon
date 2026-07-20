@@ -71,15 +71,20 @@ Focus, plan status, waits, and turn attribution remain orthogonal:
 - ordinary turn completion does not release focus;
 - setting `plan_status=needs_input` alone does not release focus;
 - WorkItem-scoped `WaitFor(operator_input)` atomically records the wait and
-  releases execution focus;
-- a read model may still present that wait-scoped WorkItem as a sticky
-  attention target, but it is not current execution focus.
+  releases the current Turn binding and execution ownership;
+- WorkItem-scoped waiting does not clear canonical durable focus unless the
+  same settlement contains an explicit focus transition; and
+- scheduler admission uses activation binding and lane state rather than
+  treating durable focus as execution ownership.
 
 Automatic rehydration requires an ingress binding issued by the runtime, such
 as a `wait_id` or equivalent continuation token. Current ordinary
 `OperatorPrompt` ingress has no such binding, so the runtime must not guess by
 wait count, recency, text, or transport identity. Without a verified binding,
 the agent or operator explicitly picks the waiting WorkItem.
+
+The target activation protocol is specified by
+[Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md).
 
 ## Restart And Projections
 

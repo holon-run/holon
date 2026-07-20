@@ -6,7 +6,8 @@
         "kind": "running",
         "activation_id": "a1",
         "work_item_id": "w1",
-        "admitted_revision": 1
+        "admitted_generation": 1,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -14,7 +15,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 1,
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
           "status": {
             "kind": "runnable"
           },
@@ -28,6 +30,21 @@
           "locality": "workspace:holon",
           "cost_class": "standard"
         }
+      },
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 1,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -49,13 +66,14 @@
         "kind": "idle"
       },
       "dispatch": {
-        "kind": "reserved_for",
+        "kind": "awaiting",
         "wait_id": "wait-1"
       },
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 1,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -71,15 +89,31 @@
           "cost_class": "standard"
         }
       },
-      "settled_activations": [
-        "a1"
-      ],
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "generation": 2,
-          "state": "active"
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
+      },
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 1,
+          "state": "settled",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 1,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     }
   },
@@ -90,7 +124,8 @@
         "kind": "running",
         "activation_id": "a1",
         "work_item_id": "w1",
-        "admitted_revision": 1
+        "admitted_generation": 1,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -98,7 +133,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 1,
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
           "status": {
             "kind": "runnable"
           },
@@ -113,7 +149,8 @@
           "cost_class": "standard"
         },
         "w2": {
-          "revision": 7,
+          "metadata_revision": 7,
+          "scheduling_generation": 7,
           "status": {
             "kind": "runnable"
           },
@@ -126,6 +163,21 @@
           "locality": "remote:any",
           "cost_class": "batch"
         }
+      },
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 1,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -142,10 +194,11 @@
         "kind": "admit",
         "activation_id": "a2",
         "work_item_id": "w2",
-        "expected_revision": 7,
         "cause": {
           "kind": "scheduling"
-        }
+        },
+        "expected_generation": 7,
+        "expected_dispatch_revision": 0
       }
     ],
     "expected": {
@@ -157,7 +210,8 @@
         "kind": "running",
         "activation_id": "a2",
         "work_item_id": "w2",
-        "admitted_revision": 7
+        "admitted_generation": 7,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -165,7 +219,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 1,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -181,7 +236,8 @@
           "cost_class": "standard"
         },
         "w2": {
-          "revision": 7,
+          "metadata_revision": 7,
+          "scheduling_generation": 7,
           "status": {
             "kind": "runnable"
           },
@@ -195,19 +251,41 @@
           "cost_class": "batch"
         }
       },
-      "settled_activations": [
-        "a1"
-      ],
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "generation": 2,
-          "state": "active"
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
       },
-      "admitted_revisions": [
+      "admitted_generations": [
         "w2:7"
-      ]
+      ],
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 1,
+          "state": "settled",
+          "recovery_for": null
+        },
+        "a2": {
+          "work_item_id": "w2",
+          "admitted_generation": 7,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
@@ -217,13 +295,14 @@
         "kind": "idle"
       },
       "dispatch": {
-        "kind": "reserved_for",
+        "kind": "awaiting",
         "wait_id": "wait-1"
       },
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -241,33 +320,52 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "state": "active",
-          "generation": 2
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
       {
         "kind": "trigger_wait",
         "wait_id": "wait-1",
-        "generation": 2
+        "wait_generation": 2,
+        "trigger_id": "wait-1-trigger-2",
+        "trigger_generation": 1
       },
       {
         "kind": "admit",
         "activation_id": "a2",
         "work_item_id": "w1",
-        "expected_revision": 2,
         "cause": {
           "kind": "wait_resume",
           "wait_id": "wait-1",
-          "generation": 2
-        }
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        },
+        "expected_generation": 2,
+        "expected_dispatch_revision": 0
       },
       {
         "kind": "trigger_wait",
         "wait_id": "wait-1",
-        "generation": 2
+        "wait_generation": 2,
+        "trigger_id": "wait-1-trigger-2",
+        "trigger_generation": 1
       }
     ],
     "expected": {
@@ -280,7 +378,8 @@
         "kind": "running",
         "activation_id": "a2",
         "work_item_id": "w1",
-        "admitted_revision": 2
+        "admitted_generation": 2,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -288,7 +387,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -306,14 +406,38 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "generation": 2,
-          "state": "consumed"
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "consumed",
+              "trigger": {
+                "trigger_id": "wait-1-trigger-2",
+                "trigger_generation": 1
+              },
+              "consuming_activation_id": "a2"
+            }
+          }
         }
       },
-      "admitted_revisions": [
+      "admitted_generations": [
         "w1:2"
-      ]
+      ],
+      "activations": {
+        "a2": {
+          "work_item_id": "w1",
+          "admitted_generation": 2,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 1,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
@@ -323,13 +447,14 @@
         "kind": "idle"
       },
       "dispatch": {
-        "kind": "reserved_for",
+        "kind": "awaiting",
         "wait_id": "wait-1"
       },
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -347,10 +472,22 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "state": "active",
-          "generation": 2
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -367,13 +504,14 @@
         "kind": "idle"
       },
       "dispatch": {
-        "kind": "reserved_for",
+        "kind": "awaiting",
         "wait_id": "wait-1"
       },
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -391,10 +529,22 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "generation": 2,
-          "state": "active"
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     }
   },
@@ -405,7 +555,8 @@
         "kind": "running",
         "activation_id": "a1",
         "work_item_id": "w1",
-        "admitted_revision": 4
+        "admitted_generation": 4,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -413,7 +564,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 4,
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
           "status": {
             "kind": "runnable"
           },
@@ -427,6 +579,21 @@
           "locality": "workspace:holon",
           "cost_class": "standard"
         }
+      },
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 4,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -443,10 +610,7 @@
         "settlement_missing"
       ],
       "slot": {
-        "kind": "running",
-        "activation_id": "a1",
-        "work_item_id": "w1",
-        "admitted_revision": 4
+        "kind": "idle"
       },
       "dispatch": {
         "kind": "open"
@@ -454,9 +618,11 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 4,
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
           "status": {
-            "kind": "runnable"
+            "kind": "needs_settlement",
+            "activation_id": "a1"
           },
           "capabilities": [
             "workspace_read",
@@ -468,6 +634,21 @@
           "locality": "workspace:holon",
           "cost_class": "standard"
         }
+      },
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 4,
+          "state": "settlement_missing",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     }
   },
@@ -478,13 +659,14 @@
         "kind": "idle"
       },
       "dispatch": {
-        "kind": "reserved_for",
+        "kind": "awaiting",
         "wait_id": "wait-1"
       },
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -500,7 +682,8 @@
           "cost_class": "standard"
         },
         "w2": {
-          "revision": 1,
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
           "status": {
             "kind": "runnable"
           },
@@ -516,10 +699,26 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "state": "triggered",
-          "generation": 2
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "triggered",
+              "trigger": {
+                "trigger_id": "wait-1-trigger-2",
+                "trigger_generation": 1
+              }
+            }
+          }
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -527,21 +726,25 @@
         "kind": "admit",
         "activation_id": "a-other",
         "work_item_id": "w2",
-        "expected_revision": 1,
         "cause": {
           "kind": "scheduling"
-        }
+        },
+        "expected_generation": 1,
+        "expected_dispatch_revision": 0
       },
       {
         "kind": "admit",
         "activation_id": "a-resume",
         "work_item_id": "w1",
-        "expected_revision": 2,
         "cause": {
           "kind": "wait_resume",
           "wait_id": "wait-1",
-          "generation": 2
-        }
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        },
+        "expected_generation": 2,
+        "expected_dispatch_revision": 0
       }
     ],
     "expected": {
@@ -553,7 +756,8 @@
         "kind": "running",
         "activation_id": "a-resume",
         "work_item_id": "w1",
-        "admitted_revision": 2
+        "admitted_generation": 2,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -561,7 +765,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -577,7 +782,8 @@
           "cost_class": "standard"
         },
         "w2": {
-          "revision": 1,
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
           "status": {
             "kind": "runnable"
           },
@@ -593,14 +799,38 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "generation": 2,
-          "state": "consumed"
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "consumed",
+              "trigger": {
+                "trigger_id": "wait-1-trigger-2",
+                "trigger_generation": 1
+              },
+              "consuming_activation_id": "a-resume"
+            }
+          }
         }
       },
-      "admitted_revisions": [
+      "admitted_generations": [
         "w1:2"
-      ]
+      ],
+      "activations": {
+        "a-resume": {
+          "work_item_id": "w1",
+          "admitted_generation": 2,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 1,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
@@ -615,7 +845,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -631,7 +862,8 @@
           "cost_class": "standard"
         },
         "w2": {
-          "revision": 3,
+          "metadata_revision": 3,
+          "scheduling_generation": 3,
           "status": {
             "kind": "runnable"
           },
@@ -647,10 +879,22 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "state": "active",
-          "generation": 2
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -658,10 +902,11 @@
         "kind": "admit",
         "activation_id": "a2",
         "work_item_id": "w2",
-        "expected_revision": 3,
         "cause": {
           "kind": "scheduling"
-        }
+        },
+        "expected_generation": 3,
+        "expected_dispatch_revision": 0
       }
     ],
     "expected": {
@@ -672,7 +917,8 @@
         "kind": "running",
         "activation_id": "a2",
         "work_item_id": "w2",
-        "admitted_revision": 3
+        "admitted_generation": 3,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -680,7 +926,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -696,7 +943,8 @@
           "cost_class": "standard"
         },
         "w2": {
-          "revision": 3,
+          "metadata_revision": 3,
+          "scheduling_generation": 3,
           "status": {
             "kind": "runnable"
           },
@@ -712,14 +960,33 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "generation": 2,
-          "state": "active"
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
       },
-      "admitted_revisions": [
+      "admitted_generations": [
         "w2:3"
-      ]
+      ],
+      "activations": {
+        "a2": {
+          "work_item_id": "w2",
+          "admitted_generation": 3,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
@@ -734,7 +1001,8 @@
       "focus": "discussion",
       "work": {
         "discussion": {
-          "revision": 9,
+          "metadata_revision": 9,
+          "scheduling_generation": 9,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-discussion"
@@ -747,7 +1015,8 @@
           "cost_class": "interactive"
         },
         "background": {
-          "revision": 4,
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
           "status": {
             "kind": "runnable"
           },
@@ -761,10 +1030,22 @@
       },
       "waits": {
         "wait-discussion": {
-          "owner_work_item_id": "discussion",
-          "state": "active",
-          "generation": 9
+          "current_generation": 9,
+          "generations": {
+            "9": {
+              "owner_work_item_id": "discussion",
+              "state": "active"
+            }
+          }
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -772,10 +1053,11 @@
         "kind": "admit",
         "activation_id": "a-background",
         "work_item_id": "background",
-        "expected_revision": 4,
         "cause": {
           "kind": "scheduling"
-        }
+        },
+        "expected_generation": 4,
+        "expected_dispatch_revision": 0
       }
     ],
     "expected": {
@@ -786,7 +1068,8 @@
         "kind": "running",
         "activation_id": "a-background",
         "work_item_id": "background",
-        "admitted_revision": 4
+        "admitted_generation": 4,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -794,7 +1077,8 @@
       "focus": "discussion",
       "work": {
         "discussion": {
-          "revision": 9,
+          "metadata_revision": 9,
+          "scheduling_generation": 9,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-discussion"
@@ -807,7 +1091,8 @@
           "cost_class": "interactive"
         },
         "background": {
-          "revision": 4,
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
           "status": {
             "kind": "runnable"
           },
@@ -821,14 +1106,33 @@
       },
       "waits": {
         "wait-discussion": {
-          "owner_work_item_id": "discussion",
-          "generation": 9,
-          "state": "active"
+          "current_generation": 9,
+          "generations": {
+            "9": {
+              "owner_work_item_id": "discussion",
+              "state": "active"
+            }
+          }
         }
       },
-      "admitted_revisions": [
+      "admitted_generations": [
         "background:4"
-      ]
+      ],
+      "activations": {
+        "a-background": {
+          "work_item_id": "background",
+          "admitted_generation": 4,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
@@ -843,7 +1147,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -861,38 +1166,59 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "state": "active",
-          "generation": 2
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
       {
         "kind": "trigger_wait",
         "wait_id": "wait-1",
-        "generation": 2
+        "wait_generation": 2,
+        "trigger_id": "wait-1-trigger-2",
+        "trigger_generation": 1
       },
       {
         "kind": "trigger_wait",
         "wait_id": "wait-1",
-        "generation": 2
+        "wait_generation": 2,
+        "trigger_id": "wait-1-trigger-2",
+        "trigger_generation": 1
       },
       {
         "kind": "admit",
         "activation_id": "a2",
         "work_item_id": "w1",
-        "expected_revision": 2,
         "cause": {
           "kind": "wait_resume",
           "wait_id": "wait-1",
-          "generation": 2
-        }
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        },
+        "expected_generation": 2,
+        "expected_dispatch_revision": 0
       },
       {
         "kind": "trigger_wait",
         "wait_id": "wait-1",
-        "generation": 2
+        "wait_generation": 2,
+        "trigger_id": "wait-1-trigger-2",
+        "trigger_generation": 1
       }
     ],
     "expected": {
@@ -906,7 +1232,8 @@
         "kind": "running",
         "activation_id": "a2",
         "work_item_id": "w1",
-        "admitted_revision": 2
+        "admitted_generation": 2,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -914,7 +1241,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
           "status": {
             "kind": "waiting",
             "wait_id": "wait-1"
@@ -932,14 +1260,38 @@
       },
       "waits": {
         "wait-1": {
-          "owner_work_item_id": "w1",
-          "generation": 2,
-          "state": "consumed"
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "consumed",
+              "trigger": {
+                "trigger_id": "wait-1-trigger-2",
+                "trigger_generation": 1
+              },
+              "consuming_activation_id": "a2"
+            }
+          }
         }
       },
-      "admitted_revisions": [
+      "admitted_generations": [
         "w1:2"
-      ]
+      ],
+      "activations": {
+        "a2": {
+          "work_item_id": "w1",
+          "admitted_generation": 2,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
@@ -949,7 +1301,8 @@
         "kind": "running",
         "activation_id": "a-child",
         "work_item_id": "child",
-        "admitted_revision": 3
+        "admitted_generation": 3,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -957,7 +1310,8 @@
       "focus": "child",
       "work": {
         "child": {
-          "revision": 3,
+          "metadata_revision": 3,
+          "scheduling_generation": 3,
           "status": {
             "kind": "runnable"
           },
@@ -972,7 +1326,8 @@
           "cost_class": "standard"
         },
         "caller": {
-          "revision": 5,
+          "metadata_revision": 5,
+          "scheduling_generation": 5,
           "status": {
             "kind": "runnable"
           },
@@ -985,6 +1340,21 @@
           "locality": "workspace:holon",
           "cost_class": "standard"
         }
+      },
+      "activations": {
+        "a-child": {
+          "work_item_id": "child",
+          "admitted_generation": 3,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -1025,7 +1395,8 @@
       "focus": "child",
       "work": {
         "child": {
-          "revision": 4,
+          "metadata_revision": 3,
+          "scheduling_generation": 4,
           "status": {
             "kind": "terminal"
           },
@@ -1040,7 +1411,8 @@
           "cost_class": "standard"
         },
         "caller": {
-          "revision": 6,
+          "metadata_revision": 5,
+          "scheduling_generation": 6,
           "status": {
             "kind": "runnable"
           },
@@ -1054,12 +1426,24 @@
           "cost_class": "standard"
         }
       },
-      "settled_activations": [
-        "a-child"
-      ],
       "continuation_admissions": [
         "continue-1"
-      ]
+      ],
+      "activations": {
+        "a-child": {
+          "work_item_id": "child",
+          "admitted_generation": 3,
+          "state": "settled",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
@@ -1069,7 +1453,8 @@
         "kind": "running",
         "activation_id": "a1",
         "work_item_id": "w1",
-        "admitted_revision": 1
+        "admitted_generation": 1,
+        "recovery_for": null
       },
       "dispatch": {
         "kind": "open"
@@ -1077,7 +1462,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 1,
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
           "status": {
             "kind": "runnable"
           },
@@ -1091,6 +1477,21 @@
           "locality": "workspace:holon",
           "cost_class": "standard"
         }
+      },
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 1,
+          "state": "running",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -1115,7 +1516,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 2,
+          "metadata_revision": 1,
+          "scheduling_generation": 2,
           "status": {
             "kind": "runnable"
           },
@@ -1130,13 +1532,25 @@
           "cost_class": "standard"
         }
       },
-      "settled_activations": [
-        "a1"
-      ]
+      "activations": {
+        "a1": {
+          "work_item_id": "w1",
+          "admitted_generation": 1,
+          "state": "settled",
+          "recovery_for": null
+        }
+      },
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
+      }
     }
   },
   {
-    "name": "stale_scheduling_revision_is_rejected",
+    "name": "stale_scheduling_generation_is_rejected",
     "initial": {
       "slot": {
         "kind": "idle"
@@ -1147,7 +1561,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 8,
+          "metadata_revision": 8,
+          "scheduling_generation": 8,
           "status": {
             "kind": "runnable"
           },
@@ -1161,6 +1576,14 @@
           "locality": "workspace:holon",
           "cost_class": "standard"
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     },
     "events": [
@@ -1168,10 +1591,11 @@
         "kind": "admit",
         "activation_id": "a-stale",
         "work_item_id": "w1",
-        "expected_revision": 7,
         "cause": {
           "kind": "scheduling"
-        }
+        },
+        "expected_generation": 7,
+        "expected_dispatch_revision": 0
       }
     ],
     "expected": {
@@ -1187,7 +1611,8 @@
       "focus": "w1",
       "work": {
         "w1": {
-          "revision": 8,
+          "metadata_revision": 8,
+          "scheduling_generation": 8,
           "status": {
             "kind": "runnable"
           },
@@ -1201,6 +1626,14 @@
           "locality": "workspace:holon",
           "cost_class": "standard"
         }
+      },
+      "activations": {},
+      "dispatch_revision": 0,
+      "rollout": {
+        "protocol_mode": "legacy",
+        "config_revision": 0,
+        "manifest": null,
+        "scenarios": {}
       }
     }
   }

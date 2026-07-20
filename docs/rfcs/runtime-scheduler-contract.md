@@ -26,6 +26,25 @@ This RFC does not propose a large rewrite as the first step. It defines the
 contract Holon should converge toward and the tests that should guard the
 existing implementation while it is refactored.
 
+## Target Admission Protocol
+
+[Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
+defines the target admission and terminal-transition protocol for this broader
+scheduler contract.
+
+In that target:
+
+- `AgentActivation` replaces Message or synthetic `SystemTick` as the unit of
+  granted model execution;
+- `ActivationSettlement` is the required terminal transition;
+- WorkItem demand and agent lane intake use independent generations and
+  revisions;
+- wait resume claims an exact wait generation; and
+- closure, `AgentStatus`, readiness, and display posture remain projections.
+
+The Message/Turn/`SystemTick` descriptions below remain migration and current
+implementation context until the activation protocol becomes authoritative.
+
 ## Problem
 
 Holon is headless, event-driven, and long-lived. Scheduler bugs therefore have
