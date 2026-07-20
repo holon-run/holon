@@ -1,0 +1,801 @@
+[
+  {
+    "name": "await_this_reserves_lane_for_operator_interaction",
+    "initial": {
+      "slot": {
+        "kind": "running",
+        "activation_id": "a1",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "settle",
+        "activation_id": "a1",
+        "settlement": {
+          "kind": "wait",
+          "wait_id": "wait-1",
+          "mode": "await_this"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "settled"
+      ],
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "reserved_for",
+        "wait_id": "wait-1"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "waiting",
+          "wait_id": "wait-1"
+        }
+      },
+      "work_revision": {
+        "w1": 2
+      },
+      "wait_state": {
+        "wait-1": "active"
+      },
+      "settled_activations": [
+        "a1"
+      ]
+    }
+  },
+  {
+    "name": "accept_scheduling_keeps_wait_active_and_admits_other_work",
+    "initial": {
+      "slot": {
+        "kind": "running",
+        "activation_id": "a1",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        },
+        "w2": {
+          "revision": 7,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "settle",
+        "activation_id": "a1",
+        "settlement": {
+          "kind": "wait",
+          "wait_id": "wait-1",
+          "mode": "accept_scheduling"
+        }
+      },
+      {
+        "kind": "admit",
+        "activation_id": "a2",
+        "work_item_id": "w2",
+        "expected_revision": 7,
+        "cause": {
+          "kind": "scheduling"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "settled",
+        "admitted"
+      ],
+      "slot": {
+        "kind": "running",
+        "activation_id": "a2",
+        "work_item_id": "w2"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "waiting",
+          "wait_id": "wait-1"
+        },
+        "w2": {
+          "kind": "runnable"
+        }
+      },
+      "wait_state": {
+        "wait-1": "active"
+      },
+      "settled_activations": [
+        "a1"
+      ]
+    }
+  },
+  {
+    "name": "matching_operator_input_consumes_wait_once",
+    "initial": {
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "reserved_for",
+        "wait_id": "wait-1"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "waits": {
+        "wait-1": {
+          "owner_work_item_id": "w1",
+          "state": "active"
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "trigger_wait",
+        "wait_id": "wait-1"
+      },
+      {
+        "kind": "admit",
+        "activation_id": "a2",
+        "work_item_id": "w1",
+        "expected_revision": 2,
+        "cause": {
+          "kind": "wait_resume",
+          "wait_id": "wait-1"
+        }
+      },
+      {
+        "kind": "trigger_wait",
+        "wait_id": "wait-1"
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "wait_triggered",
+        "admitted",
+        "duplicate_ignored"
+      ],
+      "slot": {
+        "kind": "running",
+        "activation_id": "a2",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "waiting",
+          "wait_id": "wait-1"
+        }
+      },
+      "wait_state": {
+        "wait-1": "consumed"
+      }
+    }
+  },
+  {
+    "name": "unrelated_operator_input_is_intervention",
+    "initial": {
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "reserved_for",
+        "wait_id": "wait-1"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "waits": {
+        "wait-1": {
+          "owner_work_item_id": "w1",
+          "state": "active"
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "operator_intervention",
+        "input_id": "input-unrelated"
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "operator_intervention"
+      ],
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "reserved_for",
+        "wait_id": "wait-1"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "waiting",
+          "wait_id": "wait-1"
+        }
+      },
+      "wait_state": {
+        "wait-1": "active"
+      }
+    }
+  },
+  {
+    "name": "progress_only_turn_reports_settlement_missing",
+    "initial": {
+      "slot": {
+        "kind": "running",
+        "activation_id": "a1",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 4,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "settle",
+        "activation_id": "a1",
+        "settlement": {
+          "kind": "missing"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "settlement_missing"
+      ],
+      "slot": {
+        "kind": "running",
+        "activation_id": "a1",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "runnable"
+        }
+      },
+      "work_revision": {
+        "w1": 4
+      }
+    }
+  },
+  {
+    "name": "reserved_lane_rejects_other_work_and_accepts_matching_resume",
+    "initial": {
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "reserved_for",
+        "wait_id": "wait-1"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        },
+        "w2": {
+          "revision": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "waits": {
+        "wait-1": {
+          "owner_work_item_id": "w1",
+          "state": "triggered"
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "admit",
+        "activation_id": "a-other",
+        "work_item_id": "w2",
+        "expected_revision": 1,
+        "cause": {
+          "kind": "scheduling"
+        }
+      },
+      {
+        "kind": "admit",
+        "activation_id": "a-resume",
+        "work_item_id": "w1",
+        "expected_revision": 2,
+        "cause": {
+          "kind": "wait_resume",
+          "wait_id": "wait-1"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "rejected",
+        "admitted"
+      ],
+      "slot": {
+        "kind": "running",
+        "activation_id": "a-resume",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "waiting",
+          "wait_id": "wait-1"
+        },
+        "w2": {
+          "kind": "runnable"
+        }
+      },
+      "wait_state": {
+        "wait-1": "consumed"
+      }
+    }
+  },
+  {
+    "name": "waiting_current_work_does_not_block_queued_runnable_work",
+    "initial": {
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        },
+        "w2": {
+          "revision": 3,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "waits": {
+        "wait-1": {
+          "owner_work_item_id": "w1",
+          "state": "active"
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "admit",
+        "activation_id": "a2",
+        "work_item_id": "w2",
+        "expected_revision": 3,
+        "cause": {
+          "kind": "scheduling"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "admitted"
+      ],
+      "slot": {
+        "kind": "running",
+        "activation_id": "a2",
+        "work_item_id": "w2"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "waiting",
+          "wait_id": "wait-1"
+        },
+        "w2": {
+          "kind": "runnable"
+        }
+      },
+      "wait_state": {
+        "wait-1": "active"
+      }
+    }
+  },
+  {
+    "name": "queued_execution_does_not_mutate_focus",
+    "initial": {
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "discussion",
+      "work": {
+        "discussion": {
+          "revision": 9,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-discussion"
+          }
+        },
+        "background": {
+          "revision": 4,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "waits": {
+        "wait-discussion": {
+          "owner_work_item_id": "discussion",
+          "state": "active"
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "admit",
+        "activation_id": "a-background",
+        "work_item_id": "background",
+        "expected_revision": 4,
+        "cause": {
+          "kind": "scheduling"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "admitted"
+      ],
+      "slot": {
+        "kind": "running",
+        "activation_id": "a-background",
+        "work_item_id": "background"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "discussion",
+      "work_status": {
+        "discussion": {
+          "kind": "waiting",
+          "wait_id": "wait-discussion"
+        },
+        "background": {
+          "kind": "runnable"
+        }
+      }
+    }
+  },
+  {
+    "name": "duplicate_callback_never_reconsumes_wait",
+    "initial": {
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "waits": {
+        "wait-1": {
+          "owner_work_item_id": "w1",
+          "state": "active"
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "trigger_wait",
+        "wait_id": "wait-1"
+      },
+      {
+        "kind": "trigger_wait",
+        "wait_id": "wait-1"
+      },
+      {
+        "kind": "admit",
+        "activation_id": "a2",
+        "work_item_id": "w1",
+        "expected_revision": 2,
+        "cause": {
+          "kind": "wait_resume",
+          "wait_id": "wait-1"
+        }
+      },
+      {
+        "kind": "trigger_wait",
+        "wait_id": "wait-1"
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "wait_triggered",
+        "duplicate_ignored",
+        "admitted",
+        "duplicate_ignored"
+      ],
+      "slot": {
+        "kind": "running",
+        "activation_id": "a2",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "wait_state": {
+        "wait-1": "consumed"
+      }
+    }
+  },
+  {
+    "name": "completion_admits_caller_continuation_once",
+    "initial": {
+      "slot": {
+        "kind": "running",
+        "activation_id": "a-child",
+        "work_item_id": "child"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "child",
+      "work": {
+        "child": {
+          "revision": 3,
+          "status": {
+            "kind": "runnable"
+          }
+        },
+        "caller": {
+          "revision": 5,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "settle",
+        "activation_id": "a-child",
+        "settlement": {
+          "kind": "complete",
+          "continuation": {
+            "admission_id": "continue-1",
+            "caller_work_item_id": "caller"
+          }
+        }
+      },
+      {
+        "kind": "settle",
+        "activation_id": "a-child",
+        "settlement": {
+          "kind": "complete",
+          "continuation": {
+            "admission_id": "continue-1",
+            "caller_work_item_id": "caller"
+          }
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "settled",
+        "rejected"
+      ],
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "child",
+      "work_status": {
+        "child": {
+          "kind": "terminal"
+        },
+        "caller": {
+          "kind": "runnable"
+        }
+      },
+      "work_revision": {
+        "child": 4,
+        "caller": 6
+      },
+      "settled_activations": [
+        "a-child"
+      ],
+      "continuation_admissions": [
+        "continue-1"
+      ]
+    }
+  },
+  {
+    "name": "serialized_snapshot_fences_settled_activation",
+    "initial": {
+      "slot": {
+        "kind": "running",
+        "activation_id": "a1",
+        "work_item_id": "w1"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "settle",
+        "activation_id": "a1",
+        "settlement": {
+          "kind": "continue"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "settled"
+      ],
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "runnable"
+        }
+      },
+      "work_revision": {
+        "w1": 2
+      },
+      "settled_activations": [
+        "a1"
+      ]
+    }
+  },
+  {
+    "name": "stale_scheduling_revision_is_rejected",
+    "initial": {
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work": {
+        "w1": {
+          "revision": 8,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      }
+    },
+    "events": [
+      {
+        "kind": "admit",
+        "activation_id": "a-stale",
+        "work_item_id": "w1",
+        "expected_revision": 7,
+        "cause": {
+          "kind": "scheduling"
+        }
+      }
+    ],
+    "expected": {
+      "decisions": [
+        "rejected"
+      ],
+      "slot": {
+        "kind": "idle"
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "focus": "w1",
+      "work_status": {
+        "w1": {
+          "kind": "runnable"
+        }
+      },
+      "work_revision": {
+        "w1": 8
+      }
+    }
+  }
+]
