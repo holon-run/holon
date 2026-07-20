@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentBriefPatchFromEvents,
+  buildResumeRefreshes,
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
   isSessionCacheContextCurrent,
@@ -14,6 +15,7 @@ import {
   resetSessionsForResume,
   resetTransientRuntimeStateForResume,
   readStoredRuntimeConnectionConfig,
+  runWithConcurrencyLimit,
   sessionForEventLogEpoch,
   streamEventFromBackfill,
   useRuntimeStore,
@@ -731,6 +733,59 @@ describe("runtime client generation", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("bounded resume refresh scheduling", () => {
+  it("uses detail for the selected agent instead of scheduling duplicate state and detail refreshes", () => {
+    expect(buildResumeRefreshes(["agent-a", "agent-b", "agent-c"], "agent-b")).toEqual([
+      { agentId: "agent-a", detail: false },
+      { agentId: "agent-b", detail: true },
+      { agentId: "agent-c", detail: false },
+    ]);
+  });
+
+  it("limits concurrent refreshes", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const releases: Array<() => void> = [];
+
+    const scheduled = runWithConcurrencyLimit(
+      Array.from({ length: 10 }, (_, index) => index),
+      4,
+      async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+      },
+    );
+
+    await vi.waitFor(() => expect(active).toBe(4));
+    while (releases.length) {
+      releases.shift()?.();
+      await Promise.resolve();
+    }
+    await scheduled;
+
+    expect(maxActive).toBe(4);
+  });
+
+  it("stops starting queued refreshes after the generation becomes stale", async () => {
+    let current = true;
+    const started: number[] = [];
+
+    await runWithConcurrencyLimit(
+      [1, 2, 3, 4, 5],
+      1,
+      async (value) => {
+        started.push(value);
+        current = false;
+      },
+      () => current,
+    );
+
+    expect(started).toEqual([1]);
   });
 });
 

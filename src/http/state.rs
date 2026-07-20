@@ -217,8 +217,12 @@ pub async fn agent_state(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    runtime.prune_stale_attached_workspaces().await.ok();
-    let agent = runtime.agent_summary().await.map_err(error_response)?;
+    let agent_started = std::time::Instant::now();
+    let projection = runtime
+        .lightweight_agent_state_projection()
+        .await
+        .map_err(error_response)?;
+    crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
     let tasks_started = std::time::Instant::now();
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
@@ -232,10 +236,8 @@ pub async fn agent_state(
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
     crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
     let work_items_started = std::time::Instant::now();
-    let work_items = runtime
-        .storage()
-        .work_queue_read_model()
-        .map_err(error_response)?
+    let work_items = projection
+        .work_queue
         .items
         .into_iter()
         .take(STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
@@ -251,22 +253,33 @@ pub async fn agent_state(
         .map(ExternalTriggerStateSnapshot::from)
         .collect();
     crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
-    let workspace = state_workspace_snapshot(&agent, &state);
-    let mut agent_dto = crate::http_dto::SlimAgentDto::from(&agent);
-    agent_dto.agent.last_turn_terminal = agent
+    let workspace_started = std::time::Instant::now();
+    let workspace = state_workspace_snapshot(&projection.agent, &state);
+    crate::diagnostics::record_projection_state_workspace(workspace_started.elapsed());
+    let mut agent_dto = crate::http_dto::SlimAgentDto {
+        identity: projection.identity,
+        agent: (&projection.agent).into(),
+        scheduling_posture: projection.scheduling_posture,
+        active_task_count: projection.active_task_count,
+        lifecycle: projection.lifecycle,
+        model: (&projection.model).into(),
+        closure: (&projection.closure).into(),
+        active_children: projection.active_children.iter().map(Into::into).collect(),
+    };
+    agent_dto.agent.last_turn_terminal = projection
         .agent
         .last_turn_terminal
         .clone()
         .map(slim_state_turn_terminal_record);
-    agent_dto.agent.last_runtime_failure = agent
+    agent_dto.agent.last_runtime_failure = projection
         .agent
         .last_runtime_failure
         .clone()
         .map(slim_state_runtime_failure);
     let session = crate::http_dto::StateSessionSnapshotDto {
-        current_run_id: agent.agent.current_run_id.clone(),
-        pending_count: agent.agent.pending,
-        last_turn: agent
+        current_run_id: projection.agent.current_run_id.clone(),
+        pending_count: projection.agent.pending,
+        last_turn: projection
             .agent
             .last_turn_terminal
             .clone()
@@ -441,7 +454,7 @@ fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
 }
 
 fn state_workspace_snapshot(
-    agent: &AgentSummary,
+    agent: &AgentState,
     state: &AppState,
 ) -> crate::http_dto::StateWorkspaceSnapshotDto {
     let all_entries = state.host.workspace_entries().unwrap_or_default();
@@ -453,7 +466,7 @@ fn state_workspace_snapshot(
     let mut workspaces: Vec<AgentWorkspaceInfo> = Vec::new();
 
     // Add active workspace first (with full runtime info).
-    if let Some(active_entry) = agent.agent.active_workspace_entry.as_ref() {
+    if let Some(active_entry) = agent.active_workspace_entry.as_ref() {
         seen_ids.insert(active_entry.workspace_id.clone());
 
         // Try to enrich with registry data (alias, repo_name).
@@ -462,7 +475,7 @@ fn state_workspace_snapshot(
             .find(|e| e.workspace_id == active_entry.workspace_id);
         let worktree = build_worktree_info(
             active_entry.projection_metadata.as_ref(),
-            agent.agent.worktree_session.as_ref(),
+            agent.worktree_session.as_ref(),
         );
 
         workspaces.push(AgentWorkspaceInfo {
@@ -481,7 +494,7 @@ fn state_workspace_snapshot(
     }
 
     // Add remaining attached workspaces (identity-only info from registry).
-    for ws_id in &agent.agent.attached_workspaces {
+    for ws_id in &agent.attached_workspaces {
         if seen_ids.contains(ws_id) {
             continue;
         }

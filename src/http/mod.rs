@@ -81,7 +81,7 @@ pub(crate) use crate::{
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
-        AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility, AuditEvent,
+        AdmissionContext, AgentRegistryStatus, AgentState, AgentVisibility, AuditEvent,
         AuthorityClass, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
         ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
         MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
@@ -760,7 +760,11 @@ pub(crate) fn traced_json<T: Serialize>(
     started_at: std::time::Instant,
     value: T,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let serialization_started = std::time::Instant::now();
     let bytes = serde_json::to_vec(&value).map_err(|err| error_response(err.into()))?;
+    if route == "/agents/{agent_id}/state" {
+        diagnostics::record_projection_state_serialization(serialization_started.elapsed());
+    }
     let build_elapsed = started_at.elapsed();
     diagnostics::record_http_json_response(route, build_elapsed, bytes.len());
     if build_elapsed >= HTTP_SLOW_RESPONSE_WARN_AFTER
