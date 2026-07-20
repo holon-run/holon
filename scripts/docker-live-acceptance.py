@@ -88,6 +88,7 @@ class CaseHarness:
         self.container = f"holon-live-{case_id}-{suffix}"
         self.token = secrets.token_urlsafe(24)
         self.base_url = ""
+        self.agent_id = ""
         self.workspace_parent = self.evidence / "workspace"
         self.log_index = 0
         self.evidence.mkdir(parents=True, exist_ok=True)
@@ -132,8 +133,6 @@ class CaseHarness:
             "--env",
             f"HOLON_MODEL={self.model}",
             "--env",
-            "HOLON_MODEL_FALLBACKS=",
-            "--env",
             "HOLON_DISABLE_PROVIDER_FALLBACK=true",
             "--publish",
             "127.0.0.1::7878",
@@ -158,12 +157,59 @@ class CaseHarness:
                 if lines:
                     port = lines[0].rsplit(":", 1)[-1]
             if not port:
+                state = self.docker(
+                    "inspect",
+                    "--format",
+                    "{{.State.Running}}",
+                    self.container,
+                    check=False,
+                )
+                if state.returncode == 0 and state.stdout.strip() == "false":
+                    logs = self.docker("logs", self.container, check=False)
+                    detail = (logs.stdout + logs.stderr).strip()
+                    raise AssertionError(
+                        "Holon container exited before publishing its port"
+                        + (f": {detail}" if detail else "")
+                    )
                 time.sleep(0.25)
         require(bool(port), "failed to resolve the container's published port")
         self.base_url = f"http://127.0.0.1:{port}"
         self.wait_readiness()
+        self.wait_agent_idle()
 
     def stop(self) -> None:
+        shutdown_error = ""
+        if self.base_url:
+            try:
+                self.request("POST", "/api/control/runtime/shutdown", {})
+            except Exception as error:
+                shutdown_error = str(error)
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            state = self.docker(
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                self.container,
+                check=False,
+            )
+            if state.returncode != 0 or state.stdout.strip() == "false":
+                break
+            time.sleep(0.25)
+
+        state = self.docker(
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            self.container,
+            check=False,
+        )
+        require(
+            state.returncode != 0 or state.stdout.strip() == "false",
+            "Holon container did not stop after the graceful shutdown request"
+            + (f": {shutdown_error}" if shutdown_error else ""),
+        )
         self.capture_logs()
         self.docker("rm", "-f", self.container, check=False)
         self.base_url = ""
@@ -199,7 +245,10 @@ class CaseHarness:
         expected_status: int = 200,
     ) -> Any:
         data = None
-        headers = {"Authorization": f"Bearer {self.token}"}
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.token}",
+        }
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
@@ -221,9 +270,15 @@ class CaseHarness:
                 f"{method} {path} returned {status}, expected {expected_status}: "
                 f"{payload.decode(errors='replace')}"
             )
-        if not payload:
+        if not payload.strip():
             return None
         return json.loads(payload)
+
+    def agent_path(self, suffix: str, *, control: bool = False) -> str:
+        require(bool(self.agent_id), "default agent id is unavailable")
+        agent_id = urllib.parse.quote(self.agent_id, safe="")
+        prefix = "/api/control/agents" if control else "/api/agents"
+        return f"{prefix}/{agent_id}/{suffix}"
 
     def wait_readiness(self) -> None:
         deadline = time.monotonic() + 90
@@ -241,7 +296,13 @@ class CaseHarness:
                 f"container exited before readiness; see {self.evidence}",
             )
             try:
-                self.request("GET", "/api/control/runtime/readiness")
+                readiness = self.request("GET", "/api/control/runtime/readiness")
+                agent_id = readiness["startup_surface"]["default_agent_id"]
+                require(
+                    isinstance(agent_id, str) and agent_id,
+                    f"readiness response omitted default_agent_id: {readiness}",
+                )
+                self.agent_id = agent_id
                 return
             except Exception as error:  # readiness is intentionally polled
                 last_error = str(error)
@@ -249,31 +310,52 @@ class CaseHarness:
         self.capture_logs()
         raise TimeoutError(f"Holon did not become ready: {last_error}")
 
+    def wait_agent_idle(self) -> None:
+        deadline = time.monotonic() + 90
+        last_state: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            last_state = self.request("GET", self.agent_path("state"))
+            agent = last_state["agent"]["agent"]
+            if (
+                agent["status"] in TERMINAL_STATUSES
+                and agent.get("current_run_id") is None
+                and int(last_state["session"]["pending_count"]) == 0
+            ):
+                return
+            time.sleep(1)
+        write_json(self.evidence / "startup-idle-timeout-state.json", last_state)
+        self.capture_logs()
+        raise TimeoutError("default agent did not become idle after readiness")
+
     def state(self, label: str) -> dict[str, Any]:
-        value = self.request("GET", "/api/agents/default/state")
+        value = self.request("GET", self.agent_path("state"))
         write_json(self.evidence / f"{label}-state.json", value)
         return value
 
     def work_items(self, label: str) -> list[dict[str, Any]]:
-        value = self.request("GET", "/api/agents/default/work-items?limit=50")
+        value = self.request("GET", self.agent_path("work-items?limit=50"))
         write_json(self.evidence / f"{label}-work-items.json", value)
         return value
 
+    def brief(self, brief_id: str, label: str) -> dict[str, Any]:
+        encoded_id = urllib.parse.quote(brief_id, safe="")
+        value = self.request("GET", self.agent_path(f"briefs/{encoded_id}"))
+        write_json(self.evidence / f"{label}-brief.json", value)
+        return value
+
     def events(self, label: str) -> list[dict[str, Any]]:
-        page = self.request(
-            "GET", "/api/agents/default/events?limit=500&order=asc"
-        )
+        page = self.request("GET", self.agent_path("events?limit=500&order=asc"))
         write_json(self.evidence / f"{label}-events.json", page)
         return page["events"]
 
     def capture_context(self, label: str) -> None:
         write_json(
             self.evidence / f"{label}-briefs.json",
-            self.request("GET", "/api/agents/default/briefs?limit=50"),
+            self.request("GET", self.agent_path("briefs?limit=50")),
         )
         write_json(
             self.evidence / f"{label}-transcript.json",
-            self.request("GET", "/api/agents/default/transcript?limit=200"),
+            self.request("GET", self.agent_path("transcript?limit=200")),
         )
         self.state(label)
         self.work_items(label)
@@ -284,7 +366,7 @@ class CaseHarness:
         baseline = int(before["agent"]["agent"]["turn_index"])
         response = self.request(
             "POST",
-            "/api/control/agents/default/prompt",
+            self.agent_path("prompt", control=True),
             {"text": text},
         )
         write_json(self.evidence / f"{label}-prompt-response.json", response)
@@ -293,7 +375,7 @@ class CaseHarness:
         deadline = time.monotonic() + self.timeout_seconds
         last_state = before
         while time.monotonic() < deadline:
-            last_state = self.request("GET", "/api/agents/default/state")
+            last_state = self.request("GET", self.agent_path("state"))
             agent = last_state["agent"]["agent"]
             if (
                 int(agent["turn_index"]) > baseline
@@ -318,14 +400,14 @@ class CaseHarness:
         failures = [
             event
             for event in events
-            if event["event_type"] == "tool_execution_failed"
+            if event["type"] == "tool_execution_failed"
             and int(event["payload"].get("turn_index", 0)) > baseline_turn
         ]
         require(not failures, f"tool failures occurred in {label}: {failures}")
         return [
             event
             for event in events
-            if event["event_type"] == "tool_executed"
+            if event["type"] == "tool_executed"
             and event["payload"].get("status") == "success"
             and int(event["payload"].get("turn_index", 0)) > baseline_turn
         ]
@@ -343,7 +425,7 @@ class CaseHarness:
         execution_id = event["payload"]["tool_execution_id"]
         detail = self.request(
             "GET",
-            f"/api/agents/default/tool-executions/{execution_id}",
+            self.agent_path(f"tool-executions/{execution_id}"),
         )
         write_json(self.evidence / f"{label}-{execution_id}.json", detail)
         return detail
@@ -352,9 +434,10 @@ class CaseHarness:
         encoded_path = "/".join(
             urllib.parse.quote(part, safe="") for part in relative_path.split("/")
         )
+        workspace_id = urllib.parse.quote(f"agent_home:{self.agent_id}", safe="")
         value = self.request(
             "GET",
-            f"/api/workspaces/agent_home%3Adefault/files/{encoded_path}",
+            f"/api/workspaces/{workspace_id}/files/{encoded_path}",
         )
         write_json(self.evidence / f"{label}.json", value)
         return value
@@ -377,7 +460,7 @@ def run_workspace_case(harness: CaseHarness, case: dict[str, Any]) -> None:
     harness.start()
     attached = harness.request(
         "POST",
-        "/api/control/agents/default/workspace/attach",
+        harness.agent_path("workspace/attach", control=True),
         {"path": "/acceptance/repo"},
     )
     write_json(harness.evidence / "workspace-attach.json", attached)
@@ -499,8 +582,12 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         f"WorkItem todos do not match the checked-in case: {item}",
     )
     require(
-        state["agent"]["agent"].get("current_work_item_id") == work_item_id,
-        "created WorkItem was not current after WaitFor",
+        state["agent"]["agent"].get("current_work_item_id") is None,
+        "waiting WorkItem should release current focus after WaitFor",
+    )
+    require(
+        item.get("has_active_waits") is True,
+        f"WorkItem should retain an active operator wait: {item}",
     )
     plan = harness.agent_home_file(
         f"work-items/{work_item_id}/plan.md", "workitem-plan"
@@ -520,9 +607,12 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         f"WorkItem wait did not survive restart: {restored}",
     )
     require(
-        restart_state["agent"]["agent"].get("current_work_item_id")
-        == work_item_id,
-        "current WorkItem focus did not survive restart",
+        restart_state["agent"]["agent"].get("current_work_item_id") is None,
+        "blocked WorkItem should not become current merely because of restart",
+    )
+    require(
+        restored.get("has_active_waits") is True,
+        f"WorkItem operator wait did not survive restart: {restored}",
     )
 
     complete_phase = case["phases"][1]
@@ -549,9 +639,19 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         ),
         f"WorkItem todos were not all completed: {completed}",
     )
+    result_brief_id = completed.get("result_brief_id")
     require(
-        completion_marker in (completed.get("result_summary") or ""),
-        f"completion result did not preserve marker {completion_marker}: {completed}",
+        isinstance(result_brief_id, str) and result_brief_id,
+        f"completed WorkItem omitted result_brief_id: {completed}",
+    )
+    result_brief = harness.brief(result_brief_id, "workitem-result")
+    require(
+        result_brief.get("work_item_id") == work_item_id,
+        f"completion brief is not linked to WorkItem {work_item_id}: {result_brief}",
+    )
+    require(
+        completion_marker in (result_brief.get("text") or ""),
+        f"completion brief did not preserve marker {completion_marker}: {result_brief}",
     )
 
 
