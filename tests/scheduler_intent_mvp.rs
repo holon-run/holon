@@ -115,6 +115,42 @@ fn validator_rejects_stale_or_ineligible_targets() {
 }
 
 #[test]
+fn validator_rejects_non_explicit_binding_when_multiple_targets_are_eligible() {
+    let corpus: Corpus = read_json(fixture_dir().join("inputs.json"));
+    let case = corpus
+        .cases
+        .iter()
+        .find(|case| case.id == "two_waits_ambiguous_continue")
+        .expect("case");
+    let arbitrary_wait = Proposal::BindWait {
+        case_id: case.id.clone(),
+        snapshot_revision: case.snapshot_revision,
+        wait_id: "wait-docs".into(),
+        generation: 1,
+    };
+    assert_eq!(
+        validate(case, &arbitrary_wait),
+        Err(ValidationError::AmbiguousBinding)
+    );
+
+    let case = corpus
+        .cases
+        .iter()
+        .find(|case| case.id == "similar_work_items_ambiguous")
+        .expect("case");
+    let arbitrary_work_item = Proposal::BindWorkItem {
+        case_id: case.id.clone(),
+        snapshot_revision: case.snapshot_revision,
+        work_item_id: "work-auth-timeout".into(),
+        revision: 4,
+    };
+    assert_eq!(
+        validate(case, &arbitrary_work_item),
+        Err(ValidationError::AmbiguousBinding)
+    );
+}
+
+#[test]
 fn recorded_shadow_runs_are_scored_without_granting_scheduler_authority() {
     let corpus: Corpus = read_json(fixture_dir().join("inputs.json"));
     let gold: Vec<Proposal> = read_json(fixture_dir().join("gold.json"));
@@ -125,6 +161,26 @@ fn recorded_shadow_runs_are_scored_without_granting_scheduler_authority() {
         let proposals: Vec<Proposal> = read_json(fixture_dir().join(run));
         assert_complete_run(&corpus.cases, &proposals);
         let run_score = score(&corpus.cases, &gold, &proposals);
+        assert_eq!(
+            run_score.wrong_target_bindings, 0,
+            "{run}: shadow proposals must not produce an accepted wrong binding"
+        );
+        assert!(
+            run_score.target_binding_precision() >= 0.99,
+            "{run}: accepted binding precision below gate"
+        );
+        assert!(
+            run_score.exact_accuracy() >= 0.80,
+            "{run}: exact accuracy below gate"
+        );
+        assert!(
+            run_score.exact_accuracy() - baseline_score.exact_accuracy() >= 0.25,
+            "{run}: insufficient gain over structural baseline"
+        );
+        assert!(
+            run_score.target_bindings >= 8,
+            "{run}: excessive unresolved fallback"
+        );
         println!(
             "{run} exact={:.3} binding_precision={:.3} unresolved={:.3} invalid={} wrong_bindings={} exact_gain={:.3}",
             run_score.exact_accuracy(),

@@ -176,13 +176,15 @@
           "work_item_id": "work-auth",
           "revision": 6,
           "state": "runnable",
-          "summary": "修复登录超时"
+          "summary": "修复登录超时",
+          "routing_keys": ["登录超时"]
         },
         {
           "work_item_id": "work-docs",
           "revision": 3,
           "state": "runnable",
-          "summary": "整理用户文档"
+          "summary": "整理用户文档",
+          "routing_keys": ["用户文档"]
         }
       ]
     },
@@ -196,13 +198,15 @@
           "work_item_id": "work-maintainability",
           "revision": 15,
           "state": "runnable",
-          "summary": "跟踪并推进 PR #2338"
+          "summary": "跟踪并推进 PR #2338",
+          "routing_keys": ["PR #2338"]
         },
         {
           "work_item_id": "work-release",
           "revision": 2,
           "state": "runnable",
-          "summary": "准备下一个版本发布"
+          "summary": "准备下一个版本发布",
+          "routing_keys": ["版本发布"]
         }
       ]
     },
@@ -216,13 +220,15 @@
           "work_item_id": "work-auth-timeout",
           "revision": 4,
           "state": "runnable",
-          "summary": "修复登录超时"
+          "summary": "修复登录超时",
+          "routing_keys": ["登录"]
         },
         {
           "work_item_id": "work-auth-oauth",
           "revision": 5,
           "state": "runnable",
-          "summary": "修复 OAuth 登录回调失败"
+          "summary": "修复 OAuth 登录回调失败",
+          "routing_keys": ["登录"]
         }
       ]
     },
@@ -491,13 +497,15 @@
           "work_item_id": "work-db",
           "revision": 10,
           "state": "waiting",
-          "summary": "数据库迁移"
+          "summary": "数据库迁移",
+          "routing_keys": ["数据库迁移"]
         },
         {
           "work_item_id": "work-docs",
           "revision": 4,
           "state": "runnable",
-          "summary": "文档更新"
+          "summary": "文档更新",
+          "routing_keys": ["文档"]
         }
       ]
     },

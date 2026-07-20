@@ -26,6 +26,8 @@ pub struct WaitCandidate {
     pub state: WaitCandidateState,
     pub owner_work_item_id: String,
     pub summary: String,
+    #[serde(default)]
+    pub routing_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -41,6 +43,8 @@ pub struct WorkItemCandidate {
     pub revision: u64,
     pub state: WorkItemCandidateState,
     pub summary: String,
+    #[serde(default)]
+    pub routing_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -122,6 +126,7 @@ pub enum ValidationError {
     UnknownWorkItem,
     TerminalWorkItem,
     StaleWorkItemRevision,
+    AmbiguousBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -182,6 +187,22 @@ pub fn validate(case: &Case, proposal: &Proposal) -> Result<(), ValidationError>
             if wait.generation != *generation {
                 return Err(ValidationError::StaleWaitGeneration);
             }
+            let active_waits: Vec<_> = case
+                .waits
+                .iter()
+                .filter(|candidate| candidate.state == WaitCandidateState::Active)
+                .collect();
+            if active_waits.len() > 1
+                && !uniquely_matches(
+                    &case.operator_input,
+                    wait_id,
+                    active_waits
+                        .iter()
+                        .map(|candidate| (candidate.wait_id.as_str(), &candidate.routing_keys)),
+                )
+            {
+                return Err(ValidationError::AmbiguousBinding);
+            }
         }
         Proposal::BindWorkItem {
             work_item_id,
@@ -199,10 +220,43 @@ pub fn validate(case: &Case, proposal: &Proposal) -> Result<(), ValidationError>
             if work_item.revision != *revision {
                 return Err(ValidationError::StaleWorkItemRevision);
             }
+            let eligible_work_items: Vec<_> = case
+                .work_items
+                .iter()
+                .filter(|candidate| candidate.state != WorkItemCandidateState::Terminal)
+                .collect();
+            if eligible_work_items.len() > 1
+                && !uniquely_matches(
+                    &case.operator_input,
+                    work_item_id,
+                    eligible_work_items.iter().map(|candidate| {
+                        (candidate.work_item_id.as_str(), &candidate.routing_keys)
+                    }),
+                )
+            {
+                return Err(ValidationError::AmbiguousBinding);
+            }
         }
         Proposal::NewInteraction { .. } | Proposal::Unresolved { .. } => {}
     }
     Ok(())
+}
+
+fn uniquely_matches<'a>(
+    operator_input: &str,
+    selected_id: &str,
+    candidates: impl Iterator<Item = (&'a str, &'a Vec<String>)>,
+) -> bool {
+    let matched: Vec<_> = candidates
+        .filter(|(candidate_id, routing_keys)| {
+            operator_input.contains(candidate_id)
+                || routing_keys
+                    .iter()
+                    .any(|routing_key| operator_input.contains(routing_key))
+        })
+        .map(|(candidate_id, _)| candidate_id)
+        .collect();
+    matched == [selected_id]
 }
 
 pub fn structural_baseline(case: &Case) -> Proposal {

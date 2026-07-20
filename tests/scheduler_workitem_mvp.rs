@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use model::{
-    assert_invariants, reduce, ActivationSlot, AgentDispatchState, Decision, Event, Snapshot,
-    WaitState, WorkStatus,
+    assert_invariants, reduce, ActivationSlot, AdmissionCause, AgentDispatchState, Decision, Event,
+    Settlement, Snapshot, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -26,12 +26,11 @@ struct Expected {
     dispatch: AgentDispatchState,
     #[serde(default)]
     focus: Option<String>,
+    work: BTreeMap<String, WorkDemand>,
     #[serde(default)]
-    work_status: BTreeMap<String, WorkStatus>,
+    waits: BTreeMap<String, WaitRecord>,
     #[serde(default)]
-    work_revision: BTreeMap<String, u64>,
-    #[serde(default)]
-    wait_state: BTreeMap<String, WaitState>,
+    admitted_revisions: Vec<String>,
     #[serde(default)]
     settled_activations: Vec<String>,
     #[serde(default)]
@@ -90,44 +89,37 @@ fn historical_scenarios_replay_to_one_explicit_state() {
             "{}: focus",
             fixture.name
         );
-        for (work_item_id, status) in fixture.expected.work_status {
-            assert_eq!(
-                snapshot.work.get(&work_item_id).map(|work| &work.status),
-                Some(&status),
-                "{}: work status for {work_item_id}",
-                fixture.name
-            );
-        }
-        for (work_item_id, revision) in fixture.expected.work_revision {
-            assert_eq!(
-                snapshot.work.get(&work_item_id).map(|work| work.revision),
-                Some(revision),
-                "{}: work revision for {work_item_id}",
-                fixture.name
-            );
-        }
-        for (wait_id, state) in fixture.expected.wait_state {
-            assert_eq!(
-                snapshot.waits.get(&wait_id).map(|wait| &wait.state),
-                Some(&state),
-                "{}: wait state for {wait_id}",
-                fixture.name
-            );
-        }
-        for activation_id in fixture.expected.settled_activations {
-            assert!(
-                snapshot.settled_activations.contains(&activation_id),
-                "{}: missing settled activation {activation_id}",
-                fixture.name
-            );
-        }
-        for admission_id in fixture.expected.continuation_admissions {
-            assert!(
-                snapshot.continuation_admissions.contains(&admission_id),
-                "{}: missing continuation admission {admission_id}",
-                fixture.name
-            );
-        }
+        assert_eq!(
+            snapshot.work, fixture.expected.work,
+            "{}: work",
+            fixture.name
+        );
+        assert_eq!(
+            snapshot.waits, fixture.expected.waits,
+            "{}: waits",
+            fixture.name
+        );
+        assert_eq!(
+            snapshot.admitted_revisions.into_iter().collect::<Vec<_>>(),
+            fixture.expected.admitted_revisions,
+            "{}: admitted revisions",
+            fixture.name
+        );
+        assert_eq!(
+            snapshot.settled_activations.into_iter().collect::<Vec<_>>(),
+            fixture.expected.settled_activations,
+            "{}: settled activations",
+            fixture.name
+        );
+        assert_eq!(
+            snapshot
+                .continuation_admissions
+                .into_iter()
+                .collect::<Vec<_>>(),
+            fixture.expected.continuation_admissions,
+            "{}: continuation admissions",
+            fixture.name
+        );
     }
 }
 
@@ -140,10 +132,18 @@ fn serialized_snapshot_does_not_replay_a_settled_activation() {
     let first = reduce(&fixture.initial, &fixture.events[0]);
     let encoded = serde_json::to_vec(&first.snapshot).expect("serialize");
     let reloaded: Snapshot = serde_json::from_slice(&encoded).expect("deserialize");
-    let replay = reduce(&reloaded, &fixture.events[0]);
+    let replay = reduce(
+        &reloaded,
+        &Event::Admit {
+            activation_id: "a1".into(),
+            work_item_id: "w1".into(),
+            expected_revision: 2,
+            cause: AdmissionCause::Scheduling,
+        },
+    );
     assert_eq!(replay.decision, Decision::Rejected);
     assert_eq!(replay.snapshot, reloaded);
-    assert_eq!(replay.diagnostics, ["no_running_activation"]);
+    assert_eq!(replay.diagnostics, ["activation_already_settled"]);
 }
 
 proptest! {
@@ -161,7 +161,9 @@ proptest! {
                 "wait-1".into(),
                 model::WaitRecord {
                     owner_work_item_id: "w1".into(),
+                    generation: 1,
                     state: WaitState::Active,
+                    resolved_generations: Default::default(),
                 },
             );
             snapshot.dispatch = AgentDispatchState::ReservedFor {
@@ -213,6 +215,7 @@ fn small_state_space_preserves_lane_wait_and_settlement_invariants() {
     let events = [
         Event::TriggerWait {
             wait_id: "wait-1".into(),
+            generation: 1,
         },
         Event::OperatorIntervention {
             input_id: "input-1".into(),
@@ -223,6 +226,7 @@ fn small_state_space_preserves_lane_wait_and_settlement_invariants() {
             expected_revision: 1,
             cause: model::AdmissionCause::WaitResume {
                 wait_id: "wait-1".into(),
+                generation: 1,
             },
         },
     ];
@@ -237,7 +241,9 @@ fn small_state_space_preserves_lane_wait_and_settlement_invariants() {
                 "wait-1".into(),
                 model::WaitRecord {
                     owner_work_item_id: "w1".into(),
+                    generation: 1,
                     state: wait_state.clone(),
+                    resolved_generations: Default::default(),
                 },
             );
             snapshot.dispatch = dispatch.clone();
@@ -259,6 +265,149 @@ fn small_state_space_preserves_lane_wait_and_settlement_invariants() {
     }
 }
 
+#[test]
+fn stale_wait_generation_cannot_trigger_or_resume_reused_wait_id() {
+    let first_activation = reduce(
+        &minimal_snapshot(1),
+        &Event::Admit {
+            activation_id: "a1".into(),
+            work_item_id: "w1".into(),
+            expected_revision: 1,
+            cause: AdmissionCause::Scheduling,
+        },
+    );
+    assert_eq!(first_activation.decision, Decision::Admitted);
+    let first_wait = reduce(
+        &first_activation.snapshot,
+        &Event::Settle {
+            activation_id: "a1".into(),
+            settlement: Settlement::Wait {
+                wait_id: "wait-1".into(),
+                mode: model::WaitMode::AwaitThis,
+            },
+        },
+    );
+    assert_eq!(first_wait.decision, Decision::Settled);
+    assert_eq!(first_wait.snapshot.waits["wait-1"].generation, 2);
+
+    let first_trigger = reduce(
+        &first_wait.snapshot,
+        &Event::TriggerWait {
+            wait_id: "wait-1".into(),
+            generation: 2,
+        },
+    );
+    assert_eq!(first_trigger.decision, Decision::WaitTriggered);
+    let resumed = reduce(
+        &first_trigger.snapshot,
+        &Event::Admit {
+            activation_id: "a2".into(),
+            work_item_id: "w1".into(),
+            expected_revision: 2,
+            cause: AdmissionCause::WaitResume {
+                wait_id: "wait-1".into(),
+                generation: 2,
+            },
+        },
+    );
+    assert_eq!(resumed.decision, Decision::Admitted);
+    let reused_wait = reduce(
+        &resumed.snapshot,
+        &Event::Settle {
+            activation_id: "a2".into(),
+            settlement: Settlement::Wait {
+                wait_id: "wait-1".into(),
+                mode: model::WaitMode::AwaitThis,
+            },
+        },
+    );
+    assert_eq!(reused_wait.decision, Decision::Settled);
+    let rearmed_wait = &reused_wait.snapshot.waits["wait-1"];
+    assert_eq!(rearmed_wait.generation, 3);
+    assert_eq!(rearmed_wait.state, WaitState::Active);
+    assert_eq!(
+        rearmed_wait
+            .resolved_generations
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [2]
+    );
+    assert!(reused_wait
+        .transitions
+        .contains(&"wait:wait-1:generation:2:consumed->resolved".into()));
+
+    let stale_trigger = reduce(
+        &reused_wait.snapshot,
+        &Event::TriggerWait {
+            wait_id: "wait-1".into(),
+            generation: 2,
+        },
+    );
+    assert_eq!(stale_trigger.decision, Decision::Rejected);
+    assert_eq!(stale_trigger.diagnostics, ["stale_wait_generation"]);
+
+    let triggered = reduce(
+        &reused_wait.snapshot,
+        &Event::TriggerWait {
+            wait_id: "wait-1".into(),
+            generation: 3,
+        },
+    );
+    assert_eq!(triggered.decision, Decision::WaitTriggered);
+
+    let stale_resume = reduce(
+        &triggered.snapshot,
+        &Event::Admit {
+            activation_id: "a-stale".into(),
+            work_item_id: "w1".into(),
+            expected_revision: 3,
+            cause: AdmissionCause::WaitResume {
+                wait_id: "wait-1".into(),
+                generation: 2,
+            },
+        },
+    );
+    assert_eq!(stale_resume.decision, Decision::Rejected);
+    assert_eq!(stale_resume.diagnostics, ["stale_wait_generation"]);
+
+    let current_resume = reduce(
+        &triggered.snapshot,
+        &Event::Admit {
+            activation_id: "a3".into(),
+            work_item_id: "w1".into(),
+            expected_revision: 3,
+            cause: AdmissionCause::WaitResume {
+                wait_id: "wait-1".into(),
+                generation: 3,
+            },
+        },
+    );
+    assert_eq!(current_resume.decision, Decision::Admitted);
+}
+
+#[test]
+fn activation_cannot_settle_after_work_item_revision_changes() {
+    let mut snapshot = minimal_snapshot(4);
+    snapshot.slot = ActivationSlot::Running {
+        activation_id: "a1".into(),
+        work_item_id: "w1".into(),
+        admitted_revision: 4,
+    };
+    snapshot.work.get_mut("w1").expect("work").revision = 5;
+
+    let outcome = reduce(
+        &snapshot,
+        &Event::Settle {
+            activation_id: "a1".into(),
+            settlement: Settlement::Continue,
+        },
+    );
+    assert_eq!(outcome.decision, Decision::Rejected);
+    assert_eq!(outcome.diagnostics, ["stale_activation_revision"]);
+    assert_eq!(outcome.snapshot, snapshot);
+}
+
 fn minimal_snapshot(revision: u64) -> Snapshot {
     Snapshot {
         slot: ActivationSlot::Idle,
@@ -269,6 +418,10 @@ fn minimal_snapshot(revision: u64) -> Snapshot {
             model::WorkDemand {
                 revision,
                 status: WorkStatus::Runnable,
+                capabilities: ["workspace_write".into()].into_iter().collect(),
+                locks: ["workspace:holon".into()].into_iter().collect(),
+                locality: "workspace:holon".into(),
+                cost_class: "standard".into(),
             },
         )]),
         waits: BTreeMap::new(),
