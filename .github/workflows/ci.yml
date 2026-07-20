@@ -19,6 +19,13 @@ on:
       - "Makefile"
       - "build.rs"
       - "scripts/docker-smoke.sh"
+      - "scripts/docker-e2e.py"
+      - "scripts/docker-live-acceptance.py"
+      - "scripts/docker_e2e/**"
+      - "scripts/docker-smoke.sh"
+      - "scripts/docker-e2e.py"
+      - "scripts/docker-live-acceptance.py"
+      - "scripts/docker_e2e/**"
   pull_request:
     branches: [main]
     paths:
@@ -62,6 +69,9 @@ jobs:
 
       - name: Smoke test image
         run: scripts/docker-smoke.sh holon:ci
+
+      - name: Validate Docker E2E runner
+        run: make docker-e2e-validate
 
   rust:
     name: Rust

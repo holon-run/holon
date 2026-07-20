@@ -22,6 +22,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM debian:bookworm-slim AS runtime
 
+ARG OCI_VERSION=dev
+ARG OCI_REVISION=unknown
+ARG OCI_SOURCE=https://github.com/holon-run/holon
+
+LABEL org.opencontainers.image.version="${OCI_VERSION}" \
+      org.opencontainers.image.revision="${OCI_REVISION}" \
+      org.opencontainers.image.source="${OCI_SOURCE}"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \

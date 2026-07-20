@@ -1,0 +1,257 @@
+name: Release E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Git ref or full commit SHA to build and test.
+        required: true
+      release_tag:
+        description: Intended release tag, for example v0.14.0.
+        required: true
+      previous_image:
+        description: Previous release image used by upgrade cases.
+        required: false
+      model:
+        description: Real model route.
+        required: false
+        default: deepseek/deepseek-v4-flash
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: Build candidate image
+    runs-on: ubuntu-latest
+    environment: release-e2e
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.image.outputs.ref }}
+      sha: ${{ steps.image.outputs.commit }}
+    steps:
+      - id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_ref }}
+
+      - name: Resolve candidate identity
+        id: image
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          repository="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/${repository}:candidate-${commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push candidate
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.image.outputs.ref }}
+          build-args: |
+            OCI_VERSION=${{ inputs.release_tag }}
+            OCI_REVISION=${{ steps.image.outputs.commit }}
+            OCI_SOURCE=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=holon-docker
+          cache-to: type=gha,mode=max,scope=holon-docker
+
+  core:
+    name: Real LLM core suite
+    needs: candidate
+    runs-on: ubuntu-latest
+    environment: release-e2e
+    permissions:
+      contents: read
+      packages: read
+    env:
+      CANDIDATE_IMAGE: ${{ needs.candidate.outputs.image }}@${{ needs.candidate.outputs.digest }}
+      HOLON_E2E_MODEL: ${{ inputs.model }}
+      HOLON_E2E_DOCKER_ENV_FILE: /tmp/holon-e2e.env
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.candidate.outputs.sha }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare protected provider environment
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${DEEPSEEK_API_KEY}"
+          umask 077
+          printf 'DEEPSEEK_API_KEY=%s\n' "${DEEPSEEK_API_KEY}" > "${HOLON_E2E_DOCKER_ENV_FILE}"
+          chmod 0600 "${HOLON_E2E_DOCKER_ENV_FILE}"
+
+      - name: Pull and smoke candidate digest
+        run: |
+          set -euo pipefail
+          docker pull "${CANDIDATE_IMAGE}"
+          scripts/docker-smoke.sh "${CANDIDATE_IMAGE}"
+
+      - name: Run release core E2E
+        env:
+          HOLON_E2E_PREVIOUS_IMAGE: ${{ inputs.previous_image }}
+        run: |
+          set -euo pipefail
+          args=(
+            --image-digest "${CANDIDATE_IMAGE}"
+            --skip-build
+            --suite core
+            --env-file "${HOLON_E2E_DOCKER_ENV_FILE}"
+          )
+          if [ -n "${HOLON_E2E_PREVIOUS_IMAGE}" ]; then
+            args+=(--previous-image "${HOLON_E2E_PREVIOUS_IMAGE}")
+          fi
+          python3 scripts/docker-e2e.py "${args[@]}"
+
+      - name: Publish run summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          summaries = sorted(Path("target/docker-e2e").glob("*/summary.json"))
+          if not summaries:
+              raise SystemExit("No Docker E2E summary was produced")
+          summary = json.loads(summaries[-1].read_text())
+          lines = [
+              "# Release Docker E2E",
+              "",
+              f"- Status: **{summary['status']}**",
+              f"- Candidate: `{summary['image']['ref']}`",
+              f"- Git SHA: `{summary['git_sha']}`",
+              f"- Model: `{summary['model_route']}`",
+              f"- Duration: `{summary['duration_seconds']}s`",
+              "",
+              "| Case | Result | Duration |",
+              "| --- | --- | ---: |",
+          ]
+          for case in summary["case_results"]:
+              lines.append(
+                  f"| `{case['id']}` | {case['status']} | {case['duration_seconds']}s |"
+              )
+          Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text(
+              "\n".join(lines) + "\n"
+          )
+          PY
+
+      - name: Write release E2E attestation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summaries = sorted(Path("target/docker-e2e").glob("*/summary.json"))
+          if not summaries:
+              raise SystemExit("No Docker E2E summary was produced")
+          summary = json.loads(summaries[-1].read_text())
+          if summary["status"] != "pass":
+              raise SystemExit(f"Release E2E did not pass: {summary['status']}")
+          attestation = {
+              "schema_version": 1,
+              "release_tag": os.environ["RELEASE_TAG"],
+              "candidate_ref": os.environ["CANDIDATE_REF"],
+              "git_sha": os.environ["CANDIDATE_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "status": summary["status"],
+              "model_route": summary["model_route"],
+              "image": summary["image"],
+              "summary_path": str(summaries[-1]),
+          }
+          Path("target/release-e2e-attestation").mkdir(parents=True, exist_ok=True)
+          Path("target/release-e2e-attestation/release-e2e-attestation.json").write_text(
+              json.dumps(attestation, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+
+      - name: Prepare safe evidence upload
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -rf target/docker-e2e-upload
+          mkdir -p target/docker-e2e-upload
+          python3 - <<'PY'
+          import shutil
+          import json
+          from pathlib import Path
+
+          summaries = sorted(Path("target/docker-e2e").glob("*/summary.json"))
+          if not summaries:
+              Path("target/docker-e2e-upload/upload-blocked.txt").write_text(
+                  "Raw evidence upload blocked because no secret-scan.json was produced.\n"
+              )
+              raise SystemExit(0)
+          evidence = summaries[-1].parent
+          if not (evidence / "secret-scan.json").is_file():
+              Path("target/docker-e2e-upload/upload-blocked.txt").write_text(
+                  f"Raw evidence upload blocked because {evidence}/secret-scan.json is missing.\n"
+              )
+              raise SystemExit(0)
+          scan = json.loads((evidence / "secret-scan.json").read_text())
+          if scan.get("status") != "pass":
+              destination = Path("target/docker-e2e-upload") / evidence.name
+              destination.mkdir(parents=True, exist_ok=True)
+              for name in ("secret-scan.json", "summary.json", "junit.xml"):
+                  source = evidence / name
+                  if source.is_file():
+                      shutil.copy2(source, destination / name)
+              (destination / "raw-evidence-blocked.txt").write_text(
+                  "Raw evidence upload blocked because the secret scan failed. "
+                  "Only metadata was uploaded.\n"
+              )
+              raise SystemExit(0)
+          shutil.copytree(evidence, Path("target/docker-e2e-upload") / evidence.name)
+          PY
+
+      - name: Upload E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-e2e-${{ needs.candidate.outputs.sha }}
+          path: target/docker-e2e-upload/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload release E2E attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-e2e-attestation-${{ needs.candidate.outputs.sha }}-${{ inputs.release_tag }}
+          path: target/release-e2e-attestation/release-e2e-attestation.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove provider environment
+        if: always()
+        run: rm -f "${HOLON_E2E_DOCKER_ENV_FILE}"

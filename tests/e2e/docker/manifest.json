@@ -1,0 +1,121 @@
+{
+  "version": 2,
+  "cases": [
+    {
+      "id": "runtime-auth-model-delivery",
+      "tier": "core",
+      "tags": ["runtime", "auth", "model", "delivery"],
+      "timeout_seconds": 600,
+      "description": "Verify control authentication, the exact real model route, provider evidence, canonical tools, transcript, and brief delivery.",
+      "phases": [
+        {
+          "id": "delivery",
+          "required_tools": [
+            "AgentGet",
+            "ListModelProviders",
+            "ListProviderModels"
+          ],
+          "forbidden_tools": [
+            "ApplyPatch",
+            "ExecCommand",
+            "CreateWorkItem"
+          ],
+          "prompt": "Release Docker E2E case {case_id}. Call AgentGet for the current agent. Call ListModelProviders, then call ListProviderModels for provider {provider} using a small limit. Do not call mutation or shell tools. After all three tools succeed, answer with one concise sentence containing the literal marker {marker}."
+        }
+      ]
+    },
+    {
+      "id": "memory-agent-home-persistence",
+      "tier": "core",
+      "tags": ["memory", "agent-home", "restart", "persistence"],
+      "timeout_seconds": 600,
+      "description": "Search exact AgentHome memory through the real model, fetch the returned source_ref, restart, and fetch the same durable source again.",
+      "phases": [
+        {
+          "id": "search",
+          "required_tools": [
+            "MemorySearch",
+            "MemoryGet"
+          ],
+          "forbidden_tools": [
+            "ApplyPatch",
+            "ExecCommand",
+            "CreateWorkItem"
+          ],
+          "prompt": "Release Docker E2E case {case_id}. Call MemorySearch with the exact query {marker} and a small limit. From the returned results, copy the real source_ref whose content contains the exact marker. Call MemoryGet with that source_ref and enough max_chars to include the marker. Do not invent a source_ref and do not modify files."
+        },
+        {
+          "id": "recover",
+          "required_tools": [
+            "MemoryGet"
+          ],
+          "forbidden_tools": [
+            "ApplyPatch",
+            "ExecCommand",
+            "CreateWorkItem"
+          ],
+          "prompt": "Continue release Docker E2E case {case_id} after a real holon serve restart. Call MemoryGet with the exact persisted source_ref {source_ref} and enough max_chars to include the marker {marker}. Do not search for or substitute another source_ref. Do not modify files."
+        }
+      ]
+    },
+    {
+      "id": "workspace-restart-lifecycle",
+      "tier": "core",
+      "tags": ["workspace", "worktree", "restart", "persistence"],
+      "timeout_seconds": 600,
+      "description": "Create a managed worktree through a real model, restart holon serve, then recover and remove the persisted worktree.",
+      "phases": [
+        {
+          "id": "create",
+          "required_tools": [
+            "GetWorkspaceState",
+            "SwitchWorkspace",
+            "CreateWorktree"
+          ],
+          "forbidden_tools": ["ApplyPatch"],
+          "prompt": "Live Docker acceptance case {case_id}. Use the named Holon tools, not shell git/worktree commands. First call GetWorkspaceState. Switch to workspace_id {workspace_id}. Create a linked worktree from base_ref main with branch {branch}, activate=true, and keep the returned execution_root_id. Call GetWorkspaceState while that worktree is active. Switch back to workspace_id {workspace_id}, call GetWorkspaceState again, and finish without removing the worktree. Do not modify files and do not create a WorkItem."
+        },
+        {
+          "id": "recover",
+          "required_tools": [
+            "GetWorkspaceState",
+            "SwitchWorkspace",
+            "RemoveWorktree"
+          ],
+          "forbidden_tools": ["ApplyPatch"],
+          "prompt": "Continue live Docker acceptance case {case_id} after a real holon serve restart. Call GetWorkspaceState and confirm execution_root_id {execution_root_id} is still registered. Switch to that exact execution_root_id and call GetWorkspaceState. Switch back to canonical workspace_id {workspace_id}. Remove execution_root_id {execution_root_id} with branch_policy keep. Call GetWorkspaceState one final time and only then report completion. Do not use shell git/worktree commands and do not create a WorkItem."
+        }
+      ]
+    },
+    {
+      "id": "workitem-wait-restart-complete",
+      "tier": "core",
+      "tags": ["workitem", "wait", "restart", "persistence", "delivery"],
+      "timeout_seconds": 600,
+      "description": "Create and focus a durable WorkItem through a real model, wait for operator input, restart holon serve, then resume and complete the same item.",
+      "phases": [
+        {
+          "id": "wait",
+          "required_tools": [
+            "CreateWorkItem",
+            "PickWorkItem",
+            "WaitFor"
+          ],
+          "forbidden_tools": ["ApplyPatch"],
+          "prompt": "Live Docker acceptance case {case_id}. Create exactly one WorkItem with objective {objective}. Seed its plan with the literal marker {plan_marker}, set plan_status needs_input, and use exactly these todos: phase-one completed, phase-two in_progress, phase-three pending. Pick the new WorkItem so it is current. Then call WaitFor with wake operator_input and a concrete reason that includes {plan_marker}. Do not modify project files and do not complete the WorkItem in this turn."
+        },
+        {
+          "id": "complete",
+          "required_tools": [
+            "ListWorkItems",
+            "GetWorkItem",
+            "UpdateWorkItem",
+            "CompleteWorkItem"
+          ],
+          "forbidden_tools": ["ApplyPatch"],
+          "prompt": "Resume live Docker acceptance case {case_id} after a real holon serve restart. Call ListWorkItems with filter current and include_todo_list=true, then GetWorkItem for {work_item_id} with include_todo_list=true. Confirm it is the same item whose plan contains {plan_marker}. Update that WorkItem to plan_status ready with all three existing todos completed. After UpdateWorkItem succeeds, your very next assistant response must contain an operator-facing text block with a concise completion result and the literal marker {completion_marker}, immediately followed by the CompleteWorkItem tool call for exactly WorkItem {work_item_id} in that same response. The completion text must precede CompleteWorkItem; calling CompleteWorkItem alone and reporting the marker in a later response is a contract failure. Do not place the completion text before UpdateWorkItem, do not put another tool between the completion text and CompleteWorkItem, and do not use transitional text such as \"Now complete it\". Do not create another WorkItem and do not modify project files."
+        }
+      ]
+    }
+  ]
+}

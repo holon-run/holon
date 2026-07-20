@@ -10,9 +10,88 @@ permissions:
   contents: read
 
 jobs:
+  e2e-gate:
+    name: Verify Release E2E gate
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      candidate_image: ${{ steps.gate.outputs.candidate_image }}
+      e2e_run_id: ${{ steps.gate.outputs.e2e_run_id }}
+    steps:
+      - name: Verify matching Release E2E attestation
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          sha="${GITHUB_SHA}"
+          artifact_name="release-e2e-attestation-${sha}-${tag}"
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          mkdir -p release-e2e-gate
+
+          runs_json="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api}/actions/workflows/release-e2e.yml/runs?event=workflow_dispatch&status=success&per_page=100")"
+
+          artifact_url=""
+          e2e_run_id=""
+          for run_id in $(jq -r --arg sha "${sha}" '.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success") | .id' <<<"${runs_json}"); do
+            artifacts_json="$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${api}/actions/runs/${run_id}/artifacts?per_page=100")"
+            artifact_url="$(jq -r --arg name "${artifact_name}" '.artifacts[] | select(.name == $name and .expired == false) | .archive_download_url' <<<"${artifacts_json}" | head -n1)"
+            if [ -n "${artifact_url}" ]; then
+              e2e_run_id="${run_id}"
+              break
+            fi
+          done
+
+          if [ -z "${artifact_url}" ]; then
+            echo "No successful Release E2E attestation artifact named ${artifact_name} was found for ${sha}." >&2
+            exit 1
+          fi
+
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -o release-e2e-gate/attestation.zip \
+            "${artifact_url}"
+          unzip -p release-e2e-gate/attestation.zip release-e2e-attestation.json \
+            > release-e2e-gate/release-e2e-attestation.json
+
+          jq -e \
+            --arg tag "${tag}" \
+            --arg sha "${sha}" \
+            --arg run_id "${e2e_run_id}" \
+            '.schema_version == 1
+             and .release_tag == $tag
+             and .git_sha == $sha
+             and (.workflow_run_id | tostring) == $run_id
+             and .status == "pass"
+             and (.image.ref | contains("@sha256:"))
+             and (.model_route | length > 0)' \
+            release-e2e-gate/release-e2e-attestation.json >/dev/null
+
+          candidate_image="$(jq -r '.image.ref' release-e2e-gate/release-e2e-attestation.json)"
+          echo "candidate_image=${candidate_image}" >> "$GITHUB_OUTPUT"
+          echo "e2e_run_id=${e2e_run_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified release E2E attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-e2e-attestation
+          path: release-e2e-gate/release-e2e-attestation.json
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
+    needs: e2e-gate
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +144,9 @@ jobs:
   release:
     name: Publish GitHub release
     runs-on: ubuntu-latest
-    needs: build
+    needs:
+      - build
+      - e2e-gate
     permissions:
       contents: write
     steps:
@@ -194,13 +275,13 @@ jobs:
   container:
     name: Publish container image
     runs-on: ubuntu-latest
-    needs: release
+    needs:
+      - release
+      - e2e-gate
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -211,22 +292,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image metadata
-        id: metadata
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-
-      - name: Build and publish image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=holon-docker
-          cache-to: type=gha,mode=max,scope=holon-docker
+      - name: Promote verified candidate image
+        env:
+          SOURCE_IMAGE: ${{ needs.e2e-gate.outputs.candidate_image }}
+        run: |
+          set -euo pipefail
+          repository="$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          version="${GITHUB_REF_NAME#v}"
+          docker buildx imagetools create \
+            --tag "${repository}:${version}" \
+            --tag "${repository}:latest" \
+            "${SOURCE_IMAGE}"
