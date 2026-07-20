@@ -1,0 +1,15 @@
+.git
+.github
+.holon
+.benchmark-results
+.claude
+.playwright-mcp
+build
+coverage
+dist
+e2e-manual/**/artifacts
+holon-output
+holon-output-*
+node_modules
+target
+web-gui/app/dist

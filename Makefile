@@ -1,8 +1,9 @@
-.PHONY: help web web-ci transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-live-acceptance fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
 CONCURRENT_REPEATS ?= 3
+DOCKER_IMAGE ?= holon:dev
 CONCURRENT_LIFECYCLE_TESTS := \
 	runtime_tasks \
 	runtime_waiting_and_reactivation \
@@ -142,6 +143,15 @@ test-live-runtime: ## Run end-to-end runtime and workspace-tool live tests
 		'Test binaries: live_prompt_continuity, live_workspace_tools'
 	cargo test --test live_prompt_continuity -- --ignored --nocapture
 	cargo test --test live_workspace_tools -- --ignored --nocapture
+
+docker-build: ## Build the local Holon runtime image
+	docker build --tag "$(DOCKER_IMAGE)" .
+
+docker-smoke: docker-build ## Start the image and verify the real service readiness boundary
+	scripts/docker-smoke.sh "$(DOCKER_IMAGE)"
+
+docker-live-acceptance: docker-build ## Run manual Docker acceptance with a real LLM (requires HOLON_LIVE_MODEL and credentials)
+	python3 scripts/docker-live-acceptance.py --image "$(DOCKER_IMAGE)" --skip-build
 
 fmt:
 	cargo fmt

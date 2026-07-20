@@ -5,8 +5,10 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/ci.yml"
+      - ".dockerignore"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "Dockerfile"
       - "src/**"
       - "tests/**"
       - "agent_templates/**"
@@ -16,12 +18,15 @@ on:
       - "web-gui/**"
       - "Makefile"
       - "build.rs"
+      - "scripts/docker-smoke.sh"
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/ci.yml"
+      - ".dockerignore"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "Dockerfile"
       - "src/**"
       - "tests/**"
       - "agent_templates/**"
@@ -36,6 +41,28 @@ permissions:
   contents: read
 
 jobs:
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: holon:ci
+          cache-from: type=gha,scope=holon-docker
+          cache-to: type=gha,mode=max,scope=holon-docker
+
+      - name: Smoke test image
+        run: scripts/docker-smoke.sh holon:ci
+
   rust:
     name: Rust
     runs-on: ubuntu-latest

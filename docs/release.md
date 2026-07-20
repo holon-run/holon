@@ -21,6 +21,18 @@ The release workflow builds and uploads:
 - `holon-darwin-arm64.tar.gz`
 - `checksums.txt`
 
+After the GitHub release is published successfully, the same tag also builds
+and publishes the Linux amd64 container image:
+
+- `ghcr.io/holon-run/holon:<version>`
+- `ghcr.io/holon-run/holon:latest`
+
+The image runs `holon serve --listen 0.0.0.0:7878` in the foreground. A
+non-loopback listener requires `HOLON_CONTROL_TOKEN`, so container deployments
+must provide one. The service also validates its configured model provider at
+startup, so deployments must provide `HOLON_MODEL` and the corresponding
+provider credentials.
+
 The workflow also generates `Formula/holon.rb`. If `HOMEBREW_TAP_TOKEN` is
 configured, it pushes the formula to `holon-run/homebrew-tap`; otherwise the
 formula is available as a workflow artifact.
@@ -35,6 +47,13 @@ Before pushing the tag, verify:
   release-prep PR as the PR reference
 - supported binary assets are Linux amd64, macOS amd64, and macOS arm64
 - `checksums.txt` will be included with the release assets
+- `make docker-smoke` passes against the production Dockerfile
+- for workspace, WorkItem, scheduling, persistence, or container-runtime
+  changes, the manual real-LLM Docker cases in
+  `docs/testing/docker-acceptance.md` have been run with
+  `make docker-live-acceptance`, or the release notes explicitly record why
+  they were skipped
+- the GHCR image is currently declared as Linux amd64 only
 - `Formula/holon.rb` will be generated, and either pushed to
   `holon-run/homebrew-tap` or retained as a workflow artifact when
   `HOMEBREW_TAP_TOKEN` is not configured

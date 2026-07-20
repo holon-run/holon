@@ -77,6 +77,35 @@ arm64 from [GitHub Releases](https://github.com/holon-run/holon/releases/latest)
 
 The examples below assume `holon` is installed on `PATH`.
 
+### Docker
+
+Release images are published to GitHub Container Registry. The container runs
+`holon serve` in the foreground and requires a control token because it listens
+on a non-loopback address:
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:7878:7878 \
+  -e HOLON_CONTROL_TOKEN='replace-with-a-long-random-token' \
+  -e HOLON_MODEL='openai/gpt-5.4' \
+  -e OPENAI_API_KEY \
+  -v holon-home:/var/lib/holon \
+  ghcr.io/holon-run/holon:latest
+```
+
+Replace the model and credential environment variable when using another
+provider. Holon validates that the configured model provider is available
+before the service starts.
+
+The base image includes Git and common shell/network utilities. Mount a
+writable workspace at `/workspace`, or derive a project-specific image when
+the agent needs additional development toolchains. The published image is
+currently Linux amd64.
+
+For release-level container smoke and optional real-LLM workspace/WorkItem
+acceptance cases, see
+[Docker release acceptance](docs/testing/docker-acceptance.md).
+
 ## Provider setup
 
 Holon needs a model provider before it can run agents. The recommended path is:
