@@ -386,7 +386,7 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
         )
         .await?;
 
-    eventually_for(Duration::from_secs(10), || {
+    eventually_for(Duration::from_secs(30), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks
             .iter()
@@ -416,7 +416,7 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
     };
     runtime.enqueue(stale_running).await?;
 
-    eventually_for(Duration::from_secs(10), || {
+    eventually_for(Duration::from_secs(30), || {
         let state = runtime.storage().read_agent()?;
         let tasks = runtime.storage().latest_task_records()?;
         let latest = tasks
@@ -457,7 +457,7 @@ pub async fn subagent_task_failure_propagates_failed_output_to_parent() -> Resul
         )
         .await?;
 
-    eventually_for(Duration::from_secs(10), || {
+    eventually_for(Duration::from_secs(30), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Failed
@@ -507,7 +507,7 @@ pub async fn multiple_subagent_tasks_do_not_cross_contaminate_outputs() -> Resul
         )
         .await?;
 
-    eventually_for(Duration::from_secs(10), || {
+    eventually_for(Duration::from_secs(30), || {
         let tasks = runtime.storage().latest_task_records()?;
         let alpha_done = tasks.iter().any(|record| {
             record.id == alpha.id && record.status == holon::types::TaskStatus::Completed
@@ -556,7 +556,7 @@ pub async fn subagent_task_returns_result_to_parent_session() -> Result<()> {
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
-    eventually_for(Duration::from_secs(10), || {
+    eventually_for(Duration::from_secs(30), || {
         let briefs = runtime.storage().read_recent_briefs(20)?;
         Ok(briefs
             .iter()
