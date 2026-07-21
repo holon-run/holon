@@ -73,6 +73,15 @@ static PROJECTION_STATE_WORKSPACE: MetricAccumulator =
 static PROJECTION_STATE_SERIALIZATION: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.serialization");
 static PROJECTION_AGENTS_LIST: MetricAccumulator = MetricAccumulator::new("projection.agents_list");
+static PROJECTION_GATE_LEADERS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_JOINED_WAITERS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_REJECTED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_FAILED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_CANCELLED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_MAX_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PerformanceDiagnosticsSnapshot {
@@ -80,10 +89,24 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub process_uptime_ms: u64,
     pub http: Vec<MetricSnapshot>,
     pub projections: Vec<MetricSnapshot>,
+    pub projection_gate: ProjectionGateDiagnosticsSnapshot,
     pub db: Vec<MetricSnapshot>,
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectionGateDiagnosticsSnapshot {
+    pub leaders: u64,
+    pub joined_waiters: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub rejected: u64,
+    pub failed: u64,
+    pub cancelled: u64,
+    pub active_permits: u64,
+    pub max_active_permits: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -308,6 +331,58 @@ pub fn record_projection_agents_list(elapsed: Duration) {
     PROJECTION_AGENTS_LIST.record(elapsed, None);
 }
 
+pub fn record_projection_gate_cache_hit() {
+    process_started_at();
+    PROJECTION_GATE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_cache_miss() {
+    process_started_at();
+    PROJECTION_GATE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_joined_waiter() {
+    process_started_at();
+    PROJECTION_GATE_JOINED_WAITERS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_rejected() {
+    process_started_at();
+    PROJECTION_GATE_REJECTED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_failed() {
+    process_started_at();
+    PROJECTION_GATE_FAILED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_cancelled() {
+    process_started_at();
+    PROJECTION_GATE_CANCELLED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_leader_started() {
+    process_started_at();
+    PROJECTION_GATE_LEADERS.fetch_add(1, Ordering::Relaxed);
+    let active = PROJECTION_GATE_ACTIVE_PERMITS.fetch_add(1, Ordering::Relaxed) + 1;
+    update_max(&PROJECTION_GATE_MAX_ACTIVE_PERMITS, active);
+}
+
+pub fn record_projection_gate_leader_finished() {
+    let mut current = PROJECTION_GATE_ACTIVE_PERMITS.load(Ordering::Relaxed);
+    while current > 0 {
+        match PROJECTION_GATE_ACTIVE_PERMITS.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
+    }
+}
+
 pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
     let started_at = process_started_at();
     PerformanceDiagnosticsSnapshot {
@@ -337,6 +412,17 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROJECTION_STATE_WORKSPACE.snapshot(false),
             PROJECTION_STATE_SERIALIZATION.snapshot(false),
         ],
+        projection_gate: ProjectionGateDiagnosticsSnapshot {
+            leaders: PROJECTION_GATE_LEADERS.load(Ordering::Relaxed),
+            joined_waiters: PROJECTION_GATE_JOINED_WAITERS.load(Ordering::Relaxed),
+            cache_hits: PROJECTION_GATE_CACHE_HITS.load(Ordering::Relaxed),
+            cache_misses: PROJECTION_GATE_CACHE_MISSES.load(Ordering::Relaxed),
+            rejected: PROJECTION_GATE_REJECTED.load(Ordering::Relaxed),
+            failed: PROJECTION_GATE_FAILED.load(Ordering::Relaxed),
+            cancelled: PROJECTION_GATE_CANCELLED.load(Ordering::Relaxed),
+            active_permits: PROJECTION_GATE_ACTIVE_PERMITS.load(Ordering::Relaxed),
+            max_active_permits: PROJECTION_GATE_MAX_ACTIVE_PERMITS.load(Ordering::Relaxed),
+        },
         db: vec![DB_CONNECTION_OPEN.snapshot(false)],
         scheduler: vec![
             SCHEDULER_POLL_ALL.snapshot(false),
@@ -358,6 +444,16 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROVIDER_ROUND_TOTAL.snapshot(false),
             PROVIDER_RETRY.snapshot(false),
         ],
+    }
+}
+
+fn update_max(target: &AtomicU64, value: u64) {
+    let mut current = target.load(Ordering::Relaxed);
+    while value > current {
+        match target.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
     }
 }
 
@@ -457,6 +553,14 @@ mod tests {
         record_projection_state_workspace(Duration::from_millis(1));
         record_projection_state_serialization(Duration::from_millis(1));
         record_projection_agents_list(Duration::from_millis(10));
+        record_projection_gate_cache_hit();
+        record_projection_gate_cache_miss();
+        record_projection_gate_joined_waiter();
+        record_projection_gate_rejected();
+        record_projection_gate_failed();
+        record_projection_gate_cancelled();
+        record_projection_gate_leader_started();
+        record_projection_gate_leader_finished();
 
         let snapshot = performance_snapshot();
 
@@ -492,6 +596,15 @@ mod tests {
             .provider
             .iter()
             .any(|metric| metric.name == "provider.retry" && metric.count >= 1));
+        assert!(snapshot.projection_gate.leaders >= 1);
+        assert!(snapshot.projection_gate.joined_waiters >= 1);
+        assert!(snapshot.projection_gate.cache_hits >= 1);
+        assert!(snapshot.projection_gate.cache_misses >= 1);
+        assert!(snapshot.projection_gate.rejected >= 1);
+        assert!(snapshot.projection_gate.failed >= 1);
+        assert!(snapshot.projection_gate.cancelled >= 1);
+        assert_eq!(snapshot.projection_gate.active_permits, 0);
+        assert!(snapshot.projection_gate.max_active_permits >= 1);
         for name in [
             "projection.agents_list",
             "projection.agent_state.agent",

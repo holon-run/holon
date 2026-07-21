@@ -106,3 +106,4 @@ Current decision notes:
 - [092 Venice Model Catalog](./092-venice-model-catalog.md)
 - [093 Image Generation Route Calibration](./093-image-generation-route-calibration.md)
 - [094 OpenAI Codex Reasoning Effort](./094-openai-codex-reasoning-effort.md)
+- [096 Bounded HTTP Projection Gate](./096-bounded-http-projection-gate.md)

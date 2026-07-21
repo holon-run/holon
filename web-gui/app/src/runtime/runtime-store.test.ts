@@ -736,6 +736,65 @@ describe("runtime client generation", () => {
   });
 });
 
+describe("projection saturation refresh handling", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the current roster when a best-effort bootstrap refresh is rejected", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+
+    let saturated = false;
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/agents/list")) {
+        return Promise.resolve(
+          saturated
+            ? new Response(
+                JSON.stringify({
+                  ok: false,
+                  error: "projection capacity is busy; retry later",
+                  code: "projection_busy",
+                  retryable: true,
+                }),
+                {
+                  status: 429,
+                  headers: {
+                    "content-type": "application/json",
+                    "retry-after": "1",
+                  },
+                },
+              )
+            : jsonResponse([{ id: "agent-a", lifecycle: "asleep" }]),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await Promise.resolve();
+    const currentRoster = useRuntimeStore.getState().bootstrap.agents;
+
+    saturated = true;
+    await useRuntimeStore.getState().refreshBootstrap({ syncEvents: false });
+
+    expect(useRuntimeStore.getState()).toMatchObject({
+      bootstrap: { agents: currentRoster },
+      bootstrapLoading: false,
+      bootstrapError: undefined,
+    });
+  });
+});
+
 describe("bounded resume refresh scheduling", () => {
   it("uses detail for the selected agent instead of scheduling duplicate state and detail refreshes", () => {
     expect(buildResumeRefreshes(["agent-a", "agent-b", "agent-c"], "agent-b")).toEqual([

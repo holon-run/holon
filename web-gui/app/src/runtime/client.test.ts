@@ -203,6 +203,29 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent-one/state"]);
   });
 
+  it("surfaces projection saturation instead of replacing agent state with a disconnected fixture", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        Response.json(
+          {
+            ok: false,
+            error: "projection capacity is busy; retry later",
+            code: "projection_busy",
+            retryable: true,
+          },
+          { status: 429, headers: { "retry-after": "1" } },
+        )) as typeof fetch,
+    });
+
+    await expect(client.getAgentState("agent-one")).rejects.toMatchObject({
+      name: "RuntimeHttpError",
+      status: 429,
+      code: "projection_busy",
+    });
+  });
+
   it("loads agent detail without fetching the full roster", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({

@@ -639,6 +639,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       try {
         return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders, connectionMode, hasToken);
       } catch (error) {
+        if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken, isAuthRequiredError(error));
       }
@@ -651,6 +652,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       try {
         return await fetchAgentDetail(baseUrl, fetchImpl, requestHeaders, agentId, displayLevel);
       } catch (error) {
+        if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentDetail(agentId, message);
       }
@@ -662,6 +664,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       try {
         return await fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
       } catch (error) {
+        if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentSummary(agentId, message);
       }
@@ -2198,6 +2201,10 @@ async function readErrorEnvelope(response: Response): Promise<{ error?: string; 
 
 function isAuthRequiredError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.code === "auth_required";
+}
+
+export function isProjectionBusyError(error: unknown): boolean {
+  return error instanceof RuntimeHttpError && error.status === 429 && error.code === "projection_busy";
 }
 
 function buildDisconnectedBootstrap(

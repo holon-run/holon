@@ -177,14 +177,27 @@ pub async fn handshake(
 pub async fn list_agent_entries(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> AxumResponse {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let agents = state
-        .host
-        .list_agent_entries()
-        .await
-        .map_err(error_response)?;
-    crate::diagnostics::record_projection_agents_list(started_at.elapsed());
-    traced_json("/agents/list", started_at, agents)
+    if let Err(error) = authorize_remote_access(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    let result = state
+        .projection_gate
+        .run(ProjectionKey::AgentsList, || async {
+            let projection_started = std::time::Instant::now();
+            let agents = state
+                .host
+                .list_agent_entries()
+                .await
+                .map_err(error_response)
+                .map_err(ProjectionFailure::from)?;
+            crate::diagnostics::record_projection_agents_list(projection_started.elapsed());
+            serialize_json("/agents/list", &agents).map_err(ProjectionFailure::from)
+        })
+        .await;
+    match result {
+        Ok(bytes) => traced_json_bytes("/agents/list", started_at, bytes),
+        Err(error) => projection_gate_error_response(error),
+    }
 }

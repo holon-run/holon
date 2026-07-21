@@ -97,6 +97,7 @@ mod control;
 mod events;
 mod ingress;
 mod jobs;
+mod projection_gate;
 mod skills;
 mod state;
 mod tasks;
@@ -106,6 +107,9 @@ mod web;
 mod workspace_files;
 
 // Re-export shared helpers used across submodules.
+pub(crate) use projection_gate::{
+    ProjectionFailure, ProjectionGate, ProjectionGateError, ProjectionKey,
+};
 pub(crate) use state::{
     control_admission_context, current_boundary_metadata, enqueue_internal,
     public_admission_context, EnqueueIngress,
@@ -181,6 +185,7 @@ pub struct AppState {
     pub jobs: JobRegistry,
     pub skill_library_write_jobs: Arc<tokio::sync::Semaphore>,
     pub template_remote_source_sync_jobs: Arc<tokio::sync::Semaphore>,
+    pub(crate) projection_gate: Arc<ProjectionGate>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -225,6 +230,11 @@ impl HttpErrorEnvelope {
 
     fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    fn retryable(mut self, retryable: bool) -> Self {
+        self.retryable = Some(retryable);
         self
     }
 
@@ -275,6 +285,7 @@ impl AppState {
         let jobs = JobRegistry::default();
         let skill_library_write_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
+        let projection_gate = Arc::new(ProjectionGate::default());
         Self {
             host,
             require_control_token,
@@ -285,6 +296,7 @@ impl AppState {
             jobs,
             skill_library_write_jobs,
             template_remote_source_sync_jobs,
+            projection_gate,
         }
     }
 
@@ -301,6 +313,7 @@ impl AppState {
         let jobs = JobRegistry::default();
         let skill_library_write_jobs = Arc::new(tokio::sync::Semaphore::new(1));
         let template_remote_source_sync_jobs = Arc::new(tokio::sync::Semaphore::new(1));
+        let projection_gate = Arc::new(ProjectionGate::default());
         Self {
             host,
             require_control_token: false,
@@ -311,6 +324,7 @@ impl AppState {
             jobs,
             skill_library_write_jobs,
             template_remote_source_sync_jobs,
+            projection_gate,
         }
     }
 
@@ -760,11 +774,27 @@ pub(crate) fn traced_json<T: Serialize>(
     started_at: std::time::Instant,
     value: T,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let bytes = serialize_json(route, &value)?;
+    Ok(traced_json_bytes(route, started_at, bytes))
+}
+
+pub(crate) fn serialize_json<T: Serialize>(
+    route: &'static str,
+    value: &T,
+) -> Result<Bytes, (StatusCode, Json<Value>)> {
     let serialization_started = std::time::Instant::now();
-    let bytes = serde_json::to_vec(&value).map_err(|err| error_response(err.into()))?;
+    let bytes = serde_json::to_vec(value).map_err(|err| error_response(err.into()))?;
     if route == "/agents/{agent_id}/state" {
         diagnostics::record_projection_state_serialization(serialization_started.elapsed());
     }
+    Ok(Bytes::from(bytes))
+}
+
+pub(crate) fn traced_json_bytes(
+    route: &'static str,
+    started_at: std::time::Instant,
+    bytes: Bytes,
+) -> AxumResponse {
     let build_elapsed = started_at.elapsed();
     diagnostics::record_http_json_response(route, build_elapsed, bytes.len());
     if build_elapsed >= HTTP_SLOW_RESPONSE_WARN_AFTER
@@ -777,7 +807,24 @@ pub(crate) fn traced_json<T: Serialize>(
             "large or slow HTTP JSON payload built"
         );
     }
-    Ok(([(CONTENT_TYPE, "application/json")], bytes).into_response())
+    ([(CONTENT_TYPE, "application/json")], bytes).into_response()
+}
+
+pub(crate) fn projection_gate_error_response(error: ProjectionGateError) -> AxumResponse {
+    match error {
+        ProjectionGateError::Build(failure) => failure.into_http_error().into_response(),
+        ProjectionGateError::Rejected => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, "1")],
+            Json(
+                HttpErrorEnvelope::new("projection capacity is busy; retry later")
+                    .code("projection_busy")
+                    .hint("keep the current projection and retry on the next scheduled refresh")
+                    .retryable(true),
+            ),
+        )
+            .into_response(),
+    }
 }
 pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result<()> {
     if !state.require_control_token {
@@ -1158,7 +1205,10 @@ pub async fn serve_unix(
 
 #[cfg(test)]
 mod tests {
-    use super::{error_response, router, AppState};
+    use super::{
+        error_response, projection_gate_error_response, router, AppState, ProjectionGate,
+        ProjectionGateError,
+    };
     use crate::{
         config::AppConfig,
         host::RuntimeHost,
@@ -1169,7 +1219,7 @@ mod tests {
         body::{to_bytes, Body},
         http::{header, Request, StatusCode},
     };
-    use std::{fs, sync::Arc};
+    use std::{fs, sync::Arc, time::Duration};
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -1208,6 +1258,52 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(&body[..], b"<html>holon ui</html>");
+    }
+
+    #[tokio::test]
+    async fn projection_capacity_response_is_retryable_with_retry_after() {
+        let response = projection_gate_error_response(ProjectionGateError::Rejected);
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["code"], "projection_busy");
+        assert_eq!(body["retryable"], true);
+    }
+
+    #[tokio::test]
+    async fn projection_routes_authorize_before_checking_capacity() {
+        let (_home, host) = test_host();
+        let mut state = AppState::for_tcp(host);
+        state.require_control_token = true;
+        state.projection_gate = Arc::new(ProjectionGate::new(0, Duration::from_millis(250)));
+        let app = router(state);
+
+        for uri in ["/api/agents/list", "/api/agents/default/state"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
+            assert!(
+                !response.headers().contains_key(header::RETRY_AFTER),
+                "{uri}"
+            );
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["code"], "auth_required", "{uri}");
+        }
     }
 
     #[test]

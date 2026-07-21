@@ -2662,6 +2662,67 @@
             "minimum": 0,
             "type": "integer"
           },
+          "projection_gate": {
+            "properties": {
+              "active_permits": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cache_hits": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cache_misses": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cancelled": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "failed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "joined_waiters": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "leaders": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_active_permits": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rejected": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "leaders",
+              "joined_waiters",
+              "cache_hits",
+              "cache_misses",
+              "rejected",
+              "failed",
+              "cancelled",
+              "active_permits",
+              "max_active_permits"
+            ],
+            "type": "object"
+          },
           "projections": {
             "items": {
               "properties": {
@@ -2876,6 +2937,7 @@
           "process_uptime_ms",
           "http",
           "projections",
+          "projection_gate",
           "db",
           "scheduler",
           "turn",

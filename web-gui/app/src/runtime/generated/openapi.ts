@@ -2660,6 +2660,26 @@ export interface components {
             }[];
             /** Format: uint64 */
             process_uptime_ms: number;
+            projection_gate: {
+                /** Format: uint64 */
+                active_permits: number;
+                /** Format: uint64 */
+                cache_hits: number;
+                /** Format: uint64 */
+                cache_misses: number;
+                /** Format: uint64 */
+                cancelled: number;
+                /** Format: uint64 */
+                failed: number;
+                /** Format: uint64 */
+                joined_waiters: number;
+                /** Format: uint64 */
+                leaders: number;
+                /** Format: uint64 */
+                max_active_permits: number;
+                /** Format: uint64 */
+                rejected: number;
+            };
             projections: {
                 /** Format: double */
                 avg_bytes?: number | null;
