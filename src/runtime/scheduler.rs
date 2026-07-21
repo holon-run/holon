@@ -10,9 +10,10 @@ use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
     ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
-    Priority, TaskRecord, TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionKind,
-    WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemSchedulingState,
-    WorkItemState, WorkReactivationMode, WorkReactivationSignal,
+    Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus, TimerStatus,
+    TurnTerminalKind, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
+    WorkItemRecord, WorkItemSchedulingState, WorkItemState, WorkReactivationMode,
+    WorkReactivationSignal,
 };
 use crate::work_item_scheduling::WorkItemSchedulingProjection;
 use chrono::{DateTime, Utc};
@@ -21,6 +22,7 @@ use serde::Serialize;
 const REDUCER_ONLY_CANDIDATES_SCENARIO: &str = "reducer_only_candidates";
 const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str = "work_item_autonomous_continuation";
 const WAIT_RESUME_SCENARIO: &str = "wait_resume";
+const SETTLEMENT_SCENARIO: &str = "settlement";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -593,11 +595,31 @@ pub(crate) struct RestrictedWaitResumeCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct LegacySettlementObservation {
+    schema_version: u32,
+    boundary: &'static str,
+    input_identity: String,
+    settlement_status: &'static str,
+    queue_len: usize,
+    turn_in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RestrictedSettlementCandidate {
+    schema_version: u32,
+    action: &'static str,
+    queue_disposition: &'static str,
+    settlement_disposition: &'static str,
+    resulting_posture: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum LegacySchedulerObservation {
     MessageAdmission(LegacyMessageAdmissionObservation),
     WorkQueueTick(LegacyWorkQueueTickObservation),
     WaitResume(LegacyWaitResumeObservation),
+    Settlement(LegacySettlementObservation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -606,6 +628,7 @@ pub(crate) enum RestrictedSchedulerCandidate {
     MessageAdmission(RestrictedMessageAdmissionCandidate),
     WorkQueueTick(RestrictedWorkQueueTickCandidate),
     WaitResume(RestrictedWaitResumeCandidate),
+    Settlement(RestrictedSettlementCandidate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1107,6 +1130,58 @@ fn restricted_wait_resume_model_reentry(projection: &SchedulerProjection) -> boo
         return false;
     }
     !projection.turn_in_progress
+}
+
+pub(crate) fn shadow_comparison_for_settlement(
+    projection: &SchedulerProjection,
+    record: &QueueEntryRecord,
+) -> Option<SchedulerShadowComparison> {
+    let legacy_status = match record.status {
+        QueueEntryStatus::Processed => "complete",
+        QueueEntryStatus::Aborted => "failed",
+        QueueEntryStatus::Interrupted => "interrupted",
+        QueueEntryStatus::Interjected => "interjected",
+        QueueEntryStatus::Dropped => "dropped",
+        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued => return None,
+    };
+    let candidate_disposition = restricted_settlement_disposition(projection);
+    let input_identity = format!("message:{}", record.message_id);
+    let observation = LegacySchedulerObservation::Settlement(LegacySettlementObservation {
+        schema_version: 1,
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity: input_identity.clone(),
+        settlement_status: legacy_status,
+        queue_len: projection.queue_len,
+        turn_in_progress: projection.turn_in_progress,
+    });
+    let candidate = RestrictedSchedulerCandidate::Settlement(RestrictedSettlementCandidate {
+        schema_version: 1,
+        action: "settle",
+        queue_disposition: "settle",
+        settlement_disposition: candidate_disposition,
+        resulting_posture: "open",
+    });
+    let matched = legacy_status == candidate_disposition;
+    Some(SchedulerShadowComparison {
+        scenario_class: SETTLEMENT_SCENARIO,
+        comparison_identity: format!("settlement:{}", record.message_id),
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity,
+        legacy_observation: observation,
+        shadow_candidate: candidate,
+        matched,
+        divergence_code: (!matched).then_some("settlement_outcome_mismatch"),
+    })
+}
+
+fn restricted_settlement_disposition(projection: &SchedulerProjection) -> &'static str {
+    if matches!(projection.status, AgentStatus::Stopped) {
+        return "failed";
+    }
+    if projection.turn_in_progress {
+        return "pending";
+    }
+    "complete"
 }
 
 pub(crate) fn semantic_shadow_decision_for_message_admission(

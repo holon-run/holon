@@ -1633,6 +1633,18 @@ impl RuntimeHandle {
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
     ) -> Result<bool> {
+        let shadow_comparison = {
+            let guard = self.inner.agent.lock().await;
+            let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+                &self.inner.storage,
+                &guard.state,
+                guard.queue.len(),
+                self.now(),
+            )?;
+            scheduler::shadow_comparison_for_settlement(&projection, &record)
+                .map(scheduler_executor::scheduler_shadow_comparison_command)
+                .transpose()?
+        };
         let commit = self.inner.runtime_db.transitions().commit_queue(
             &crate::runtime_db::transitions::QueueTransitionCommand {
                 agent_id: record.agent_id.clone(),
@@ -1642,7 +1654,7 @@ impl RuntimeHandle {
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
                 audit_events,
-                scheduler_shadow_comparison: None,
+                scheduler_shadow_comparison: shadow_comparison,
                 scheduler_semantic_shadow: None,
                 notify_scheduler,
                 fault: self.take_transition_fault(),

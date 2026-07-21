@@ -1514,6 +1514,129 @@ fn wait_resume_shadow_comparison_detects_model_reentry_divergence() {
     );
 }
 
+// --- settlement shadow comparison ---
+
+fn make_settlement_record(message_id: &str, status: QueueEntryStatus) -> QueueEntryRecord {
+    let now = Utc::now();
+    QueueEntryRecord {
+        message_id: message_id.into(),
+        agent_id: "default".into(),
+        priority: Priority::Normal,
+        status,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[test]
+fn settlement_shadow_comparison_records_processed_settlement() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("processed settlement should produce comparison");
+    assert_eq!(comparison.scenario_class, "settlement");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["settlement_status"], "complete");
+    assert_eq!(observation["turn_in_progress"], false);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "settle");
+    assert_eq!(candidate["settlement_disposition"], "complete");
+    assert_eq!(candidate["resulting_posture"], "open");
+}
+
+#[test]
+fn settlement_shadow_comparison_returns_none_for_queued_entry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Queued);
+    assert!(scheduler::shadow_comparison_for_settlement(&projection, &record).is_none());
+}
+
+#[test]
+fn settlement_shadow_comparison_returns_none_for_dequeued_entry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Dequeued);
+    assert!(scheduler::shadow_comparison_for_settlement(&projection, &record).is_none());
+}
+
+#[test]
+fn settlement_shadow_comparison_detects_divergence_when_turn_in_progress() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Legacy settles as Processed but turn is still in progress
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("settlement_outcome_mismatch"),
+    );
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["settlement_status"], "complete");
+    assert_eq!(observation["turn_in_progress"], true);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["settlement_disposition"], "pending");
+}
+
+#[test]
+fn settlement_shadow_comparison_detects_divergence_when_agent_stopped() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Stopped;
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Legacy settles as Processed but agent is stopped
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("settlement_outcome_mismatch"),
+    );
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["settlement_disposition"], "failed");
+}
+
+#[test]
+fn settlement_shadow_comparison_matches_aborted_with_stopped_agent() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Stopped;
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Aborted);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("aborted settlement should produce comparison");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["settlement_status"], "failed");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["settlement_disposition"], "failed");
+}
+
 #[test]
 fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
     let dir = tempdir().unwrap();
