@@ -1915,7 +1915,8 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_phase3_scenarios_require_preflight_and_rollback_before_admission() -> Result<()> {
+    fn scheduler_authoritative_scenarios_require_matched_evidence_and_restart_safe_rollback(
+    ) -> Result<()> {
         for scenario_class in [
             "reducer_only_candidates",
             "work_item_autonomous_continuation",
@@ -1991,18 +1992,18 @@ mod tests {
             }
 
             let now = Utc::now();
-            let queue_record = QueueEntryRecord {
-                message_id: format!("message-{scenario_class}"),
+            let matched_queue_record = QueueEntryRecord {
+                message_id: format!("message-matched-{scenario_class}"),
                 agent_id: "agent-a".into(),
                 priority: crate::types::Priority::Normal,
                 status: QueueEntryStatus::Queued,
                 created_at: now,
                 updated_at: now,
             };
-            let queue_command = QueueTransitionCommand {
+            let matched_queue_command = QueueTransitionCommand {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Admit,
-                mutation: QueueMutation::Upsert(queue_record.clone()),
+                mutation: QueueMutation::Upsert(matched_queue_record.clone()),
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
@@ -2010,11 +2011,11 @@ mod tests {
                 scheduler_semantic_shadow: None,
                 scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
                     scenario_class: scenario_class.into(),
-                    comparison_identity: format!("comparison-{scenario_class}"),
-                    boundary: "phase3_test".into(),
-                    input_identity: format!("input-{scenario_class}"),
+                    comparison_identity: format!("comparison-matched-{scenario_class}"),
+                    boundary: "phase5h_cutover".into(),
+                    input_identity: format!("input-matched-{scenario_class}"),
                     legacy_observation: serde_json::json!({"decision": "legacy"}),
-                    shadow_candidate: serde_json::json!({"decision": "candidate"}),
+                    shadow_candidate: serde_json::json!({"decision": "legacy"}),
                     matched: true,
                     divergence_code: None,
                 }),
@@ -2023,17 +2024,58 @@ mod tests {
                 fault: None,
                 brief_evidence: Vec::new(),
             };
-            let error = db.transitions().commit_queue(&queue_command).unwrap_err();
+            assert!(
+                db.transitions()
+                    .commit_queue(&matched_queue_command)?
+                    .applied
+            );
+            assert_eq!(
+                db.queue_entries().latest_all()?,
+                vec![matched_queue_record.clone()]
+            );
+
+            let divergent_queue_record = QueueEntryRecord {
+                message_id: format!("message-divergent-{scenario_class}"),
+                ..matched_queue_record.clone()
+            };
+            let divergent_queue_command = QueueTransitionCommand {
+                mutation: QueueMutation::Upsert(divergent_queue_record.clone()),
+                scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
+                    scenario_class: scenario_class.into(),
+                    comparison_identity: format!("comparison-divergent-{scenario_class}"),
+                    boundary: "phase5h_cutover".into(),
+                    input_identity: format!("input-divergent-{scenario_class}"),
+                    legacy_observation: serde_json::json!({"decision": "legacy"}),
+                    shadow_candidate: serde_json::json!({"decision": "candidate"}),
+                    matched: false,
+                    divergence_code: Some("phase5h_cutover_mismatch".into()),
+                }),
+                ..matched_queue_command.clone()
+            };
+            let error = db
+                .transitions()
+                .commit_queue(&divergent_queue_command)
+                .unwrap_err();
             assert!(error
                 .to_string()
-                .contains("production authority is not wired"));
-            assert!(db.queue_entries().latest_all()?.is_empty());
+                .contains("rejected divergent canonical evidence"));
+            assert_eq!(
+                db.queue_entries().latest_all()?,
+                vec![matched_queue_record.clone()]
+            );
+            let comparison_count: i64 = db.connection()?.query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a' AND scenario_class = ?1",
+                [scenario_class],
+                |row| row.get(0),
+            )?;
+            assert_eq!(comparison_count, 1);
 
             let rolled_back = db.transitions().commit_scheduler_rollout_command(
                 &format!("{scenario_class}-hard-blocker"),
                 &RolloutCommand::ReportScenarioHardBlocker {
                     scenario_class: scenario_class.into(),
-                    blocker_code: "authoritative_admission_not_wired".into(),
+                    blocker_code: "canonical_evidence_diverged".into(),
                     expected_config_revision: 4,
                     expected_manifest_revision: 1,
                     expected_preflight_revision: 1,
@@ -2041,7 +2083,11 @@ mod tests {
                 None,
             )?;
             assert_eq!(rolled_back.result.decision, Decision::RollbackTripped);
-            assert!(db.transitions().commit_queue(&queue_command)?.applied);
+            assert!(
+                db.transitions()
+                    .commit_queue(&divergent_queue_command)?
+                    .applied
+            );
             drop(db);
 
             let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -2052,14 +2098,30 @@ mod tests {
                 snapshot.rollout.scenarios[scenario_class].mode,
                 ScenarioMode::Shadow
             );
-            assert_eq!(reopened.queue_entries().latest_all()?, vec![queue_record]);
+            assert_eq!(
+                reopened.queue_entries().latest_all()?,
+                vec![matched_queue_record, divergent_queue_record]
+            );
             let comparison_count: i64 = reopened.connection()?.query_row(
                 "SELECT COUNT(*) FROM scheduler_shadow_comparisons
                  WHERE agent_id = 'agent-a' AND scenario_class = ?1",
                 [scenario_class],
                 |row| row.get(0),
             )?;
-            assert_eq!(comparison_count, 1);
+            assert_eq!(comparison_count, 2);
+            let divergent_outcome: String = reopened.connection()?.query_row(
+                "SELECT comparison_outcome
+                 FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a'
+                   AND scenario_class = ?1
+                   AND comparison_identity = ?2",
+                [
+                    scenario_class,
+                    &format!("comparison-divergent-{scenario_class}"),
+                ],
+                |row| row.get(0),
+            )?;
+            assert_eq!(divergent_outcome, "diverged");
         }
         Ok(())
     }
