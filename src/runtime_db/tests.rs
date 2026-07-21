@@ -79,10 +79,12 @@ mod tests {
         domain::scheduler_protocol::{
             self, ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
             ActivationPriority, ActivationProvenance, ActivationSlot, ActivationTrust,
-            AgentActivation, AgentDispatchState, Decision, IssueActivationAuthorityCommand,
-            ObservationalDivergenceAllowance, PreemptionPolicy, ProtocolCommand, ProtocolMode,
-            RollbackAction, RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand,
-            RolloutManifest, RolloutPreflightState, ScenarioMode, Snapshot, WorkDemand, WorkStatus,
+            AdmitActivationCommand, AgentActivation, AgentDispatchState, Decision,
+            IssueActivationAuthorityCommand, ObservationalDivergenceAllowance, PreemptionPolicy,
+            ProtocolCommand, ProtocolMode, RollbackAction, RollbackPolicy, RollbackTrigger,
+            RolloutClassEvidence, RolloutCommand, RolloutManifest, RolloutPreflightState,
+            ScenarioMode, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
+            WaitTrigger, WorkDemand, WorkStatus,
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
@@ -1361,6 +1363,153 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(ledger_rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_wait_resume_persists_consumed_wait_and_activation_atomically() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let wait_id = "wait-a";
+        let wait_generation = 2;
+        let trigger_id = "trigger-a";
+        let trigger_generation = 1;
+        let scheduling_generation = 2;
+        let dispatch_revision = 1;
+        let activation = AgentActivation {
+            id: "activation-wait-resume".into(),
+            agent_id: agent_id.into(),
+            state: ActivationLifecycleState::Admitted,
+            cause: ActivationCause::WaitResume {
+                wait_id: wait_id.into(),
+                wait_generation,
+                trigger_id: trigger_id.into(),
+                trigger_generation,
+            },
+            binding: ActivationBinding::WaitOwner {
+                wait_id: wait_id.into(),
+                owner_work_item_id: "work-a".into(),
+            },
+            priority: ActivationPriority::Normal,
+            preemption: PreemptionPolicy::NonPreemptive,
+            source_revision: Some(1),
+            idempotency_key: "activation-wait-resume".into(),
+            provenance: ActivationProvenance {
+                origin: ActivationOrigin::System,
+                trust: ActivationTrust::RuntimeInstruction,
+                source_id: "wait-trigger".into(),
+                correlation_id: Some("correlation-wait-resume".into()),
+                causation_id: Some(trigger_id.into()),
+            },
+        };
+        let authority_id = "authority-wait-resume";
+        let authority =
+            ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
+                authority_id: authority_id.into(),
+                activation: activation.clone(),
+                expected_scheduling_generation: scheduling_generation,
+                expected_dispatch_revision: dispatch_revision,
+            });
+        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id: authority_id.into(),
+            activation,
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision: dispatch_revision,
+        });
+        let mut initial = scheduler_protocol_snapshot(scheduling_generation);
+        initial.work.get_mut("work-a").expect("work").status = WorkStatus::Waiting {
+            wait_id: wait_id.into(),
+        };
+        initial.dispatch = AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: wait_id.into(),
+                generation: wait_generation,
+            },
+        };
+        initial.dispatch_revision = dispatch_revision;
+        initial.waits.insert(
+            wait_id.into(),
+            WaitRecord {
+                current_generation: wait_generation,
+                generations: BTreeMap::from([(
+                    wait_generation,
+                    WaitGenerationRecord {
+                        owner_work_item_id: "work-a".into(),
+                        state: WaitState::Triggered,
+                        trigger: Some(WaitTrigger {
+                            trigger_id: trigger_id.into(),
+                            trigger_generation,
+                        }),
+                        consuming_activation_id: None,
+                    },
+                )]),
+            },
+        );
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+        db.transitions()
+            .commit_scheduler_protocol_command(agent_id, &authority, None)?;
+        let after_authority = db
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        let error = db
+            .transitions()
+            .commit_scheduler_protocol_command(
+                agent_id,
+                &admission,
+                Some(TransitionFaultPoint::AfterCanonicalWrites),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected runtime transition fault"),
+            "unexpected wait resume fault: {error}"
+        );
+        assert_eq!(
+            db.transitions()
+                .load_scheduler_protocol_snapshot(agent_id)?,
+            after_authority
+        );
+        let rolled_back: (String, Option<String>) = db.connection()?.query_row(
+            "SELECT lifecycle_state, consuming_activation_id
+             FROM scheduler_wait_generations
+             WHERE agent_id = ?1 AND wait_id = ?2 AND generation = ?3",
+            params![agent_id, wait_id, wait_generation],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(rolled_back, ("triggered".into(), None));
+
+        let committed = db
+            .transitions()
+            .commit_scheduler_protocol_command(agent_id, &admission, None)?;
+        assert_eq!(committed.result.decision, Decision::Admitted);
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let persisted: (String, Option<String>) = reopened.connection()?.query_row(
+            "SELECT lifecycle_state, consuming_activation_id
+             FROM scheduler_wait_generations
+             WHERE agent_id = ?1 AND wait_id = ?2 AND generation = ?3",
+            params![agent_id, wait_id, wait_generation],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(
+            persisted,
+            ("consumed".into(), Some("activation-wait-resume".into()))
+        );
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot(agent_id)?
+                .waits[wait_id]
+                .generations[&wait_generation]
+                .consuming_activation_id
+                .as_deref(),
+            Some("activation-wait-resume")
+        );
         Ok(())
     }
 

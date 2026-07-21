@@ -18,7 +18,7 @@ use crate::domain::scheduler_protocol::{
     ProtocolMode, RollbackAction, RollbackTrigger, RolloutCommand, RolloutManifest,
     RolloutPreflightRecord, RolloutPreflightState, RolloutState, ScenarioAuthority,
     ScenarioHardBlockerRecord, ScenarioMode, Snapshot, WaitGenerationRecord, WaitIdentity,
-    WaitRecord, WorkDemand, WorkStatus,
+    WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use crate::domain::scheduler_semantic::{
     resolve_semantic_proposal, validate_semantic_decision_input, validate_semantic_provider_config,
@@ -1274,6 +1274,11 @@ fn persist_agent_snapshot_tx(
                 ),
                 None => (None, None),
             };
+            let staged_state = if record.state == WaitState::Consumed {
+                enum_token(&WaitState::Triggered)?
+            } else {
+                enum_token(&record.state)?
+            };
             tx.execute(
                 "INSERT INTO scheduler_wait_generations (
                    agent_id,
@@ -1301,7 +1306,7 @@ fn persist_agent_snapshot_tx(
                     wait_id,
                     to_i64(*generation, "wait generation")?,
                     &record.owner_work_item_id,
-                    enum_token(&record.state)?,
+                    staged_state,
                     trigger_id,
                     trigger_generation,
                     serde_json::to_string(record)?,
@@ -1432,12 +1437,15 @@ fn persist_agent_snapshot_tx(
         for (generation, record) in &wait.generations {
             tx.execute(
                 "UPDATE scheduler_wait_generations
-                 SET consuming_activation_id = ?4, payload_json = ?5
+                 SET lifecycle_state = ?4,
+                     consuming_activation_id = ?5,
+                     payload_json = ?6
                  WHERE agent_id = ?1 AND wait_id = ?2 AND generation = ?3",
                 params![
                     agent_id,
                     wait_id,
                     to_i64(*generation, "wait generation")?,
+                    enum_token(&record.state)?,
                     record.consuming_activation_id.as_deref(),
                     serde_json::to_string(record)?,
                 ],
