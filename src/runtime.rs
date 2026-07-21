@@ -28,6 +28,7 @@ pub(crate) mod workspace_control;
 mod worktree;
 
 pub use first_run_intro::maybe_enqueue_first_run_intro;
+pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub use tasks::{
     PickedWorkItem, WorkItemContinuationSummary, WorkItemFocusTransition,
     WorkItemFocusTransitionWarning,

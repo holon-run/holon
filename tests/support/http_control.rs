@@ -20,7 +20,7 @@ use holon::{
     provider::{AgentProvider, StubProvider},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
+        AdmissionContext, AgentState, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority, TodoItem,
         TodoItemState, WorkItemState,
@@ -341,6 +341,38 @@ pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
     assert_eq!(returned.id, brief.id);
     assert_eq!(returned.agent_id, "default");
     assert_eq!(returned.text, brief.text);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let agent_id = host.config().default_agent_id.clone();
+    let agent_state_path = host
+        .config()
+        .data_dir
+        .join("agents")
+        .join(&agent_id)
+        .join(".holon/state/agent.json");
+    let mut state = AgentState::new(&agent_id);
+    state.status = AgentStatus::Asleep;
+    host.runtime_db().agent_states().upsert(&state)?;
+
+    assert!(!agent_state_path.exists());
+
+    let response = reqwest::Client::new()
+        .get(format!("{base}/api/agents/{agent_id}/state"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+
+    assert_eq!(payload["agent"]["agent"]["status"], "asleep");
+    assert!(
+        !agent_state_path.exists(),
+        "GET /state must not initialize agent storage or start a runtime"
+    );
 
     server.abort();
     Ok(())

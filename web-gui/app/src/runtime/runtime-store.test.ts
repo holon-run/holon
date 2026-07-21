@@ -796,12 +796,14 @@ describe("projection saturation refresh handling", () => {
 });
 
 describe("bounded resume refresh scheduling", () => {
-  it("uses detail for the selected agent instead of scheduling duplicate state and detail refreshes", () => {
+  it("only schedules a detail refresh for the selected agent", () => {
     expect(buildResumeRefreshes(["agent-a", "agent-b", "agent-c"], "agent-b")).toEqual([
-      { agentId: "agent-a", detail: false },
       { agentId: "agent-b", detail: true },
-      { agentId: "agent-c", detail: false },
     ]);
+  });
+
+  it("schedules no resume refresh when the selected agent is absent from the refreshed roster", () => {
+    expect(buildResumeRefreshes(["agent-a", "agent-c"], "agent-b")).toEqual([]);
   });
 
   it("limits concurrent refreshes", async () => {

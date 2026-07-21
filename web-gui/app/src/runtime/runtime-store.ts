@@ -561,10 +561,9 @@ export function buildResumeRefreshes(
   agentIds: readonly string[],
   selectedAgentId: string,
 ): Array<{ agentId: string; detail: boolean }> {
-  return agentIds.map((agentId) => ({
-    agentId,
-    detail: agentId === selectedAgentId,
-  }));
+  return agentIds
+    .filter((agentId) => agentId === selectedAgentId)
+    .map((agentId) => ({ agentId, detail: true }));
 }
 
 function closeEventStreamsForResume(set: StoreSet): void {
