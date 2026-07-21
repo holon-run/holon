@@ -411,6 +411,7 @@ impl RuntimeHandle {
                         transcript_entries: vec![transcript],
                         audit_events: vec![audit_event],
                         scheduler_shadow_comparison: None,
+                        scheduler_semantic_shadow: None,
                         notify_scheduler: false,
                         fault: None,
                     },

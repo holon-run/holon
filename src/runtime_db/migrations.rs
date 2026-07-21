@@ -1686,6 +1686,29 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_shadow_comparisons_scenario
   );
 "#,
     },
+    Migration {
+        version: 33,
+        name: "scheduler_semantic_shadow_decisions",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_semantic_shadow_decisions (
+  agent_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  contract_revision INTEGER NOT NULL CHECK (contract_revision > 0),
+  payload_hash TEXT NOT NULL,
+  authority_mode TEXT NOT NULL CHECK (authority_mode = 'shadow'),
+  input_json TEXT NOT NULL,
+  provider_json TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  policy_json TEXT NOT NULL,
+  resolution_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_semantic_shadow_decisions_created
+  ON scheduler_semantic_shadow_decisions(agent_id, created_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

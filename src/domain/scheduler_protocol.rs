@@ -474,6 +474,29 @@ pub enum ActivationTrust {
     ExternalEvidence,
 }
 
+pub fn activation_provenance_has_valid_authority(provenance: &ActivationProvenance) -> bool {
+    match provenance.origin {
+        ActivationOrigin::Operator => provenance.trust == ActivationTrust::OperatorInstruction,
+        ActivationOrigin::Channel | ActivationOrigin::Webhook => matches!(
+            provenance.trust,
+            ActivationTrust::IntegrationSignal | ActivationTrust::ExternalEvidence
+        ),
+        ActivationOrigin::Callback => matches!(
+            provenance.trust,
+            ActivationTrust::RuntimeInstruction
+                | ActivationTrust::IntegrationSignal
+                | ActivationTrust::ExternalEvidence
+        ),
+        ActivationOrigin::Timer | ActivationOrigin::System => matches!(
+            provenance.trust,
+            ActivationTrust::RuntimeInstruction | ActivationTrust::IntegrationSignal
+        ),
+        ActivationOrigin::Task | ActivationOrigin::RuntimeRecovery => {
+            provenance.trust == ActivationTrust::RuntimeInstruction
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivationCause {

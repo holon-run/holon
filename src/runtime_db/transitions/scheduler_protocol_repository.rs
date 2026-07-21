@@ -20,6 +20,12 @@ use crate::domain::scheduler_protocol::{
     ScenarioHardBlockerRecord, ScenarioMode, Snapshot, WaitGenerationRecord, WaitIdentity,
     WaitRecord, WorkDemand, WorkStatus,
 };
+use crate::domain::scheduler_semantic::{
+    resolve_semantic_proposal, validate_semantic_decision_input, validate_semantic_provider_config,
+    SemanticDecisionInput, SemanticProposalProviderConfig, SemanticProposalResolution,
+    SemanticProposalResponse, SemanticValidationPolicy, SEMANTIC_CONTRACT_REVISION,
+    SEMANTIC_OPERATOR_BINDING_SCENARIO,
+};
 
 use super::{inject_fault, RuntimeTransitionRepository, TransitionFaultPoint};
 
@@ -39,8 +45,24 @@ pub(crate) struct SchedulerShadowComparisonCommand {
     pub divergence_code: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SchedulerSemanticShadowCommand {
+    pub input: SemanticDecisionInput,
+    pub provider: SemanticProposalProviderConfig,
+    pub response: SemanticProposalResponse,
+    pub policy: SemanticValidationPolicy,
+}
+
 pub(super) struct PreparedShadowComparison {
     command: SchedulerShadowComparisonCommand,
+    payload_hash: String,
+    authority_mode: ScenarioMode,
+    already_recorded: bool,
+}
+
+pub(super) struct PreparedSemanticShadowDecision {
+    command: SchedulerSemanticShadowCommand,
+    resolution: SemanticProposalResolution,
     payload_hash: String,
     authority_mode: ScenarioMode,
     already_recorded: bool,
@@ -197,6 +219,73 @@ pub(super) fn validate_shadow_comparison_tx(
     }))
 }
 
+pub(super) fn validate_semantic_shadow_decision_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: Option<&SchedulerSemanticShadowCommand>,
+) -> Result<Option<PreparedSemanticShadowDecision>> {
+    let Some(command) = command else {
+        return Ok(None);
+    };
+    if command.input.target_agent_id != agent_id {
+        bail!("semantic shadow decision target agent does not match queue partition");
+    }
+    validate_semantic_decision_input(&command.input)
+        .map_err(|error| anyhow!("invalid semantic decision input: {error:?}"))?;
+    validate_semantic_provider_config(&command.provider)
+        .map_err(|error| anyhow!("invalid semantic provider config: {error:?}"))?;
+    command
+        .policy
+        .validate()
+        .map_err(|error| anyhow!("invalid semantic validation policy: {error:?}"))?;
+
+    let authority_mode = effective_scenario_mode_tx(tx, SEMANTIC_OPERATOR_BINDING_SCENARIO)?;
+    match authority_mode {
+        ScenarioMode::Off => return Ok(None),
+        ScenarioMode::Authoritative => {
+            bail!(
+                "scheduler scenario {} is authoritative, but semantic production authority is not wired",
+                SEMANTIC_OPERATOR_BINDING_SCENARIO
+            );
+        }
+        ScenarioMode::Shadow => {}
+    }
+
+    let payload_hash = canonical_semantic_shadow_hash(command)?;
+    let existing_payload_hash = tx
+        .query_row(
+            "SELECT payload_hash
+             FROM scheduler_semantic_shadow_decisions
+             WHERE agent_id = ?1 AND source_id = ?2",
+            params![agent_id, command.input.provenance.source_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(existing_payload_hash) = existing_payload_hash.as_ref() {
+        if existing_payload_hash != &payload_hash {
+            bail!(
+                "semantic decision source replay conflict for agent {}, source {}",
+                agent_id,
+                command.input.provenance.source_id
+            );
+        }
+    }
+
+    let resolution = resolve_semantic_proposal(
+        &command.input,
+        command.provider.clone(),
+        command.response.clone(),
+        command.policy,
+    );
+    Ok(Some(PreparedSemanticShadowDecision {
+        command: command.clone(),
+        resolution,
+        payload_hash,
+        authority_mode,
+        already_recorded: existing_payload_hash.is_some(),
+    }))
+}
+
 pub(super) fn validate_queue_admission_authority_tx(tx: &Transaction<'_>) -> Result<()> {
     let protocol_mode = tx.query_row(
         "SELECT protocol_mode
@@ -271,6 +360,41 @@ pub(super) fn persist_shadow_comparison_tx(
     Ok(())
 }
 
+pub(super) fn persist_semantic_shadow_decision_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    prepared: Option<PreparedSemanticShadowDecision>,
+) -> Result<()> {
+    let Some(prepared) = prepared else {
+        return Ok(());
+    };
+    if prepared.already_recorded {
+        return Ok(());
+    }
+    let command = prepared.command;
+    tx.execute(
+        "INSERT INTO scheduler_semantic_shadow_decisions (
+           agent_id, source_id, contract_revision, payload_hash, authority_mode,
+           input_json, provider_json, response_json, policy_json, resolution_json,
+           created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            agent_id,
+            command.input.provenance.source_id,
+            SEMANTIC_CONTRACT_REVISION,
+            prepared.payload_hash,
+            scenario_mode_token(prepared.authority_mode),
+            serde_json::to_string(&command.input)?,
+            serde_json::to_string(&command.provider)?,
+            serde_json::to_string(&command.response)?,
+            serde_json::to_string(&command.policy)?,
+            serde_json::to_string(&prepared.resolution)?,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
 fn effective_scenario_mode_tx(tx: &Transaction<'_>, scenario_class: &str) -> Result<ScenarioMode> {
     let protocol_mode = tx.query_row(
         "SELECT protocol_mode
@@ -307,6 +431,14 @@ fn effective_scenario_mode_tx(tx: &Transaction<'_>, scenario_class: &str) -> Res
 fn canonical_shadow_comparison_hash(command: &SchedulerShadowComparisonCommand) -> Result<String> {
     let canonical = serde_json::to_vec(&serde_json::json!({
         "schema_version": SHADOW_COMPARISON_SCHEMA_VERSION,
+        "command": command,
+    }))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(canonical)))
+}
+
+fn canonical_semantic_shadow_hash(command: &SchedulerSemanticShadowCommand) -> Result<String> {
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "contract_revision": SEMANTIC_CONTRACT_REVISION,
         "command": command,
     }))?;
     Ok(format!("sha256:{:x}", Sha256::digest(canonical)))

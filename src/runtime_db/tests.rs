@@ -2007,6 +2007,7 @@ mod tests {
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
                 audit_events: Vec::new(),
+                scheduler_semantic_shadow: None,
                 scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
                     scenario_class: scenario_class.into(),
                     comparison_identity: format!("comparison-{scenario_class}"),

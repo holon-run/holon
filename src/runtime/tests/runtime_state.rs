@@ -4385,6 +4385,7 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
             audit_events: Vec::new(),
+            scheduler_semantic_shadow: None,
             scheduler_shadow_comparison: None,
             notify_scheduler: false,
             fault: None,

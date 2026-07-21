@@ -350,6 +350,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )
         .map(scheduler_shadow_comparison_command)
         .transpose()?;
+        let persisted_message = self
+            .runtime
+            .inner
+            .storage
+            .read_message_by_id(&candidate.message.id)?
+            .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
+        let semantic_shadow = scheduler::semantic_shadow_decision_for_message_admission(
+            &projection,
+            &persisted_message,
+        )?
+        .map(scheduler_semantic_shadow_command);
         scheduler::append_scheduling_diagnostics(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -412,6 +423,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         ),
                     ],
                     scheduler_shadow_comparison: shadow_comparison,
+                    scheduler_semantic_shadow: semantic_shadow,
                     notify_scheduler: false,
                     fault: self.runtime.take_transition_fault(),
                 },
@@ -466,6 +478,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 "evidence": evidence,
             }),
         ))
+    }
+}
+
+fn scheduler_semantic_shadow_command(
+    decision: scheduler::SchedulerSemanticShadowDecision,
+) -> crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerSemanticShadowCommand {
+    crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerSemanticShadowCommand {
+        input: decision.input,
+        provider: decision.provider,
+        response: decision.response,
+        policy: decision.policy,
     }
 }
 

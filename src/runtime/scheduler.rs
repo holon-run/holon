@@ -1,4 +1,10 @@
 use super::*;
+use crate::domain::scheduler_semantic::{
+    structural_semantic_proposal, SemanticProposalProviderConfig, SemanticProposalProviderIdentity,
+    SemanticProposalResponse, SemanticValidationPolicy, SemanticWaitCandidate,
+    SemanticWaitCandidateState, SemanticWorkItemCandidate, SemanticWorkItemCandidateState,
+    TrustedSemanticIngress, SEMANTIC_CONTRACT_REVISION,
+};
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{
@@ -6,8 +12,9 @@ use crate::types::{
     ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
     Priority, TaskRecord, TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionKind,
     WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemSchedulingState,
-    WorkReactivationMode, WorkReactivationSignal,
+    WorkItemState, WorkReactivationMode, WorkReactivationSignal,
 };
+use crate::work_item_scheduling::WorkItemSchedulingProjection;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -37,6 +44,8 @@ pub(crate) struct SchedulerProjection {
     pub last_turn_terminal: Option<TurnTerminalKind>,
     pub turn_in_progress: bool,
     pub runtime_error: bool,
+    semantic_waits: Vec<WaitConditionRecord>,
+    semantic_work_items: Vec<WorkItemSchedulingProjection>,
 }
 
 pub(crate) struct SchedulerAgentSnapshot {
@@ -198,6 +207,8 @@ impl SchedulerProjection {
                 &storage.read_recent_events(64)?,
                 &storage.read_recent_briefs(64)?,
             ),
+            semantic_waits: active_wait_conditions,
+            semantic_work_items: work_queue.items,
         })
     }
 
@@ -580,6 +591,14 @@ pub(crate) struct SchedulerShadowComparison {
     pub divergence_code: Option<&'static str>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SchedulerSemanticShadowDecision {
+    pub input: crate::domain::scheduler_semantic::SemanticDecisionInput,
+    pub provider: SemanticProposalProviderConfig,
+    pub response: SemanticProposalResponse,
+    pub policy: SemanticValidationPolicy,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchedulerBoundary {
     RunLoop,
@@ -956,6 +975,90 @@ pub(crate) fn shadow_comparison_for_message_admission(
         matched,
         divergence_code: (!matched).then_some("message_admission_outcome_mismatch"),
     })
+}
+
+pub(crate) fn semantic_shadow_decision_for_message_admission(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+) -> Result<Option<SchedulerSemanticShadowDecision>> {
+    if message.kind != MessageKind::OperatorPrompt {
+        return Ok(None);
+    }
+
+    let ingress = match TrustedSemanticIngress::from_persisted_message(message) {
+        Ok(ingress) => ingress,
+        Err(_) => return Ok(None),
+    };
+    let waits = projection
+        .semantic_waits
+        .iter()
+        .filter_map(|wait| {
+            let owner_work_item_id = wait.work_item_id.clone()?;
+            Some(SemanticWaitCandidate {
+                wait_id: wait.id.clone(),
+                agent_id: wait.agent_id.clone(),
+                generation: semantic_wait_generation(wait),
+                state: SemanticWaitCandidateState::Active,
+                owner_work_item_id,
+                summary: wait.waiting_for.clone(),
+                routing_keys: semantic_routing_keys(&wait.id, wait.subject_ref.as_deref()),
+            })
+        })
+        .collect();
+    let work_items = projection
+        .semantic_work_items
+        .iter()
+        .map(|work_item| SemanticWorkItemCandidate {
+            work_item_id: work_item.id.clone(),
+            agent_id: work_item.agent_id.clone(),
+            revision: work_item.revision,
+            state: if work_item.state == WorkItemState::Completed {
+                SemanticWorkItemCandidateState::Terminal
+            } else if work_item.scheduling_state == WorkItemSchedulingState::Runnable {
+                SemanticWorkItemCandidateState::Runnable
+            } else {
+                SemanticWorkItemCandidateState::Waiting
+            },
+            summary: work_item.objective.clone(),
+            routing_keys: vec![work_item.id.clone()],
+        })
+        .collect();
+    let input = ingress.decision_input(waits, work_items);
+    let proposal = structural_semantic_proposal(&input);
+
+    Ok(Some(SchedulerSemanticShadowDecision {
+        input,
+        provider: SemanticProposalProviderConfig {
+            identity: SemanticProposalProviderIdentity {
+                provider_id: "runtime-structural-shadow".into(),
+                model_ref: "builtin/structural-semantic-proposal".into(),
+                contract_revision: SEMANTIC_CONTRACT_REVISION,
+            },
+        },
+        response: SemanticProposalResponse {
+            proposal,
+            confidence_bps: crate::domain::scheduler_semantic::MAX_CONFIDENCE_BPS,
+            latency_ms: None,
+        },
+        policy: SemanticValidationPolicy::default(),
+    }))
+}
+
+fn semantic_wait_generation(wait: &WaitConditionRecord) -> u64 {
+    u64::try_from(wait.updated_at.timestamp_micros())
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn semantic_routing_keys(id: &str, subject_ref: Option<&str>) -> Vec<String> {
+    let mut keys = vec![id.to_string()];
+    if let Some(subject_ref) = subject_ref
+        .map(str::trim)
+        .filter(|subject_ref| !subject_ref.is_empty() && *subject_ref != id)
+    {
+        keys.push(subject_ref.to_string());
+    }
+    keys
 }
 
 fn restricted_message_admission_candidate(

@@ -167,6 +167,8 @@ pub(crate) struct QueueTransitionCommand {
     pub audit_events: Vec<AuditEvent>,
     pub scheduler_shadow_comparison:
         Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
+    pub scheduler_semantic_shadow:
+        Option<scheduler_protocol_repository::SchedulerSemanticShadowCommand>,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
 }
@@ -372,6 +374,12 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 command.scheduler_shadow_comparison.as_ref(),
             )?;
+            let semantic_shadow =
+                scheduler_protocol_repository::validate_semantic_shadow_decision_tx(
+                    tx,
+                    &command.agent_id,
+                    command.scheduler_semantic_shadow.as_ref(),
+                )?;
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             let applied = mutation_applied || agent_state_applied;
@@ -382,6 +390,11 @@ impl RuntimeTransitionRepository<'_> {
                 tx,
                 &command.agent_id,
                 shadow_comparison,
+            )?;
+            scheduler_protocol_repository::persist_semantic_shadow_decision_tx(
+                tx,
+                &command.agent_id,
+                semantic_shadow,
             )?;
             for message in &command.message_evidence {
                 append_message_tx(tx, message)?;
@@ -1182,6 +1195,7 @@ mod tests {
                     message_evidence: Vec::new(),
                     transcript_entries: vec![transcript],
                     audit_events: vec![AuditEvent::legacy("queue_settled", serde_json::json!({}))],
+                    scheduler_semantic_shadow: None,
                     scheduler_shadow_comparison: None,
                     notify_scheduler: true,
                     fault: Some(fault),
@@ -1263,6 +1277,7 @@ mod tests {
                         "queue_entry_claimed",
                         serde_json::json!({}),
                     )],
+                    scheduler_semantic_shadow: None,
                     scheduler_shadow_comparison: Some(
                         scheduler_protocol_repository::SchedulerShadowComparisonCommand {
                             scenario_class: "reducer_only_candidates".into(),
