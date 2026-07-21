@@ -362,6 +362,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let shadow_comparison = shadow_comparison
             .map(scheduler_shadow_comparison_command)
             .transpose()?;
+        #[cfg(test)]
+        let shadow_comparison = if self
+            .runtime
+            .inner
+            .omit_next_scheduler_claim_shadow_comparison
+            .swap(false, Ordering::SeqCst)
+        {
+            None
+        } else {
+            shadow_comparison
+        };
         let persisted_message = self
             .runtime
             .inner

@@ -360,6 +360,8 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]
+                omit_next_scheduler_claim_shadow_comparison: AtomicBool::new(false),
+                #[cfg(test)]
                 transition_warnings: StdMutex::new(Vec::new()),
             }),
         };

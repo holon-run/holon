@@ -271,6 +271,8 @@ struct RuntimeInner {
     #[cfg(test)]
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
+    omit_next_scheduler_claim_shadow_comparison: AtomicBool,
+    #[cfg(test)]
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
@@ -645,6 +647,17 @@ impl RuntimeHandle {
             "a transition fault is already armed for this runtime fixture"
         );
         faults.push_back(fault);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn omit_next_scheduler_claim_shadow_comparison(&self) {
+        assert!(
+            !self
+                .inner
+                .omit_next_scheduler_claim_shadow_comparison
+                .swap(true, Ordering::SeqCst),
+            "scheduler claim shadow comparison omission is already armed"
+        );
     }
 
     #[cfg(test)]

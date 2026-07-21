@@ -835,6 +835,150 @@ async fn authoritative_mode_allows_claims_outside_authoritative_scenario() {
 }
 
 #[tokio::test]
+async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_partial_writes() {
+    for (scenario_class, message, waiting_work_item) in [
+        (
+            "reducer_only_candidates",
+            MessageEnvelope::new(
+                "default",
+                MessageKind::WebhookEvent,
+                MessageOrigin::Webhook {
+                    source: "authoritative-claim-missing-evidence".into(),
+                    event_type: Some("ping".into()),
+                },
+                AuthorityClass::ExternalEvidence,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "claim".into(),
+                },
+            ),
+            None,
+        ),
+        (
+            "wait_resume",
+            task_result_message("task-authoritative-claim"),
+            Some("work-authoritative-claim"),
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        if let Some(work_item_id) = waiting_work_item {
+            let mut work_item =
+                WorkItemRecord::new("default", "waiting claim", WorkItemState::Open);
+            work_item.id = work_item_id.into();
+            runtime.storage().append_work_item(&work_item).unwrap();
+            runtime
+                .storage()
+                .append_wait_condition(&task_wait_condition_for_work_item(
+                    "task-authoritative-claim",
+                    work_item_id,
+                ))
+                .unwrap();
+        }
+        let connection = runtime.inner.runtime_db.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_protocol_config
+                 SET protocol_mode = 'shadow',
+                     config_revision = 1,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE config_id = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO scheduler_scenario_authorities (
+                   scenario_class, mode, rollback_target,
+                   manifest_revision, preflight_revision, updated_at
+                 ) VALUES (?1, 'shadow', 'off', NULL, NULL, CURRENT_TIMESTAMP)",
+                [scenario_class],
+            )
+            .unwrap();
+
+        let message = runtime.enqueue(message).await.unwrap();
+        let state_before_claim = runtime.agent_state().await.unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_protocol_config
+                 SET protocol_mode = 'authoritative',
+                     config_revision = 2,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE config_id = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_scenario_authorities
+                 SET mode = 'authoritative',
+                     rollback_target = 'shadow',
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE scenario_class = ?1",
+                [scenario_class],
+            )
+            .unwrap();
+        runtime.omit_next_scheduler_claim_shadow_comparison();
+
+        let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+        {
+            Ok(_) => panic!("expected missing authoritative evidence to reject {scenario_class}"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires matched canonical evidence"),
+            "unexpected {scenario_class} error: {error:#}"
+        );
+        assert_eq!(runtime.agent_state().await.unwrap(), state_before_claim);
+        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+        let entries = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message_id, message.id);
+        assert_eq!(entries[0].status, QueueEntryStatus::Queued);
+        let comparison_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(comparison_count, 0);
+        let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+        assert!(!events.iter().any(|event| {
+            event.kind == "scheduler_decision"
+                && event.data["boundary"] == "run_loop"
+                && event.data["message_id"] == message.id
+        }));
+        assert!(!events.iter().any(|event| {
+            event.kind == "queue_entry_claimed" && event.data["message_id"] == message.id
+        }));
+    }
+}
+
+#[tokio::test]
 async fn run_loop_stale_head_noops_before_authoritative_fence() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
