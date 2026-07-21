@@ -13,10 +13,7 @@ pub(super) fn should_ignore_task_update(latest: Option<TaskRecord>, task: &TaskR
         return false;
     };
 
-    if is_terminal_task_status(&latest.status)
-        && is_terminal_task_status(&task.status)
-        && latest.status != task.status
-    {
+    if is_terminal_task_status(&latest.status) && is_terminal_task_status(&task.status) {
         return true;
     }
 
@@ -235,11 +232,19 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
-        if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
+        let latest = self.inner.runtime_db.tasks().latest(&task.id)?;
+        let repeated_terminal = latest.as_ref().is_some_and(|latest| {
+            is_terminal_task_status(&latest.status)
+                && is_terminal_task_status(&task.status)
+                && latest.status == task.status
+        });
+        if should_ignore_task_update(latest, &task) && !repeated_terminal {
             return Ok(());
         }
-        self.persist_task_transition(&task, "task_result_received")
-            .await?;
+        if !repeated_terminal {
+            self.persist_task_transition(&task, "task_result_received")
+                .await?;
+        }
 
         let task_status_label = match task.status {
             TaskStatus::Completed => "completed",
@@ -435,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_same_terminal_updates_are_preserved_for_result_events() {
+    fn repeated_same_terminal_updates_are_ignored() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
@@ -444,7 +449,7 @@ mod tests {
 
         let latest = storage.latest_task_record("task-1").unwrap();
         let repeated_terminal = task("task-1", TaskStatus::Failed, true);
-        assert!(!should_ignore_task_update(latest, &repeated_terminal));
+        assert!(should_ignore_task_update(latest, &repeated_terminal));
     }
 
     #[test]
@@ -617,6 +622,38 @@ mod tests {
         }));
         let transcript = runtime.storage().read_recent_transcript(10).unwrap();
         assert!(transcript.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_terminal_task_result_skips_transition_but_processes_message() {
+        let runtime = runtime();
+        let mut recorded = task("task-1", TaskStatus::Completed, false);
+        recorded.parent_message_id = Some("original-parent".into());
+        recorded.detail = Some(json!({"source": "completion"}));
+        runtime
+            .reduce_task_status_message(recorded.clone())
+            .await
+            .unwrap();
+
+        let mut repeated = task("task-1", TaskStatus::Completed, false);
+        repeated.parent_message_id = Some("task-result-message".into());
+        repeated.detail = Some(json!({
+            "source": "message",
+            "parent_turn_id": "turn-1",
+        }));
+        runtime
+            .reduce_task_result_message(&task_result_message("task-1"), repeated, false, None)
+            .await
+            .unwrap();
+
+        let latest = runtime.task_record("task-1").await.unwrap().unwrap();
+        assert_eq!(latest.parent_message_id.as_deref(), Some("original-parent"));
+        assert_eq!(latest.detail, recorded.detail);
+        let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+        assert!(briefs.iter().any(|brief| {
+            brief.kind == crate::types::BriefKind::Result
+                && brief.text.contains("Task task-1 completed")
+        }));
     }
 
     #[tokio::test]
