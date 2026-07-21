@@ -1596,6 +1596,7 @@ impl RuntimeHandle {
                             updated_at: Utc::now(),
                         },
                     ),
+                    scheduler_authority_scenarios: Vec::new(),
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(expected_persisted_state)),
                         record: Box::new(committed_state.clone()),
@@ -1664,6 +1665,10 @@ impl RuntimeHandle {
                 agent_id: record.agent_id.clone(),
                 operation: crate::runtime_db::transitions::QueueOperation::Settle,
                 mutation: crate::runtime_db::transitions::QueueMutation::Upsert(record),
+                scheduler_authority_scenarios: vec![
+                    scheduler::SETTLEMENT_SCENARIO.into(),
+                    scheduler::DELIVERY_SCENARIO.into(),
+                ],
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),

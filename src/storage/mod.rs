@@ -4374,7 +4374,11 @@ mod tests {
                     WorkItemRecord::new("default", format!("queued-{index}"), WorkItemState::Open);
                 item.id = format!("work-{index}");
                 item.created_at = base + chrono::Duration::seconds(index);
-                item.updated_at = item.created_at;
+                item.updated_at = if index == 0 {
+                    base + chrono::Duration::hours(1)
+                } else {
+                    item.created_at
+                };
                 item
             })
             .collect::<Vec<_>>();

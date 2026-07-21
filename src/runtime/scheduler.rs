@@ -19,12 +19,13 @@ use crate::work_item_scheduling::WorkItemSchedulingProjection;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-const REDUCER_ONLY_CANDIDATES_SCENARIO: &str = "reducer_only_candidates";
-const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str = "work_item_autonomous_continuation";
-const WAIT_RESUME_SCENARIO: &str = "wait_resume";
-const SETTLEMENT_SCENARIO: &str = "settlement";
-const DELIVERY_SCENARIO: &str = "delivery";
-const INTERJECTION_SCENARIO: &str = "operator_interjection";
+pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: &str = "reducer_only_candidates";
+pub(crate) const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str =
+    "work_item_autonomous_continuation";
+pub(crate) const WAIT_RESUME_SCENARIO: &str = "wait_resume";
+pub(crate) const SETTLEMENT_SCENARIO: &str = "settlement";
+pub(crate) const DELIVERY_SCENARIO: &str = "delivery";
+pub(crate) const INTERJECTION_SCENARIO: &str = "operator_interjection";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {

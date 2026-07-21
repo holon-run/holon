@@ -4406,6 +4406,7 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             }),
+            scheduler_authority_scenarios: Vec::new(),
             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                 expected: Some(Box::new(expected)),
                 record: Box::new(committed),

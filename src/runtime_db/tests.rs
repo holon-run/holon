@@ -2004,6 +2004,7 @@ mod tests {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Admit,
                 mutation: QueueMutation::Upsert(matched_queue_record.clone()),
+                scheduler_authority_scenarios: vec![scenario_class.into()],
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
@@ -2029,6 +2030,27 @@ mod tests {
                     .commit_queue(&matched_queue_command)?
                     .applied
             );
+            assert_eq!(
+                db.queue_entries().latest_all()?,
+                vec![matched_queue_record.clone()]
+            );
+
+            let missing_queue_record = QueueEntryRecord {
+                message_id: format!("message-missing-{scenario_class}"),
+                ..matched_queue_record.clone()
+            };
+            let missing_queue_command = QueueTransitionCommand {
+                mutation: QueueMutation::Upsert(missing_queue_record),
+                scheduler_shadow_comparison: None,
+                ..matched_queue_command.clone()
+            };
+            let error = db
+                .transitions()
+                .commit_queue(&missing_queue_command)
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("requires matched canonical evidence"));
             assert_eq!(
                 db.queue_entries().latest_all()?,
                 vec![matched_queue_record.clone()]
@@ -2214,6 +2236,7 @@ mod tests {
                         agent_id: "agent-a".into(),
                         operation: QueueOperation::Admit,
                         mutation: QueueMutation::Upsert(queue_record),
+                        scheduler_authority_scenarios: vec![SCENARIO_CLASS.into()],
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),

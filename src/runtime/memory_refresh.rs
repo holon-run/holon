@@ -802,6 +802,9 @@ impl RuntimeHandle {
                     agent_id: message.agent_id.clone(),
                     operation: crate::runtime_db::transitions::QueueOperation::Admit,
                     mutation: crate::runtime_db::transitions::QueueMutation::Upsert(queue_record),
+                    scheduler_authority_scenarios: vec![
+                        scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO.into(),
+                    ],
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(expected_persisted_state)),
                         record: Box::new(committed_state.clone()),

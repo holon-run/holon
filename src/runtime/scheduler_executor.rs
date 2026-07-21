@@ -350,9 +350,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )
         .or_else(|| {
             scheduler::shadow_comparison_for_wait_resume(&projection, &candidate.message, &decision)
-        })
-        .map(scheduler_shadow_comparison_command)
-        .transpose()?;
+        });
+        let scheduler_authority_scenarios = shadow_comparison
+            .iter()
+            .map(|comparison| comparison.scenario_class.into())
+            .collect();
+        let shadow_comparison = shadow_comparison
+            .map(scheduler_shadow_comparison_command)
+            .transpose()?;
         let persisted_message = self
             .runtime
             .inner
@@ -407,6 +412,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     mutation: crate::runtime_db::transitions::QueueMutation::Consume(
                         queue_record.clone(),
                     ),
+                    scheduler_authority_scenarios,
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(guard.state.clone())),
                         record: Box::new(running_state.clone()),

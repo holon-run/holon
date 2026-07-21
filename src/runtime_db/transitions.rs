@@ -161,6 +161,7 @@ pub(crate) struct QueueTransitionCommand {
     pub agent_id: String,
     pub operation: QueueOperation,
     pub mutation: QueueMutation,
+    pub scheduler_authority_scenarios: Vec<String>,
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
@@ -349,6 +350,14 @@ impl RuntimeTransitionRepository<'_> {
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            scheduler_protocol_repository::validate_required_shadow_comparisons_tx(
+                tx,
+                &command.scheduler_authority_scenarios,
+                [
+                    command.scheduler_shadow_comparison.as_ref(),
+                    command.scheduler_delivery_shadow_comparison.as_ref(),
+                ],
+            )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let mutation_applied = match &command.mutation {
                 QueueMutation::Consume(record) => match command.operation {
@@ -1196,6 +1205,7 @@ mod tests {
                     agent_id: "agent-a".into(),
                     operation: QueueOperation::Settle,
                     mutation: QueueMutation::Upsert(processed),
+                    scheduler_authority_scenarios: Vec::new(),
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(settled_state),
@@ -1277,6 +1287,7 @@ mod tests {
                     agent_id: "agent-a".into(),
                     operation: QueueOperation::Claim,
                     mutation: QueueMutation::Consume(claimed),
+                    scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(running_state),
@@ -1365,6 +1376,7 @@ mod tests {
             agent_id: "agent-a".into(),
             operation: QueueOperation::Claim,
             mutation: QueueMutation::Consume(claimed.clone()),
+            scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -1452,6 +1464,7 @@ mod tests {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Claim,
                 mutation: QueueMutation::Consume(claimed),
+                scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),

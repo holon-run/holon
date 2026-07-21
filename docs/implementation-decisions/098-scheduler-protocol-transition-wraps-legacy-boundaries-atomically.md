@@ -27,6 +27,11 @@ queue, projection, audit, or comparison writes. A reported hard blocker is a
 fenced command that records the blocker and atomically returns that scenario
 to its configured `Shadow` or `Off` rollback target.
 
+`QueueTransitionCommand` declares its authority scenario requirements
+separately from the optional comparison payloads. This lets the repository
+reject an omitted payload before any queue mutation instead of treating
+absence as an unscoped legacy transition.
+
 ## Reason
 
 Wrapping all boundaries in the same transaction prevents partial shadow

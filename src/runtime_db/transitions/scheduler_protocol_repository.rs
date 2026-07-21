@@ -152,6 +152,26 @@ enum CommandTransactionOutcome<T> {
     Conflict(SchedulerProtocolCommandIdentityConflict),
 }
 
+pub(super) fn validate_required_shadow_comparisons_tx(
+    tx: &Transaction<'_>,
+    required_scenarios: &[String],
+    commands: [Option<&SchedulerShadowComparisonCommand>; 2],
+) -> Result<()> {
+    for scenario_class in required_scenarios {
+        if effective_scenario_mode_tx(tx, scenario_class)? != ScenarioMode::Authoritative {
+            continue;
+        }
+        let has_evidence = commands
+            .iter()
+            .flatten()
+            .any(|command| command.scenario_class == *scenario_class);
+        if !has_evidence {
+            bail!("scheduler scenario {scenario_class} requires matched canonical evidence");
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate_shadow_comparison_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
