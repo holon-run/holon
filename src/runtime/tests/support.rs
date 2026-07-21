@@ -216,7 +216,7 @@ pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id
         completed_at: Utc::now(),
         duration_ms: 10,
     });
-    runtime.inner.storage.write_agent(&guard.state).unwrap();
+    guard.persist_state(&runtime.inner.storage).unwrap();
 }
 
 pub(crate) async fn seed_bound_work_item(

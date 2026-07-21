@@ -1150,6 +1150,565 @@ CREATE TABLE IF NOT EXISTS runtime_metadata (
         name: "runtime_retention_created_at_indexes",
         sql: "",
     },
+    Migration {
+        version: 31,
+        name: "scheduler_protocol_canonical_facts",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_work_demands (
+  agent_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  metadata_revision INTEGER NOT NULL CHECK (metadata_revision >= 0),
+  scheduling_generation INTEGER NOT NULL CHECK (scheduling_generation >= 0),
+  status TEXT NOT NULL CHECK (
+    status IN ('runnable', 'waiting', 'needs_settlement', 'paused', 'terminal')
+  ),
+  status_reference_id TEXT,
+  capabilities_json TEXT NOT NULL,
+  locks_json TEXT NOT NULL,
+  locality TEXT NOT NULL,
+  cost_class TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, work_item_id),
+  CHECK (
+    (status IN ('runnable', 'terminal') AND status_reference_id IS NULL)
+    OR (status IN ('waiting', 'needs_settlement', 'paused') AND status_reference_id IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_activation_authorities (
+  agent_id TEXT NOT NULL,
+  authority_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  expected_scheduling_generation INTEGER NOT NULL CHECK (expected_scheduling_generation >= 0),
+  expected_dispatch_revision INTEGER NOT NULL CHECK (expected_dispatch_revision >= 0),
+  consumed_by_activation_id TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, authority_id),
+  UNIQUE (agent_id, activation_id),
+  UNIQUE (
+    agent_id,
+    authority_id,
+    activation_id,
+    work_item_id,
+    expected_scheduling_generation
+  ),
+  FOREIGN KEY (agent_id, work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id),
+  FOREIGN KEY (agent_id, consumed_by_activation_id)
+    REFERENCES scheduler_activations(agent_id, activation_id),
+  CHECK (
+    consumed_by_activation_id IS NULL
+    OR consumed_by_activation_id = activation_id
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_activations (
+  agent_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  authority_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  admitted_generation INTEGER NOT NULL CHECK (admitted_generation >= 0),
+  admission_kind TEXT NOT NULL CHECK (
+    admission_kind IN ('scheduling', 'wait_resume', 'settlement_recovery')
+  ),
+  recovery_for_activation_id TEXT,
+  wait_id TEXT,
+  wait_generation INTEGER CHECK (wait_generation IS NULL OR wait_generation >= 0),
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN (
+      'admitted',
+      'running',
+      'settled',
+      'interrupted',
+      'cancelled',
+      'settlement_missing'
+    )
+  ),
+  idempotency_key TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, activation_id),
+  UNIQUE (agent_id, authority_id),
+  UNIQUE (agent_id, idempotency_key),
+  UNIQUE (agent_id, activation_id, work_item_id, admitted_generation),
+  FOREIGN KEY (
+    agent_id,
+    authority_id,
+    activation_id,
+    work_item_id,
+    admitted_generation
+  ) REFERENCES scheduler_activation_authorities(
+    agent_id,
+    authority_id,
+    activation_id,
+    work_item_id,
+    expected_scheduling_generation
+  ),
+  FOREIGN KEY (agent_id, work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id),
+  FOREIGN KEY (agent_id, recovery_for_activation_id)
+    REFERENCES scheduler_activations(agent_id, activation_id),
+  FOREIGN KEY (agent_id, wait_id, wait_generation)
+    REFERENCES scheduler_wait_generations(agent_id, wait_id, generation),
+  CHECK (
+    (admission_kind = 'scheduling'
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL)
+    OR (admission_kind = 'wait_resume'
+      AND recovery_for_activation_id IS NULL
+      AND wait_id IS NOT NULL
+      AND wait_generation IS NOT NULL)
+    OR (admission_kind = 'settlement_recovery'
+      AND recovery_for_activation_id IS NOT NULL
+      AND wait_id IS NULL
+      AND wait_generation IS NULL)
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduler_activations_ordinary_admission_fence
+  ON scheduler_activations(agent_id, work_item_id, admitted_generation)
+  WHERE admission_kind IN ('scheduling', 'wait_resume');
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduler_activations_recovery_admission_fence
+  ON scheduler_activations(
+    agent_id,
+    work_item_id,
+    admitted_generation,
+    recovery_for_activation_id
+  )
+  WHERE admission_kind = 'settlement_recovery';
+
+CREATE TABLE IF NOT EXISTS scheduler_waits (
+  agent_id TEXT NOT NULL,
+  wait_id TEXT NOT NULL,
+  owner_work_item_id TEXT NOT NULL,
+  current_generation INTEGER NOT NULL CHECK (current_generation >= 0),
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, wait_id),
+  FOREIGN KEY (agent_id, owner_work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_wait_generations (
+  agent_id TEXT NOT NULL,
+  wait_id TEXT NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 0),
+  owner_work_item_id TEXT NOT NULL,
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN ('active', 'triggered', 'consumed', 'resolved')
+  ),
+  trigger_id TEXT,
+  trigger_generation INTEGER CHECK (trigger_generation IS NULL OR trigger_generation >= 0),
+  consuming_activation_id TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, wait_id, generation),
+  FOREIGN KEY (agent_id, wait_id)
+    REFERENCES scheduler_waits(agent_id, wait_id),
+  FOREIGN KEY (agent_id, owner_work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id),
+  FOREIGN KEY (agent_id, consuming_activation_id)
+    REFERENCES scheduler_activations(agent_id, activation_id),
+  CHECK (
+    (trigger_id IS NULL AND trigger_generation IS NULL)
+    OR (trigger_id IS NOT NULL AND trigger_generation IS NOT NULL)
+  ),
+  CHECK (
+    (lifecycle_state IN ('active', 'triggered', 'resolved')
+      AND consuming_activation_id IS NULL)
+    OR (lifecycle_state = 'consumed' AND consuming_activation_id IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_agent_slots (
+  agent_id TEXT PRIMARY KEY,
+  slot_kind TEXT NOT NULL CHECK (slot_kind IN ('idle', 'running')),
+  activation_id TEXT,
+  work_item_id TEXT,
+  admitted_generation INTEGER CHECK (admitted_generation IS NULL OR admitted_generation >= 0),
+  recovery_for_activation_id TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (agent_id, activation_id, work_item_id, admitted_generation)
+    REFERENCES scheduler_activations(
+      agent_id,
+      activation_id,
+      work_item_id,
+      admitted_generation
+    ),
+  FOREIGN KEY (agent_id, recovery_for_activation_id)
+    REFERENCES scheduler_activations(agent_id, activation_id),
+  CHECK (
+    (slot_kind = 'idle'
+      AND activation_id IS NULL
+      AND work_item_id IS NULL
+      AND admitted_generation IS NULL
+      AND recovery_for_activation_id IS NULL)
+    OR (slot_kind = 'running'
+      AND activation_id IS NOT NULL
+      AND work_item_id IS NOT NULL
+      AND admitted_generation IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_agent_dispatch (
+  agent_id TEXT PRIMARY KEY,
+  dispatch_kind TEXT NOT NULL CHECK (dispatch_kind IN ('open', 'awaiting')),
+  wait_id TEXT,
+  wait_generation INTEGER CHECK (wait_generation IS NULL OR wait_generation >= 0),
+  dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 0),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (agent_id, wait_id, wait_generation)
+    REFERENCES scheduler_wait_generations(agent_id, wait_id, generation),
+  CHECK (
+    (dispatch_kind = 'open' AND wait_id IS NULL AND wait_generation IS NULL)
+    OR (dispatch_kind = 'awaiting' AND wait_id IS NOT NULL AND wait_generation IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_agent_focus (
+  agent_id TEXT PRIMARY KEY,
+  focused_work_item_id TEXT,
+  focus_revision INTEGER NOT NULL CHECK (focus_revision >= 0),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (agent_id, focused_work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_scheduler_agent_focus_insert
+BEFORE INSERT ON scheduler_agent_focus
+WHEN NEW.focused_work_item_id IS NOT NULL
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM scheduler_work_demands
+    WHERE agent_id = NEW.agent_id
+      AND work_item_id = NEW.focused_work_item_id
+      AND status != 'terminal'
+  ) THEN RAISE(ABORT, 'scheduler focus must reference an owned open WorkItem demand') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_scheduler_agent_focus_update
+BEFORE UPDATE OF focused_work_item_id ON scheduler_agent_focus
+WHEN NEW.focused_work_item_id IS NOT NULL
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM scheduler_work_demands
+    WHERE agent_id = NEW.agent_id
+      AND work_item_id = NEW.focused_work_item_id
+      AND status != 'terminal'
+  ) THEN RAISE(ABORT, 'scheduler focus must reference an owned open WorkItem demand') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_scheduler_work_demands_preserve_focus
+BEFORE UPDATE OF status ON scheduler_work_demands
+WHEN NEW.status = 'terminal' AND EXISTS (
+  SELECT 1
+  FROM scheduler_agent_focus
+  WHERE agent_id = OLD.agent_id
+    AND focused_work_item_id = OLD.work_item_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'focused scheduler WorkItem demand must remain open');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_scheduler_work_demands_preserve_focus_delete
+BEFORE DELETE ON scheduler_work_demands
+WHEN EXISTS (
+  SELECT 1
+  FROM scheduler_agent_focus
+  WHERE agent_id = OLD.agent_id
+    AND focused_work_item_id = OLD.work_item_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'focused scheduler WorkItem demand cannot be deleted');
+END;
+
+CREATE TABLE IF NOT EXISTS scheduler_activation_settlements (
+  agent_id TEXT NOT NULL,
+  settlement_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, settlement_id),
+  UNIQUE (agent_id, activation_id),
+  FOREIGN KEY (agent_id, activation_id)
+    REFERENCES scheduler_activations(agent_id, activation_id)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_missing_settlements (
+  agent_id TEXT NOT NULL,
+  missing_settlement_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, missing_settlement_id),
+  UNIQUE (agent_id, activation_id),
+  FOREIGN KEY (agent_id, activation_id)
+    REFERENCES scheduler_activations(agent_id, activation_id)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_continuation_admissions (
+  agent_id TEXT NOT NULL,
+  admission_id TEXT NOT NULL,
+  settlement_id TEXT NOT NULL,
+  completed_work_item_id TEXT NOT NULL,
+  caller_work_item_id TEXT NOT NULL,
+  expected_caller_generation INTEGER NOT NULL CHECK (expected_caller_generation >= 0),
+  admitted_caller_generation INTEGER NOT NULL CHECK (admitted_caller_generation >= 0),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, admission_id),
+  UNIQUE (agent_id, settlement_id),
+  FOREIGN KEY (agent_id, settlement_id)
+    REFERENCES scheduler_activation_settlements(agent_id, settlement_id),
+  FOREIGN KEY (agent_id, completed_work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id),
+  FOREIGN KEY (agent_id, caller_work_item_id)
+    REFERENCES scheduler_work_demands(agent_id, work_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_protocol_command_results (
+  agent_id TEXT NOT NULL,
+  command_kind TEXT NOT NULL,
+  command_identity TEXT NOT NULL,
+  canonical_schema_version INTEGER NOT NULL CHECK (canonical_schema_version > 0),
+  payload_hash TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  conflict_kind TEXT,
+  conflict_code TEXT,
+  result_references_json TEXT NOT NULL,
+  pre_state_fence_json TEXT NOT NULL,
+  post_state_fence_json TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, command_kind, command_identity),
+  CHECK (
+    (conflict_kind IS NULL AND conflict_code IS NULL)
+    OR (conflict_kind IS NOT NULL AND conflict_code IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_protocol_command_conflict_attempts (
+  conflict_attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  partition_kind TEXT NOT NULL CHECK (
+    partition_kind IN ('agent', 'global_rollout')
+  ),
+  partition_key TEXT NOT NULL,
+  command_kind TEXT NOT NULL,
+  command_identity TEXT NOT NULL,
+  canonical_schema_version INTEGER NOT NULL CHECK (canonical_schema_version > 0),
+  existing_payload_hash TEXT NOT NULL,
+  incoming_payload_hash TEXT NOT NULL,
+  conflict_kind TEXT NOT NULL,
+  conflict_code TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_protocol_migrations (
+  agent_id TEXT NOT NULL,
+  migration_identity TEXT NOT NULL,
+  migration_version INTEGER NOT NULL CHECK (migration_version > 0),
+  source_kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  provenance_json TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  rejection_kind TEXT,
+  rejection_code TEXT,
+  imported_fact_references_json TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, migration_identity),
+  UNIQUE (agent_id, source_kind, source_id),
+  CHECK (
+    (rejection_kind IS NULL AND rejection_code IS NULL)
+    OR (rejection_kind IS NOT NULL AND rejection_code IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_protocol_config (
+  config_id INTEGER PRIMARY KEY CHECK (config_id = 1),
+  protocol_mode TEXT NOT NULL CHECK (
+    protocol_mode IN ('legacy', 'shadow', 'authoritative')
+  ),
+  config_revision INTEGER NOT NULL CHECK (config_revision >= 0),
+  latest_preflight_revision INTEGER NOT NULL CHECK (latest_preflight_revision >= 0),
+  updated_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO scheduler_protocol_config (
+  config_id, protocol_mode, config_revision, latest_preflight_revision, updated_at
+) VALUES (1, 'legacy', 0, 0, CURRENT_TIMESTAMP);
+
+CREATE TABLE IF NOT EXISTS scheduler_rollout_command_results (
+  command_kind TEXT NOT NULL,
+  command_identity TEXT NOT NULL,
+  canonical_schema_version INTEGER NOT NULL CHECK (canonical_schema_version > 0),
+  payload_hash TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  conflict_kind TEXT,
+  conflict_code TEXT,
+  result_references_json TEXT NOT NULL,
+  pre_state_fence_json TEXT NOT NULL,
+  post_state_fence_json TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (command_kind, command_identity),
+  CHECK (
+    (conflict_kind IS NULL AND conflict_code IS NULL)
+    OR (conflict_kind IS NOT NULL AND conflict_code IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_rollout_preflights (
+  preflight_revision INTEGER PRIMARY KEY CHECK (preflight_revision >= 0),
+  manifest_revision INTEGER NOT NULL CHECK (manifest_revision >= 0),
+  state TEXT NOT NULL CHECK (state IN ('open', 'completed', 'consumed')),
+  manifest_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_rollout_manifests (
+  manifest_revision INTEGER PRIMARY KEY CHECK (manifest_revision >= 0),
+  preflight_revision INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  installed_at TEXT NOT NULL,
+  FOREIGN KEY (preflight_revision)
+    REFERENCES scheduler_rollout_preflights(preflight_revision)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_scenario_authorities (
+  scenario_class TEXT PRIMARY KEY,
+  mode TEXT NOT NULL CHECK (mode IN ('off', 'shadow', 'authoritative')),
+  rollback_target TEXT NOT NULL CHECK (rollback_target IN ('off', 'shadow')),
+  manifest_revision INTEGER,
+  preflight_revision INTEGER,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (manifest_revision)
+    REFERENCES scheduler_rollout_manifests(manifest_revision),
+  FOREIGN KEY (preflight_revision)
+    REFERENCES scheduler_rollout_preflights(preflight_revision)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_scenario_hard_blockers (
+  scenario_class TEXT NOT NULL,
+  blocker_code TEXT NOT NULL,
+  config_revision INTEGER NOT NULL CHECK (config_revision >= 0),
+  manifest_revision INTEGER NOT NULL,
+  preflight_revision INTEGER NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  action_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (
+    scenario_class,
+    blocker_code,
+    config_revision,
+    manifest_revision,
+    preflight_revision
+  ),
+  FOREIGN KEY (manifest_revision)
+    REFERENCES scheduler_rollout_manifests(manifest_revision),
+  FOREIGN KEY (preflight_revision)
+    REFERENCES scheduler_rollout_preflights(preflight_revision)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_work_demands_status
+  ON scheduler_work_demands(agent_id, status, scheduling_generation);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_wait_generations_state
+  ON scheduler_wait_generations(agent_id, lifecycle_state);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_activations_state
+  ON scheduler_activations(agent_id, lifecycle_state);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_command_results_created
+  ON scheduler_protocol_command_results(agent_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_command_conflict_attempts_identity
+  ON scheduler_protocol_command_conflict_attempts(
+    partition_kind,
+    partition_key,
+    command_kind,
+    command_identity,
+    conflict_attempt_id
+  );
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_rollout_command_results_created
+  ON scheduler_rollout_command_results(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_migrations_created
+  ON scheduler_protocol_migrations(agent_id, created_at);
+"#,
+    },
+    Migration {
+        version: 32,
+        name: "scheduler_shadow_comparisons",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_shadow_comparisons (
+  agent_id TEXT NOT NULL,
+  scenario_class TEXT NOT NULL,
+  comparison_identity TEXT NOT NULL,
+  canonical_schema_version INTEGER NOT NULL CHECK (canonical_schema_version > 0),
+  payload_hash TEXT NOT NULL,
+  boundary TEXT NOT NULL,
+  input_identity TEXT NOT NULL,
+  authority_mode TEXT NOT NULL CHECK (
+    authority_mode IN ('shadow', 'authoritative')
+  ),
+  legacy_observation_json TEXT NOT NULL,
+  shadow_candidate_json TEXT NOT NULL,
+  comparison_outcome TEXT NOT NULL CHECK (
+    comparison_outcome IN ('matched', 'diverged')
+  ),
+  divergence_code TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, scenario_class, comparison_identity),
+  CHECK (
+    (comparison_outcome = 'matched' AND divergence_code IS NULL)
+    OR (comparison_outcome = 'diverged' AND divergence_code IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_shadow_comparisons_scenario
+  ON scheduler_shadow_comparisons(
+    scenario_class,
+    authority_mode,
+    created_at
+  );
+"#,
+    },
+    Migration {
+        version: 33,
+        name: "scheduler_semantic_shadow_decisions",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_semantic_shadow_decisions (
+  agent_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  contract_revision INTEGER NOT NULL CHECK (contract_revision > 0),
+  payload_hash TEXT NOT NULL,
+  authority_mode TEXT NOT NULL CHECK (authority_mode = 'shadow'),
+  input_json TEXT NOT NULL,
+  provider_json TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  policy_json TEXT NOT NULL,
+  resolution_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_semantic_shadow_decisions_created
+  ON scheduler_semantic_shadow_decisions(agent_id, created_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

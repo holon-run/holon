@@ -8,10 +8,14 @@ order: 30
 
 This page defines the current contract for Holon's scheduler: what inputs it
 consumes, how it derives posture and runnability, and what decisions it emits.
+It also documents the additive protocol transition layer that wraps scheduler
+decisions in atomic transactions with shadow comparison, semantic decision
+plane integration, and a public diagnostic event stream.
 
-> **Last verified:** 2026-05-23 against `src/runtime/scheduler.rs`,
+> **Last verified:** 2026-07-21 against `src/runtime/scheduler.rs`,
 > `src/runtime/scheduler_executor.rs`, `src/runtime/waiting.rs`,
-> `src/runtime/closure.rs`.
+> `src/runtime/closure.rs`, `src/runtime/turn/execution.rs`,
+> `src/runtime_event.rs`, `src/types.rs`.
 
 ## Source RFCs
 
@@ -20,6 +24,7 @@ consumes, how it derives posture and runnability, and what decisions it emits.
 - [Waiting Plane And Reactivation](https://github.com/holon-run/holon/blob/main/docs/rfcs/waiting-plane-and-reactivation.md)
 - [Continuation Trigger](https://github.com/holon-run/holon/blob/main/docs/rfcs/continuation-trigger.md)
 - [Work Item Centered Agent Runtime](https://github.com/holon-run/holon/blob/main/docs/rfcs/work-item-centered-agent-runtime.md)
+- [Agent Activation, Settlement, and Dispatch](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-activation-settlement-and-dispatch.md) — normative target for admission, activation, settlement, and dispatch authority
 
 ## Core model
 
@@ -140,11 +145,113 @@ WorkItems flow through scheduling states that the scheduler consumes:
 - Duplicate suppression uses idempotency keys to prevent redundant system
   ticks for the same wake hint or continue-active signal.
 
+## Protocol transition layer
+
+The scheduler decision flow above describes the **legacy** production path.
+An additive protocol layer wraps every scheduler boundary in an atomic
+`QueueTransitionCommand` transaction that can simultaneously:
+
+1. commit the queue operation (admit, claim, or enqueue);
+2. update the agent state projection;
+3. persist message evidence, transcript entries, and audit events;
+4. record a `SchedulerShadowComparison` between the legacy decision and the
+   canonical protocol outcome; and
+5. record a `SchedulerSemanticShadowDecision` from the semantic decision
+   plane (trusted ingress, provider, response, and policy).
+
+All five effects commit in the same SQLite transaction. If the transaction
+fails or the CAS does not match, no partial shadow sample or semantic record
+is left behind.
+
+### Rollout modes
+
+The `scheduler_protocol_config` table controls a per-agent rollout state:
+
+| Mode | Behavior |
+|------|----------|
+| `Legacy` | No protocol persistence; legacy scheduler is sole authority |
+| `Shadow` | Legacy scheduler remains authoritative; protocol records comparison and semantic shadow for observability |
+| `Authoritative` | Protocol owns admission authority; legacy path is compatibility-only |
+
+Rollout transitions are `Legacy → Shadow → Authoritative` for upgrade and
+`Authoritative → Shadow → Legacy` for rollback. Authority is scoped by
+scenario class. In `Authoritative`, a queue transition commits only when its
+canonical comparison evidence is present and matched. Missing or divergent
+evidence fails closed and the transaction leaves no queue, projection, audit,
+or comparison partial writes. A reported hard blocker atomically records the
+blocker and returns the affected class to its configured `Shadow` or `Off`
+rollback target.
+
+### Integration points
+
+`QueueTransitionCommand` is committed at every scheduler boundary. Each
+boundary records its own shadow comparison between the legacy decision and
+the canonical protocol outcome:
+
+| Boundary | Operation | Shadow comparison | Semantic shadow |
+|----------|-----------|-------------------|-----------------|
+| Message admission (`scheduler_executor::prepare_message`) | `Claim` | Yes | Yes |
+| Wait resume (same path, `.or_else`) | `Claim` | Yes | — |
+| Settlement recovery (`runtime::commit_queue_settlement`) | `Settle` | Yes | — |
+| Delivery disposition (`runtime::commit_queue_settlement`) | `Settle` | Yes (delivery) | — |
+| Operator interjection — `AfterProviderRound` | `Admit` | Yes | — |
+| Operator interjection — `BeforeToolExecution` | `Admit` | Yes | — |
+| Operator interjection — `AfterToolResults` | `Admit` | Yes | — |
+| Operator interjection — `BeforeProviderContinuation` | `Admit` | Yes | — |
+| Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | Yes | — |
+
+The semantic decision plane provides trusted-ingress construction, provider
+validation, and response policy. It returns `Ok(None)` when trusted ingress
+conditions are not met, preventing observation errors from blocking the run
+loop. No provider owns runtime authority; the deterministic resolver and
+validator retain all state-transition control. Wait resume shadow comparison
+is evaluated within the message admission path via `.or_else`, so the same
+`QueueTransitionCommand` transaction records whichever comparison applies.
+Settlement recovery and delivery disposition shadow comparisons are recorded
+in the same `commit_queue_settlement` transaction.
+
+### Public diagnostic event stream
+
+The scheduler emits a typed `SchedulerDiagnosticAuditEvent` for every
+decision that passes through `append_scheduler_decision`. This event carries:
+
+| Field | Content |
+|-------|---------|
+| `decision` | `SchedulerDecisionKind` variant |
+| `reason` | Human-readable decision reason |
+| `boundary` | Where the decision was made (e.g. `run_loop`, `after_provider_round`) |
+| `message_id` | Optional message that triggered the decision |
+| `evidence` | Evidence strings used by the decision |
+| `scenario_class` | Optional scenario classification (e.g. `operator_interjection`) |
+| `shadow_matched` | Whether legacy and canonical outcomes agreed, when shadow was present |
+| `divergence_code` | Optional divergence code if outcomes disagreed |
+
+The event is emitted via `RuntimeEventKind::SchedulerDiagnostic` alongside
+the legacy `scheduler_decision` audit event. Both are persisted in the same
+transaction as the scheduler decision. The typed event is the public
+observability surface; the legacy audit event remains for backward
+compatibility.
+
+### Scheduling advisories
+
+`SchedulingAdvisory` is an internal, non-authoritative warning system that
+detects potential scheduler state mismatches: idle posture with runnable
+work, weak external wait recoverability, unrecoverable blocked WorkItems,
+and similar conditions. Advisories are appended as `scheduling_advisory`
+audit events with deduplication against recent events.
+
+Advisories are **not** diagnostics in the diagnostic event stream sense.
+They are internal hints for debugging and operational awareness; the
+deterministic scheduler projection and posture derivation remain the sole
+authority for scheduling decisions.
+
 ## Known gaps
 
 - `SchedulerDecisionKind` intentionally has more variants than the coarse
   RFC posture labels. The RFC posture is the stable turn-end vocabulary;
   decision variants are concrete runtime actions and duplicate-suppression
   outcomes.
-- The scheduler does not yet expose a public diagnostic event stream for
-  observability; diagnostic events exist but are audit-only.
+- The current authoritative acceptance gate validates atomic matched-evidence
+  pass-through, divergence rejection, rollback, restart, bounded concurrent
+  load, and FIFO WorkItem projection. It is not a calibrated production SLO or
+  a substitute for deployment-specific soak and capacity testing.

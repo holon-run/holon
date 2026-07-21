@@ -3152,7 +3152,7 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Asleep;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let capability = runtime
         .create_external_trigger(

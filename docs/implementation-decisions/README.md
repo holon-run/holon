@@ -108,3 +108,4 @@ Current decision notes:
 - [094 OpenAI Codex Reasoning Effort](./094-openai-codex-reasoning-effort.md)
 - [096 Bounded HTTP Projection Gate](./096-bounded-http-projection-gate.md)
 - [097 Storage-Backed Agent State Projection](./097-storage-backed-agent-state-projection.md)
+- [098 Scheduler Protocol Transition Wraps Legacy Boundaries Atomically](./098-scheduler-protocol-transition-wraps-legacy-boundaries-atomically.md)

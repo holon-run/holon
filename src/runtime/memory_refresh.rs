@@ -170,7 +170,11 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     if let Some(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief(
                         result_brief_id,
                     )) = duplicate
@@ -188,9 +192,20 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
-                self.emit_system_tick_from_work_queue(&active, "continue_active")
-                    .await?;
+                let shadow_comparison = scheduler::shadow_comparison_for_work_queue_tick(
+                    &scheduler_projection,
+                    &active,
+                    "continue_active",
+                    &decision,
+                    scheduler::SchedulerBoundary::IdleTick,
+                );
+                self.emit_system_tick_from_work_queue(
+                    &active,
+                    "continue_active",
+                    shadow_comparison,
+                    Some(&decision),
+                )
+                .await?;
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
@@ -212,7 +227,11 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     if let Some(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage(
                         message_id,
                     )) = duplicate
@@ -230,9 +249,20 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
-                self.emit_system_tick_from_work_queue(&queued, "queued_available")
-                    .await?;
+                let shadow_comparison = scheduler::shadow_comparison_for_work_queue_tick(
+                    &scheduler_projection,
+                    &queued,
+                    "queued_available",
+                    &decision,
+                    scheduler::SchedulerBoundary::IdleTick,
+                );
+                self.emit_system_tick_from_work_queue(
+                    &queued,
+                    "queued_available",
+                    shadow_comparison,
+                    Some(&decision),
+                )
+                .await?;
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
@@ -254,7 +284,11 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     let mut guard = self.inner.agent.lock().await;
                     if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                         guard.state.pending_wake_hint = None;
@@ -264,7 +298,11 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                scheduler::append_scheduler_decision(
+                    &self.inner.storage,
+                    &self.inner.default_agent_id,
+                    &decision,
+                )?;
                 self.emit_system_tick_from_wake_hint(&pending).await?;
 
                 #[cfg(test)]
@@ -294,7 +332,11 @@ impl RuntimeHandle {
                         decision.boundary(scheduler::SchedulerBoundary::IdleTick.as_str())
                     })
                 {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                 }
                 Ok(false)
             }
@@ -475,7 +517,11 @@ impl RuntimeHandle {
                 duplicate,
             }),
         );
-        scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+        scheduler::append_scheduler_decision(
+            &self.inner.storage,
+            &self.inner.default_agent_id,
+            &decision,
+        )?;
         if !matches!(
             decision.kind,
             scheduler::SchedulerDecisionKind::EmitSystemTick
@@ -633,6 +679,8 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
         reason: &str,
+        shadow_comparison: Option<scheduler::SchedulerShadowComparison>,
+        decision: Option<&scheduler::SchedulerDecision>,
     ) -> Result<()> {
         let idempotency_key = scheduler::work_queue_tick_idempotency_key(work_item, reason);
         let mut message = MessageEnvelope::new(
@@ -667,18 +715,124 @@ impl RuntimeHandle {
             }
         }));
         message.work_item_id = Some(work_item.id.clone());
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "system_tick_emitted",
-            serde_json::json!({
-                "subsystem": "work_queue",
-                "work_queue": message
-                    .metadata
-                    .as_ref()
-                    .and_then(|value| value.get("work_queue"))
-                    .cloned()
-            }),
-        ))?;
-        let _ = self.enqueue(message).await?;
+        message.normalize_admission_fields();
+        message.turn_id = normalized_turn_id(message.turn_id.as_deref());
+        if message.turn_id.is_none() {
+            message.turn_id = Some(crate::ids::turn_id());
+        }
+        let scheduler_shadow_comparison = shadow_comparison
+            .map(super::scheduler_executor::scheduler_shadow_comparison_command)
+            .transpose()?;
+        let work_queue_metadata = message
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("work_queue"))
+            .cloned();
+        let mut audit_events = decision
+            .map(scheduler::scheduler_decision_event)
+            .into_iter()
+            .collect::<Vec<_>>();
+        audit_events.extend([
+            AuditEvent::legacy(
+                "system_tick_emitted",
+                serde_json::json!({
+                    "subsystem": "work_queue",
+                    "work_queue": work_queue_metadata
+                }),
+            ),
+            AuditEvent::legacy(
+                "message_admitted",
+                serde_json::json!({
+                    "message_id": message.id.clone(),
+                    "agent_id": message.agent_id.clone(),
+                    "kind": message.kind.clone(),
+                    "origin": message.origin.clone(),
+                    "authority_class": message.authority_class,
+                    "delivery_surface": message.delivery_surface,
+                    "admission_context": message.admission_context,
+                    "trigger_kind": message.trigger_kind,
+                    "work_item_id": message.work_item_id.clone(),
+                    "task_id": message.task_id.clone(),
+                    "source_refs": message.source_refs.clone(),
+                    "correlation_id": message.correlation_id.clone(),
+                    "causation_id": message.causation_id.clone(),
+                }),
+            ),
+            AuditEvent::typed(
+                RuntimeEventKind::MessageEnqueued,
+                &MessageLifecycleAuditEvent::from_message(&message),
+            )?,
+        ]);
+        let mut commit = {
+            let mut guard = self.inner.agent.lock().await;
+            let expected_persisted_state = guard.last_persisted_state.clone();
+            let mut committed_state = guard.state.clone();
+            let previous_status = committed_state.status.clone();
+            let previous_sleeping_until = committed_state.sleeping_until;
+            committed_state.pending = guard.queue.len().saturating_add(1);
+            committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
+            committed_state.total_message_count =
+                self.inner.storage.count_messages()?.saturating_add(1);
+            if scheduler::apply_message_wake_projection(&mut committed_state) {
+                audit_events.push(AuditEvent::legacy(
+                    "scheduler_posture_decision",
+                    serde_json::json!({
+                        "boundary": "message_admission",
+                        "reason": "message_admission_wake",
+                        "previous_status": previous_status,
+                        "next_status": committed_state.status,
+                        "evidence": [
+                            format!("message_id={}", message.id),
+                            format!("message_kind={:?}", message.kind),
+                            format!("previous_sleeping_until={previous_sleeping_until:?}"),
+                        ],
+                    }),
+                ));
+            }
+            let queue_record = QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Queued,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            };
+            let mut commit = self.inner.runtime_db.transitions().commit_queue(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: message.agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(queue_record),
+                    scheduler_authority_scenarios: vec![
+                        scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO.into(),
+                    ],
+                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_persisted_state)),
+                        record: Box::new(committed_state.clone()),
+                    }),
+                    message_evidence: vec![message.clone()],
+                    transcript_entries: Vec::new(),
+                    audit_events,
+                    scheduler_shadow_comparison,
+                    scheduler_delivery_shadow_comparison: None,
+                    scheduler_semantic_shadow: None,
+                    notify_scheduler: true,
+                    fault: self.take_transition_fault(),
+                    brief_evidence: Vec::new(),
+                },
+            )?;
+            if !commit.applied {
+                return Err(anyhow!(
+                    "work queue tick admission made no durable progress"
+                ));
+            }
+            guard.queue.push(message);
+            guard.state = committed_state.clone();
+            guard.last_persisted_state = committed_state;
+            commit.effects.agent_state = None;
+            commit
+        };
+        commit.effects.notify_scheduler = true;
+        self.apply_transition_commit(commit).await;
         Ok(())
     }
 
@@ -880,6 +1034,29 @@ mod tests {
         }
     }
 
+    fn enable_scheduler_shadow_scenario(test_runtime: &TestRuntime, scenario_class: &str) {
+        let connection = test_runtime.runtime.inner.runtime_db.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_protocol_config
+                 SET protocol_mode = 'shadow',
+                     config_revision = config_revision + 1,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE config_id = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO scheduler_scenario_authorities (
+                   scenario_class, mode, rollback_target,
+                   manifest_revision, preflight_revision, updated_at
+                 ) VALUES (?1, 'shadow', 'off', NULL, NULL, CURRENT_TIMESTAMP)",
+                [scenario_class],
+            )
+            .unwrap();
+    }
+
     fn wait_for_audit_event(test_runtime: &TestRuntime, kind: &str, label: &str) -> AuditEvent {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
@@ -914,7 +1091,9 @@ mod tests {
     fn set_agent_status(test_runtime: &TestRuntime, status: AgentStatus) {
         let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
         guard.state.status = status;
-        // Don't write - just update in-memory state for the test
+        guard
+            .persist_state(&test_runtime.runtime.inner.storage)
+            .unwrap();
     }
 
     fn add_queued_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
@@ -1353,6 +1532,182 @@ mod tests {
 
         let guard = test_runtime.runtime.inner.agent.blocking_lock();
         assert!(guard.state.current_work_item_id.is_none());
+    }
+
+    #[test]
+    fn queued_system_tick_persists_shadow_comparison_with_admission_facts() {
+        let test_runtime = test_runtime();
+        enable_scheduler_shadow_scenario(&test_runtime, "work_item_autonomous_continuation");
+        set_agent_idle(&test_runtime);
+        let queued = add_queued_work_item(&test_runtime, "wi-shadow", "shadow-target");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(
+            ticks[0].1["work_item_id"].as_str(),
+            Some(queued.id.as_str())
+        );
+        let tick_message = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_messages(10)
+            .unwrap()
+            .into_iter()
+            .find(|message| {
+                is_runtime_work_queue_message_for_work_item(message, &queued.id, "queued_available")
+            })
+            .expect("work queue tick message should be durable");
+
+        let queue_entries = test_runtime
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap();
+        assert_eq!(queue_entries.len(), 1);
+        assert_eq!(queue_entries[0].message_id, tick_message.id);
+        assert_eq!(queue_entries[0].status, QueueEntryStatus::Queued);
+
+        let connection = test_runtime.runtime.inner.runtime_db.connection().unwrap();
+        let (boundary, input_identity, outcome, authority_mode): (String, String, String, String) =
+            connection
+                .query_row(
+                    "SELECT boundary, input_identity, comparison_outcome, authority_mode
+                 FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'default'
+                   AND scenario_class = 'work_item_autonomous_continuation'
+                   AND comparison_identity = ?1",
+                    [format!(
+                        "work_queue_idle_tick:work_queue:queued_available:{}:{}",
+                        queued.id, queued.revision
+                    )],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+        assert_eq!(boundary, "idle_tick");
+        assert_eq!(
+            input_identity,
+            format!(
+                "work_queue_tick:work_queue:queued_available:{}:{}",
+                queued.id, queued.revision
+            )
+        );
+        assert_eq!(outcome, "matched");
+        assert_eq!(authority_mode, "shadow");
+
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(20)
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "system_tick_emitted"));
+        assert!(events.iter().any(|event| event.kind == "message_admitted"));
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeEventKind::MessageEnqueued.descriptor().wire_name
+        }));
+    }
+
+    #[test]
+    fn queued_system_tick_fault_rolls_back_all_admission_facts() {
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let test_runtime = test_runtime();
+            enable_scheduler_shadow_scenario(&test_runtime, "work_item_autonomous_continuation");
+            set_agent_idle(&test_runtime);
+            add_queued_work_item(&test_runtime, "wi-shadow-fault", "shadow-target");
+            let initial_state = test_runtime
+                .runtime
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap()
+                .unwrap();
+            let initial_message_count =
+                test_runtime.runtime.inner.storage.count_messages().unwrap();
+            test_runtime.runtime.inject_next_transition_fault(fault);
+
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let error = rt
+                .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected runtime transition fault"),
+                "unexpected error for {fault:?}: {error:#}"
+            );
+
+            assert_eq!(
+                test_runtime.runtime.inner.storage.count_messages().unwrap(),
+                initial_message_count
+            );
+            assert!(test_runtime
+                .runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest_all()
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                test_runtime
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .agent_states()
+                    .latest("default")
+                    .unwrap(),
+                Some(initial_state.clone())
+            );
+            let comparison_count: i64 = test_runtime
+                .runtime
+                .inner
+                .runtime_db
+                .connection()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM scheduler_shadow_comparisons",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(comparison_count, 0);
+            assert!(get_emitted_system_ticks(&test_runtime).is_empty());
+            let events = test_runtime
+                .runtime
+                .inner
+                .storage
+                .read_recent_events(20)
+                .unwrap();
+            assert!(!events.iter().any(|event| {
+                matches!(
+                    event.kind.as_str(),
+                    "scheduler_decision"
+                        | "system_tick_emitted"
+                        | "message_admitted"
+                        | "message_enqueued"
+                )
+            }));
+
+            let guard = test_runtime.runtime.inner.agent.blocking_lock();
+            assert!(guard.queue.is_empty());
+            assert_eq!(guard.state, initial_state);
+        }
     }
 
     #[test]

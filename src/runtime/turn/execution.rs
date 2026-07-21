@@ -56,7 +56,7 @@ use super::{
 use super::{truncate_preview, CHECKPOINT_RESUME_PROMPT};
 use crate::runtime::{
     combine_text_history, is_max_output_stop_reason, message_dispatch::message_text, scheduler,
-    CurrentRunAborted, RuntimeHandle,
+    scheduler_executor, CurrentRunAborted, RuntimeHandle,
 };
 
 impl RuntimeHandle {
@@ -332,12 +332,13 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(super) async fn drain_operator_interjections(
+    pub(in crate::runtime) async fn drain_operator_interjections(
         &self,
         agent_id: &str,
         round: usize,
-        boundary: &str,
+        boundary: scheduler::InterjectionBoundary,
     ) -> Result<Vec<String>> {
+        let boundary_str = boundary.as_str();
         let mut follow_up_texts = Vec::new();
         loop {
             let committed = {
@@ -353,6 +354,23 @@ impl RuntimeHandle {
                 let mut committed_state = expected_state.clone();
                 committed_state.pending = guard.queue.len().saturating_sub(1);
                 let text = render_operator_interjection_text(&message);
+                let shadow_comparison =
+                    scheduler::SchedulerProjection::from_state_with_queue_len_at(
+                        &self.inner.storage,
+                        &guard.state,
+                        guard.queue.len(),
+                        self.now(),
+                    )
+                    .ok()
+                    .and_then(|projection| {
+                        scheduler::shadow_comparison_for_operator_interjection(
+                            &projection,
+                            &message,
+                            boundary,
+                        )
+                    })
+                    .map(scheduler_executor::scheduler_shadow_comparison_command)
+                    .transpose()?;
                 let transcript = TranscriptEntry::new(
                     message.agent_id.clone(),
                     TranscriptEntryKind::IncomingMessage,
@@ -383,7 +401,7 @@ impl RuntimeHandle {
                     serde_json::json!({
                         "agent_id": agent_id,
                         "round": round,
-                        "boundary": boundary,
+                        "boundary": boundary_str,
                         "message_id": message.id,
                         "origin": message.origin,
                         "authority_class": message.authority_class,
@@ -396,22 +414,32 @@ impl RuntimeHandle {
                         ),
                     }),
                 );
-                let mut commit = self.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: message.agent_id.clone(),
-                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
-                            queue_record,
-                        ),
-                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(expected_state)),
-                            record: Box::new(committed_state.clone()),
-                        }),
-                        transcript_entries: vec![transcript],
-                        audit_events: vec![audit_event],
-                        notify_scheduler: false,
-                        fault: None,
-                    },
-                )?;
+                let mut commit =
+                    self.inner.runtime_db.transitions().commit_queue(
+                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: message.agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Interject,
+                            mutation: crate::runtime_db::transitions::QueueMutation::Consume(
+                                queue_record,
+                            ),
+                            scheduler_authority_scenarios: vec![
+                                scheduler::INTERJECTION_SCENARIO.into()
+                            ],
+                            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                                expected: Some(Box::new(expected_state)),
+                                record: Box::new(committed_state.clone()),
+                            }),
+                            message_evidence: Vec::new(),
+                            transcript_entries: vec![transcript],
+                            audit_events: vec![audit_event],
+                            scheduler_shadow_comparison: shadow_comparison,
+                            scheduler_delivery_shadow_comparison: None,
+                            scheduler_semantic_shadow: None,
+                            notify_scheduler: false,
+                            fault: None,
+                            brief_evidence: Vec::new(),
+                        },
+                    )?;
                 if !commit.applied {
                     return Err(anyhow::anyhow!(
                         "interjection settlement made no durable progress"
@@ -436,7 +464,7 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         round: usize,
-        boundary: &str,
+        boundary: scheduler::InterjectionBoundary,
         completed_rounds: &mut [TurnRoundRecord],
     ) -> Result<bool> {
         let interjections = self
@@ -699,7 +727,7 @@ impl TurnExecution<'_> {
                     .append_operator_interjections_to_last_round(
                         agent_id,
                         round,
-                        "before_provider_continuation",
+                        scheduler::InterjectionBoundary::BeforeProviderContinuation,
                         &mut completed_rounds,
                     )
                     .await?;
@@ -1473,7 +1501,11 @@ impl TurnExecution<'_> {
 
             if tool_calls.is_empty() {
                 let interjections = runtime
-                    .drain_operator_interjections(agent_id, round, "after_provider_round")
+                    .drain_operator_interjections(
+                        agent_id,
+                        round,
+                        scheduler::InterjectionBoundary::AfterProviderRound,
+                    )
                     .await?;
                 if !interjections.is_empty() {
                     let mut round_record = TurnRoundRecord {
@@ -1503,7 +1535,11 @@ impl TurnExecution<'_> {
             let mut before_tool_execution_interjections = Vec::new();
             if !tool_calls.is_empty() {
                 before_tool_execution_interjections = runtime
-                    .drain_operator_interjections(agent_id, round, "before_tool_execution")
+                    .drain_operator_interjections(
+                        agent_id,
+                        round,
+                        scheduler::InterjectionBoundary::BeforeToolExecution,
+                    )
                     .await?;
             }
 
@@ -2062,7 +2098,11 @@ impl TurnExecution<'_> {
                 to_json_value(&ToolResultData::RefsWithWrapper { refs }),
             ))?;
             let after_tool_results_interjections = runtime
-                .drain_operator_interjections(agent_id, round, "after_tool_results")
+                .drain_operator_interjections(
+                    agent_id,
+                    round,
+                    scheduler::InterjectionBoundary::AfterToolResults,
+                )
                 .await?;
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);

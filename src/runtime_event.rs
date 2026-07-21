@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     AgentStateChangedEvent, BriefCreatedAuditEvent, MessageLifecycleAuditEvent,
-    TaskLifecycleAuditEvent, WorkItemLifecycleAuditEvent,
+    SchedulerDiagnosticAuditEvent, TaskLifecycleAuditEvent, WorkItemLifecycleAuditEvent,
 };
 
 pub const RUNTIME_EVENT_CONTRACT_VERSION: u32 = 2;
@@ -30,6 +30,7 @@ pub enum RuntimeEventDisplayFamily {
     Task,
     WorkItem,
     AgentState,
+    Scheduler,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub enum RuntimeEventKind {
     TaskResultReceived,
     WorkItemWritten,
     AgentStateChanged,
+    SchedulerDiagnostic,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
@@ -79,6 +81,10 @@ impl RuntimeEventPayload for WorkItemLifecycleAuditEvent {
 
 impl RuntimeEventPayload for AgentStateChangedEvent {
     const SCHEMA_ID: &'static str = "holon.runtime_event.agent_state_changed";
+}
+
+impl RuntimeEventPayload for SchedulerDiagnosticAuditEvent {
+    const SCHEMA_ID: &'static str = "holon.runtime_event.scheduler_diagnostic";
 }
 
 const REGISTRY: &[RuntimeEventDescriptor] = &[
@@ -146,6 +152,14 @@ const REGISTRY: &[RuntimeEventDescriptor] = &[
         display_family: RuntimeEventDisplayFamily::AgentState,
         fixture_json: r#"{"agent_id":"default","status":"awake_idle","pending":0,"turn_index":0,"attached_workspace_ids":[],"worktree_active":false}"#,
     },
+    RuntimeEventDescriptor {
+        kind: RuntimeEventKind::SchedulerDiagnostic,
+        wire_name: "scheduler_diagnostic",
+        payload_schema: SchedulerDiagnosticAuditEvent::SCHEMA_ID,
+        payload_schema_version: SchedulerDiagnosticAuditEvent::SCHEMA_VERSION,
+        display_family: RuntimeEventDisplayFamily::Scheduler,
+        fixture_json: r#"{"agent_id":"default","decision":"StartModelTurn","reason":"message_admitted","boundary":"run_loop","scenario_class":"message_admission","shadow_matched":true,"divergence_code":null,"work_item_id":null,"message_id":"msg_fixture","task_id":null,"evidence":["queue_len=1"]}"#,
+    },
 ];
 
 impl RuntimeEventKind {
@@ -212,6 +226,10 @@ mod tests {
                 RuntimeEventKind::AgentStateChanged => {
                     serde_json::from_str::<AgentStateChangedEvent>(entry.fixture_json)
                         .expect("agent-state fixture must match its payload type");
+                }
+                RuntimeEventKind::SchedulerDiagnostic => {
+                    serde_json::from_str::<SchedulerDiagnosticAuditEvent>(entry.fixture_json)
+                        .expect("scheduler diagnostic fixture must match its payload type");
                 }
             }
         }

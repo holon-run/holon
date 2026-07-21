@@ -4253,6 +4253,37 @@ impl AgentModelOverrideAuditEvent {
     }
 }
 
+/// Public diagnostic event for scheduler decisions and shadow comparison outcomes.
+///
+/// Extends scheduler observability from internal audit-only records to a typed,
+/// publicly addressable event stream. Each event captures the scheduler decision
+/// (what the runtime chose to do), the boundary where it was made, and—when a
+/// shadow comparison was recorded—whether the legacy and typed protocol paths
+/// agreed or diverged.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SchedulerDiagnosticAuditEvent {
+    #[serde(alias = "session_id")]
+    pub agent_id: String,
+    pub decision: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_matched: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergence_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
 fn detail_string(detail: Option<&Value>, field: &str) -> Option<String> {
     detail
         .and_then(|value| value.get(field))

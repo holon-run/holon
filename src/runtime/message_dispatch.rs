@@ -68,7 +68,11 @@ impl RuntimeHandle {
                 continuation_resolution: plan.continuation_resolution.as_ref(),
             },
         );
-        scheduler::append_scheduler_decision(&self.inner.storage, &scheduler_decision)?;
+        scheduler::append_scheduler_decision(
+            &self.inner.storage,
+            &self.inner.default_agent_id,
+            &scheduler_decision,
+        )?;
         self.process_message_with_plan(message, plan, &scheduler_decision)
             .await
     }

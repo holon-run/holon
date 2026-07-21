@@ -3414,10 +3414,30 @@ pub(crate) fn try_claim_queued_message_tx(
     tx: &Transaction<'_>,
     record: &QueueEntryRecord,
 ) -> Result<bool> {
+    try_transition_claimable_message_tx(tx, record, QueueEntryStatus::Dequeued, true)
+}
+
+pub(crate) fn try_interject_queued_message_tx(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+) -> Result<bool> {
+    try_transition_claimable_message_tx(tx, record, QueueEntryStatus::Interjected, false)
+}
+
+fn try_transition_claimable_message_tx(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+    target_status: QueueEntryStatus,
+    include_interrupted: bool,
+) -> Result<bool> {
     let queued_status = enum_string(&QueueEntryStatus::Queued)?;
-    let interrupted_status = enum_string(&QueueEntryStatus::Interrupted)?;
+    let secondary_status = enum_string(if include_interrupted {
+        &QueueEntryStatus::Interrupted
+    } else {
+        &QueueEntryStatus::Queued
+    })?;
     let mut claimed = record.clone();
-    claimed.status = QueueEntryStatus::Dequeued;
+    claimed.status = target_status;
     let payload_json = serde_json::to_string(&claimed)?;
     let priority = enum_string(&claimed.priority)?;
     let status = enum_string(&claimed.status)?;
@@ -3440,7 +3460,7 @@ pub(crate) fn try_claim_queued_message_tx(
             timestamp(claimed.updated_at),
             payload_json,
             queued_status,
-            interrupted_status,
+            secondary_status,
         ],
     )?;
     Ok(changed == 1)

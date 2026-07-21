@@ -17,6 +17,26 @@ shutdown remain explicit posture authorities, and the provider turn loop still
 owns safe-point operator interjection. These are preserved boundaries, not open
 scheduler blockers.
 
+## Protocol transition layer
+
+An additive `QueueTransitionCommand` protocol layer wraps every scheduler
+boundary in an atomic SQLite transaction. Each boundary records a shadow
+comparison between the legacy decision and the canonical protocol outcome,
+plus a semantic shadow decision when trusted ingress conditions apply. The
+boundaries currently integrated are: message admission, wait resume,
+settlement recovery, delivery disposition, operator interjection (four typed
+boundaries), and work-queue idle tick. A public `SchedulerDiagnosticAuditEvent`
+stream is emitted alongside legacy audit for observability. See
+[scheduler spec](../website/spec/scheduler.md) and
+[implementation decision 098](../implementation-decisions/098-scheduler-protocol-transition-wraps-legacy-boundaries-atomically.md).
+
+Rollout authority is scenario-local. `Shadow` records matched or divergent
+evidence without changing legacy behavior. `Authoritative` requires matched
+canonical evidence in the same transaction as the queue mutation; missing or
+divergent evidence rejects the complete transaction. A fenced hard-blocker
+command records the blocker and atomically restores the configured rollback
+target. These authority and rollback facts survive restart.
+
 ## Landed contract anchors
 
 - Normal queued-message processing records a `scheduler_decision` before the
@@ -47,7 +67,14 @@ Focused verification currently lives in:
 - `src/runtime/continuation.rs`
 - `src/runtime/memory_refresh.rs`
 - `src/runtime/task_state_reducer.rs`
+- `src/runtime/runtime_db/transitions.rs` (protocol transition atomics)
+- `src/runtime_db/tests.rs` (authoritative cutover, rollback, concurrent load,
+  and restart)
+- `src/runtime/turn/execution.rs` (operator interjection per-boundary shadow)
+- `src/storage/mod.rs` (FIFO WorkItem queue projection)
 - `tests/fixtures/scheduler/`
+- `tests/scheduler_workitem_mvp.rs` (canonical protocol invariants)
+- `tests/scheduler_intent_mvp.rs` (semantic decision plane shadow scoring)
 
 Useful local checks:
 
@@ -56,6 +83,12 @@ cargo test scheduler --quiet
 cargo test mismatched_timer_trigger_stays_liveness_only --quiet
 cargo test queued_system_tick_explicit_idempotency_key_wins_over_newer_signals --quiet
 cargo test operator_interjection_prompt_is_interjected_before_next_provider_round --quiet
+cargo test scheduling_advisory --quiet
+cargo test scheduler_diagnostic_audit_event --quiet
+cargo test scheduler_authoritative_scenarios_require_matched_evidence_and_restart_safe_rollback --quiet
+cargo test scheduler_authoritative_queue_commits_survive_sustained_concurrent_load_and_restart --quiet
+cargo test storage_work_queue_prompt_projection_preserves_fifo_fairness_and_limit --quiet
+cargo test --test scheduler_workitem_mvp --test scheduler_intent_mvp --quiet
 ```
 
 ## Remaining follow-up

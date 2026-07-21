@@ -271,6 +271,8 @@ struct RuntimeInner {
     #[cfg(test)]
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
+    omit_next_scheduler_claim_shadow_comparison: AtomicBool,
+    #[cfg(test)]
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
@@ -645,6 +647,17 @@ impl RuntimeHandle {
             "a transition fault is already armed for this runtime fixture"
         );
         faults.push_back(fault);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn omit_next_scheduler_claim_shadow_comparison(&self) {
+        assert!(
+            !self
+                .inner
+                .omit_next_scheduler_claim_shadow_comparison
+                .swap(true, Ordering::SeqCst),
+            "scheduler claim shadow comparison omission is already armed"
+        );
     }
 
     #[cfg(test)]
@@ -1524,50 +1537,103 @@ impl RuntimeHandle {
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
-        self.persist_message_evidence(&message)?;
-        self.inner.storage.append_queue_entry(&QueueEntryRecord {
-            message_id: message.id.clone(),
-            agent_id: message.agent_id.clone(),
-            priority: message.priority.clone(),
-            status: QueueEntryStatus::Queued,
-            created_at: message.created_at,
-            updated_at: Utc::now(),
-        })?;
-        {
+        let message_is_new = self
+            .inner
+            .storage
+            .read_message_by_id(&message.id)?
+            .is_none();
+        let mut audit_events = vec![
+            AuditEvent::legacy(
+                "message_admitted",
+                serde_json::json!({
+                    "message_id": message.id.clone(),
+                    "agent_id": message.agent_id.clone(),
+                    "kind": message.kind.clone(),
+                    "origin": message.origin.clone(),
+                    "authority_class": message.authority_class,
+                    "delivery_surface": message.delivery_surface,
+                    "admission_context": message.admission_context,
+                    "trigger_kind": message.trigger_kind,
+                    "work_item_id": message.work_item_id.clone(),
+                    "task_id": message.task_id.clone(),
+                    "source_refs": message.source_refs.clone(),
+                    "correlation_id": message.correlation_id.clone(),
+                    "causation_id": message.causation_id.clone(),
+                }),
+            ),
+            AuditEvent::typed(
+                RuntimeEventKind::MessageEnqueued,
+                &MessageLifecycleAuditEvent::from_message(&message),
+            )?,
+        ];
+        let mut commit = {
             let mut guard = self.inner.agent.lock().await;
+            let expected_persisted_state = guard.last_persisted_state.clone();
+            let mut committed_state = guard.state.clone();
+            let previous_status = committed_state.status.clone();
+            let previous_sleeping_until = committed_state.sleeping_until;
+            committed_state.pending = guard.queue.len().saturating_add(1);
+            committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
+            committed_state.total_message_count = self
+                .inner
+                .storage
+                .count_messages()?
+                .saturating_add(usize::from(message_is_new));
+            if scheduler::apply_message_wake_projection(&mut committed_state) {
+                audit_events.push(AuditEvent::legacy(
+                    "scheduler_posture_decision",
+                    serde_json::json!({
+                        "boundary": "message_admission",
+                        "reason": "message_admission_wake",
+                        "previous_status": previous_status,
+                        "next_status": committed_state.status,
+                        "evidence": [
+                            format!("message_id={}", message.id),
+                            format!("message_kind={:?}", message.kind),
+                            format!("previous_sleeping_until={previous_sleeping_until:?}"),
+                        ],
+                    }),
+                ));
+            }
+            let commit = self.inner.runtime_db.transitions().commit_queue(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: message.agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
+                        QueueEntryRecord {
+                            message_id: message.id.clone(),
+                            agent_id: message.agent_id.clone(),
+                            priority: message.priority.clone(),
+                            status: QueueEntryStatus::Queued,
+                            created_at: message.created_at,
+                            updated_at: Utc::now(),
+                        },
+                    ),
+                    scheduler_authority_scenarios: Vec::new(),
+                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_persisted_state)),
+                        record: Box::new(committed_state.clone()),
+                    }),
+                    message_evidence: vec![message.clone()],
+                    transcript_entries: Vec::new(),
+                    audit_events,
+                    scheduler_shadow_comparison: None,
+                    scheduler_delivery_shadow_comparison: None,
+                    scheduler_semantic_shadow: None,
+                    notify_scheduler: true,
+                    fault: self.take_transition_fault(),
+                    brief_evidence: Vec::new(),
+                },
+            )?;
             guard.queue.push(message.clone());
-            guard.state.pending = guard.queue.len();
-            guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
-            guard.state.total_message_count = self.inner.storage.count_messages()?;
-            guard.persist_state(&self.inner.storage)?;
-        }
-        scheduler_executor::SchedulerDecisionExecutor::new(self)
-            .admit_message_wake(&message)
-            .await?;
-
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "message_admitted",
-            serde_json::json!({
-                "message_id": message.id.clone(),
-                "agent_id": message.agent_id.clone(),
-                "kind": message.kind.clone(),
-                "origin": message.origin.clone(),
-                "authority_class": message.authority_class,
-                "delivery_surface": message.delivery_surface,
-                "admission_context": message.admission_context,
-                "trigger_kind": message.trigger_kind,
-                "work_item_id": message.work_item_id.clone(),
-                "task_id": message.task_id.clone(),
-                "source_refs": message.source_refs.clone(),
-                "correlation_id": message.correlation_id.clone(),
-                "causation_id": message.causation_id.clone(),
-            }),
-        ))?;
-        self.inner.storage.append_event(&AuditEvent::typed(
-            RuntimeEventKind::MessageEnqueued,
-            &MessageLifecycleAuditEvent::from_message(&message),
-        )?)?;
-        self.inner.notify.notify_one();
+            guard.state = committed_state.clone();
+            guard.last_persisted_state = committed_state;
+            let mut commit = commit;
+            commit.effects.agent_state = None;
+            commit
+        };
+        commit.effects.notify_scheduler = true;
+        self.apply_transition_commit(commit).await;
         Ok(message)
     }
 
@@ -1583,24 +1649,52 @@ impl RuntimeHandle {
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
     ) -> Result<bool> {
+        let shadow_comparison = {
+            let guard = self.inner.agent.lock().await;
+            let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+                &self.inner.storage,
+                &guard.state,
+                guard.queue.len(),
+                self.now(),
+            )?;
+            scheduler::shadow_comparison_for_settlement(&projection, &record)
+                .map(scheduler_executor::scheduler_shadow_comparison_command)
+                .transpose()?
+        };
+        let delivery_shadow_comparison = {
+            let guard = self.inner.agent.lock().await;
+            let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+                &self.inner.storage,
+                &guard.state,
+                guard.queue.len(),
+                self.now(),
+            )?;
+            scheduler::shadow_comparison_for_delivery(&projection, &record)
+                .map(scheduler_executor::scheduler_shadow_comparison_command)
+                .transpose()?
+        };
         let commit = self.inner.runtime_db.transitions().commit_queue(
             &crate::runtime_db::transitions::QueueTransitionCommand {
                 agent_id: record.agent_id.clone(),
+                operation: crate::runtime_db::transitions::QueueOperation::Settle,
                 mutation: crate::runtime_db::transitions::QueueMutation::Upsert(record),
+                scheduler_authority_scenarios: vec![
+                    scheduler::SETTLEMENT_SCENARIO.into(),
+                    scheduler::DELIVERY_SCENARIO.into(),
+                ],
                 agent_state: None,
+                message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
                 audit_events,
+                scheduler_shadow_comparison: shadow_comparison,
+                scheduler_delivery_shadow_comparison: delivery_shadow_comparison,
+                scheduler_semantic_shadow: None,
                 notify_scheduler,
                 fault: self.take_transition_fault(),
+                brief_evidence: Vec::new(),
             },
         )?;
         Ok(self.apply_transition_commit(commit).await.applied)
-    }
-
-    pub(crate) fn persist_message_evidence(&self, message: &MessageEnvelope) -> Result<()> {
-        self.inner.storage.append_message(message)?;
-        self.inner.notify.notify_one();
-        Ok(())
     }
 
     pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
@@ -1649,7 +1743,11 @@ impl RuntimeHandle {
                         scheduler::SchedulerBoundary::RunLoop,
                         scheduler::SchedulerInput::Idle,
                     );
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     return Ok(());
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
@@ -1677,7 +1775,11 @@ impl RuntimeHandle {
                         scheduler::SchedulerDecisionKind::Sleep
                             | scheduler::SchedulerDecisionKind::StayIdle
                     ) {
-                        scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                        scheduler::append_scheduler_decision(
+                            &self.inner.storage,
+                            &self.inner.default_agent_id,
+                            &decision,
+                        )?;
                     }
                     let next_recheck_at = self.next_blocked_work_item_recheck_at().await?;
                     let idle_state = scheduler_executor::SchedulerDecisionExecutor::new(&self)

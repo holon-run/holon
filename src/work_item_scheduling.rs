@@ -392,11 +392,9 @@ pub fn compare_scheduling_projection_order(
                         )
                     })
             }
-            WorkItemCandidateClass::QueuedRunnable => left
-                .work_item
-                .updated_at
-                .cmp(&right.work_item.updated_at)
-                .then_with(|| left.work_item.created_at.cmp(&right.work_item.created_at)),
+            WorkItemCandidateClass::QueuedRunnable => {
+                left.work_item.created_at.cmp(&right.work_item.created_at)
+            }
             WorkItemCandidateClass::Yielded
             | WorkItemCandidateClass::WaitingForOperator
             | WorkItemCandidateClass::Blocked

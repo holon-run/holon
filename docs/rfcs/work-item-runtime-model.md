@@ -182,8 +182,12 @@ The WorkItem lifecycle state set is:
 
 Blocked and queued are derived views, not lifecycle states:
 
-- blocked work is `open` work with `blocked_by` set;
-- queued work is `open` work that is not the current focus and has no blocker.
+- the legacy compatibility view may show `open` work with `blocked_by` as
+  blocked;
+- the target blocked/paused view comes from an active wait or typed manual
+  hold; and
+- the target queued-runnable view requires an offered scheduling generation,
+  independently of current focus.
 
 Blocked WorkItems may also carry a one-shot fallback recheck deadline:
 
@@ -214,8 +218,10 @@ The initial state set is:
 
 `needs_input`
 - the plan cannot be safely finalized without operator or external input.
-- the work item remains open but is not scheduler-runnable until the agent
-  processes the input and updates the work item back to `ready` or `draft`.
+- the WorkItem remains open; this planning posture does not itself create a
+  wait or suppress scheduler demand.
+- when execution must pause for input, the agent records an operator
+  `WaitCondition` through `WaitFor`.
 
 Daemon mode does not require a human to confirm every plan. The agent may move
 from `draft` to `ready` when the task boundary is clear. It should use
@@ -308,7 +314,8 @@ At most one item should normally be `in_progress`.
 
 `blocked_by` is optional WorkItem-level wait/blocker display text.
 
-It means the objective cannot currently be advanced by the agent. Examples:
+It explains why the objective cannot currently be advanced by the agent.
+It is compatibility/display data, not target scheduler authority. Examples:
 
 - waiting for operator input;
 - waiting for an external callback;
@@ -321,7 +328,7 @@ If only one step is awkward but the objective can still progress, do not set
 External waits should be represented through `WaitFor(wake=external)` plus any
 external trigger, timer, callback, or inbox subscription needed for liveness.
 `blocked_by` should explain the blocker; it should not be the only durable
-wake mechanism.
+wake mechanism or create/suppress scheduling demand by itself.
 
 ## Plan-Then-Implement Flow
 
@@ -391,30 +398,39 @@ means the top-level agent-owned objective is singular.
 
 ## Activation And Tick Behavior
 
-Tick should ask:
+The target scheduler asks:
 
-- is there runnable work worth activating?
+- is there an eligible, fenced activation candidate?
 
-Runnable is a derived view, not a stored lifecycle state:
+Runnable is a derived view over scheduler-sensitive facts, not a stored
+lifecycle state and not a consequence of plan metadata:
 
 - `state = open`
-- no `blocked_by`
-- `plan_status != needs_input`
+- no running or settlement-missing activation;
+- no active wait, yield frame, or manual hold; and
+- an offered WorkItem scheduling generation.
 
-The minimal rule is:
+The target rule is:
 
-1. if the current WorkItem is runnable, wake and continue it;
-2. otherwise, if another queued runnable WorkItem exists, wake the agent so
-   it can explicitly pick one;
-3. otherwise, remain idle.
+1. construct candidates from canonical Message, task, wait, WorkItem,
+   continuation, and recovery facts;
+2. match candidates against the agent activation slot, dispatch state, and
+   runtime constraints;
+3. atomically claim one `AgentActivation`; or
+4. remain idle or sleep.
 
-The runtime may surface candidate WorkItems, but it should not silently mutate
-`current_work_item_id`.
+The runtime does not silently mutate `current_work_item_id` when it admits
+queued WorkItem execution. Activation binding owns execution while durable
+focus remains a separate attention pointer.
 
 New ingress should not automatically preempt the current WorkItem. If the
 ingress belongs to the same objective, it updates the current WorkItem. If it
 forms a different objective, it becomes separate queued work or remains in the
 external system that owns routing.
+
+Synthetic `SystemTick` may remain as a compatibility executor during
+migration, but it is not the target WorkItem admission protocol. See
+[Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md).
 
 ## Persistence Model
 
@@ -723,7 +739,8 @@ The initial default bias should be conservative:
   `needs_input`;
 - if the agent needs to change interpretation, edit the plan artifact before
   patching;
-- blocked state should be explicit through `blocked_by`;
+- waiting or paused state should be explicit through `WaitFor` or a typed
+  manual hold; `blocked_by` is display text;
 - completion should require explicit completion action.
 
 ## Current Design Direction
@@ -738,11 +755,13 @@ This RFC currently assumes:
 - todo item states are `pending`, `in_progress`, and `completed`;
 - item-level blocked state is omitted;
 - WorkItem-level blocked state is represented by `blocked_by`;
+- target scheduler waiting or pause authority is represented by active waits
+  or typed manual holds, not by `blocked_by`;
 - the first rollout remains message-driven by default;
 - WorkItem creation is explicit rather than inferred from every ingress;
 - `current_work_item_id` is controlled by explicit agent action;
-- queued and blocked views are derived from `open`, `current_work_item_id`, and
-  `blocked_by`;
+- queued-runnable and blocked/paused scheduling views are derived by the shared
+  read model from lifecycle, activation, demand, wait, yield, and hold facts;
 - runtime does not silently switch current work;
 - progress narration remains in transcript, brief, tool, issue, PR, and final
   message records associated back to WorkItems by runtime binding;

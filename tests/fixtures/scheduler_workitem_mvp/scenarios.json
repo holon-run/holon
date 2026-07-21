@@ -1,0 +1,3475 @@
+[
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "settle_activation",
+          "settlement": {
+            "activation_id": "a1",
+            "agent_dispatch": {
+              "kind": "awaiting",
+              "wait": {
+                "generation": 2,
+                "id": "wait-1"
+              }
+            },
+            "created_at": "2026-07-20T00:00:00Z",
+            "disposition": {
+              "kind": "work_waits",
+              "wait": {
+                "generation": 2,
+                "id": "wait-1"
+              }
+            },
+            "evidence": [],
+            "id": "settlement-a1-1",
+            "operator_delivery": null,
+            "turn_terminal": null
+          }
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a1": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 1,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 1
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 1,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 1
+        }
+      },
+      "activations": {
+        "a1": {
+          "admitted_generation": 1,
+          "recovery_for": null,
+          "state": "settled",
+          "work_item_id": "w1"
+        }
+      },
+      "decisions": [
+        "settled"
+      ],
+      "dispatch": {
+        "kind": "awaiting",
+        "wait": {
+          "generation": 2,
+          "id": "wait-1"
+        }
+      },
+      "dispatch_revision": 1,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {
+        "settlement-a1-1": {
+          "activation_id": "a1",
+          "agent_dispatch": {
+            "kind": "awaiting",
+            "wait": {
+              "generation": 2,
+              "id": "wait-1"
+            }
+          },
+          "created_at": "2026-07-20T00:00:00Z",
+          "disposition": {
+            "kind": "work_waits",
+            "wait": {
+              "generation": 2,
+              "id": "wait-1"
+            }
+          },
+          "evidence": [],
+          "id": "settlement-a1-1",
+          "operator_delivery": null,
+          "turn_terminal": null
+        }
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "admitted_generations": [
+        "w1:1"
+      ],
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {
+        "a1": {
+          "admitted_generation": 1,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w1"
+        }
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "activation_id": "a1",
+        "admitted_generation": 1,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w1"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0,
+          "consumed_by": "a1"
+        }
+      },
+      "activation_admissions": {
+        "a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0
+        }
+      },
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [
+        "w1:1"
+      ],
+      "continuation_admissions": {},
+      "waits": {}
+    },
+    "name": "await_this_reserves_lane_for_operator_interaction"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "settle_activation",
+          "settlement": {
+            "activation_id": "a1",
+            "agent_dispatch": {
+              "kind": "open"
+            },
+            "created_at": "2026-07-20T00:00:00Z",
+            "disposition": {
+              "kind": "work_waits",
+              "wait": {
+                "generation": 2,
+                "id": "wait-1"
+              }
+            },
+            "evidence": [],
+            "id": "settlement-a1-1",
+            "operator_delivery": null,
+            "turn_terminal": null
+          }
+        }
+      },
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 7,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": null,
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 7
+        },
+        "command": {
+          "kind": "admit_activation",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 7,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 7
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a1": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 1,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 1
+        },
+        "a2": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 7,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 7
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 1,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 1
+        },
+        "authority-a2": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 7,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 7
+        }
+      },
+      "activations": {
+        "a1": {
+          "admitted_generation": 1,
+          "recovery_for": null,
+          "state": "settled",
+          "work_item_id": "w1"
+        },
+        "a2": {
+          "admitted_generation": 7,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w2"
+        }
+      },
+      "admitted_generations": [
+        "w1:1",
+        "w2:7"
+      ],
+      "decisions": [
+        "settled",
+        "admitted"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {
+        "settlement-a1-1": {
+          "activation_id": "a1",
+          "agent_dispatch": {
+            "kind": "open"
+          },
+          "created_at": "2026-07-20T00:00:00Z",
+          "disposition": {
+            "kind": "work_waits",
+            "wait": {
+              "generation": 2,
+              "id": "wait-1"
+            }
+          },
+          "evidence": [],
+          "id": "settlement-a1-1",
+          "operator_delivery": null,
+          "turn_terminal": null
+        }
+      },
+      "slot": {
+        "activation_id": "a2",
+        "admitted_generation": 7,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w2"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        },
+        "w2": {
+          "capabilities": [
+            "web_search"
+          ],
+          "cost_class": "batch",
+          "locality": "remote:any",
+          "locks": [
+            "network:shared"
+          ],
+          "metadata_revision": 7,
+          "scheduling_generation": 7,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {
+        "a1": {
+          "admitted_generation": 1,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w1"
+        }
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "activation_id": "a1",
+        "admitted_generation": 1,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w1"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        },
+        "w2": {
+          "capabilities": [
+            "web_search"
+          ],
+          "cost_class": "batch",
+          "locality": "remote:any",
+          "locks": [
+            "network:shared"
+          ],
+          "metadata_revision": 7,
+          "scheduling_generation": 7,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0,
+          "consumed_by": "a1"
+        }
+      },
+      "activation_admissions": {
+        "a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0
+        }
+      },
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [
+        "w1:1"
+      ],
+      "continuation_admissions": {},
+      "waits": {}
+    },
+    "name": "accept_scheduling_keeps_wait_active_and_admits_other_work"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "trigger_wait",
+          "wait_id": "wait-1",
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        }
+      },
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": null,
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        },
+        "command": {
+          "kind": "admit_activation",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "trigger_wait",
+          "wait_id": "wait-1",
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a2": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      "activation_authorities": {
+        "authority-a2": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      "activations": {
+        "a2": {
+          "admitted_generation": 2,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w1"
+        }
+      },
+      "admitted_generations": [
+        "w1:2"
+      ],
+      "decisions": [
+        "wait_triggered",
+        "admitted",
+        "duplicate_ignored"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 1,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "activation_id": "a2",
+        "admitted_generation": 2,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w1"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "consuming_activation_id": "a2",
+              "owner_work_item_id": "w1",
+              "state": "consumed",
+              "trigger": {
+                "trigger_generation": 1,
+                "trigger_id": "wait-1-trigger-2"
+              }
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {},
+      "dispatch": {
+        "kind": "awaiting",
+        "wait": {
+          "generation": 2,
+          "id": "wait-1"
+        }
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "activation_authorities": {},
+      "activation_admissions": {},
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [],
+      "continuation_admissions": {}
+    },
+    "name": "matching_operator_input_consumes_wait_once"
+  },
+  {
+    "events": [
+      {
+        "surface": "event",
+        "event": {
+          "input_id": "input-unrelated",
+          "kind": "operator_intervention"
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {},
+      "activation_authorities": {},
+      "activations": {},
+      "decisions": [
+        "operator_intervention"
+      ],
+      "dispatch": {
+        "kind": "awaiting",
+        "wait": {
+          "generation": 2,
+          "id": "wait-1"
+        }
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "admitted_generations": [],
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {},
+      "dispatch": {
+        "kind": "awaiting",
+        "wait": {
+          "generation": 2,
+          "id": "wait-1"
+        }
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "activation_authorities": {},
+      "activation_admissions": {},
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [],
+      "continuation_admissions": {}
+    },
+    "name": "unrelated_operator_input_is_intervention"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "record_missing_settlement",
+          "id": "missing-a1",
+          "activation_id": "a1",
+          "created_at": "2026-07-20T00:00:00Z"
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a1": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 4,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 4
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 4,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 4
+        }
+      },
+      "activations": {
+        "a1": {
+          "admitted_generation": 4,
+          "recovery_for": null,
+          "state": "settlement_missing",
+          "work_item_id": "w1"
+        }
+      },
+      "decisions": [
+        "settlement_missing"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "missing_settlements": {
+        "missing-a1": {
+          "activation_id": "a1",
+          "created_at": "2026-07-20T00:00:00Z",
+          "id": "missing-a1"
+        }
+      },
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "kind": "idle"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
+          "status": {
+            "activation_id": "a1",
+            "kind": "needs_settlement"
+          }
+        }
+      },
+      "admitted_generations": [
+        "w1:4"
+      ],
+      "continuation_admissions": [],
+      "waits": {}
+    },
+    "initial": {
+      "activations": {
+        "a1": {
+          "admitted_generation": 4,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w1"
+        }
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "activation_id": "a1",
+        "admitted_generation": 4,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w1"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 4
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 4,
+          "expected_dispatch_revision": 0,
+          "consumed_by": "a1"
+        }
+      },
+      "activation_admissions": {
+        "a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 4
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 4,
+          "expected_dispatch_revision": 0
+        }
+      },
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [
+        "w1:4"
+      ],
+      "continuation_admissions": {},
+      "waits": {}
+    },
+    "name": "progress_only_turn_reports_settlement_missing"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a-other",
+          "activation": {
+            "id": "a-other",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w2",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a-other",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0,
+          "consumed_by": null
+        },
+        "command": {
+          "kind": "admit_activation",
+          "authority_id": "authority-a-other",
+          "activation": {
+            "id": "a-other",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w2",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a-other",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0
+        }
+      },
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a-resume",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a-resume",
+            "idempotency_key": "activation-a-resume",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": null,
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        },
+        "command": {
+          "kind": "admit_activation",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a-resume",
+            "idempotency_key": "activation-a-resume",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a-resume",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a-resume": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a-resume",
+            "idempotency_key": "activation-a-resume",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a-resume",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      "activation_authorities": {
+        "authority-a-resume": {
+          "authority_id": "authority-a-resume",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a-resume",
+            "idempotency_key": "activation-a-resume",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a-resume",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      "activations": {
+        "a-resume": {
+          "admitted_generation": 2,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w1"
+        }
+      },
+      "admitted_generations": [
+        "w1:2"
+      ],
+      "decisions": [
+        "rejected",
+        "admitted"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 1,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "activation_id": "a-resume",
+        "admitted_generation": 2,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w1"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "consuming_activation_id": "a-resume",
+              "owner_work_item_id": "w1",
+              "state": "consumed",
+              "trigger": {
+                "trigger_generation": 1,
+                "trigger_id": "wait-1-trigger-2"
+              }
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        },
+        "w2": {
+          "capabilities": [
+            "web_search"
+          ],
+          "cost_class": "batch",
+          "locality": "remote:any",
+          "locks": [
+            "network:shared"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {},
+      "dispatch": {
+        "kind": "awaiting",
+        "wait": {
+          "generation": 2,
+          "id": "wait-1"
+        }
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "triggered",
+              "trigger": {
+                "trigger_generation": 1,
+                "trigger_id": "wait-1-trigger-2"
+              }
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        },
+        "w2": {
+          "capabilities": [
+            "web_search"
+          ],
+          "cost_class": "batch",
+          "locality": "remote:any",
+          "locks": [
+            "network:shared"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {},
+      "activation_admissions": {},
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [],
+      "continuation_admissions": {}
+    },
+    "name": "reserved_lane_rejects_other_work_and_accepts_matching_resume"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 3,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": null,
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 3
+        },
+        "command": {
+          "kind": "admit_activation",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 3,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 3
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a2": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 3,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 3
+        }
+      },
+      "activation_authorities": {
+        "authority-a2": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w2"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 3,
+              "work_item_id": "w2"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 3
+        }
+      },
+      "activations": {
+        "a2": {
+          "admitted_generation": 3,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w2"
+        }
+      },
+      "admitted_generations": [
+        "w2:3"
+      ],
+      "decisions": [
+        "admitted"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "activation_id": "a2",
+        "admitted_generation": 3,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w2"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        },
+        "w2": {
+          "capabilities": [
+            "web_search"
+          ],
+          "cost_class": "batch",
+          "locality": "remote:any",
+          "locks": [
+            "network:shared"
+          ],
+          "metadata_revision": 3,
+          "scheduling_generation": 3,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {},
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        },
+        "w2": {
+          "capabilities": [
+            "web_search"
+          ],
+          "cost_class": "batch",
+          "locality": "remote:any",
+          "locks": [
+            "network:shared"
+          ],
+          "metadata_revision": 3,
+          "scheduling_generation": 3,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {},
+      "activation_admissions": {},
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [],
+      "continuation_admissions": {}
+    },
+    "name": "waiting_current_work_does_not_block_queued_runnable_work"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a-background",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "background"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 4,
+              "work_item_id": "background"
+            },
+            "id": "a-background",
+            "idempotency_key": "activation-a-background",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": null,
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 4
+        },
+        "command": {
+          "kind": "admit_activation",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "background"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 4,
+              "work_item_id": "background"
+            },
+            "id": "a-background",
+            "idempotency_key": "activation-a-background",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a-background",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 4
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a-background": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "background"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 4,
+              "work_item_id": "background"
+            },
+            "id": "a-background",
+            "idempotency_key": "activation-a-background",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a-background",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 4
+        }
+      },
+      "activation_authorities": {
+        "authority-a-background": {
+          "authority_id": "authority-a-background",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "background"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 4,
+              "work_item_id": "background"
+            },
+            "id": "a-background",
+            "idempotency_key": "activation-a-background",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "scheduler",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a-background",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 4
+        }
+      },
+      "activations": {
+        "a-background": {
+          "admitted_generation": 4,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "background"
+        }
+      },
+      "admitted_generations": [
+        "background:4"
+      ],
+      "decisions": [
+        "admitted"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "discussion",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "activation_id": "a-background",
+        "admitted_generation": 4,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "background"
+      },
+      "waits": {
+        "wait-discussion": {
+          "current_generation": 9,
+          "generations": {
+            "9": {
+              "owner_work_item_id": "discussion",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "background": {
+          "capabilities": [
+            "shell"
+          ],
+          "cost_class": "batch",
+          "locality": "host:local",
+          "locks": [],
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
+          "status": {
+            "kind": "runnable"
+          }
+        },
+        "discussion": {
+          "capabilities": [
+            "operator_input"
+          ],
+          "cost_class": "interactive",
+          "locality": "agent:holon-dev",
+          "locks": [],
+          "metadata_revision": 9,
+          "scheduling_generation": 9,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-discussion"
+          }
+        }
+      },
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {},
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "discussion",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-discussion": {
+          "current_generation": 9,
+          "generations": {
+            "9": {
+              "owner_work_item_id": "discussion",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "background": {
+          "capabilities": [
+            "shell"
+          ],
+          "cost_class": "batch",
+          "locality": "host:local",
+          "locks": [],
+          "metadata_revision": 4,
+          "scheduling_generation": 4,
+          "status": {
+            "kind": "runnable"
+          }
+        },
+        "discussion": {
+          "capabilities": [
+            "operator_input"
+          ],
+          "cost_class": "interactive",
+          "locality": "agent:holon-dev",
+          "locks": [],
+          "metadata_revision": 9,
+          "scheduling_generation": 9,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-discussion"
+          }
+        }
+      },
+      "activation_authorities": {},
+      "activation_admissions": {},
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [],
+      "continuation_admissions": {}
+    },
+    "name": "queued_execution_does_not_mutate_focus"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "trigger_wait",
+          "wait_id": "wait-1",
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        }
+      },
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "trigger_wait",
+          "wait_id": "wait-1",
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        }
+      },
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": null,
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        },
+        "command": {
+          "kind": "admit_activation",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "trigger_wait",
+          "wait_id": "wait-1",
+          "wait_generation": 2,
+          "trigger_id": "wait-1-trigger-2",
+          "trigger_generation": 1
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a2": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      "activation_authorities": {
+        "authority-a2": {
+          "authority_id": "authority-a2",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "wait_owner",
+              "owner_work_item_id": "w1",
+              "wait_id": "wait-1"
+            },
+            "cause": {
+              "kind": "wait_resume",
+              "trigger_generation": 1,
+              "trigger_id": "wait-1-trigger-2",
+              "wait_generation": 2,
+              "wait_id": "wait-1"
+            },
+            "id": "a2",
+            "idempotency_key": "activation-a2",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "wait-resume",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a2",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 2
+        }
+      },
+      "activations": {
+        "a2": {
+          "admitted_generation": 2,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w1"
+        }
+      },
+      "admitted_generations": [
+        "w1:2"
+      ],
+      "decisions": [
+        "wait_triggered",
+        "duplicate_ignored",
+        "admitted",
+        "duplicate_ignored"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "activation_id": "a2",
+        "admitted_generation": 2,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w1"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "consuming_activation_id": "a2",
+              "owner_work_item_id": "w1",
+              "state": "consumed",
+              "trigger": {
+                "trigger_generation": 1,
+                "trigger_id": "wait-1-trigger-2"
+              }
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "continuation_admissions": []
+    },
+    "initial": {
+      "activations": {},
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "waits": {
+        "wait-1": {
+          "current_generation": 2,
+          "generations": {
+            "2": {
+              "owner_work_item_id": "w1",
+              "state": "active"
+            }
+          }
+        }
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 2,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "waiting",
+            "wait_id": "wait-1"
+          }
+        }
+      },
+      "activation_authorities": {},
+      "activation_admissions": {},
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [],
+      "continuation_admissions": {}
+    },
+    "name": "duplicate_callback_never_reconsumes_wait"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "settle_activation",
+          "settlement": {
+            "activation_id": "a-child",
+            "agent_dispatch": {
+              "kind": "open"
+            },
+            "created_at": "2026-07-20T00:00:00Z",
+            "disposition": {
+              "continuation": {
+                "admission_id": "continue-1",
+                "caller_work_item_id": "caller",
+                "expected_caller_generation": 5
+              },
+              "kind": "work_completed"
+            },
+            "evidence": [
+              "completion-report:a-child:3"
+            ],
+            "id": "settlement-a-child-3",
+            "operator_delivery": "brief-a-child-3",
+            "turn_terminal": "turn-terminal-a-child-3"
+          }
+        }
+      },
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "settle_activation",
+          "settlement": {
+            "activation_id": "a-child",
+            "agent_dispatch": {
+              "kind": "open"
+            },
+            "created_at": "2026-07-20T00:00:00Z",
+            "disposition": {
+              "continuation": {
+                "admission_id": "continue-1",
+                "caller_work_item_id": "caller",
+                "expected_caller_generation": 5
+              },
+              "kind": "work_completed"
+            },
+            "evidence": [
+              "completion-report:a-child:3"
+            ],
+            "id": "settlement-a-child-3",
+            "operator_delivery": "brief-a-child-3",
+            "turn_terminal": "turn-terminal-a-child-3"
+          }
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a-child": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "child"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 3,
+              "work_item_id": "child"
+            },
+            "id": "a-child",
+            "idempotency_key": "activation-a-child",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a-child",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 3
+        }
+      },
+      "activation_authorities": {
+        "authority-a-child": {
+          "authority_id": "authority-a-child",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "child"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 3,
+              "work_item_id": "child"
+            },
+            "id": "a-child",
+            "idempotency_key": "activation-a-child",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a-child",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 3
+        }
+      },
+      "activations": {
+        "a-child": {
+          "admitted_generation": 3,
+          "recovery_for": null,
+          "state": "settled",
+          "work_item_id": "child"
+        }
+      },
+      "continuation_admissions": [
+        "continue-1"
+      ],
+      "decisions": [
+        "settled",
+        "duplicate_ignored"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "caller",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {
+        "settlement-a-child-3": {
+          "activation_id": "a-child",
+          "agent_dispatch": {
+            "kind": "open"
+          },
+          "created_at": "2026-07-20T00:00:00Z",
+          "disposition": {
+            "continuation": {
+              "admission_id": "continue-1",
+              "caller_work_item_id": "caller",
+              "expected_caller_generation": 5
+            },
+            "kind": "work_completed"
+          },
+          "evidence": [
+            "completion-report:a-child:3"
+          ],
+          "id": "settlement-a-child-3",
+          "operator_delivery": "brief-a-child-3",
+          "turn_terminal": "turn-terminal-a-child-3"
+        }
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "work": {
+        "caller": {
+          "capabilities": [
+            "workspace_read"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 5,
+          "scheduling_generation": 6,
+          "status": {
+            "kind": "runnable"
+          }
+        },
+        "child": {
+          "capabilities": [
+            "shell",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "worktree:child",
+          "locks": [
+            "worktree:child"
+          ],
+          "metadata_revision": 3,
+          "scheduling_generation": 4,
+          "status": {
+            "kind": "terminal"
+          }
+        }
+      },
+      "admitted_generations": [
+        "child:3"
+      ],
+      "waits": {}
+    },
+    "initial": {
+      "activations": {
+        "a-child": {
+          "admitted_generation": 3,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "child"
+        }
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "child",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "activation_id": "a-child",
+        "admitted_generation": 3,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "child"
+      },
+      "work": {
+        "caller": {
+          "capabilities": [
+            "workspace_read"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 5,
+          "scheduling_generation": 5,
+          "status": {
+            "kind": "runnable"
+          }
+        },
+        "child": {
+          "capabilities": [
+            "shell",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "worktree:child",
+          "locks": [
+            "worktree:child"
+          ],
+          "metadata_revision": 3,
+          "scheduling_generation": 3,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {
+        "authority-a-child": {
+          "authority_id": "authority-a-child",
+          "activation": {
+            "id": "a-child",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "child",
+              "scheduling_generation": 3
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "child"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a-child",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 3,
+          "expected_dispatch_revision": 0,
+          "consumed_by": "a-child"
+        }
+      },
+      "activation_admissions": {
+        "a-child": {
+          "authority_id": "authority-a-child",
+          "activation": {
+            "id": "a-child",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "child",
+              "scheduling_generation": 3
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "child"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a-child",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 3,
+          "expected_dispatch_revision": 0
+        }
+      },
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [
+        "child:3"
+      ],
+      "continuation_admissions": {},
+      "waits": {}
+    },
+    "name": "completion_admits_caller_continuation_once"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "command": {
+          "kind": "settle_activation",
+          "settlement": {
+            "activation_id": "a1",
+            "agent_dispatch": {
+              "kind": "open"
+            },
+            "created_at": "2026-07-20T00:00:00Z",
+            "disposition": {
+              "kind": "work_continues"
+            },
+            "evidence": [],
+            "id": "settlement-a1-1",
+            "operator_delivery": null,
+            "turn_terminal": null
+          }
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {
+        "a1": {
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 1,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "authority_id": "authority-a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 1
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "agent_id": "agent-1",
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "cause": {
+              "kind": "work_item_runnable",
+              "scheduling_generation": 1,
+              "work_item_id": "w1"
+            },
+            "id": "a1",
+            "idempotency_key": "activation-a1",
+            "preemption": "non_preemptive",
+            "priority": "normal",
+            "provenance": {
+              "causation_id": null,
+              "correlation_id": null,
+              "origin": "system",
+              "source_id": "fixture",
+              "trust": "runtime_instruction"
+            },
+            "source_revision": null,
+            "state": "admitted"
+          },
+          "consumed_by": "a1",
+          "expected_dispatch_revision": 0,
+          "expected_scheduling_generation": 1
+        }
+      },
+      "activations": {
+        "a1": {
+          "admitted_generation": 1,
+          "recovery_for": null,
+          "state": "settled",
+          "work_item_id": "w1"
+        }
+      },
+      "decisions": [
+        "settled"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {
+        "settlement-a1-1": {
+          "activation_id": "a1",
+          "agent_dispatch": {
+            "kind": "open"
+          },
+          "created_at": "2026-07-20T00:00:00Z",
+          "disposition": {
+            "kind": "work_continues"
+          },
+          "evidence": [],
+          "id": "settlement-a1-1",
+          "operator_delivery": null,
+          "turn_terminal": null
+        }
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 2,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "admitted_generations": [
+        "w1:1"
+      ],
+      "continuation_admissions": [],
+      "waits": {}
+    },
+    "initial": {
+      "activations": {
+        "a1": {
+          "admitted_generation": 1,
+          "recovery_for": null,
+          "state": "running",
+          "work_item_id": "w1"
+        }
+      },
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "activation_id": "a1",
+        "admitted_generation": 1,
+        "kind": "running",
+        "recovery_for": null,
+        "work_item_id": "w1"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 1,
+          "scheduling_generation": 1,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {
+        "authority-a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0,
+          "consumed_by": "a1"
+        }
+      },
+      "activation_admissions": {
+        "a1": {
+          "authority_id": "authority-a1",
+          "activation": {
+            "id": "a1",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 1
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a1",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 1,
+          "expected_dispatch_revision": 0
+        }
+      },
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [
+        "w1:1"
+      ],
+      "continuation_admissions": {},
+      "waits": {}
+    },
+    "name": "serialized_snapshot_fences_settled_activation"
+  },
+  {
+    "events": [
+      {
+        "surface": "protocol",
+        "authority": {
+          "authority_id": "authority-a-stale",
+          "activation": {
+            "id": "a-stale",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 7
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a-stale",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 7,
+          "expected_dispatch_revision": 0,
+          "consumed_by": null
+        },
+        "command": {
+          "kind": "admit_activation",
+          "authority_id": "authority-a-stale",
+          "activation": {
+            "id": "a-stale",
+            "agent_id": "agent-1",
+            "state": "admitted",
+            "cause": {
+              "kind": "work_item_runnable",
+              "work_item_id": "w1",
+              "scheduling_generation": 7
+            },
+            "binding": {
+              "kind": "work_item",
+              "work_item_id": "w1"
+            },
+            "priority": "normal",
+            "preemption": "non_preemptive",
+            "source_revision": null,
+            "idempotency_key": "activation-a-stale",
+            "provenance": {
+              "origin": "system",
+              "trust": "runtime_instruction",
+              "source_id": "fixture",
+              "correlation_id": null,
+              "causation_id": null
+            }
+          },
+          "expected_scheduling_generation": 7,
+          "expected_dispatch_revision": 0
+        }
+      }
+    ],
+    "expected": {
+      "activation_admissions": {},
+      "activation_authorities": {},
+      "activations": {},
+      "decisions": [
+        "rejected"
+      ],
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "missing_settlements": {},
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "settlements": {},
+      "slot": {
+        "kind": "idle"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 8,
+          "scheduling_generation": 8,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "admitted_generations": [],
+      "continuation_admissions": [],
+      "waits": {}
+    },
+    "initial": {
+      "activations": {},
+      "dispatch": {
+        "kind": "open"
+      },
+      "dispatch_revision": 0,
+      "focus": "w1",
+      "rollout": {
+        "config_revision": 0,
+        "manifest": null,
+        "protocol_mode": "legacy",
+        "scenarios": {}
+      },
+      "slot": {
+        "kind": "idle"
+      },
+      "work": {
+        "w1": {
+          "capabilities": [
+            "workspace_read",
+            "workspace_write"
+          ],
+          "cost_class": "standard",
+          "locality": "workspace:holon",
+          "locks": [
+            "workspace:holon"
+          ],
+          "metadata_revision": 8,
+          "scheduling_generation": 8,
+          "status": {
+            "kind": "runnable"
+          }
+        }
+      },
+      "activation_authorities": {},
+      "activation_admissions": {},
+      "settlements": {},
+      "missing_settlements": {},
+      "admitted_generations": [],
+      "continuation_admissions": {},
+      "waits": {}
+    },
+    "name": "stale_scheduling_generation_is_rejected"
+  }
+]

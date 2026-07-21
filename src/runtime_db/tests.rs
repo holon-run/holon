@@ -44,6 +44,8 @@ use crate::runtime_db::migrations::timestamp;
 use crate::runtime_db::RuntimeDbLock;
 #[cfg(test)]
 use rusqlite::{ffi::ErrorCode, TransactionBehavior};
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
 pub mod test_support {
@@ -74,7 +76,21 @@ pub mod test_support {
 mod tests {
     use super::*;
     use crate::{
+        domain::scheduler_protocol::{
+            self, ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
+            ActivationPriority, ActivationProvenance, ActivationSlot, ActivationTrust,
+            AgentActivation, AgentDispatchState, Decision, IssueActivationAuthorityCommand,
+            ObservationalDivergenceAllowance, PreemptionPolicy, ProtocolCommand, ProtocolMode,
+            RollbackAction, RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand,
+            RolloutManifest, RolloutPreflightState, ScenarioMode, Snapshot, WorkDemand, WorkStatus,
+        },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
+        runtime_db::transitions::{
+            scheduler_protocol_repository::{
+                SchedulerProtocolCommandIdentityConflict, SchedulerShadowComparisonCommand,
+            },
+            QueueMutation, QueueOperation, QueueTransitionCommand, TransitionFaultPoint,
+        },
         system::WorkspaceAccessMode,
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
@@ -292,6 +308,377 @@ mod tests {
         identity
     }
 
+    fn scheduler_protocol_snapshot(scheduling_generation: u64) -> Snapshot {
+        Snapshot {
+            slot: ActivationSlot::Idle,
+            dispatch: AgentDispatchState::Open,
+            dispatch_revision: 0,
+            focus: Some("work-a".into()),
+            work: BTreeMap::from([(
+                "work-a".into(),
+                WorkDemand {
+                    metadata_revision: scheduling_generation,
+                    scheduling_generation,
+                    status: WorkStatus::Runnable,
+                    capabilities: BTreeSet::from(["workspace_write".into()]),
+                    locks: BTreeSet::from(["workspace:holon".into()]),
+                    locality: "workspace:holon".into(),
+                    cost_class: "standard".into(),
+                },
+            )]),
+            waits: BTreeMap::new(),
+            activations: BTreeMap::new(),
+            activation_authorities: BTreeMap::new(),
+            activation_admissions: BTreeMap::new(),
+            settlements: BTreeMap::new(),
+            missing_settlements: BTreeMap::new(),
+            rollout: Default::default(),
+            admitted_generations: BTreeSet::new(),
+            continuation_admissions: BTreeMap::new(),
+        }
+    }
+
+    fn scheduler_protocol_authority_command(
+        agent_id: &str,
+        scheduling_generation: u64,
+    ) -> ProtocolCommand {
+        ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
+            authority_id: "authority-a".into(),
+            activation: AgentActivation {
+                id: "activation-a".into(),
+                agent_id: agent_id.into(),
+                state: ActivationLifecycleState::Admitted,
+                cause: ActivationCause::WorkItemRunnable {
+                    work_item_id: "work-a".into(),
+                    scheduling_generation,
+                },
+                binding: ActivationBinding::WorkItem {
+                    work_item_id: "work-a".into(),
+                },
+                priority: ActivationPriority::Normal,
+                preemption: PreemptionPolicy::NonPreemptive,
+                source_revision: Some(1),
+                idempotency_key: "activation-a".into(),
+                provenance: ActivationProvenance {
+                    origin: ActivationOrigin::System,
+                    trust: ActivationTrust::RuntimeInstruction,
+                    source_id: "scheduler".into(),
+                    correlation_id: Some("correlation-a".into()),
+                    causation_id: Some("cause-a".into()),
+                },
+            },
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision: 0,
+        })
+    }
+
+    fn scheduler_rollout_manifest(revision: u64, preflight_revision: u64) -> RolloutManifest {
+        let evidence: BTreeSet<String> = [
+            "restart",
+            "fault_injection",
+            "rollback_drill",
+            "duplicate_trigger",
+            "stale_generation",
+            "restart_after_consume",
+            "rearm",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        RolloutManifest {
+            revision,
+            preflight_revision,
+            preflight_for_manifest_revision: revision,
+            preflight_succeeded: true,
+            protocol_build: format!("holon-0.30.0-test-{revision}"),
+            schema_build: format!("scheduler-protocol-schema-v{revision}"),
+            schema_revision: revision,
+            fixture_corpus_revision: format!("scheduler-workitem-phase2-v{revision}"),
+            classes: BTreeMap::from([(
+                "exact_wait_resume".into(),
+                RolloutClassEvidence {
+                    configured_mode: ScenarioMode::Authoritative,
+                    minimum_shadow_samples: 1_000,
+                    minimum_shadow_duration_secs: 604_800,
+                    observed_shadow_samples: 1_000,
+                    observed_shadow_duration_secs: 604_800,
+                    maximum_p99_latency_regression_bps: 500,
+                    observed_p99_latency_regression_bps: 100,
+                    hard_blocker_count: 0,
+                    unresolved_divergence_count: 0,
+                    required_evidence: evidence.clone(),
+                    verified_evidence: evidence,
+                    rollback_policy: RollbackPolicy {
+                        trigger: RollbackTrigger::AnyHardBlocker,
+                        action: RollbackAction::StopAdmissionsAndRevert {
+                            target: ScenarioMode::Shadow,
+                        },
+                    },
+                },
+            )]),
+            safety_divergence_bps: 0,
+            canonical_state_divergence_bps: 0,
+            allowed_observational_divergence: BTreeMap::from([(
+                "diagnostic_order".into(),
+                ObservationalDivergenceAllowance {
+                    maximum_rate_bps: 10,
+                    reviewed_by: "phase2-reviewer".into(),
+                },
+            )]),
+            approver: "phase2-reviewer".into(),
+            approved_at: "2026-07-20T00:00:00Z".into(),
+        }
+    }
+
+    fn scheduler_phase3_rollout_manifest(
+        scenario_class: &str,
+        revision: u64,
+        preflight_revision: u64,
+    ) -> RolloutManifest {
+        let (minimum_shadow_samples, minimum_shadow_duration_secs, scenario_evidence) =
+            match scenario_class {
+                "reducer_only_candidates" => (
+                    10_000,
+                    72 * 60 * 60,
+                    vec!["deterministic_replay", "duplicate_command_idempotency"],
+                ),
+                "work_item_autonomous_continuation" => (
+                    2_000,
+                    14 * 24 * 60 * 60,
+                    vec![
+                        "concurrent_claim",
+                        "reservation_conflict",
+                        "yield_return",
+                        "work_item_rollback",
+                    ],
+                ),
+                _ => panic!("unsupported Phase 3 scenario {scenario_class}"),
+            };
+        let evidence: BTreeSet<String> = ["restart", "fault_injection", "rollback_drill"]
+            .into_iter()
+            .chain(scenario_evidence)
+            .map(Into::into)
+            .collect();
+        RolloutManifest {
+            revision,
+            preflight_revision,
+            preflight_for_manifest_revision: revision,
+            preflight_succeeded: true,
+            protocol_build: format!("holon-0.30.0-phase3-{revision}"),
+            schema_build: format!("scheduler-protocol-schema-v{revision}"),
+            schema_revision: revision,
+            fixture_corpus_revision: format!("scheduler-workitem-phase3-v{revision}"),
+            classes: BTreeMap::from([(
+                scenario_class.into(),
+                RolloutClassEvidence {
+                    configured_mode: ScenarioMode::Authoritative,
+                    minimum_shadow_samples,
+                    minimum_shadow_duration_secs,
+                    observed_shadow_samples: minimum_shadow_samples,
+                    observed_shadow_duration_secs: minimum_shadow_duration_secs,
+                    maximum_p99_latency_regression_bps: 500,
+                    observed_p99_latency_regression_bps: 100,
+                    hard_blocker_count: 0,
+                    unresolved_divergence_count: 0,
+                    required_evidence: evidence.clone(),
+                    verified_evidence: evidence,
+                    rollback_policy: RollbackPolicy {
+                        trigger: RollbackTrigger::AnyHardBlocker,
+                        action: RollbackAction::StopAdmissionsAndRevert {
+                            target: ScenarioMode::Shadow,
+                        },
+                    },
+                },
+            )]),
+            safety_divergence_bps: 0,
+            canonical_state_divergence_bps: 0,
+            allowed_observational_divergence: BTreeMap::new(),
+            approver: "phase3-reviewer".into(),
+            approved_at: "2026-07-21T00:00:00Z".into(),
+        }
+    }
+
+    fn scheduler_rollout_canonical_counts(db: &RuntimeDb) -> Result<[i64; 5]> {
+        let connection = db.connection()?;
+        Ok([
+            connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_rollout_preflights",
+                [],
+                |row| row.get(0),
+            )?,
+            connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_rollout_manifests",
+                [],
+                |row| row.get(0),
+            )?,
+            connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_scenario_authorities",
+                [],
+                |row| row.get(0),
+            )?,
+            connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_scenario_hard_blockers",
+                [],
+                |row| row.get(0),
+            )?,
+            connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_rollout_command_results",
+                [],
+                |row| row.get(0),
+            )?,
+        ])
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum SchedulerRolloutFaultCase {
+        ConfigureProtocol,
+        OpenPreflight,
+        CompletePreflight,
+        InstallManifest,
+        ChangeScenarioAuthority,
+        ReportScenarioHardBlocker,
+    }
+
+    fn prepare_scheduler_rollout_fault_case(
+        db: &RuntimeDb,
+        case: SchedulerRolloutFaultCase,
+    ) -> Result<(&'static str, RolloutCommand, Decision)> {
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+        let manifest = scheduler_rollout_manifest(1, 1);
+
+        if !matches!(case, SchedulerRolloutFaultCase::OpenPreflight) {
+            db.transitions().commit_scheduler_rollout_command(
+                "fault-setup-open",
+                &RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+                None,
+            )?;
+        }
+        if matches!(
+            case,
+            SchedulerRolloutFaultCase::InstallManifest
+                | SchedulerRolloutFaultCase::ChangeScenarioAuthority
+                | SchedulerRolloutFaultCase::ReportScenarioHardBlocker
+        ) {
+            db.transitions().commit_scheduler_rollout_command(
+                "fault-setup-complete",
+                &RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+                None,
+            )?;
+        }
+        if matches!(
+            case,
+            SchedulerRolloutFaultCase::ChangeScenarioAuthority
+                | SchedulerRolloutFaultCase::ReportScenarioHardBlocker
+        ) {
+            db.transitions().commit_scheduler_rollout_command(
+                "fault-setup-install",
+                &RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest: manifest.clone(),
+                },
+                None,
+            )?;
+            db.transitions().commit_scheduler_rollout_command(
+                "fault-setup-configure",
+                &RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+                None,
+            )?;
+        }
+        if matches!(case, SchedulerRolloutFaultCase::ReportScenarioHardBlocker) {
+            db.transitions().commit_scheduler_rollout_command(
+                "fault-setup-shadow",
+                &RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+                None,
+            )?;
+            db.transitions().commit_scheduler_rollout_command(
+                "fault-setup-authoritative",
+                &RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+                None,
+            )?;
+        }
+
+        Ok(match case {
+            SchedulerRolloutFaultCase::ConfigureProtocol => (
+                "fault-target-configure",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 0,
+                    mode: ProtocolMode::Legacy,
+                },
+                Decision::ProtocolConfigured,
+            ),
+            SchedulerRolloutFaultCase::OpenPreflight => (
+                "fault-target-open",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+                Decision::RolloutPreflightOpened,
+            ),
+            SchedulerRolloutFaultCase::CompletePreflight => (
+                "fault-target-complete",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest,
+                },
+                Decision::RolloutPreflightCompleted,
+            ),
+            SchedulerRolloutFaultCase::InstallManifest => (
+                "fault-target-install",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+                Decision::ManifestInstalled,
+            ),
+            SchedulerRolloutFaultCase::ChangeScenarioAuthority => (
+                "fault-target-authority",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+                Decision::ScenarioAuthorityChanged,
+            ),
+            SchedulerRolloutFaultCase::ReportScenarioHardBlocker => (
+                "fault-target-blocker",
+                RolloutCommand::ReportScenarioHardBlocker {
+                    scenario_class: "exact_wait_resume".into(),
+                    blocker_code: "fault-injected-hard-blocker".into(),
+                    expected_config_revision: 4,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                },
+                Decision::RollbackTripped,
+            ),
+        })
+    }
+
     #[test]
     fn runtime_db_fresh_migration_creates_foundation_schema() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
@@ -327,6 +714,26 @@ mod tests {
             "workspace_occupancies",
             "agent_identities",
             "context_episode_anchors",
+            "scheduler_work_demands",
+            "scheduler_activation_authorities",
+            "scheduler_activations",
+            "scheduler_waits",
+            "scheduler_wait_generations",
+            "scheduler_agent_slots",
+            "scheduler_agent_dispatch",
+            "scheduler_agent_focus",
+            "scheduler_activation_settlements",
+            "scheduler_missing_settlements",
+            "scheduler_continuation_admissions",
+            "scheduler_protocol_command_results",
+            "scheduler_protocol_command_conflict_attempts",
+            "scheduler_protocol_migrations",
+            "scheduler_protocol_config",
+            "scheduler_rollout_preflights",
+            "scheduler_rollout_manifests",
+            "scheduler_scenario_authorities",
+            "scheduler_scenario_hard_blockers",
+            "scheduler_shadow_comparisons",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -355,6 +762,2060 @@ mod tests {
         )?;
         assert_eq!(readiness_index_count, 0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_rollout_schema_rejects_authoritative_rollback_target() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let error = db
+            .connection()?
+            .execute(
+                "INSERT INTO scheduler_scenario_authorities (
+                   scenario_class,
+                   mode,
+                   rollback_target,
+                   manifest_revision,
+                   preflight_revision,
+                   updated_at
+                 ) VALUES ('invalid-rollback', 'off', 'authoritative', NULL, NULL, ?1)",
+                [Utc::now().to_rfc3339()],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_schema_partitions_agent_references() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        for (agent_id, work_item_id) in [("agent-a", "work-a"), ("agent-b", "work-b")] {
+            connection.execute(
+                "INSERT INTO scheduler_work_demands (
+                   agent_id,
+                   work_item_id,
+                   metadata_revision,
+                   scheduling_generation,
+                   status,
+                   status_reference_id,
+                   capabilities_json,
+                   locks_json,
+                   locality,
+                   cost_class,
+                   payload_json,
+                   updated_at
+                 ) VALUES (?1, ?2, 0, 1, 'runnable', NULL, '[]', '[]', 'local', 'small', '{}', ?3)",
+                (agent_id, work_item_id, Utc::now().to_rfc3339()),
+            )?;
+        }
+
+        let error = connection
+            .execute(
+                "INSERT INTO scheduler_agent_focus (
+                   agent_id,
+                   focused_work_item_id,
+                   focus_revision,
+                   updated_at
+                 ) VALUES ('agent-a', 'work-b', 1, ?1)",
+                [Utc::now().to_rfc3339()],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+
+        connection.execute(
+            "INSERT INTO scheduler_agent_focus (
+               agent_id,
+               focused_work_item_id,
+               focus_revision,
+               updated_at
+             ) VALUES ('agent-a', 'work-a', 1, ?1)",
+            [Utc::now().to_rfc3339()],
+        )?;
+        let error = connection
+            .execute(
+                "UPDATE scheduler_work_demands
+                 SET status = 'terminal'
+                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
+                [],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_schema_enforces_shared_admission_fence() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let now = Utc::now().to_rfc3339();
+        connection.execute(
+            "INSERT INTO scheduler_work_demands (
+               agent_id,
+               work_item_id,
+               metadata_revision,
+               scheduling_generation,
+               status,
+               status_reference_id,
+               capabilities_json,
+               locks_json,
+               locality,
+               cost_class,
+               payload_json,
+               updated_at
+             ) VALUES ('agent-a', 'work-a', 0, 7, 'runnable', NULL, '[]', '[]', 'local', 'small', '{}', ?1)",
+            [&now],
+        )?;
+        connection.execute(
+            "INSERT INTO scheduler_waits (
+               agent_id,
+               wait_id,
+               owner_work_item_id,
+               current_generation,
+               payload_json,
+               updated_at
+             ) VALUES ('agent-a', 'wait-a', 'work-a', 1, '{}', ?1)",
+            [&now],
+        )?;
+        connection.execute(
+            "INSERT INTO scheduler_wait_generations (
+               agent_id,
+               wait_id,
+               generation,
+               owner_work_item_id,
+               lifecycle_state,
+               trigger_id,
+               trigger_generation,
+               consuming_activation_id,
+               payload_json,
+               created_at,
+               updated_at
+             ) VALUES (
+               'agent-a',
+               'wait-a',
+               1,
+               'work-a',
+               'triggered',
+               'trigger-a',
+               1,
+               NULL,
+               '{}',
+               ?1,
+               ?1
+             )",
+            [&now],
+        )?;
+        for (authority_id, activation_id) in [
+            ("authority-scheduling", "activation-scheduling"),
+            ("authority-wait-resume", "activation-wait-resume"),
+        ] {
+            connection.execute(
+                "INSERT INTO scheduler_activation_authorities (
+                   agent_id,
+                   authority_id,
+                   activation_id,
+                   work_item_id,
+                   expected_scheduling_generation,
+                   expected_dispatch_revision,
+                   consumed_by_activation_id,
+                   payload_json,
+                   created_at
+                 ) VALUES ('agent-a', ?1, ?2, 'work-a', 7, 0, NULL, '{}', ?3)",
+                (authority_id, activation_id, &now),
+            )?;
+        }
+        connection.execute(
+            "INSERT INTO scheduler_activations (
+               agent_id,
+               activation_id,
+               authority_id,
+               work_item_id,
+               admitted_generation,
+               admission_kind,
+               recovery_for_activation_id,
+               wait_id,
+               wait_generation,
+               lifecycle_state,
+               idempotency_key,
+               payload_json,
+               created_at,
+               updated_at
+             ) VALUES (
+               'agent-a',
+               'activation-scheduling',
+               'authority-scheduling',
+               'work-a',
+               7,
+               'scheduling',
+               NULL,
+               NULL,
+               NULL,
+               'running',
+               'idempotency-scheduling',
+               '{}',
+               ?1,
+               ?1
+             )",
+            [&now],
+        )?;
+
+        let error = connection
+            .execute(
+                "INSERT INTO scheduler_activations (
+                   agent_id,
+                   activation_id,
+                   authority_id,
+                   work_item_id,
+                   admitted_generation,
+                   admission_kind,
+                   recovery_for_activation_id,
+                   wait_id,
+                   wait_generation,
+                   lifecycle_state,
+                   idempotency_key,
+                   payload_json,
+                   created_at,
+                   updated_at
+                 ) VALUES (
+                   'agent-a',
+                   'activation-wait-resume',
+                   'authority-wait-resume',
+                   'work-a',
+                   7,
+                   'wait_resume',
+                   NULL,
+                   'wait-a',
+                   1,
+                   'running',
+                   'idempotency-wait-resume',
+                   '{}',
+                   ?1,
+                   ?1
+                 )",
+                [&now],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("scheduler_activations.agent_id, scheduler_activations.work_item_id, scheduler_activations.admitted_generation"),
+            "expected shared ordinary admission fence, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_schema_binds_authority_to_one_activation_identity() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let now = Utc::now().to_rfc3339();
+        connection.execute(
+            "INSERT INTO scheduler_work_demands (
+               agent_id,
+               work_item_id,
+               metadata_revision,
+               scheduling_generation,
+               status,
+               status_reference_id,
+               capabilities_json,
+               locks_json,
+               locality,
+               cost_class,
+               payload_json,
+               updated_at
+             ) VALUES ('agent-a', 'work-a', 0, 2, 'runnable', NULL, '[]', '[]', 'local', 'small', '{}', ?1)",
+            [&now],
+        )?;
+        for (authority_id, activation_id, generation) in [
+            ("authority-a", "activation-a", 1),
+            ("authority-b", "activation-b", 2),
+        ] {
+            connection.execute(
+                "INSERT INTO scheduler_activation_authorities (
+                   agent_id,
+                   authority_id,
+                   activation_id,
+                   work_item_id,
+                   expected_scheduling_generation,
+                   expected_dispatch_revision,
+                   consumed_by_activation_id,
+                   payload_json,
+                   created_at
+                 ) VALUES ('agent-a', ?1, ?2, 'work-a', ?3, 0, NULL, '{}', ?4)",
+                (authority_id, activation_id, generation, &now),
+            )?;
+        }
+
+        let error = connection
+            .execute(
+                "INSERT INTO scheduler_activations (
+                   agent_id,
+                   activation_id,
+                   authority_id,
+                   work_item_id,
+                   admitted_generation,
+                   admission_kind,
+                   recovery_for_activation_id,
+                   wait_id,
+                   wait_generation,
+                   lifecycle_state,
+                   idempotency_key,
+                   payload_json,
+                   created_at,
+                   updated_at
+                 ) VALUES (
+                   'agent-a',
+                   'activation-b',
+                   'authority-a',
+                   'work-a',
+                   1,
+                   'scheduling',
+                   NULL,
+                   NULL,
+                   NULL,
+                   'running',
+                   'mismatched-authority',
+                   '{}',
+                   ?1,
+                   ?1
+                 )",
+                [&now],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+
+        for (authority_id, activation_id, generation) in [
+            ("authority-a", "activation-a", 1),
+            ("authority-b", "activation-b", 2),
+        ] {
+            connection.execute(
+                "INSERT INTO scheduler_activations (
+                   agent_id,
+                   activation_id,
+                   authority_id,
+                   work_item_id,
+                   admitted_generation,
+                   admission_kind,
+                   recovery_for_activation_id,
+                   wait_id,
+                   wait_generation,
+                   lifecycle_state,
+                   idempotency_key,
+                   payload_json,
+                   created_at,
+                   updated_at
+                 ) VALUES (
+                   'agent-a',
+                   ?1,
+                   ?2,
+                   'work-a',
+                   ?3,
+                   'scheduling',
+                   NULL,
+                   NULL,
+                   NULL,
+                   'running',
+                   ?1,
+                   '{}',
+                   ?4,
+                   ?4
+                 )",
+                (activation_id, authority_id, generation, &now),
+            )?;
+        }
+        let error = connection
+            .execute(
+                "UPDATE scheduler_activation_authorities
+                 SET consumed_by_activation_id = 'activation-b'
+                 WHERE agent_id = 'agent-a' AND authority_id = 'authority-a'",
+                [],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+        connection.execute(
+            "UPDATE scheduler_activation_authorities
+             SET consumed_by_activation_id = 'activation-a'
+             WHERE agent_id = 'agent-a' AND authority_id = 'authority-a'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_ledgers_keep_first_seen_identities() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let now = Utc::now().to_rfc3339();
+        connection.execute(
+            "INSERT INTO scheduler_protocol_command_results (
+               agent_id,
+               command_kind,
+               command_identity,
+               canonical_schema_version,
+               payload_hash,
+               decision,
+               conflict_kind,
+               conflict_code,
+               result_references_json,
+               pre_state_fence_json,
+               post_state_fence_json,
+               outcome_json,
+               created_at
+             ) VALUES (
+               'agent-a',
+               'admit_activation',
+               'activation-a',
+               1,
+               'hash-a',
+               'rejected',
+               'stale_generation',
+               'stale_work_generation',
+               '[]',
+               '{}',
+               '{}',
+               '{}',
+               ?1
+             )",
+            [&now],
+        )?;
+        let error = connection
+            .execute(
+                "INSERT INTO scheduler_protocol_command_results (
+                   agent_id,
+                   command_kind,
+                   command_identity,
+                   canonical_schema_version,
+                   payload_hash,
+                   decision,
+                   conflict_kind,
+                   conflict_code,
+                   result_references_json,
+                   pre_state_fence_json,
+                   post_state_fence_json,
+                   outcome_json,
+                   created_at
+                 ) VALUES (
+                   'agent-a',
+                   'admit_activation',
+                   'activation-a',
+                   1,
+                   'hash-b',
+                   'admitted',
+                   NULL,
+                   NULL,
+                   '[]',
+                   '{}',
+                   '{}',
+                   '{}',
+                   ?1
+                 )",
+                [&now],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+
+        connection.execute(
+            "INSERT INTO scheduler_protocol_migrations (
+               agent_id,
+               migration_identity,
+               migration_version,
+               source_kind,
+               source_id,
+               payload_hash,
+               provenance_json,
+               decision,
+               rejection_kind,
+               rejection_code,
+               imported_fact_references_json,
+               outcome_json,
+               created_at
+             ) VALUES (
+               'agent-a',
+               'migration-a',
+               1,
+               'legacy_turn',
+               'turn-a',
+               'hash-a',
+               '{}',
+               'imported',
+               NULL,
+               NULL,
+               '[]',
+               '{}',
+               ?1
+             )",
+            [&now],
+        )?;
+        let error = connection
+            .execute(
+                "INSERT INTO scheduler_protocol_migrations (
+                   agent_id,
+                   migration_identity,
+                   migration_version,
+                   source_kind,
+                   source_id,
+                   payload_hash,
+                   provenance_json,
+                   decision,
+                   rejection_kind,
+                   rejection_code,
+                   imported_fact_references_json,
+                   outcome_json,
+                   created_at
+                 ) VALUES (
+                   'agent-a',
+                   'migration-b',
+                   1,
+                   'legacy_turn',
+                   'turn-a',
+                   'hash-a',
+                   '{}',
+                   'imported',
+                   NULL,
+                   NULL,
+                   '[]',
+                   '{}',
+                   ?1
+                 )",
+                [&now],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::ConstraintViolation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_repository_rebuilds_and_replays_after_restart() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let initial = scheduler_protocol_snapshot(1);
+        let command = scheduler_protocol_authority_command(agent_id, 1);
+        let expected = scheduler_protocol::reduce_command(&initial, &command)
+            .outcome
+            .snapshot;
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+        let committed = db
+            .transitions()
+            .commit_scheduler_protocol_command(agent_id, &command, None)?;
+        assert!(committed.applied);
+        assert!(!committed.replayed);
+        assert_eq!(committed.result.decision, Decision::AuthorityIssued);
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot(agent_id)?,
+            expected
+        );
+        let replayed = reopened
+            .transitions()
+            .commit_scheduler_protocol_command(agent_id, &command, None)?;
+        assert!(!replayed.applied);
+        assert!(replayed.replayed);
+        assert_eq!(replayed.result, committed.result);
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot(agent_id)?,
+            expected
+        );
+        let ledger_rows: i64 = reopened.connection()?.query_row(
+            "SELECT COUNT(*) FROM scheduler_protocol_command_results
+             WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(ledger_rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_repository_faults_roll_back_snapshot_and_ledger() -> Result<()> {
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            let agent_id = "agent-a";
+            let initial = scheduler_protocol_snapshot(1);
+            let command = scheduler_protocol_authority_command(agent_id, 1);
+            let expected = scheduler_protocol::reduce_command(&initial, &command)
+                .outcome
+                .snapshot;
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.transitions()
+                .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+
+            let error = db
+                .transitions()
+                .commit_scheduler_protocol_command(agent_id, &command, Some(fault))
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected runtime transition fault"),
+                "unexpected {fault:?} error: {error}"
+            );
+            assert_eq!(
+                db.transitions()
+                    .load_scheduler_protocol_snapshot(agent_id)?,
+                initial,
+                "{fault:?} left partial canonical state"
+            );
+            let connection = db.connection()?;
+            let authority_rows: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_activation_authorities
+                 WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?;
+            let ledger_rows: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_protocol_command_results
+                 WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(authority_rows, 0, "{fault:?} left authority state");
+            assert_eq!(ledger_rows, 0, "{fault:?} left command ledger state");
+            drop(connection);
+
+            let retried = db
+                .transitions()
+                .commit_scheduler_protocol_command(agent_id, &command, None)?;
+            assert!(retried.applied);
+            assert!(!retried.replayed);
+            assert_eq!(
+                db.transitions()
+                    .load_scheduler_protocol_snapshot(agent_id)?,
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_command_identity_conflicts_are_typed_and_audited() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let initial = scheduler_protocol_snapshot(1);
+        let command = scheduler_protocol_authority_command(agent_id, 1);
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+        db.transitions()
+            .commit_scheduler_protocol_command(agent_id, &command, None)?;
+
+        let mut conflicting_command = command.clone();
+        let ProtocolCommand::IssueActivationAuthority(conflicting_authority) =
+            &mut conflicting_command
+        else {
+            unreachable!("fixture is an authority command");
+        };
+        conflicting_authority.expected_dispatch_revision = 1;
+        let error = db
+            .transitions()
+            .commit_scheduler_protocol_command(agent_id, &conflicting_command, None)
+            .unwrap_err();
+        let conflict = error
+            .downcast_ref::<SchedulerProtocolCommandIdentityConflict>()
+            .expect("agent command conflict should retain its protocol type");
+        assert_eq!(conflict.partition_kind, "agent");
+        assert_eq!(conflict.partition_key, agent_id);
+        assert_eq!(conflict.command_kind, "issue_activation_authority");
+        assert_eq!(conflict.command_identity, "authority-a");
+        assert_ne!(
+            conflict.existing_payload_hash,
+            conflict.incoming_payload_hash
+        );
+        assert_eq!(
+            conflict.conflict.kind,
+            scheduler_protocol::ProtocolConflictKind::PayloadConflict
+        );
+        assert_eq!(conflict.conflict.code, "command_identity_payload_conflict");
+
+        let rollout_command = RolloutCommand::ConfigureProtocol {
+            expected_config_revision: 0,
+            mode: ProtocolMode::Legacy,
+        };
+        db.transitions().commit_scheduler_rollout_command(
+            "rollout-config-identity",
+            &rollout_command,
+            None,
+        )?;
+        let rollout_error = db
+            .transitions()
+            .commit_scheduler_rollout_command(
+                "rollout-config-identity",
+                &RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Legacy,
+                },
+                None,
+            )
+            .unwrap_err();
+        let rollout_conflict = rollout_error
+            .downcast_ref::<SchedulerProtocolCommandIdentityConflict>()
+            .expect("rollout conflict should retain its protocol type");
+        assert_eq!(rollout_conflict.partition_kind, "global_rollout");
+        assert_eq!(rollout_conflict.partition_key, "global");
+        assert_eq!(rollout_conflict.command_kind, "configure_protocol");
+        assert_eq!(rollout_conflict.command_identity, "rollout-config-identity");
+
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = reopened.connection()?;
+        let attempts: Vec<(String, String, String, String)> = connection
+            .prepare(
+                "SELECT partition_kind, partition_key, command_kind, command_identity
+                 FROM scheduler_protocol_command_conflict_attempts
+                 ORDER BY conflict_attempt_id",
+            )?
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(
+            attempts,
+            vec![
+                (
+                    "agent".into(),
+                    agent_id.into(),
+                    "issue_activation_authority".into(),
+                    "authority-a".into(),
+                ),
+                (
+                    "global_rollout".into(),
+                    "global".into(),
+                    "configure_protocol".into(),
+                    "rollout-config-identity".into(),
+                ),
+            ]
+        );
+        let agent_results: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM scheduler_protocol_command_results
+             WHERE agent_id = ?1 AND command_identity = 'authority-a'",
+            [agent_id],
+            |row| row.get(0),
+        )?;
+        let rollout_results: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM scheduler_rollout_command_results
+             WHERE command_identity = 'rollout-config-identity'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(agent_results, 1);
+        assert_eq!(rollout_results, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_initializing_second_agent_preserves_global_rollout() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let first = scheduler_protocol_snapshot(1);
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &first)?;
+
+        let command = RolloutCommand::ConfigureProtocol {
+            expected_config_revision: 0,
+            mode: scheduler_protocol::ProtocolMode::Legacy,
+        };
+        let committed = db.transitions().commit_scheduler_rollout_command(
+            "rollout-config-1",
+            &command,
+            None,
+        )?;
+        assert!(committed.applied);
+        assert_eq!(committed.result.decision, Decision::ProtocolConfigured);
+
+        let mut second = scheduler_protocol_snapshot(2);
+        second.focus = Some("work-b".into());
+        second.work = BTreeMap::from([(
+            "work-b".into(),
+            WorkDemand {
+                metadata_revision: 2,
+                scheduling_generation: 2,
+                status: WorkStatus::Runnable,
+                capabilities: BTreeSet::from(["workspace_write".into()]),
+                locks: BTreeSet::from(["workspace:holon".into()]),
+                locality: "workspace:holon".into(),
+                cost_class: "standard".into(),
+            },
+        )]);
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-b", &second)?;
+
+        let first_loaded = db
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        let second_loaded = db
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-b")?;
+        assert_eq!(first_loaded.rollout.config_revision, 1);
+        assert_eq!(second_loaded.rollout, first_loaded.rollout);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_rollout_open_preflight_references_canonical_revision() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+
+        let first = db.transitions().commit_scheduler_rollout_command(
+            "preflight-reference-open-1",
+            &RolloutCommand::OpenPreflight {
+                expected_config_revision: 0,
+                manifest_revision: 1,
+            },
+            None,
+        )?;
+        assert_eq!(first.result.fact_references, vec!["rollout:preflight:1"]);
+        db.transitions().commit_scheduler_rollout_command(
+            "preflight-reference-complete-1",
+            &RolloutCommand::CompletePreflight {
+                expected_config_revision: 0,
+                expected_preflight_revision: 1,
+                manifest: scheduler_rollout_manifest(1, 1),
+            },
+            None,
+        )?;
+
+        let second_command = RolloutCommand::OpenPreflight {
+            expected_config_revision: 0,
+            manifest_revision: 1,
+        };
+        let second = db.transitions().commit_scheduler_rollout_command(
+            "preflight-reference-open-2",
+            &second_command,
+            None,
+        )?;
+        assert_eq!(second.result.fact_references, vec!["rollout:preflight:2"]);
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let replayed = reopened.transitions().commit_scheduler_rollout_command(
+            "preflight-reference-open-2",
+            &second_command,
+            None,
+        )?;
+        assert!(replayed.replayed);
+        assert_eq!(replayed.result.fact_references, vec!["rollout:preflight:2"]);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_rollout_repository_round_trips_lifecycle_and_hard_blocker() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let initial = scheduler_protocol_snapshot(1);
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &initial)?;
+
+        let manifest = scheduler_rollout_manifest(1, 1);
+        let commands = [
+            (
+                "rollout-open-1",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+                Decision::RolloutPreflightOpened,
+            ),
+            (
+                "rollout-complete-1",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+                Decision::RolloutPreflightCompleted,
+            ),
+            (
+                "rollout-install-1",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest: manifest.clone(),
+                },
+                Decision::ManifestInstalled,
+            ),
+            (
+                "rollout-authoritative",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+                Decision::ProtocolConfigured,
+            ),
+            (
+                "rollout-shadow-scenario",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+                Decision::ScenarioAuthorityChanged,
+            ),
+            (
+                "rollout-authorize-scenario",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+                Decision::ScenarioAuthorityChanged,
+            ),
+        ];
+        for (identity, command, decision) in &commands {
+            let committed = db
+                .transitions()
+                .commit_scheduler_rollout_command(identity, command, None)?;
+            assert!(committed.applied);
+            assert!(!committed.replayed);
+            assert_eq!(&committed.result.decision, decision);
+        }
+        let before_restart = db
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(
+            before_restart.rollout.preflights[&1].state,
+            RolloutPreflightState::Consumed
+        );
+        assert_eq!(before_restart.rollout.manifest, Some(manifest));
+        assert_eq!(
+            before_restart.rollout.scenarios["exact_wait_resume"].mode,
+            ScenarioMode::Authoritative
+        );
+        assert_eq!(before_restart.rollout.config_revision, 4);
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?,
+            before_restart
+        );
+        for (identity, command, _) in &commands {
+            let replayed = reopened
+                .transitions()
+                .commit_scheduler_rollout_command(identity, command, None)?;
+            assert!(!replayed.applied);
+            assert!(replayed.replayed);
+        }
+
+        let blocker = RolloutCommand::ReportScenarioHardBlocker {
+            scenario_class: "exact_wait_resume".into(),
+            blocker_code: "stale_wait_generation_accepted".into(),
+            expected_config_revision: 4,
+            expected_manifest_revision: 1,
+            expected_preflight_revision: 1,
+        };
+        let rolled_back = reopened.transitions().commit_scheduler_rollout_command(
+            "rollout-hard-blocker-1",
+            &blocker,
+            None,
+        )?;
+        assert_eq!(rolled_back.result.decision, Decision::RollbackTripped);
+        let after_rollback = reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(after_rollback.rollout.config_revision, 5);
+        assert_eq!(
+            after_rollback.rollout.scenarios["exact_wait_resume"].mode,
+            ScenarioMode::Shadow
+        );
+        assert_eq!(after_rollback.rollout.hard_blockers.len(), 1);
+        let replayed = reopened.transitions().commit_scheduler_rollout_command(
+            "rollout-hard-blocker-1",
+            &blocker,
+            None,
+        )?;
+        assert!(!replayed.applied);
+        assert!(replayed.replayed);
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?,
+            after_rollback
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_rollout_authority_downgrade_is_stepwise_and_restart_safe() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+
+        let manifest = scheduler_rollout_manifest(1, 1);
+        for (identity, command) in [
+            (
+                "downgrade-open",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "downgrade-complete",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+            ),
+            (
+                "downgrade-install",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+            ),
+            (
+                "downgrade-protocol",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "downgrade-shadow",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "downgrade-authoritative",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+            ),
+        ] {
+            let committed = db
+                .transitions()
+                .commit_scheduler_rollout_command(identity, &command, None)?;
+            assert!(committed.applied);
+        }
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let before_rejected_downgrade = reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(
+            before_rejected_downgrade.rollout.scenarios["exact_wait_resume"].mode,
+            ScenarioMode::Authoritative
+        );
+        let rejected = reopened.transitions().commit_scheduler_rollout_command(
+            "downgrade-skip-shadow",
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: "exact_wait_resume".into(),
+                expected_config_revision: 4,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Off,
+            },
+            None,
+        )?;
+        assert_eq!(rejected.result.decision, Decision::Rejected);
+        assert_eq!(
+            rejected.result.diagnostics,
+            ["invalid_scenario_authority_transition"]
+        );
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?,
+            before_rejected_downgrade
+        );
+
+        for (identity, expected_config_revision, mode) in [
+            ("downgrade-to-shadow", 4, ScenarioMode::Shadow),
+            ("downgrade-to-off", 5, ScenarioMode::Off),
+        ] {
+            let committed = reopened.transitions().commit_scheduler_rollout_command(
+                identity,
+                &RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode,
+                },
+                None,
+            )?;
+            assert_eq!(
+                committed.result.decision,
+                Decision::ScenarioAuthorityChanged
+            );
+        }
+        drop(reopened);
+
+        let restarted = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let after_restart = restarted
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(after_restart.rollout.config_revision, 6);
+        assert_eq!(
+            after_restart.rollout.scenarios["exact_wait_resume"].mode,
+            ScenarioMode::Off
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_authoritative_scenarios_require_matched_evidence_and_restart_safe_rollback(
+    ) -> Result<()> {
+        for scenario_class in [
+            "reducer_only_candidates",
+            "work_item_autonomous_continuation",
+        ] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.transitions().initialize_scheduler_protocol_partition(
+                "agent-a",
+                &scheduler_protocol_snapshot(1),
+            )?;
+            let manifest = scheduler_phase3_rollout_manifest(scenario_class, 1, 1);
+            for (identity, command, expected_decision) in [
+                (
+                    format!("{scenario_class}-open"),
+                    RolloutCommand::OpenPreflight {
+                        expected_config_revision: 0,
+                        manifest_revision: 1,
+                    },
+                    Decision::RolloutPreflightOpened,
+                ),
+                (
+                    format!("{scenario_class}-complete"),
+                    RolloutCommand::CompletePreflight {
+                        expected_config_revision: 0,
+                        expected_preflight_revision: 1,
+                        manifest: manifest.clone(),
+                    },
+                    Decision::RolloutPreflightCompleted,
+                ),
+                (
+                    format!("{scenario_class}-install"),
+                    RolloutCommand::InstallManifest {
+                        expected_config_revision: 0,
+                        manifest: manifest.clone(),
+                    },
+                    Decision::ManifestInstalled,
+                ),
+                (
+                    format!("{scenario_class}-protocol"),
+                    RolloutCommand::ConfigureProtocol {
+                        expected_config_revision: 1,
+                        mode: ProtocolMode::Authoritative,
+                    },
+                    Decision::ProtocolConfigured,
+                ),
+                (
+                    format!("{scenario_class}-shadow"),
+                    RolloutCommand::ChangeScenarioAuthority {
+                        scenario_class: scenario_class.into(),
+                        expected_config_revision: 2,
+                        expected_manifest_revision: 1,
+                        expected_preflight_revision: 1,
+                        mode: ScenarioMode::Shadow,
+                    },
+                    Decision::ScenarioAuthorityChanged,
+                ),
+                (
+                    format!("{scenario_class}-authoritative"),
+                    RolloutCommand::ChangeScenarioAuthority {
+                        scenario_class: scenario_class.into(),
+                        expected_config_revision: 3,
+                        expected_manifest_revision: 1,
+                        expected_preflight_revision: 1,
+                        mode: ScenarioMode::Authoritative,
+                    },
+                    Decision::ScenarioAuthorityChanged,
+                ),
+            ] {
+                let committed = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(&identity, &command, None)?;
+                assert_eq!(committed.result.decision, expected_decision);
+            }
+
+            let now = Utc::now();
+            let matched_queue_record = QueueEntryRecord {
+                message_id: format!("message-matched-{scenario_class}"),
+                agent_id: "agent-a".into(),
+                priority: crate::types::Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            };
+            let matched_queue_command = QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(matched_queue_record.clone()),
+                scheduler_authority_scenarios: vec![scenario_class.into()],
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                audit_events: Vec::new(),
+                scheduler_semantic_shadow: None,
+                scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
+                    scenario_class: scenario_class.into(),
+                    comparison_identity: format!("comparison-matched-{scenario_class}"),
+                    boundary: "phase5h_cutover".into(),
+                    input_identity: format!("input-matched-{scenario_class}"),
+                    legacy_observation: serde_json::json!({"decision": "legacy"}),
+                    shadow_candidate: serde_json::json!({"decision": "legacy"}),
+                    matched: true,
+                    divergence_code: None,
+                }),
+                scheduler_delivery_shadow_comparison: None,
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            };
+            assert!(
+                db.transitions()
+                    .commit_queue(&matched_queue_command)?
+                    .applied
+            );
+            assert_eq!(
+                db.queue_entries().latest_all()?,
+                vec![matched_queue_record.clone()]
+            );
+
+            let missing_queue_record = QueueEntryRecord {
+                message_id: format!("message-missing-{scenario_class}"),
+                ..matched_queue_record.clone()
+            };
+            let missing_queue_command = QueueTransitionCommand {
+                mutation: QueueMutation::Upsert(missing_queue_record),
+                scheduler_shadow_comparison: None,
+                ..matched_queue_command.clone()
+            };
+            let error = db
+                .transitions()
+                .commit_queue(&missing_queue_command)
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("requires matched canonical evidence"));
+            assert_eq!(
+                db.queue_entries().latest_all()?,
+                vec![matched_queue_record.clone()]
+            );
+
+            let divergent_queue_record = QueueEntryRecord {
+                message_id: format!("message-divergent-{scenario_class}"),
+                ..matched_queue_record.clone()
+            };
+            let divergent_queue_command = QueueTransitionCommand {
+                mutation: QueueMutation::Upsert(divergent_queue_record.clone()),
+                scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
+                    scenario_class: scenario_class.into(),
+                    comparison_identity: format!("comparison-divergent-{scenario_class}"),
+                    boundary: "phase5h_cutover".into(),
+                    input_identity: format!("input-divergent-{scenario_class}"),
+                    legacy_observation: serde_json::json!({"decision": "legacy"}),
+                    shadow_candidate: serde_json::json!({"decision": "candidate"}),
+                    matched: false,
+                    divergence_code: Some("phase5h_cutover_mismatch".into()),
+                }),
+                ..matched_queue_command.clone()
+            };
+            let error = db
+                .transitions()
+                .commit_queue(&divergent_queue_command)
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("rejected divergent canonical evidence"));
+            assert_eq!(
+                db.queue_entries().latest_all()?,
+                vec![matched_queue_record.clone()]
+            );
+            let comparison_count: i64 = db.connection()?.query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a' AND scenario_class = ?1",
+                [scenario_class],
+                |row| row.get(0),
+            )?;
+            assert_eq!(comparison_count, 1);
+
+            let rolled_back = db.transitions().commit_scheduler_rollout_command(
+                &format!("{scenario_class}-hard-blocker"),
+                &RolloutCommand::ReportScenarioHardBlocker {
+                    scenario_class: scenario_class.into(),
+                    blocker_code: "canonical_evidence_diverged".into(),
+                    expected_config_revision: 4,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                },
+                None,
+            )?;
+            assert_eq!(rolled_back.result.decision, Decision::RollbackTripped);
+            assert!(
+                db.transitions()
+                    .commit_queue(&divergent_queue_command)?
+                    .applied
+            );
+            drop(db);
+
+            let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let snapshot = reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?;
+            assert_eq!(
+                snapshot.rollout.scenarios[scenario_class].mode,
+                ScenarioMode::Shadow
+            );
+            assert_eq!(
+                reopened.queue_entries().latest_all()?,
+                vec![matched_queue_record, divergent_queue_record]
+            );
+            let comparison_count: i64 = reopened.connection()?.query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a' AND scenario_class = ?1",
+                [scenario_class],
+                |row| row.get(0),
+            )?;
+            assert_eq!(comparison_count, 2);
+            let divergent_outcome: String = reopened.connection()?.query_row(
+                "SELECT comparison_outcome
+                 FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a'
+                   AND scenario_class = ?1
+                   AND comparison_identity = ?2",
+                [
+                    scenario_class,
+                    &format!("comparison-divergent-{scenario_class}"),
+                ],
+                |row| row.get(0),
+            )?;
+            assert_eq!(divergent_outcome, "diverged");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_authoritative_queue_commits_survive_sustained_concurrent_load_and_restart(
+    ) -> Result<()> {
+        const WRITERS: usize = 4;
+        const COMMITS_PER_WRITER: usize = 64;
+        const SCENARIO_CLASS: &str = "reducer_only_candidates";
+
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+        let manifest = scheduler_phase3_rollout_manifest(SCENARIO_CLASS, 1, 1);
+        for (identity, command) in [
+            (
+                "sustained-open",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "sustained-complete",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+            ),
+            (
+                "sustained-install",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+            ),
+            (
+                "sustained-protocol",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "sustained-shadow",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: SCENARIO_CLASS.into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "sustained-authoritative",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: SCENARIO_CLASS.into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+            ),
+        ] {
+            let committed = db
+                .transitions()
+                .commit_scheduler_rollout_command(identity, &command, None)?;
+            assert!(committed.applied);
+        }
+
+        let mut handles = Vec::new();
+        for writer_index in 0..WRITERS {
+            let writer = db.clone();
+            handles.push(std::thread::spawn(move || -> Result<()> {
+                for commit_index in 0..COMMITS_PER_WRITER {
+                    let identity = format!("{writer_index}-{commit_index}");
+                    let now = Utc::now();
+                    let queue_record = QueueEntryRecord {
+                        message_id: format!("message-{identity}"),
+                        agent_id: "agent-a".into(),
+                        priority: crate::types::Priority::Normal,
+                        status: QueueEntryStatus::Queued,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    let command = QueueTransitionCommand {
+                        agent_id: "agent-a".into(),
+                        operation: QueueOperation::Admit,
+                        mutation: QueueMutation::Upsert(queue_record),
+                        scheduler_authority_scenarios: vec![SCENARIO_CLASS.into()],
+                        agent_state: None,
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        audit_events: Vec::new(),
+                        scheduler_semantic_shadow: None,
+                        scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
+                            scenario_class: SCENARIO_CLASS.into(),
+                            comparison_identity: format!("comparison-{identity}"),
+                            boundary: "phase5h_sustained_load".into(),
+                            input_identity: format!("input-{identity}"),
+                            legacy_observation: serde_json::json!({"decision": "admit"}),
+                            shadow_candidate: serde_json::json!({"decision": "admit"}),
+                            matched: true,
+                            divergence_code: None,
+                        }),
+                        scheduler_delivery_shadow_comparison: None,
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    };
+                    assert!(writer.transitions().commit_queue(&command)?.applied);
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow!("authoritative load writer panicked"))??;
+        }
+
+        let expected = i64::try_from(WRITERS * COMMITS_PER_WRITER)?;
+        let assert_counts = |db: &RuntimeDb| -> Result<()> {
+            let connection = db.connection()?;
+            let queue_count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM queue_entries WHERE agent_id = 'agent-a'",
+                [],
+                |row| row.get(0),
+            )?;
+            let comparison_count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a'
+                   AND scenario_class = ?1
+                   AND comparison_outcome = 'matched'",
+                [SCENARIO_CLASS],
+                |row| row.get(0),
+            )?;
+            assert_eq!(queue_count, expected);
+            assert_eq!(comparison_count, expected);
+            Ok(())
+        };
+        assert_counts(&db)?;
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_counts(&reopened)?;
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?
+                .rollout
+                .scenarios[SCENARIO_CLASS]
+                .mode,
+            ScenarioMode::Authoritative
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_rollout_manifest_replacement_is_fenced_and_restart_safe() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+        let first = scheduler_rollout_manifest(1, 1);
+        for (identity, command) in [
+            (
+                "replace-open-1",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "replace-complete-1",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: first.clone(),
+                },
+            ),
+            (
+                "replace-install-1",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest: first,
+                },
+            ),
+            (
+                "replace-configure",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "replace-shadow",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "replace-authoritative",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+            ),
+        ] {
+            db.transitions()
+                .commit_scheduler_rollout_command(identity, &command, None)?;
+        }
+
+        let second = scheduler_rollout_manifest(2, 2);
+        db.transitions().commit_scheduler_rollout_command(
+            "replace-open-2",
+            &RolloutCommand::OpenPreflight {
+                expected_config_revision: 4,
+                manifest_revision: 2,
+            },
+            None,
+        )?;
+        db.transitions().commit_scheduler_rollout_command(
+            "replace-complete-2",
+            &RolloutCommand::CompletePreflight {
+                expected_config_revision: 4,
+                expected_preflight_revision: 2,
+                manifest: second.clone(),
+            },
+            None,
+        )?;
+        let stale = db.transitions().commit_scheduler_rollout_command(
+            "replace-install-stale",
+            &RolloutCommand::InstallManifest {
+                expected_config_revision: 3,
+                manifest: second.clone(),
+            },
+            None,
+        )?;
+        assert_eq!(stale.result.decision, Decision::Rejected);
+        assert!(stale.result.fact_references.is_empty());
+
+        let installed = db.transitions().commit_scheduler_rollout_command(
+            "replace-install-2",
+            &RolloutCommand::InstallManifest {
+                expected_config_revision: 4,
+                manifest: second.clone(),
+            },
+            None,
+        )?;
+        assert_eq!(installed.result.decision, Decision::ManifestInstalled);
+        let replaced = db
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(replaced.rollout.config_revision, 5);
+        assert_eq!(replaced.rollout.manifest, Some(second.clone()));
+        assert_eq!(
+            replaced.rollout.preflights[&2].state,
+            RolloutPreflightState::Consumed
+        );
+        assert_eq!(
+            replaced.rollout.scenarios["exact_wait_resume"].mode,
+            ScenarioMode::Shadow
+        );
+        assert_eq!(
+            replaced.rollout.scenarios["exact_wait_resume"].manifest_revision,
+            None
+        );
+        assert_eq!(
+            replaced.rollout.scenarios["exact_wait_resume"].preflight_revision,
+            None
+        );
+
+        let stale_manifest = db.transitions().commit_scheduler_rollout_command(
+            "replace-stale-manifest-authority",
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: "exact_wait_resume".into(),
+                expected_config_revision: 5,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Authoritative,
+            },
+            None,
+        )?;
+        assert_eq!(stale_manifest.result.decision, Decision::Rejected);
+        assert_eq!(
+            stale_manifest
+                .result
+                .conflict
+                .as_ref()
+                .map(|conflict| conflict.code.as_str()),
+            Some("stale_rollout_manifest_revision")
+        );
+        assert!(stale_manifest.result.fact_references.is_empty());
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?,
+            replaced
+        );
+        let replayed = reopened.transitions().commit_scheduler_rollout_command(
+            "replace-install-2",
+            &RolloutCommand::InstallManifest {
+                expected_config_revision: 4,
+                manifest: second,
+            },
+            None,
+        )?;
+        assert!(!replayed.applied);
+        assert!(replayed.replayed);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_rollout_faults_roll_back_every_command_kind_atomically() -> Result<()> {
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            for case in [
+                SchedulerRolloutFaultCase::ConfigureProtocol,
+                SchedulerRolloutFaultCase::OpenPreflight,
+                SchedulerRolloutFaultCase::CompletePreflight,
+                SchedulerRolloutFaultCase::InstallManifest,
+                SchedulerRolloutFaultCase::ChangeScenarioAuthority,
+                SchedulerRolloutFaultCase::ReportScenarioHardBlocker,
+            ] {
+                let (_temp_dir, db_path, lock_path) = temp_paths()?;
+                let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+                let (identity, command, expected_decision) =
+                    prepare_scheduler_rollout_fault_case(&db, case)?;
+                let before = db
+                    .transitions()
+                    .load_scheduler_protocol_snapshot("agent-a")?;
+                let before_counts = scheduler_rollout_canonical_counts(&db)?;
+
+                let error = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(identity, &command, Some(fault))
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("injected runtime transition fault"),
+                    "unexpected {case:?} {fault:?} error: {error}"
+                );
+                assert_eq!(
+                    db.transitions()
+                        .load_scheduler_protocol_snapshot("agent-a")?,
+                    before,
+                    "{case:?} {fault:?} left partial canonical state"
+                );
+                assert_eq!(
+                    scheduler_rollout_canonical_counts(&db)?,
+                    before_counts,
+                    "{case:?} {fault:?} left canonical or ledger rows"
+                );
+
+                let retried = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(identity, &command, None)?;
+                assert!(retried.applied);
+                assert!(!retried.replayed);
+                assert_eq!(retried.result.decision, expected_decision);
+                let replayed = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(identity, &command, None)?;
+                assert!(!replayed.applied);
+                assert!(replayed.replayed);
+                assert_eq!(replayed.result, retried.result);
+                let ledger_rows: i64 = db.connection()?.query_row(
+                    "SELECT COUNT(*) FROM scheduler_rollout_command_results
+                     WHERE command_identity = ?1",
+                    [identity],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(ledger_rows, 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_snapshot_load_is_consistent_during_concurrent_rollout_commit(
+    ) -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let initial = scheduler_protocol_snapshot(1);
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &initial)?;
+
+        let reader = db.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let reader_handle = std::thread::spawn(move || -> Result<Snapshot> {
+            reader
+                .transitions()
+                .load_scheduler_protocol_snapshot_paused_after_first_read("agent-a", || {
+                    started_tx
+                        .send(())
+                        .map_err(|_| anyhow!("failed to signal scheduler snapshot read"))?;
+                    resume_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .context("scheduler snapshot read was not resumed")
+                })
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .context("scheduler snapshot reader did not establish its transaction")?;
+        let committed = db.transitions().commit_scheduler_rollout_command(
+            "rollout-config-concurrent",
+            &RolloutCommand::ConfigureProtocol {
+                expected_config_revision: 0,
+                mode: scheduler_protocol::ProtocolMode::Legacy,
+            },
+            None,
+        )?;
+        assert!(committed.applied);
+        resume_tx
+            .send(())
+            .map_err(|_| anyhow!("failed to resume scheduler snapshot read"))?;
+
+        let concurrent_snapshot = reader_handle
+            .join()
+            .map_err(|_| anyhow!("scheduler snapshot reader panicked"))??;
+        assert_eq!(concurrent_snapshot, initial);
+
+        let latest = db
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert_eq!(latest.rollout.config_revision, 1);
+        assert_eq!(
+            latest.rollout.protocol_mode,
+            scheduler_protocol::ProtocolMode::Legacy
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_rollout_repository_rejects_stale_fences_without_mutation() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+        let first = scheduler_rollout_manifest(1, 1);
+        for (identity, command) in [
+            (
+                "stale-setup-open-1",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "stale-setup-complete-1",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: first.clone(),
+                },
+            ),
+            (
+                "stale-setup-install-1",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest: first,
+                },
+            ),
+            (
+                "stale-setup-configure",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "stale-setup-shadow-1",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "stale-setup-authoritative-1",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: "exact_wait_resume".into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+            ),
+        ] {
+            let committed = db
+                .transitions()
+                .commit_scheduler_rollout_command(identity, &command, None)?;
+            assert_ne!(
+                committed.result.decision,
+                Decision::Rejected,
+                "{identity} setup command was rejected: {:?}",
+                committed.result
+            );
+        }
+
+        let assert_rejected =
+            |identity: &str, command: &RolloutCommand, expected_code: &str| -> Result<()> {
+                let before = db
+                    .transitions()
+                    .load_scheduler_protocol_snapshot("agent-a")?;
+                let before_counts = scheduler_rollout_canonical_counts(&db)?;
+                let rejected = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(identity, command, None)?;
+                assert!(rejected.applied);
+                assert!(!rejected.replayed);
+                assert_eq!(rejected.result.decision, Decision::Rejected);
+                assert!(rejected.result.fact_references.is_empty());
+                assert_eq!(
+                    rejected.result.pre_state_fence,
+                    rejected.result.post_state_fence
+                );
+                assert_eq!(
+                    rejected
+                        .result
+                        .conflict
+                        .as_ref()
+                        .map(|conflict| conflict.code.as_str()),
+                    Some(expected_code),
+                    "{identity} used rollout config revision {}",
+                    before.rollout.config_revision
+                );
+                assert_eq!(
+                    db.transitions()
+                        .load_scheduler_protocol_snapshot("agent-a")?,
+                    before,
+                    "{identity} mutated canonical rollout state"
+                );
+                let after_counts = scheduler_rollout_canonical_counts(&db)?;
+                assert_eq!(&after_counts[..4], &before_counts[..4]);
+                assert_eq!(after_counts[4], before_counts[4] + 1);
+
+                let replayed = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(identity, command, None)?;
+                assert!(!replayed.applied);
+                assert!(replayed.replayed);
+                assert_eq!(replayed.result, rejected.result);
+                assert_eq!(
+                    db.transitions()
+                        .load_scheduler_protocol_snapshot("agent-a")?,
+                    before
+                );
+                Ok(())
+            };
+
+        assert_rejected(
+            "stale-config",
+            &RolloutCommand::OpenPreflight {
+                expected_config_revision: 3,
+                manifest_revision: 2,
+            },
+            "stale_rollout_config_revision",
+        )?;
+        assert_rejected(
+            "stale-manifest",
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: "exact_wait_resume".into(),
+                expected_config_revision: 4,
+                expected_manifest_revision: 0,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Shadow,
+            },
+            "stale_rollout_manifest_revision",
+        )?;
+        assert_rejected(
+            "stale-preflight",
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: "exact_wait_resume".into(),
+                expected_config_revision: 4,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 0,
+                mode: ScenarioMode::Shadow,
+            },
+            "stale_rollout_preflight_revision",
+        )?;
+
+        let second = scheduler_rollout_manifest(2, 2);
+        assert_rejected(
+            "stale-unopened-preflight-binding",
+            &RolloutCommand::InstallManifest {
+                expected_config_revision: 4,
+                manifest: second.clone(),
+            },
+            "rollout_preflight_record_missing",
+        )?;
+        db.transitions().commit_scheduler_rollout_command(
+            "stale-setup-open-2",
+            &RolloutCommand::OpenPreflight {
+                expected_config_revision: 4,
+                manifest_revision: 2,
+            },
+            None,
+        )?;
+        db.transitions().commit_scheduler_rollout_command(
+            "stale-setup-complete-2",
+            &RolloutCommand::CompletePreflight {
+                expected_config_revision: 4,
+                expected_preflight_revision: 2,
+                manifest: second.clone(),
+            },
+            None,
+        )?;
+        db.transitions().commit_scheduler_rollout_command(
+            "stale-setup-install-2",
+            &RolloutCommand::InstallManifest {
+                expected_config_revision: 4,
+                manifest: second,
+            },
+            None,
+        )?;
+        assert_rejected(
+            "stale-replaced-authority",
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: "exact_wait_resume".into(),
+                expected_config_revision: 5,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Authoritative,
+            },
+            "stale_rollout_manifest_revision",
+        )?;
+        let promoted = db.transitions().commit_scheduler_rollout_command(
+            "stale-setup-authoritative-2",
+            &RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: "exact_wait_resume".into(),
+                expected_config_revision: 5,
+                expected_manifest_revision: 2,
+                expected_preflight_revision: 2,
+                mode: ScenarioMode::Authoritative,
+            },
+            None,
+        )?;
+        assert_eq!(promoted.result.decision, Decision::ScenarioAuthorityChanged);
+        assert_rejected(
+            "stale-replaced-blocker",
+            &RolloutCommand::ReportScenarioHardBlocker {
+                scenario_class: "exact_wait_resume".into(),
+                blocker_code: "old-manifest-blocker".into(),
+                expected_config_revision: 6,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+            },
+            "stale_rollout_manifest_revision",
+        )?;
         Ok(())
     }
 

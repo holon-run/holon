@@ -3,7 +3,7 @@ use super::support::*;
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
     WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
-    WorkItemSchedulingState, WorkReactivationMode,
+    WorkItemSchedulingState, WorkItemState, WorkReactivationMode,
 };
 use chrono::DateTime;
 use serde::de::DeserializeOwned;
@@ -949,7 +949,7 @@ fn background_work_item_task_does_not_block_runnable_work() {
 }
 
 #[test]
-fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
+fn scheduling_advisories_detect_idle_posture_with_runnable_work() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
@@ -968,13 +968,8 @@ fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
         run_id: None,
     };
 
-    let diagnostics = scheduler::scheduling_diagnostics_for_facts(
-        &agent,
-        &projection,
-        &posture,
-        &work_queue,
-        &[],
-    );
+    let diagnostics =
+        scheduler::scheduling_advisories_for_facts(&agent, &projection, &posture, &work_queue, &[]);
 
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].kind, "idle_posture_has_runnable_work");
@@ -985,7 +980,7 @@ fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
 }
 
 #[test]
-fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() {
+fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -1023,7 +1018,7 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
     blocked.blocked_by = Some("manual blocker".into());
     storage.append_work_item(&blocked).unwrap();
 
-    let diagnostics = scheduler::scheduling_diagnostics(&storage, &agent).unwrap();
+    let diagnostics = scheduler::scheduling_advisories(&storage, &agent).unwrap();
     let kinds = diagnostics
         .iter()
         .map(|diagnostic| diagnostic.kind.as_str())
@@ -1043,14 +1038,13 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
 }
 
 #[test]
-fn scheduling_diagnostics_use_authoritative_queue_len() {
+fn scheduling_advisories_use_authoritative_queue_len() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
 
-    let diagnostics =
-        scheduler::scheduling_diagnostics_with_queue_len(&storage, &agent, 1).unwrap();
+    let diagnostics = scheduler::scheduling_advisories_with_queue_len(&storage, &agent, 1).unwrap();
 
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].kind, "idle_posture_has_queued_input");
@@ -1061,7 +1055,7 @@ fn scheduling_diagnostics_use_authoritative_queue_len() {
 }
 
 #[test]
-fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
+fn scheduling_advisories_do_not_warn_for_common_legal_waits() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -1102,7 +1096,7 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
     blocked_with_recheck.recheck_at = Some(now + chrono::Duration::hours(1));
     storage.append_work_item(&blocked_with_recheck).unwrap();
 
-    let diagnostics = scheduler::scheduling_diagnostics(&storage, &agent).unwrap();
+    let diagnostics = scheduler::scheduling_advisories(&storage, &agent).unwrap();
 
     assert!(
         diagnostics.is_empty(),
@@ -1111,7 +1105,7 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
 }
 
 #[test]
-fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
+fn scheduling_advisory_append_dedupes_interleaved_recent_events() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -1141,17 +1135,17 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
             turn_id: None,
         })
         .unwrap();
-    let appended = scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap();
+    let appended = scheduler::append_scheduling_advisories(&storage, &agent, 0).unwrap();
     assert_eq!(appended, 1);
     assert_eq!(
-        scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap(),
+        scheduler::append_scheduling_advisories(&storage, &agent, 0).unwrap(),
         0
     );
 
     let events = storage.read_recent_events(10).unwrap();
     let diagnostic_kinds = events
         .iter()
-        .filter(|event| event.kind == "scheduler_diagnostic")
+        .filter(|event| event.kind == "scheduling_advisory")
         .map(|event| event.data["kind"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(diagnostic_kinds.len(), appended);
@@ -1225,6 +1219,742 @@ fn scheduler_decision_event_records_evidence_and_bindings() {
 }
 
 #[test]
+fn message_shadow_candidate_is_reduced_independently_from_legacy_decision() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "shadow-divergence".into(),
+            event_type: Some("ping".into()),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::ExternalEvent,
+        class: ContinuationClass::LivenessOnly,
+        model_reentry: false,
+        prior_closure_outcome: ClosureOutcome::Completed,
+        prior_waiting_reason: None,
+        matched_waiting_reason: false,
+        evidence: Vec::new(),
+    };
+    let inconsistent_legacy = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "injected_legacy_divergence",
+    )
+    .message(&message)
+    .model_reentry(true);
+
+    let comparison = scheduler::shadow_comparison_for_message_admission(
+        &projection,
+        &message,
+        &inconsistent_legacy,
+        Some(&continuation),
+    )
+    .expect("webhook admission should be shadow comparable");
+
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("message_admission_outcome_mismatch")
+    );
+    let candidate = serde_json::to_value(comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "reduce_message_only");
+    assert_eq!(candidate["model_reentry"], false);
+}
+
+// --- wait resume shadow comparison ---
+
+fn append_task_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    task_id: &str,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: format!("task_result:{task_id}"),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: task_id.into(),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+}
+fn append_open_work_item(storage: &AppStorage, id: &str, agent_id: &str) {
+    let mut record = WorkItemRecord::new(agent_id, "test objective", WorkItemState::Open);
+    record.id = id.into();
+    storage.append_work_item(&record).unwrap();
+}
+
+#[test]
+fn wait_resume_shadow_comparison_records_task_result_matching_active_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "task_result_wait_resume",
+    )
+    .message(&message)
+    .model_reentry(true)
+    .work_item_id("wi-1");
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("task result matching active wait should produce wait resume comparison");
+    assert_eq!(comparison.scenario_class, "wait_resume");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["wake_source"], "task_result");
+    assert_eq!(observation["legacy_decision"], "StartModelTurn");
+    assert_eq!(observation["model_reentry"], true);
+    assert_eq!(observation["work_item_id"], "wi-1");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "wait_resume");
+    assert_eq!(candidate["model_reentry"], true);
+    assert_eq!(candidate["binding_work_item_id"], "wi-1");
+    assert_eq!(candidate["queue_disposition"], "claim");
+    assert_eq!(candidate["resulting_posture"], "running");
+}
+
+#[test]
+fn message_claim_authority_scope_is_derived_without_shadow_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "test".into(),
+            event_type: None,
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claim".into(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::REDUCER_ONLY_CANDIDATES_SCENARIO]
+    );
+}
+
+#[test]
+fn wait_resume_claim_authority_scope_is_derived_without_shadow_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::WAIT_RESUME_SCENARIO]
+    );
+}
+
+#[test]
+fn wait_resume_shadow_comparison_returns_none_when_no_matching_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    // No wait condition inserted
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "task_result_no_wait",
+    )
+    .model_reentry(true);
+    assert!(
+        scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision,).is_none()
+    );
+}
+
+#[test]
+fn wait_resume_shadow_comparison_returns_none_for_non_task_result_message() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_task_wait_condition(&storage, "wait-1", "default", None, "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "test".into(),
+            event_type: None,
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "webhook_not_wait_resume",
+    )
+    .model_reentry(true);
+    assert!(
+        scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision,).is_none()
+    );
+}
+
+#[test]
+fn wait_resume_shadow_comparison_skips_work_queue_system_tick() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    // Insert a system wait condition
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-sys".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::System,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "system_tick".into(),
+            wake_sources: vec![WakeSource::SystemTick],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "work_queue_tick",
+    )
+    .model_reentry(true);
+    assert!(
+        scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision,).is_none()
+    );
+}
+
+#[test]
+fn wait_resume_shadow_comparison_detects_model_reentry_divergence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    // Turn in progress — candidate should say no model reentry
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    // Legacy says model_reentry=true but protocol candidate computes false (turn in progress)
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "divergent_task_result",
+    )
+    .message(&message)
+    .model_reentry(true)
+    .work_item_id("wi-1");
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("wait_resume_outcome_mismatch"),
+    );
+}
+
+// --- settlement shadow comparison ---
+
+fn make_settlement_record(message_id: &str, status: QueueEntryStatus) -> QueueEntryRecord {
+    let now = Utc::now();
+    QueueEntryRecord {
+        message_id: message_id.into(),
+        agent_id: "default".into(),
+        priority: Priority::Normal,
+        status,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[test]
+fn settlement_shadow_comparison_records_processed_settlement() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("processed settlement should produce comparison");
+    assert_eq!(comparison.scenario_class, "settlement");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["settlement_status"], "complete");
+    assert_eq!(observation["turn_in_progress"], false);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "settle");
+    assert_eq!(candidate["settlement_disposition"], "complete");
+    assert_eq!(candidate["resulting_posture"], "open");
+}
+
+#[test]
+fn settlement_shadow_comparison_returns_none_for_queued_entry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Queued);
+    assert!(scheduler::shadow_comparison_for_settlement(&projection, &record).is_none());
+}
+
+#[test]
+fn settlement_shadow_comparison_returns_none_for_dequeued_entry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Dequeued);
+    assert!(scheduler::shadow_comparison_for_settlement(&projection, &record).is_none());
+}
+
+#[test]
+fn settlement_shadow_comparison_detects_divergence_when_turn_in_progress() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Legacy settles as Processed but turn is still in progress
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("settlement_outcome_mismatch"),
+    );
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["settlement_status"], "complete");
+    assert_eq!(observation["turn_in_progress"], true);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["settlement_disposition"], "pending");
+}
+
+#[test]
+fn settlement_shadow_comparison_detects_divergence_when_agent_stopped() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Stopped;
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Legacy settles as Processed but agent is stopped
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("settlement_outcome_mismatch"),
+    );
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["settlement_disposition"], "failed");
+}
+
+#[test]
+fn settlement_shadow_comparison_matches_aborted_with_stopped_agent() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Stopped;
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Aborted);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("aborted settlement should produce comparison");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["settlement_status"], "failed");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["settlement_disposition"], "failed");
+}
+
+// --- delivery shadow comparison ---
+
+#[test]
+fn delivery_shadow_comparison_records_processed_with_completed_turn() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.last_turn_terminal = Some(TurnTerminalRecord {
+        turn_id: "turn-1".into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        last_assistant_message: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 100,
+    });
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("processed delivery should produce comparison");
+    assert_eq!(comparison.scenario_class, "delivery");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["turn_terminal"], "completed");
+    assert_eq!(observation["turn_in_progress"], false);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "deliver");
+    assert_eq!(candidate["delivery_disposition"], "completed");
+}
+
+#[test]
+fn delivery_shadow_comparison_returns_none_for_queued_entry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Queued);
+    assert!(scheduler::shadow_comparison_for_delivery(&projection, &record).is_none());
+}
+
+#[test]
+fn delivery_shadow_comparison_detects_divergence_when_turn_aborted_but_settled_processed() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.last_turn_terminal = Some(TurnTerminalRecord {
+        turn_id: "turn-1".into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::Aborted,
+        reason: None,
+        last_assistant_message: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 100,
+    });
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Queue settled as Processed but the turn was Aborted
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("delivery_outcome_mismatch"),
+    );
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["turn_terminal"], "aborted");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "completed");
+}
+
+#[test]
+fn delivery_shadow_comparison_matches_aborted_settlement_with_failed_terminal() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.last_turn_terminal = Some(TurnTerminalRecord {
+        turn_id: "turn-1".into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::ProviderFailedNeedsRecovery,
+        reason: None,
+        last_assistant_message: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 100,
+    });
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Aborted);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("aborted delivery should produce comparison");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(
+        observation["turn_terminal"],
+        "provider_failed_needs_recovery"
+    );
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "failed");
+}
+
+#[test]
+fn delivery_shadow_comparison_matches_interrupted_settlement() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Interrupted);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("interrupted delivery should produce comparison");
+    // No turn terminal → "none", restricted says "interrupted" → divergence
+    assert!(!comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["turn_terminal"], "none");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "interrupted");
+}
+
+#[test]
+fn delivery_shadow_comparison_detects_divergence_when_turn_in_progress() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Queue settled as Processed but turn is still in progress
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "pending");
+}
+
+// --- operator interjection shadow comparison (per-boundary) ---
+
+fn make_interjection_message(id: &str) -> MessageEnvelope {
+    let mut msg = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "interject".into(),
+        },
+    );
+    msg.id = id.into();
+    msg
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_after_provider_round() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-1");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::AfterProviderRound,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["interjection_boundary"], "after_provider_round");
+    assert_eq!(observation["turn_in_progress"], false);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "interject");
+    assert_eq!(candidate["interjection_boundary"], "after_provider_round");
+    assert_eq!(candidate["queue_disposition"], "consumed");
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_before_tool_execution() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-2");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::BeforeToolExecution,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(
+        observation["interjection_boundary"],
+        "before_tool_execution"
+    );
+    assert_eq!(observation["turn_in_progress"], true);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["interjection_boundary"], "before_tool_execution");
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_after_tool_results() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-3");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::AfterToolResults,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["interjection_boundary"], "after_tool_results");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["interjection_boundary"], "after_tool_results");
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_before_provider_continuation() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-4");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::BeforeProviderContinuation,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(
+        observation["interjection_boundary"],
+        "before_provider_continuation"
+    );
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(
+        candidate["interjection_boundary"],
+        "before_provider_continuation"
+    );
+}
+
+#[test]
 fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -1293,13 +2023,75 @@ fn scheduler_decision_append_dedupes_identical_latest_event() {
     .liveness_only(true)
     .evidence("active_waiting_intents=1");
 
-    assert!(scheduler::append_scheduler_decision(&storage, &decision).unwrap());
-    assert!(!scheduler::append_scheduler_decision(&storage, &decision).unwrap());
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &decision).unwrap());
+    assert!(
+        !scheduler::append_scheduler_decision(&storage, "default", &decision).unwrap(),
+        "duplicate decision should be suppressed"
+    );
 
     let events = storage.read_recent_events(10).unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].kind, "scheduler_decision");
+    assert_eq!(events.len(), 2, "should emit both typed and legacy events");
+    assert_eq!(events[0].kind, "scheduler_diagnostic");
     assert_eq!(events[0].data["boundary"].as_str(), Some("fixture"));
+    assert_eq!(events[0].data["shadow_matched"], serde_json::Value::Null);
+    assert_eq!(events[1].kind, "scheduler_decision");
+    assert_eq!(events[1].data["boundary"].as_str(), Some("fixture"));
+}
+
+// --- public scheduler diagnostic event stream tests ---
+
+#[test]
+fn scheduler_diagnostic_audit_event_carries_decision_without_shadow() {
+    let mut decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "message_admitted",
+    )
+    .boundary("run_loop")
+    .evidence("queue_len=1");
+    decision.message_id = Some("msg-test-1".into());
+
+    let event = scheduler::scheduler_diagnostic_audit_event("default", &decision, None);
+    assert_eq!(event.agent_id, "default");
+    assert_eq!(event.decision, "StartModelTurn");
+    assert_eq!(event.reason, "message_admitted");
+    assert_eq!(event.boundary.as_deref(), Some("run_loop"));
+    assert_eq!(event.message_id.as_deref(), Some("msg-test-1"));
+    assert!(event.evidence.contains(&"queue_len=1".to_string()));
+    assert_eq!(event.scenario_class, None);
+    assert_eq!(event.shadow_matched, None);
+    assert_eq!(event.divergence_code, None);
+}
+
+#[test]
+fn scheduler_diagnostic_audit_event_carries_shadow_comparison_outcome() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-shadow-1");
+    let shadow = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::AfterProviderRound,
+    )
+    .expect("interjection should produce comparison");
+
+    let mut decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "operator_interjection",
+    )
+    .boundary("run_loop")
+    .evidence("interjection_boundary=after_provider_round");
+    decision.message_id = Some("msg-shadow-1".into());
+
+    let event = scheduler::scheduler_diagnostic_audit_event("default", &decision, Some(&shadow));
+    assert_eq!(
+        event.scenario_class.as_deref(),
+        Some("operator_interjection")
+    );
+    assert_eq!(event.shadow_matched, Some(true));
+    assert_eq!(event.divergence_code, None);
 }
 
 #[test]

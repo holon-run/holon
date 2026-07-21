@@ -1692,28 +1692,53 @@ impl RuntimeHandle {
         });
         if sleeping_until.is_none() && allow_runnable_work_override {
             if let Some((work_item, reason)) = self.indefinite_sleep_runnable_work()? {
-                let state = {
+                let (state, queue_len) = {
                     let guard = self.inner.agent.lock().await;
-                    self.inner.storage.append_event(&AuditEvent::legacy(
-                        "scheduler_posture_decision",
-                        serde_json::json!({
-                            "boundary": "lifecycle_sleep",
-                            "reason": "sleep_overridden_runnable_work",
-                            "previous_status": guard.state.status,
-                            "next_status": guard.state.status,
-                            "evidence": [
-                                format!("previous_run_id={:?}", guard.state.current_run_id),
-                                "sleeping_until=None".to_string(),
-                                format!("work_item_id={}", work_item.id),
-                                format!("work_queue_reason={reason}"),
-                                "work_item_scheduling_state=Runnable".to_string(),
-                            ],
-                        }),
-                    ))?;
-                    guard.state.clone()
+                    (guard.state.clone(), guard.queue.len())
                 };
-                self.emit_system_tick_from_work_queue(&work_item, reason)
-                    .await?;
+                let projection = super::scheduler::SchedulerProjection::from_state_with_queue_len(
+                    &self.inner.storage,
+                    &state,
+                    queue_len,
+                )?;
+                let decision = super::scheduler::SchedulerDecision::new(
+                    super::scheduler::SchedulerDecisionKind::EmitSystemTick,
+                    reason,
+                )
+                .boundary(super::scheduler::SchedulerBoundary::LifecycleSleep.as_str())
+                .model_reentry(true)
+                .work_item_id(work_item.id.clone())
+                .evidence("lifecycle_sleep_overridden_by_runnable_work");
+                let shadow_comparison = super::scheduler::shadow_comparison_for_work_queue_tick(
+                    &projection,
+                    &work_item,
+                    reason,
+                    &decision,
+                    super::scheduler::SchedulerBoundary::LifecycleSleep,
+                );
+                self.emit_system_tick_from_work_queue(
+                    &work_item,
+                    reason,
+                    shadow_comparison,
+                    Some(&decision),
+                )
+                .await?;
+                self.inner.storage.append_event(&AuditEvent::legacy(
+                    "scheduler_posture_decision",
+                    serde_json::json!({
+                        "boundary": "lifecycle_sleep",
+                        "reason": "sleep_overridden_runnable_work",
+                        "previous_status": state.status,
+                        "next_status": state.status,
+                        "evidence": [
+                            format!("previous_run_id={:?}", state.current_run_id),
+                            "sleeping_until=None".to_string(),
+                            format!("work_item_id={}", work_item.id),
+                            format!("work_queue_reason={reason}"),
+                            "work_item_scheduling_state=Runnable".to_string(),
+                        ],
+                    }),
+                ))?;
                 self.append_state_changed_events(&state)?;
                 return Ok(());
             }

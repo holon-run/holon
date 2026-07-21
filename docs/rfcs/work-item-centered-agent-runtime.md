@@ -305,20 +305,26 @@ It may emit a system tick that asks the model to pick or review work.
 
 ### Current Focus Release
 
-The runtime should release current focus when the current WorkItem becomes
-non-runnable through an explicit WorkItem mutation:
+Durable focus and execution ownership are independent. The runtime changes
+canonical current focus only through an explicit focus transition, completion,
+or continuation policy:
 
 - `CompleteWorkItem` completes it;
-- `UpdateWorkItem(blocked_by = Some(...))` marks it blocked;
-- `UpdateWorkItem(plan_status = needs_input)` marks it waiting for operator or
-  external clarification.
+- `PickWorkItem` replaces focus or creates a yield/return transition; or
+- continuation completion restores or clears focus.
 
-This avoids a separate `YieldWorkItem` tool for the common case where the agent
-already expressed why the current item cannot continue.
+`UpdateWorkItem(plan_status = needs_input)`, a manual hold, or WorkItem-scoped
+`WaitFor` may make work non-runnable without clearing durable focus.
+`WaitFor` releases the current Turn binding and execution ownership; the
+activation settlement separately chooses whether the agent lane remains
+`Awaiting(wait_id)` or becomes `Open`.
 
 If the current WorkItem remains runnable but the agent wants to switch, it
 should use `PickWorkItem` with an explicit reason once that tool shape supports
 it. This is an agent-directed focus override, not a scheduler guess.
+
+The target focus, binding, and lane protocol is specified by
+[Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md).
 
 ### Candidate Classes
 

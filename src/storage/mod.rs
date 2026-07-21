@@ -4363,6 +4363,44 @@ mod tests {
     }
 
     #[test]
+    fn storage_work_queue_prompt_projection_preserves_fifo_fairness_and_limit() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let base = Utc::now();
+
+        let mut queued = (0..7)
+            .map(|index| {
+                let mut item =
+                    WorkItemRecord::new("default", format!("queued-{index}"), WorkItemState::Open);
+                item.id = format!("work-{index}");
+                item.created_at = base + chrono::Duration::seconds(index);
+                item.updated_at = if index == 0 {
+                    base + chrono::Duration::hours(1)
+                } else {
+                    item.created_at
+                };
+                item
+            })
+            .collect::<Vec<_>>();
+        queued.reverse();
+        for item in queued {
+            storage.append_work_item(&item).unwrap();
+        }
+        storage.write_agent(&AgentState::new("default")).unwrap();
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+        let rendered = projection
+            .queued_runnable
+            .iter()
+            .map(|item| item.objective.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rendered,
+            vec!["queued-0", "queued-1", "queued-2", "queued-3", "queued-4"]
+        );
+    }
+
+    #[test]
     fn db_backed_work_queue_prompt_projection_filters_by_current_agent() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();

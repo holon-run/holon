@@ -1,26 +1,32 @@
 //! Restricted runtime business-transition unit of work.
 
-use anyhow::{anyhow, Result};
+// Phase 2 keeps this additive persistence seam dormant until production shadow
+// wiring begins; repository tests exercise it without granting scheduler authority.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod scheduler_protocol_repository;
+
+use anyhow::{anyhow, bail, Result};
 use rusqlite::{OptionalExtension, Transaction};
 
 use crate::{
     runtime_db::{
         evidence::{
-            append_audit_event_tx, append_transcript_entry_tx, insert_runtime_index_changes_tx,
-            upsert_agent_state_tx,
+            append_audit_event_tx, append_message_tx, append_transcript_entry_tx,
+            insert_brief_evidence_tx, insert_runtime_index_changes_tx, upsert_agent_state_tx,
         },
         repositories::{
             insert_new_work_item_tx, queue_entry_transition, task_transition,
-            try_claim_queued_message_tx, update_expected_work_item_tx, upsert_queue_entry_tx,
-            upsert_task_tx, upsert_wait_condition_tx, upsert_work_item_continuation_tx,
-            wait_condition_transition,
+            try_claim_queued_message_tx, try_interject_queued_message_tx,
+            update_expected_work_item_tx, upsert_queue_entry_tx, upsert_task_tx,
+            upsert_wait_condition_tx, upsert_work_item_continuation_tx, wait_condition_transition,
         },
         RuntimeDb, RuntimeIndexChange, RuntimeStateTransitionConflict,
     },
     runtime_error::RuntimeError,
     types::{
-        AgentState, AuditEvent, QueueEntryRecord, TaskRecord, TranscriptEntry, WaitConditionRecord,
-        WorkItemContinuationFrame, WorkItemRecord, WorkItemState,
+        AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
+        TaskRecord, TranscriptEntry, WaitConditionRecord, WorkItemContinuationFrame,
+        WorkItemRecord, WorkItemState,
     },
 };
 
@@ -73,8 +79,16 @@ impl WorkItemMutation {
 
 #[derive(Debug, Clone)]
 pub(crate) enum QueueMutation {
-    Claim(QueueEntryRecord),
+    Consume(QueueEntryRecord),
     Upsert(QueueEntryRecord),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueueOperation {
+    Admit,
+    Claim,
+    Interject,
+    Settle,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -145,12 +159,22 @@ pub(crate) struct WorkItemFocusTransitionCommand {
 #[derive(Debug, Clone)]
 pub(crate) struct QueueTransitionCommand {
     pub agent_id: String,
+    pub operation: QueueOperation,
     pub mutation: QueueMutation,
+    pub scheduler_authority_scenarios: Vec<String>,
     pub agent_state: Option<AgentStateMutation>,
+    pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
     pub audit_events: Vec<AuditEvent>,
+    pub scheduler_shadow_comparison:
+        Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
+    pub scheduler_delivery_shadow_comparison:
+        Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
+    pub scheduler_semantic_shadow:
+        Option<scheduler_protocol_repository::SchedulerSemanticShadowCommand>,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
+    pub brief_evidence: Vec<BriefRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,21 +347,77 @@ impl RuntimeTransitionRepository<'_> {
 
     pub fn commit_queue(&self, command: &QueueTransitionCommand) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
+            validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            scheduler_protocol_repository::validate_required_shadow_comparisons_tx(
+                tx,
+                &command.scheduler_authority_scenarios,
+                [
+                    command.scheduler_shadow_comparison.as_ref(),
+                    command.scheduler_delivery_shadow_comparison.as_ref(),
+                ],
+            )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-            let mut applied = match &command.mutation {
-                QueueMutation::Claim(record) => try_claim_queued_message_tx(tx, record)?,
+            let mutation_applied = match &command.mutation {
+                QueueMutation::Consume(record) => match command.operation {
+                    QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
+                    QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
+                    QueueOperation::Admit | QueueOperation::Settle => {
+                        unreachable!("queue operation validation rejects this combination")
+                    }
+                },
                 QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
             };
+            if matches!(&command.mutation, QueueMutation::Consume(_)) && !mutation_applied {
+                return Ok(TransitionCommit::default());
+            }
+            let shadow_comparison = scheduler_protocol_repository::validate_shadow_comparison_tx(
+                tx,
+                &command.agent_id,
+                command.scheduler_shadow_comparison.as_ref(),
+            )?;
+            let delivery_shadow_comparison =
+                scheduler_protocol_repository::validate_shadow_comparison_tx(
+                    tx,
+                    &command.agent_id,
+                    command.scheduler_delivery_shadow_comparison.as_ref(),
+                )?;
+            let semantic_shadow =
+                scheduler_protocol_repository::validate_semantic_shadow_decision_tx(
+                    tx,
+                    &command.agent_id,
+                    command.scheduler_semantic_shadow.as_ref(),
+                )?;
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            applied |= agent_state_applied;
+            let applied = mutation_applied || agent_state_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
             }
+            scheduler_protocol_repository::persist_shadow_comparison_tx(
+                tx,
+                &command.agent_id,
+                shadow_comparison,
+            )?;
+            scheduler_protocol_repository::persist_shadow_comparison_tx(
+                tx,
+                &command.agent_id,
+                delivery_shadow_comparison,
+            )?;
+            scheduler_protocol_repository::persist_semantic_shadow_decision_tx(
+                tx,
+                &command.agent_id,
+                semantic_shadow,
+            )?;
+            for message in &command.message_evidence {
+                append_message_tx(tx, message)?;
+            }
             for entry in &command.transcript_entries {
                 append_transcript_entry_tx(tx, entry)?;
+            }
+            for brief in &command.brief_evidence {
+                insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             finish_transition_tx(
@@ -673,7 +753,7 @@ fn validate_wait_condition_tx(tx: &Transaction<'_>, incoming: &WaitConditionReco
 
 fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) -> Result<()> {
     let incoming = match mutation {
-        QueueMutation::Claim(record) | QueueMutation::Upsert(record) => record,
+        QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
     };
     let existing = tx
         .query_row(
@@ -686,6 +766,47 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
         .transpose()?;
     if let (QueueMutation::Upsert(_), Some(existing)) = (mutation, existing.as_ref()) {
         queue_entry_transition(existing, incoming)?;
+    }
+    Ok(())
+}
+
+fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
+    let valid = matches!(
+        (&command.operation, &command.mutation),
+        (
+            QueueOperation::Admit,
+            QueueMutation::Upsert(QueueEntryRecord {
+                status: QueueEntryStatus::Queued,
+                ..
+            })
+        ) | (
+            QueueOperation::Claim,
+            QueueMutation::Consume(QueueEntryRecord {
+                status: QueueEntryStatus::Dequeued,
+                ..
+            })
+        ) | (
+            QueueOperation::Interject,
+            QueueMutation::Consume(QueueEntryRecord {
+                status: QueueEntryStatus::Interjected,
+                ..
+            })
+        ) | (
+            QueueOperation::Settle,
+            QueueMutation::Upsert(QueueEntryRecord {
+                status: QueueEntryStatus::Processed
+                    | QueueEntryStatus::Interrupted
+                    | QueueEntryStatus::Aborted
+                    | QueueEntryStatus::Dropped,
+                ..
+            })
+        )
+    );
+    if !valid {
+        bail!(
+            "queue operation {:?} does not match its mutation or target status",
+            command.operation
+        );
     }
     Ok(())
 }
@@ -1082,15 +1203,22 @@ mod tests {
             db.transitions()
                 .commit_queue(&QueueTransitionCommand {
                     agent_id: "agent-a".into(),
+                    operation: QueueOperation::Settle,
                     mutation: QueueMutation::Upsert(processed),
+                    scheduler_authority_scenarios: Vec::new(),
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(settled_state),
                     }),
+                    message_evidence: Vec::new(),
                     transcript_entries: vec![transcript],
                     audit_events: vec![AuditEvent::legacy("queue_settled", serde_json::json!({}))],
+                    scheduler_semantic_shadow: None,
+                    scheduler_shadow_comparison: None,
+                    scheduler_delivery_shadow_comparison: None,
                     notify_scheduler: true,
                     fault: Some(fault),
+                    brief_evidence: Vec::new(),
                 })
                 .unwrap_err();
 
@@ -1101,6 +1229,285 @@ mod tests {
             assert!(db.transcript_entries().all(Some("agent-a"))?.is_empty());
             assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_fault_rolls_back_scheduler_shadow_comparison_atomically() -> Result<()> {
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let connection = db.connection()?;
+            connection.execute(
+                "UPDATE scheduler_protocol_config
+                 SET protocol_mode = 'shadow',
+                     config_revision = 1,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE config_id = 1",
+                [],
+            )?;
+            connection.execute(
+                "INSERT INTO scheduler_scenario_authorities (
+                   scenario_class, mode, rollback_target,
+                   manifest_revision, preflight_revision, updated_at
+                 ) VALUES (
+                   'reducer_only_candidates', 'shadow', 'off',
+                   NULL, NULL, CURRENT_TIMESTAMP
+                 )",
+                [],
+            )?;
+
+            let now = Utc::now();
+            let queued = QueueEntryRecord {
+                message_id: "message-shadow-fault".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            };
+            db.queue_entries().upsert(&queued)?;
+            let mut initial_state = AgentState::new("agent-a");
+            initial_state.pending = 1;
+            db.agent_states().upsert(&initial_state)?;
+            let mut running_state = initial_state.clone();
+            running_state.pending = 0;
+            running_state.status = crate::types::AgentStatus::AwakeRunning;
+            running_state.current_run_id = Some("run-shadow-fault".into());
+
+            let mut claimed = queued.clone();
+            claimed.status = QueueEntryStatus::Dequeued;
+            claimed.updated_at = now + chrono::Duration::seconds(1);
+            db.transitions()
+                .commit_queue(&QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Claim,
+                    mutation: QueueMutation::Consume(claimed),
+                    scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
+                    agent_state: Some(AgentStateMutation {
+                        expected: Some(Box::new(initial_state.clone())),
+                        record: Box::new(running_state),
+                    }),
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    audit_events: vec![AuditEvent::legacy(
+                        "queue_entry_claimed",
+                        serde_json::json!({}),
+                    )],
+                    scheduler_semantic_shadow: None,
+                    scheduler_shadow_comparison: Some(
+                        scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+                            scenario_class: "reducer_only_candidates".into(),
+                            comparison_identity: "message_admission:message-shadow-fault".into(),
+                            boundary: "run_loop".into(),
+                            input_identity: "message:message-shadow-fault".into(),
+                            legacy_observation: serde_json::json!({
+                                "legacy_decision": "reduce_message_only"
+                            }),
+                            shadow_candidate: serde_json::json!({
+                                "action": "reduce_message_only"
+                            }),
+                            matched: true,
+                            divergence_code: None,
+                        },
+                    ),
+                    scheduler_delivery_shadow_comparison: None,
+                    notify_scheduler: false,
+                    fault: Some(fault),
+                    brief_evidence: Vec::new(),
+                })
+                .unwrap_err();
+
+            assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
+            assert_eq!(db.agent_states().latest("agent-a")?, Some(initial_state));
+            assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+            let comparison_count: i64 = db.connection()?.query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(comparison_count, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_queue_claim_commits_only_with_matched_canonical_evidence() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let connection = db.connection()?;
+        connection.execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'authoritative', 'shadow',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )?;
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-authoritative-match".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        let committed = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(claimed.clone()),
+            scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            audit_events: vec![AuditEvent::legacy(
+                "authoritative_claim",
+                serde_json::json!({}),
+            )],
+            scheduler_semantic_shadow: None,
+            scheduler_shadow_comparison: Some(
+                scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+                    scenario_class: "reducer_only_candidates".into(),
+                    comparison_identity: "message_admission:message-authoritative-match".into(),
+                    boundary: "run_loop".into(),
+                    input_identity: "message:message-authoritative-match".into(),
+                    legacy_observation: serde_json::json!({
+                        "legacy_decision": "reduce_message_only"
+                    }),
+                    shadow_candidate: serde_json::json!({
+                        "action": "reduce_message_only"
+                    }),
+                    matched: true,
+                    divergence_code: None,
+                },
+            ),
+            scheduler_delivery_shadow_comparison: None,
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+
+        assert!(committed.applied);
+        assert_eq!(db.queue_entries().latest_all()?, vec![claimed]);
+        let (outcome, authority_mode): (String, String) = db.connection()?.query_row(
+            "SELECT comparison_outcome, authority_mode
+             FROM scheduler_shadow_comparisons
+             WHERE comparison_identity = 'message_admission:message-authoritative-match'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(outcome, "matched");
+        assert_eq!(authority_mode, "authoritative");
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_queue_claim_rejects_divergence_without_partial_writes() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let connection = db.connection()?;
+        connection.execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'authoritative', 'shadow',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )?;
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-authoritative-divergence".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        let error = db
+            .transitions()
+            .commit_queue(&QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(claimed),
+                scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                audit_events: vec![AuditEvent::legacy(
+                    "authoritative_claim",
+                    serde_json::json!({}),
+                )],
+                scheduler_semantic_shadow: None,
+                scheduler_shadow_comparison: Some(
+                    scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+                        scenario_class: "reducer_only_candidates".into(),
+                        comparison_identity: "message_admission:message-authoritative-divergence"
+                            .into(),
+                        boundary: "run_loop".into(),
+                        input_identity: "message:message-authoritative-divergence".into(),
+                        legacy_observation: serde_json::json!({
+                            "legacy_decision": "start_model_turn"
+                        }),
+                        shadow_candidate: serde_json::json!({
+                            "action": "reduce_message_only"
+                        }),
+                        matched: false,
+                        divergence_code: Some("message_admission_outcome_mismatch".into()),
+                    },
+                ),
+                scheduler_delivery_shadow_comparison: None,
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            })
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("rejected divergent canonical evidence"));
+        assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
+        assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+        let comparison_count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM scheduler_shadow_comparisons",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(comparison_count, 0);
         Ok(())
     }
 
