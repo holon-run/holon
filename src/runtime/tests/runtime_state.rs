@@ -1234,7 +1234,7 @@ async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tic
 }
 
 #[tokio::test]
-async fn lifecycle_sleep_work_queue_override_obeys_authoritative_fence() {
+async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_evidence() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1255,7 +1255,7 @@ async fn lifecycle_sleep_work_queue_override_obeys_authoritative_fence() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-authoritative-fence".into());
-        guard.state.current_work_item_id = Some(work_item_id);
+        guard.state.current_work_item_id = Some(work_item_id.clone());
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let connection = runtime.inner.runtime_db.connection().unwrap();
@@ -1282,24 +1282,45 @@ async fn lifecycle_sleep_work_queue_override_obeys_authoritative_fence() {
         )
         .unwrap();
 
-    let error = runtime.transition_to_sleep(None).await.unwrap_err();
+    runtime.transition_to_sleep(None).await.unwrap();
 
-    assert!(error
-        .to_string()
-        .contains("production authority is not wired"));
-    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
-    assert!(runtime
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(
+        state.current_run_id.as_deref(),
+        Some("run-authoritative-fence")
+    );
+    assert_eq!(state.pending, 1);
+    let tick = runtime
         .storage()
         .read_recent_messages(10)
         .unwrap()
-        .iter()
-        .all(|message| message.kind != MessageKind::SystemTick));
+        .into_iter()
+        .find(|message| message.kind == MessageKind::SystemTick)
+        .expect("matched authoritative evidence should admit the work queue tick");
+    assert_eq!(tick.work_item_id.as_deref(), Some(work_item_id.as_str()));
+    let (boundary, outcome, authority_mode): (String, String, String) = connection
+        .query_row(
+            "SELECT boundary, comparison_outcome, authority_mode
+             FROM scheduler_shadow_comparisons
+             WHERE agent_id = 'default'
+               AND scenario_class = 'work_item_autonomous_continuation'
+               AND comparison_identity = ?1",
+            [format!(
+                "work_queue_idle_tick:work_queue:continue_active:{work_item_id}:1"
+            )],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(boundary, "lifecycle_sleep");
+    assert_eq!(outcome, "matched");
+    assert_eq!(authority_mode, "authoritative");
     assert!(runtime
         .storage()
         .read_recent_events(usize::MAX)
         .unwrap()
         .iter()
-        .all(|event| event.data["reason"] != "sleep_overridden_runnable_work"));
+        .any(|event| event.data["reason"] == "sleep_overridden_runnable_work"));
 }
 
 #[tokio::test]

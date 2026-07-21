@@ -2127,6 +2127,162 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_authoritative_queue_commits_survive_sustained_concurrent_load_and_restart(
+    ) -> Result<()> {
+        const WRITERS: usize = 4;
+        const COMMITS_PER_WRITER: usize = 64;
+        const SCENARIO_CLASS: &str = "reducer_only_candidates";
+
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+        let manifest = scheduler_phase3_rollout_manifest(SCENARIO_CLASS, 1, 1);
+        for (identity, command) in [
+            (
+                "sustained-open",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "sustained-complete",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+            ),
+            (
+                "sustained-install",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+            ),
+            (
+                "sustained-protocol",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+            ),
+            (
+                "sustained-shadow",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: SCENARIO_CLASS.into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+            ),
+            (
+                "sustained-authoritative",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: SCENARIO_CLASS.into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+            ),
+        ] {
+            let committed = db
+                .transitions()
+                .commit_scheduler_rollout_command(identity, &command, None)?;
+            assert!(committed.applied);
+        }
+
+        let mut handles = Vec::new();
+        for writer_index in 0..WRITERS {
+            let writer = db.clone();
+            handles.push(std::thread::spawn(move || -> Result<()> {
+                for commit_index in 0..COMMITS_PER_WRITER {
+                    let identity = format!("{writer_index}-{commit_index}");
+                    let now = Utc::now();
+                    let queue_record = QueueEntryRecord {
+                        message_id: format!("message-{identity}"),
+                        agent_id: "agent-a".into(),
+                        priority: crate::types::Priority::Normal,
+                        status: QueueEntryStatus::Queued,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    let command = QueueTransitionCommand {
+                        agent_id: "agent-a".into(),
+                        operation: QueueOperation::Admit,
+                        mutation: QueueMutation::Upsert(queue_record),
+                        agent_state: None,
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        audit_events: Vec::new(),
+                        scheduler_semantic_shadow: None,
+                        scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
+                            scenario_class: SCENARIO_CLASS.into(),
+                            comparison_identity: format!("comparison-{identity}"),
+                            boundary: "phase5h_sustained_load".into(),
+                            input_identity: format!("input-{identity}"),
+                            legacy_observation: serde_json::json!({"decision": "admit"}),
+                            shadow_candidate: serde_json::json!({"decision": "admit"}),
+                            matched: true,
+                            divergence_code: None,
+                        }),
+                        scheduler_delivery_shadow_comparison: None,
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    };
+                    assert!(writer.transitions().commit_queue(&command)?.applied);
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow!("authoritative load writer panicked"))??;
+        }
+
+        let expected = i64::try_from(WRITERS * COMMITS_PER_WRITER)?;
+        let assert_counts = |db: &RuntimeDb| -> Result<()> {
+            let connection = db.connection()?;
+            let queue_count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM queue_entries WHERE agent_id = 'agent-a'",
+                [],
+                |row| row.get(0),
+            )?;
+            let comparison_count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a'
+                   AND scenario_class = ?1
+                   AND comparison_outcome = 'matched'",
+                [SCENARIO_CLASS],
+                |row| row.get(0),
+            )?;
+            assert_eq!(queue_count, expected);
+            assert_eq!(comparison_count, expected);
+            Ok(())
+        };
+        assert_counts(&db)?;
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_counts(&reopened)?;
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?
+                .rollout
+                .scenarios[SCENARIO_CLASS]
+                .mode,
+            ScenarioMode::Authoritative
+        );
+        Ok(())
+    }
+
+    #[test]
     fn scheduler_rollout_manifest_replacement_is_fenced_and_restart_safe() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;

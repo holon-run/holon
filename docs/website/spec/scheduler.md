@@ -174,9 +174,13 @@ The `scheduler_protocol_config` table controls a per-agent rollout state:
 | `Authoritative` | Protocol owns admission authority; legacy path is compatibility-only |
 
 Rollout transitions are `Legacy → Shadow → Authoritative` for upgrade and
-`Authoritative → Shadow → Legacy` for rollback. The `Authoritative` mode is
-currently fail-closed: if production authority is not connected, all
-admissions are rejected. This is an MVP gate, not a production cutover.
+`Authoritative → Shadow → Legacy` for rollback. Authority is scoped by
+scenario class. In `Authoritative`, a queue transition commits only when its
+canonical comparison evidence is present and matched. Missing or divergent
+evidence fails closed and the transaction leaves no queue, projection, audit,
+or comparison partial writes. A reported hard blocker atomically records the
+blocker and returns the affected class to its configured `Shadow` or `Off`
+rollback target.
 
 ### Integration points
 
@@ -247,6 +251,7 @@ authority for scheduling decisions.
   RFC posture labels. The RFC posture is the stable turn-end vocabulary;
   decision variants are concrete runtime actions and duplicate-suppression
   outcomes.
-- The `Authoritative` rollout mode is fail-closed and not yet a production
-  path; canonical evidence pass-through and full cutover validation remain
-  future work (Phase 5h).
+- The current authoritative acceptance gate validates atomic matched-evidence
+  pass-through, divergence rejection, rollback, restart, bounded concurrent
+  load, and FIFO WorkItem projection. It is not a calibrated production SLO or
+  a substitute for deployment-specific soak and capacity testing.

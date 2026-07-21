@@ -19,10 +19,13 @@ conditions are not met, rather than propagating the error. This prevents
 observation and audit mechanisms from blocking the run loop or causing test
 deadlock.
 
-The `Authoritative` rollout mode is fail-closed: if production authority is
-not connected, all admissions are rejected. This is an MVP gate, not a
-production cutover. The mode exists to verify that the protocol can enforce
-admission control, not to operate the scheduler.
+The `Authoritative` rollout mode is scenario-local and fail-closed. A queue
+transition is accepted only when the same transaction carries matched
+canonical comparison evidence for the authoritative scenario. Missing or
+divergent evidence rejects the whole transaction without leaving partial
+queue, projection, audit, or comparison writes. A reported hard blocker is a
+fenced command that records the blocker and atomically returns that scenario
+to its configured `Shadow` or `Off` rollback target.
 
 ## Reason
 
@@ -44,5 +47,7 @@ The legacy scheduler remains the sole production authority in `Shadow` mode.
 The protocol layer records comparison and semantic evidence but does not
 reject, redirect, or alter legacy decisions. No provider, model, or semantic
 plane component owns runtime authority; the deterministic resolver and
-validator retain all state-transition control. `Authoritative` mode is not a
-production path until canonical evidence pass-through is implemented.
+validator retain all state-transition control. In `Authoritative` mode, legacy
+observation remains compatibility evidence, but Runtime-owned validation and
+transaction commit decide whether the transition is admitted. Semantic
+proposals cannot satisfy, bypass, or weaken the matched-evidence requirement.
