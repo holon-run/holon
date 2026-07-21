@@ -709,7 +709,7 @@ pub async fn exec_command_batch_does_not_wait_for_background_pipe_holders() -> R
         input: json!({
             "items": [
                 {
-                    "cmd": "sh -c '(sleep 5) & printf parent_done'",
+                    "cmd": "sh -c '(sleep 30) & printf parent_done'",
                     "login": false,
                     "yield_time_ms": 10_000,
                     "max_output_tokens": 256
@@ -724,7 +724,7 @@ pub async fn exec_command_batch_does_not_wait_for_background_pipe_holders() -> R
         &call,
     );
 
-    let (result, _) = timeout(Duration::from_secs(3), execute)
+    let (result, _) = timeout(Duration::from_secs(10), execute)
         .await
         .map_err(|_| {
             anyhow::anyhow!(
@@ -732,7 +732,7 @@ pub async fn exec_command_batch_does_not_wait_for_background_pipe_holders() -> R
             )
         })??;
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(10),
         "ExecCommandBatch should return after the foreground command exits"
     );
     let value = parse_tool_result_payload(&result)?;
