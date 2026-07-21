@@ -76,6 +76,7 @@ pub enum ModelMetadataConstraintKind {
 #[serde(rename_all = "snake_case")]
 pub enum ModelMetadataConstraintSource {
     ModelUpperLimit,
+    EndpointPolicy,
     TransportCapability,
 }
 
@@ -200,6 +201,139 @@ impl ModelCapabilityOverride {
             && self.supports_reasoning.is_none()
             && self.interactive_exec.is_none()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BuiltInModelRoutePolicy {
+    display_name: Option<String>,
+    description: Option<String>,
+    context_window_tokens: Option<Option<usize>>,
+    effective_context_window_percent: Option<u8>,
+    auto_compact_token_limit: Option<Option<usize>>,
+    default_max_output_tokens: Option<Option<u32>>,
+    max_output_tokens_upper_limit: Option<Option<u32>>,
+    default_verbosity: Option<Option<ModelVerbosity>>,
+    tool_output_truncation_estimated_tokens: Option<Option<usize>>,
+    capabilities: ModelCapabilityOverride,
+    reasoning_effort_options: Option<Vec<String>>,
+}
+
+impl BuiltInModelRoutePolicy {
+    fn from_legacy_route_entry(
+        route_entry: &BuiltInModelMetadata,
+        model_entry: &BuiltInModelMetadata,
+    ) -> Self {
+        Self {
+            display_name: field_diff(
+                route_entry.display_name.clone(),
+                model_entry.display_name.clone(),
+            ),
+            description: field_diff(
+                route_entry.description.clone(),
+                model_entry.description.clone(),
+            ),
+            context_window_tokens: field_diff(
+                route_entry.context_window_tokens,
+                model_entry.context_window_tokens,
+            ),
+            effective_context_window_percent: field_diff(
+                route_entry.effective_context_window_percent,
+                model_entry.effective_context_window_percent,
+            ),
+            auto_compact_token_limit: field_diff(
+                route_entry.auto_compact_token_limit,
+                model_entry.auto_compact_token_limit,
+            ),
+            default_max_output_tokens: field_diff(
+                route_entry.default_max_output_tokens,
+                model_entry.default_max_output_tokens,
+            ),
+            max_output_tokens_upper_limit: field_diff(
+                route_entry.max_output_tokens_upper_limit,
+                model_entry.max_output_tokens_upper_limit,
+            ),
+            default_verbosity: field_diff(
+                route_entry.default_verbosity,
+                model_entry.default_verbosity,
+            ),
+            tool_output_truncation_estimated_tokens: field_diff(
+                route_entry.tool_output_truncation_estimated_tokens,
+                model_entry.tool_output_truncation_estimated_tokens,
+            ),
+            capabilities: ModelCapabilityOverride {
+                parallel_tool_calls: field_diff(
+                    route_entry.capabilities.parallel_tool_calls,
+                    model_entry.capabilities.parallel_tool_calls,
+                ),
+                image_input: field_diff(
+                    route_entry.capabilities.image_input,
+                    model_entry.capabilities.image_input,
+                ),
+                image_generation: field_diff(
+                    route_entry.capabilities.image_generation,
+                    model_entry.capabilities.image_generation,
+                ),
+                supports_reasoning: field_diff(
+                    route_entry.capabilities.supports_reasoning,
+                    model_entry.capabilities.supports_reasoning,
+                ),
+                interactive_exec: field_diff(
+                    route_entry.capabilities.interactive_exec,
+                    model_entry.capabilities.interactive_exec,
+                ),
+            },
+            reasoning_effort_options: field_diff(
+                route_entry.reasoning_effort_options.clone(),
+                model_entry.reasoning_effort_options.clone(),
+            ),
+        }
+    }
+
+    fn validate_narrowing(&self, model: &BuiltInModelMetadata) -> Result<(), String> {
+        for (name, route, intrinsic) in [
+            (
+                "parallel_tool_calls",
+                self.capabilities.parallel_tool_calls,
+                model.capabilities.parallel_tool_calls,
+            ),
+            (
+                "image_input",
+                self.capabilities.image_input,
+                model.capabilities.image_input,
+            ),
+            (
+                "image_generation",
+                self.capabilities.image_generation,
+                model.capabilities.image_generation,
+            ),
+            (
+                "supports_reasoning",
+                self.capabilities.supports_reasoning,
+                model.capabilities.supports_reasoning,
+            ),
+            (
+                "interactive_exec",
+                self.capabilities.interactive_exec,
+                model.capabilities.interactive_exec,
+            ),
+        ] {
+            if route == Some(true) && !intrinsic {
+                return Err(format!(
+                    "route policy cannot enable intrinsic capability {name} for {}",
+                    model.model_ref.as_string()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuiltInModelRouteDefinition {
+    legacy_provider: ProviderId,
+    model_ref: ModelRef,
+    endpoint: ProviderEndpointId,
+    policy: BuiltInModelRoutePolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -421,7 +555,7 @@ struct ResolvedModelMetadata {
 pub struct BuiltInModelCatalog {
     entries: HashMap<ModelRef, BuiltInModelMetadata>,
     preferred_models: HashMap<ProviderId, ModelRef>,
-    route_entries: HashMap<ModelRouteRef, BuiltInModelMetadata>,
+    route_entries: HashMap<ModelRouteRef, BuiltInModelRoutePolicy>,
     preferred_routes: HashMap<ProviderId, ModelRouteRef>,
     preferred_routes_by_model: HashMap<ModelRef, ModelRouteRef>,
     aliases: HashMap<ModelRef, ModelRef>,
@@ -464,9 +598,14 @@ impl BuiltInModelCatalog {
             }
             entry.model_ref = canonical_model_ref.clone();
             entry.endpoint = None;
+            let model_entry = entries
+                .entry(canonical_model_ref.clone())
+                .or_insert_with(|| entry.clone());
+            let route_policy =
+                BuiltInModelRoutePolicy::from_legacy_route_entry(&entry, model_entry);
             route_entries
                 .entry(route_ref.clone())
-                .or_insert_with(|| entry.clone());
+                .or_insert(route_policy);
             preferred_routes_by_model
                 .entry(canonical_model_ref.clone())
                 .and_modify(|preferred: &mut ModelRouteRef| {
@@ -477,7 +616,48 @@ impl BuiltInModelCatalog {
                     }
                 })
                 .or_insert(route_ref);
-            entries.entry(canonical_model_ref).or_insert(entry);
+        }
+        for definition in built_in_route_definitions() {
+            let legacy_model_ref = ModelRef::new(
+                definition.legacy_provider.clone(),
+                definition.model_ref.model.clone(),
+            );
+            let model_entry = entries.get(&definition.model_ref).unwrap_or_else(|| {
+                panic!(
+                    "route model {} must be registered",
+                    definition.model_ref.as_string()
+                )
+            });
+            definition
+                .policy
+                .validate_narrowing(model_entry)
+                .unwrap_or_else(|error| panic!("invalid built-in route policy: {error}"));
+            let route_ref = ModelRouteRef::new(
+                definition.model_ref.provider.clone(),
+                definition.endpoint,
+                definition.model_ref.model.clone(),
+            );
+            if legacy_model_ref != definition.model_ref {
+                aliases.insert(legacy_model_ref, definition.model_ref.clone());
+            }
+            if is_turn_default_candidate(model_entry) {
+                preferred_models
+                    .entry(definition.legacy_provider.clone())
+                    .or_insert_with(|| definition.model_ref.clone());
+                preferred_routes
+                    .entry(definition.legacy_provider)
+                    .or_insert_with(|| route_ref.clone());
+            }
+            assert!(
+                route_entries
+                    .insert(route_ref.clone(), definition.policy)
+                    .is_none(),
+                "duplicate built-in route {}",
+                route_ref.as_string()
+            );
+            preferred_routes_by_model
+                .entry(definition.model_ref)
+                .or_insert(route_ref);
         }
         Self {
             entries,
@@ -567,7 +747,7 @@ impl BuiltInModelCatalog {
         self.preferred_routes_by_model.get(model_ref).cloned()
     }
 
-    pub fn get_route(&self, route_ref: &ModelRouteRef) -> Option<&BuiltInModelMetadata> {
+    pub fn get_route(&self, route_ref: &ModelRouteRef) -> Option<&BuiltInModelRoutePolicy> {
         self.route_entries.get(route_ref)
     }
 
@@ -645,7 +825,7 @@ impl BuiltInModelCatalog {
     fn resolve_metadata(
         &self,
         model_ref: &ModelRef,
-        route_builtin: Option<&BuiltInModelMetadata>,
+        route_builtin: Option<&BuiltInModelRoutePolicy>,
         model_builtin: Option<&BuiltInModelMetadata>,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
         discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
@@ -671,8 +851,7 @@ impl BuiltInModelCatalog {
         } else if discovered.is_some() {
             ModelMetadataSource::RemoteDiscovered
         } else {
-            route_builtin
-                .or(model_builtin)
+            model_builtin
                 .map(|entry| entry.source)
                 .unwrap_or(ModelMetadataSource::UnknownFallback)
         };
@@ -689,7 +868,7 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    route_builtin.map(|entry| entry.display_name.clone()),
+                    route_builtin.and_then(|entry| entry.display_name.clone()),
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
@@ -723,7 +902,7 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    route_builtin.map(|entry| entry.description.clone()),
+                    route_builtin.and_then(|entry| entry.description.clone()),
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
@@ -749,11 +928,15 @@ impl BuiltInModelCatalog {
             ModelMetadataField::ContextWindowTokens,
             [
                 (
-                    override_config.and_then(|value| value.context_window_tokens),
+                    override_config
+                        .and_then(|value| value.context_window_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
-                    discovered.and_then(|entry| entry.context_window_tokens),
+                    discovered
+                        .and_then(|entry| entry.context_window_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
@@ -761,15 +944,20 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
-                    model_builtin.and_then(|entry| entry.context_window_tokens),
+                    model_builtin
+                        .and_then(|entry| entry.context_window_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::ModelBuiltin,
                 ),
                 (
-                    fallback_override.and_then(|value| value.context_window_tokens),
+                    fallback_override
+                        .and_then(|value| value.context_window_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
                 ),
             ],
-        );
+        )
+        .flatten();
         if context_window_tokens.is_none() {
             record_origin(
                 &mut evidence,
@@ -787,7 +975,7 @@ impl BuiltInModelCatalog {
                         ModelMetadataOrigin::ExplicitOverride,
                     ),
                     (
-                        route_builtin.map(|entry| entry.effective_context_window_percent),
+                        route_builtin.and_then(|entry| entry.effective_context_window_percent),
                         ModelMetadataOrigin::RouteBuiltin,
                     ),
                     (
@@ -856,7 +1044,9 @@ impl BuiltInModelCatalog {
             ModelMetadataField::AutoCompactTokenLimit,
             [
                 (
-                    override_config.and_then(|value| value.auto_compact_token_limit),
+                    override_config
+                        .and_then(|value| value.auto_compact_token_limit)
+                        .map(Some),
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
@@ -864,19 +1054,26 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
-                    model_builtin.and_then(|entry| entry.auto_compact_token_limit),
+                    model_builtin
+                        .and_then(|entry| entry.auto_compact_token_limit)
+                        .map(Some),
                     ModelMetadataOrigin::ModelBuiltin,
                 ),
                 (
-                    discovered.and_then(|entry| entry.auto_compact_token_limit),
+                    discovered
+                        .and_then(|entry| entry.auto_compact_token_limit)
+                        .map(Some),
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    fallback_override.and_then(|value| value.auto_compact_token_limit),
+                    fallback_override
+                        .and_then(|value| value.auto_compact_token_limit)
+                        .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
                 ),
             ],
-        );
+        )
+        .flatten();
         if auto_compact_token_limit.is_none() {
             record_origin(
                 &mut evidence,
@@ -941,7 +1138,9 @@ impl BuiltInModelCatalog {
             ModelMetadataField::RuntimeMaxOutputTokens,
             [
                 (
-                    override_config.and_then(|value| value.runtime_max_output_tokens),
+                    override_config
+                        .and_then(|value| value.runtime_max_output_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
@@ -949,19 +1148,26 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
-                    model_builtin.and_then(|entry| entry.default_max_output_tokens),
+                    model_builtin
+                        .and_then(|entry| entry.default_max_output_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::ModelBuiltin,
                 ),
                 (
-                    discovered.and_then(|entry| entry.default_max_output_tokens),
+                    discovered
+                        .and_then(|entry| entry.default_max_output_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    fallback_override.and_then(|value| value.runtime_max_output_tokens),
+                    fallback_override
+                        .and_then(|value| value.runtime_max_output_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
                 ),
             ],
-        );
+        )
+        .flatten();
         let requested_runtime_max_output_tokens = default_max_output_tokens.unwrap_or_else(|| {
             record_origin(
                 &mut evidence,
@@ -979,15 +1185,20 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
-                    discovered.and_then(|entry| entry.max_output_tokens_upper_limit),
+                    discovered
+                        .and_then(|entry| entry.max_output_tokens_upper_limit)
+                        .map(Some),
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    model_builtin.and_then(|entry| entry.max_output_tokens_upper_limit),
+                    model_builtin
+                        .and_then(|entry| entry.max_output_tokens_upper_limit)
+                        .map(Some),
                     ModelMetadataOrigin::ModelBuiltin,
                 ),
             ],
-        );
+        )
+        .flatten();
         if max_output_tokens_upper_limit.is_none() {
             record_origin(
                 &mut evidence,
@@ -1015,7 +1226,7 @@ impl BuiltInModelCatalog {
             ModelMetadataField::Verbosity,
             [
                 (
-                    override_config.and_then(|value| value.verbosity),
+                    override_config.and_then(|value| value.verbosity).map(Some),
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
@@ -1023,23 +1234,30 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
-                    model_builtin.and_then(|entry| entry.default_verbosity),
+                    model_builtin
+                        .and_then(|entry| entry.default_verbosity)
+                        .map(Some),
                     ModelMetadataOrigin::ModelBuiltin,
                 ),
                 (
-                    discovered.and_then(|entry| entry.default_verbosity),
+                    discovered
+                        .and_then(|entry| entry.default_verbosity)
+                        .map(Some),
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    fallback_override.and_then(|value| value.verbosity),
+                    fallback_override
+                        .and_then(|value| value.verbosity)
+                        .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
                 ),
                 (
-                    default_verbosity_for_model(model_ref),
+                    default_verbosity_for_model(model_ref).map(Some),
                     ModelMetadataOrigin::Derived,
                 ),
             ],
-        );
+        )
+        .flatten();
         if verbosity.is_none() {
             record_origin(
                 &mut evidence,
@@ -1052,7 +1270,9 @@ impl BuiltInModelCatalog {
             ModelMetadataField::ToolOutputTruncationEstimatedTokens,
             [
                 (
-                    override_config.and_then(|value| value.tool_output_truncation_estimated_tokens),
+                    override_config
+                        .and_then(|value| value.tool_output_truncation_estimated_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
@@ -1060,20 +1280,26 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
-                    model_builtin.and_then(|entry| entry.tool_output_truncation_estimated_tokens),
+                    model_builtin
+                        .and_then(|entry| entry.tool_output_truncation_estimated_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::ModelBuiltin,
                 ),
                 (
-                    discovered.and_then(|entry| entry.tool_output_truncation_estimated_tokens),
+                    discovered
+                        .and_then(|entry| entry.tool_output_truncation_estimated_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
                     fallback_override
-                        .and_then(|value| value.tool_output_truncation_estimated_tokens),
+                        .and_then(|value| value.tool_output_truncation_estimated_tokens)
+                        .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
                 ),
             ],
-        );
+        )
+        .flatten();
         let tool_output_truncation_estimated_tokens =
             configured_tool_output_truncation_estimated_tokens.unwrap_or_else(|| {
                 record_origin(
@@ -1083,7 +1309,7 @@ impl BuiltInModelCatalog {
                 );
                 DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS
             });
-        let capabilities = ModelCapabilityFlags {
+        let mut capabilities = ModelCapabilityFlags {
             parallel_tool_calls: resolve_capability_field(
                 &mut evidence,
                 ModelMetadataField::ParallelToolCalls,
@@ -1091,7 +1317,6 @@ impl BuiltInModelCatalog {
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.parallel_tool_calls),
                 discovered.map(|entry| entry.capabilities.parallel_tool_calls),
-                route_builtin.map(|entry| entry.capabilities.parallel_tool_calls),
                 model_builtin.map(|entry| entry.capabilities.parallel_tool_calls),
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
@@ -1104,7 +1329,6 @@ impl BuiltInModelCatalog {
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.image_input),
                 discovered.map(|entry| entry.capabilities.image_input),
-                route_builtin.map(|entry| entry.capabilities.image_input),
                 model_builtin.map(|entry| entry.capabilities.image_input),
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
@@ -1117,7 +1341,6 @@ impl BuiltInModelCatalog {
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.image_generation),
                 discovered.map(|entry| entry.capabilities.image_generation),
-                route_builtin.map(|entry| entry.capabilities.image_generation),
                 model_builtin.map(|entry| entry.capabilities.image_generation),
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
@@ -1130,7 +1353,6 @@ impl BuiltInModelCatalog {
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.supports_reasoning),
                 discovered.map(|entry| entry.capabilities.supports_reasoning),
-                route_builtin.map(|entry| entry.capabilities.supports_reasoning),
                 model_builtin.map(|entry| entry.capabilities.supports_reasoning),
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
@@ -1143,21 +1365,50 @@ impl BuiltInModelCatalog {
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.interactive_exec),
                 discovered.map(|entry| entry.capabilities.interactive_exec),
-                route_builtin.map(|entry| entry.capabilities.interactive_exec),
                 model_builtin.map(|entry| entry.capabilities.interactive_exec),
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.interactive_exec),
             ),
         };
+        if let Some(route) = route_builtin {
+            apply_route_capability_constraint(
+                &mut capabilities.parallel_tool_calls,
+                route.capabilities.parallel_tool_calls,
+                ModelMetadataField::ParallelToolCalls,
+                &mut evidence,
+            );
+            apply_route_capability_constraint(
+                &mut capabilities.image_input,
+                route.capabilities.image_input,
+                ModelMetadataField::ImageInput,
+                &mut evidence,
+            );
+            apply_route_capability_constraint(
+                &mut capabilities.image_generation,
+                route.capabilities.image_generation,
+                ModelMetadataField::ImageGeneration,
+                &mut evidence,
+            );
+            apply_route_capability_constraint(
+                &mut capabilities.supports_reasoning,
+                route.capabilities.supports_reasoning,
+                ModelMetadataField::SupportsReasoning,
+                &mut evidence,
+            );
+            apply_route_capability_constraint(
+                &mut capabilities.interactive_exec,
+                route.capabilities.interactive_exec,
+                ModelMetadataField::InteractiveExec,
+                &mut evidence,
+            );
+        }
         let reasoning_effort_options = select_field(
             &mut evidence,
             ModelMetadataField::ReasoningEffortOptions,
             [
                 (
-                    route_builtin
-                        .map(|entry| entry.reasoning_effort_options.clone())
-                        .filter(|options| !options.is_empty()),
+                    route_builtin.and_then(|entry| entry.reasoning_effort_options.clone()),
                     ModelMetadataOrigin::RouteBuiltin,
                 ),
                 (
@@ -1298,12 +1549,15 @@ fn select_field<T, const N: usize>(
     None
 }
 
+fn field_diff<T: PartialEq>(route: T, model: T) -> Option<T> {
+    (route != model).then_some(route)
+}
+
 fn resolve_capability_field(
     evidence: &mut ModelMetadataEvidence,
     field: ModelMetadataField,
     explicit_override: Option<bool>,
     discovered: Option<bool>,
-    route_builtin: Option<bool>,
     model_builtin: Option<bool>,
     unknown_fallback: Option<bool>,
 ) -> bool {
@@ -1316,7 +1570,6 @@ fn resolve_capability_field(
                 discovered.filter(|value| *value),
                 ModelMetadataOrigin::RemoteDiscovered,
             ),
-            (route_builtin, ModelMetadataOrigin::RouteBuiltin),
             (model_builtin, ModelMetadataOrigin::ModelBuiltin),
             (unknown_fallback, ModelMetadataOrigin::UnknownFallback),
         ],
@@ -1325,6 +1578,24 @@ fn resolve_capability_field(
         record_origin(evidence, field, ModelMetadataOrigin::Derived);
         false
     })
+}
+
+fn apply_route_capability_constraint(
+    effective: &mut bool,
+    route_value: Option<bool>,
+    field: ModelMetadataField,
+    evidence: &mut ModelMetadataEvidence,
+) {
+    if route_value == Some(false) && *effective {
+        evidence.constraints.push(ModelMetadataConstraint {
+            field,
+            kind: ModelMetadataConstraintKind::Disabled,
+            source: ModelMetadataConstraintSource::EndpointPolicy,
+            requested: true.to_string(),
+            effective: false.to_string(),
+        });
+        *effective = false;
+    }
 }
 
 fn default_effective_context_window_percent() -> u8 {
@@ -1403,6 +1674,10 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
         .into_iter()
         .flat_map(providers::entries_for_registration)
         .collect()
+}
+
+fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
+    providers::route_definitions()
 }
 
 fn is_turn_default_candidate(entry: &BuiltInModelMetadata) -> bool {
@@ -2545,10 +2820,32 @@ mod tests {
             assert!(
                 catalog
                     .get_route(&ModelRouteRef::parse(route_ref).unwrap())
-                    .is_some(),
+                    .is_some_and(|policy| policy == &BuiltInModelRoutePolicy::default()),
                 "{route_ref} should be registered"
             );
         }
+
+        let default_policy = catalog.resolve_route_policy(
+            &ModelRouteRef::parse("stepfun@default/step-3.7-flash").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8_192,
+        );
+        let plan_policy = catalog.resolve_route_policy(
+            &ModelRouteRef::parse("stepfun@plan/step-3.7-flash").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8_192,
+        );
+        assert_eq!(plan_policy.capabilities, default_policy.capabilities);
+        assert_eq!(
+            plan_policy.context_window_tokens,
+            default_policy.context_window_tokens
+        );
 
         assert!(catalog
             .get(&ModelRef::parse("stepfun-plan/step-3.7-flash").unwrap())
@@ -2731,7 +3028,7 @@ mod tests {
             100_000,
             6_000,
             true,
-            false,
+            true,
         );
         model_builtin.default_verbosity = Some(ModelVerbosity::High);
         let mut route_builtin = model_builtin.clone();
@@ -2741,6 +3038,8 @@ mod tests {
         route_builtin.max_output_tokens_upper_limit = Some(8_000);
         route_builtin.capabilities.image_input = true;
         route_builtin.reasoning_effort_options = vec!["route".into()];
+        let route_builtin =
+            BuiltInModelRoutePolicy::from_legacy_route_entry(&route_builtin, &model_builtin);
         let mut discovered = model_builtin.clone();
         discovered.display_name = "Remote Discovered".into();
         discovered.description = "Remote description".into();
@@ -2830,28 +3129,63 @@ mod tests {
     }
 
     #[test]
+    fn route_policy_cannot_enable_an_intrinsic_capability() {
+        let model = catalog_model(
+            "openai",
+            "route-validation",
+            "Route Validation",
+            100_000,
+            8_192,
+            true,
+            false,
+        );
+        let route = BuiltInModelRoutePolicy {
+            capabilities: ModelCapabilityOverride {
+                image_input: Some(true),
+                ..ModelCapabilityOverride::default()
+            },
+            ..BuiltInModelRoutePolicy::default()
+        };
+
+        assert_eq!(
+            route.validate_narrowing(&model),
+            Err(
+                "route policy cannot enable intrinsic capability image_input for \
+                 openai/route-validation"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
     fn capability_precedence_treats_discovered_false_as_unknown_but_preserves_explicit_false() {
         let catalog = BuiltInModelCatalog::new();
         let model_ref = ModelRef::new(ProviderId::openai(), "capability-matrix");
-        let mut route_builtin = catalog_model(
+        let model_builtin = catalog_model(
             "openai",
             "capability-matrix",
-            "Route",
+            "Model",
             100_000,
             8_192,
             true,
             true,
         );
-        route_builtin.capabilities.image_input = true;
-        let mut discovered = route_builtin.clone();
-        discovered.capabilities.image_input = false;
-        discovered.source = ModelMetadataSource::RemoteDiscovered;
-        let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+        let route_builtin = BuiltInModelRoutePolicy {
+            capabilities: ModelCapabilityOverride {
+                image_input: Some(false),
+                ..ModelCapabilityOverride::default()
+            },
+            ..BuiltInModelRoutePolicy::default()
+        };
+        let mut discovered_true = model_builtin.clone();
+        discovered_true.capabilities.image_input = true;
+        discovered_true.source = ModelMetadataSource::RemoteDiscovered;
+        let discovered_models = HashMap::from([(model_ref.clone(), discovered_true)]);
 
         let route_selected = catalog.resolve_metadata(
             &model_ref,
             Some(&route_builtin),
-            None,
+            Some(&model_builtin),
             &HashMap::new(),
             &discovered_models,
             None,
@@ -2859,13 +3193,57 @@ mod tests {
             8_192,
             Some(&ProviderEndpointId::default_endpoint()),
         );
-        assert!(route_selected.policy.capabilities.image_input);
+        assert!(!route_selected.policy.capabilities.image_input);
         assert_eq!(
             route_selected
                 .policy
                 .evidence
                 .source_for(ModelMetadataField::ImageInput),
-            Some(ModelMetadataOrigin::RouteBuiltin)
+            Some(ModelMetadataOrigin::RemoteDiscovered)
+        );
+        assert_eq!(
+            route_selected.policy.evidence.constraints,
+            [ModelMetadataConstraint {
+                field: ModelMetadataField::ImageInput,
+                kind: ModelMetadataConstraintKind::Disabled,
+                source: ModelMetadataConstraintSource::EndpointPolicy,
+                requested: "true".into(),
+                effective: "false".into(),
+            }]
+        );
+
+        let mut discovered_false = model_builtin.clone();
+        discovered_false.capabilities.image_input = false;
+        discovered_false.source = ModelMetadataSource::RemoteDiscovered;
+        let discovered_models = HashMap::from([(model_ref.clone(), discovered_false)]);
+        let inherited_model_builtin = catalog.resolve_metadata(
+            &model_ref,
+            Some(&route_builtin),
+            Some(&model_builtin),
+            &HashMap::new(),
+            &discovered_models,
+            None,
+            &base_context(),
+            8_192,
+            Some(&ProviderEndpointId::default_endpoint()),
+        );
+        assert!(!inherited_model_builtin.policy.capabilities.image_input);
+        assert_eq!(
+            inherited_model_builtin
+                .policy
+                .evidence
+                .source_for(ModelMetadataField::ImageInput),
+            Some(ModelMetadataOrigin::ModelBuiltin)
+        );
+        assert_eq!(
+            inherited_model_builtin.policy.evidence.constraints,
+            [ModelMetadataConstraint {
+                field: ModelMetadataField::ImageInput,
+                kind: ModelMetadataConstraintKind::Disabled,
+                source: ModelMetadataConstraintSource::EndpointPolicy,
+                requested: "true".into(),
+                effective: "false".into(),
+            }]
         );
 
         let overrides = HashMap::from([(
@@ -2881,7 +3259,7 @@ mod tests {
         let explicit_false = catalog.resolve_metadata(
             &model_ref,
             Some(&route_builtin),
-            None,
+            Some(&model_builtin),
             &overrides,
             &discovered_models,
             None,
@@ -2897,6 +3275,7 @@ mod tests {
                 .source_for(ModelMetadataField::ImageInput),
             Some(ModelMetadataOrigin::ExplicitOverride)
         );
+        assert!(explicit_false.policy.evidence.constraints.is_empty());
     }
 
     #[test]

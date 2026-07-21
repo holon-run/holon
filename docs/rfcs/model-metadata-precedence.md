@@ -15,6 +15,10 @@ Static model metadata, route-specific metadata, remote discovery, runtime
 configuration, derived defaults, and transport constraints are not whole-object
 alternatives.
 
+Built-in route metadata is sparse. The canonical model entry owns intrinsic
+metadata, while an exact endpoint route stores only values that differ from or
+constrain that model entry.
+
 The resolver produces:
 
 - one runtime policy used by provider construction and runtime context policy;
@@ -44,7 +48,7 @@ Winner evidence uses these source classes:
 
 - `explicit_override`: a field explicitly configured under `models.catalog`;
 - `remote_discovered`: metadata reported by provider discovery;
-- `route_builtin`: built-in metadata for the exact `ModelRouteRef`;
+- `route_builtin`: a sparse built-in policy for the exact `ModelRouteRef`;
 - `model_builtin`: built-in metadata for the canonical `ModelRef`;
 - `unknown_fallback`: the explicit unknown-model fallback;
 - `runtime_default`: a runtime configuration default;
@@ -65,11 +69,16 @@ discovery data must not implicitly enable or disable a capability.
 
 | Field class | Fields | Precedence |
 | --- | --- | --- |
-| Display | `display_name`, `description` | explicit override, remote discovery, route builtin, model builtin, unknown fallback, derived |
-| Intrinsic/provider-reported fact | `context_window_tokens`, intrinsic capability flags | explicit override, remote discovery, route builtin, model builtin, unknown fallback |
+| Display | `display_name`, `description` | explicit override, remote discovery, sparse route override, model builtin, unknown fallback, derived |
+| Intrinsic/provider-reported fact | `context_window_tokens`, intrinsic capability flags | explicit override, remote discovery, canonical model builtin, unknown fallback |
 | Route/endpoint contract | `max_output_tokens_upper_limit`, `reasoning_effort_options` | explicit override where supported, route builtin, remote discovery, model builtin, unknown fallback |
 | Runtime policy | effective context percent, auto-compaction limit, default output size, verbosity, tool-output truncation | explicit override, route builtin, model builtin, remote discovery, unknown fallback, runtime default |
 | Derived runtime policy | prompt budget, compaction trigger, compaction retention | explicit override, unknown fallback override, derived from resolved limits, runtime default |
+
+An endpoint capability value is a constraint rather than an intrinsic metadata
+winner. Missing means inherit the canonical model. `false` explicitly disables
+the capability for that endpoint. A route definition cannot set `true` to
+enable a capability that the canonical model does not have.
 
 Non-empty `reasoning_effort_options` from the selected route or discovery are
 authoritative. A discovered model that explicitly reports reasoning support
@@ -103,9 +112,12 @@ rather than borrowing the source of one input.
 
 ### 3. Model constraints
 
-Model and endpoint numeric upper limits safely clamp runtime values. Constraint
-evidence records the requested and effective values. Invalid ranges that cannot
-produce a valid policy are errors at configuration validation time.
+Model and endpoint numeric upper limits safely clamp runtime values. Endpoint
+capability restrictions similarly disable an otherwise selected intrinsic
+capability. Constraint evidence records the requested and effective values and
+distinguishes `endpoint_policy` from model and transport constraints. Invalid
+ranges or route policies that widen intrinsic capabilities are rejected during
+built-in catalog construction or configuration validation.
 
 ### 4. Transport constraints
 
@@ -159,6 +171,8 @@ remain.
 ## Compatibility
 
 - persisted provider, model, and override configuration formats do not change;
+- built-in endpoint availability no longer requires a duplicate full model
+  metadata entry;
 - `ResolvedRuntimeModelPolicy.source` remains available as a summary field;
 - existing model and route refs retain their serialization;
 - unknown capability remains conservative and is never default-enabled;

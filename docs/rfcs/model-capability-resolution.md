@@ -85,14 +85,20 @@ interpreted as proof that the text model intrinsically emits image bytes.
 
 ## Migration boundary
 
-This RFC deliberately does not merge duplicate package-provider catalog
-entries. Canonical model identity and route-level metadata migration are a
-separate change:
+Canonical model identity and route-level metadata migration is incremental:
 
 1. introduce and consume the resolved contract;
-2. migrate endpoint overrides and aliases;
-3. remove legacy booleans only after config and discovery compatibility no
+2. store one canonical intrinsic model entry and sparse policies keyed by
+   `ModelRouteRef`;
+3. migrate endpoint overrides and aliases provider by provider;
+4. remove legacy booleans only after config and discovery compatibility no
    longer depend on them.
+
+During the provider migration, legacy duplicate catalog entries may be adapted
+into sparse route policies at catalog construction. Newly migrated providers
+must register canonical model metadata once. Route capability values may only
+narrow the canonical capability; transport capability remains the final
+intersection.
 
 ## Acceptance criteria
 
