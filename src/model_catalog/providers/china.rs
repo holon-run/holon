@@ -32,6 +32,18 @@ pub(super) fn stepfun_model(
     }
 }
 
+pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
+    ["step-3.7-flash", "step-3.5-flash-2603", "step-3.5-flash"]
+        .into_iter()
+        .map(|model| BuiltInModelRouteDefinition {
+            legacy_provider: provider_id("stepfun-plan"),
+            model_ref: ModelRef::new(provider_id("stepfun"), model),
+            endpoint: ProviderEndpointId::parse("plan").expect("valid endpoint"),
+            policy: BuiltInModelRoutePolicy::default(),
+        })
+        .collect()
+}
+
 pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
     vec![
         catalog_model(
@@ -429,14 +441,6 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         stepfun_model("stepfun", "step-3.5-flash", "Step 3.5 Flash", false),
-        stepfun_model("stepfun-plan", "step-3.7-flash", "Step 3.7 Flash", true),
-        stepfun_model(
-            "stepfun-plan",
-            "step-3.5-flash-2603",
-            "Step 3.5 Flash 2603",
-            false,
-        ),
-        stepfun_model("stepfun-plan", "step-3.5-flash", "Step 3.5 Flash", false),
     ]
 }
 

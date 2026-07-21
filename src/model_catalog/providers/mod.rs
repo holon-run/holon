@@ -24,3 +24,7 @@ pub(super) fn entries_for_registration(
         ProviderCatalogRegistration::TencentTokenHub => tencent_tokenhub::entries(),
     }
 }
+
+pub(super) fn route_definitions() -> Vec<super::BuiltInModelRouteDefinition> {
+    china::route_definitions()
+}

@@ -5,6 +5,11 @@ canonical `stepfun` provider. The legacy `stepfun-plan` provider remains an
 alias for the `plan` endpoint so existing configuration continues to resolve
 to canonical `stepfun/*` model references.
 
+The three model definitions are registered once under the canonical provider.
+The `default` and `plan` endpoints have separate availability registrations
+with empty sparse policies, so both routes inherit identical intrinsic
+metadata without copying capability flags or limits.
+
 The chat catalog contains the three current models documented for both
 surfaces: `step-3.7-flash`, `step-3.5-flash-2603`, and `step-3.5-flash`.
 Step Plan also documents audio, image-editing, and router models, but Holon's
