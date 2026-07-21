@@ -1725,7 +1725,11 @@ impl RuntimeHandle {
                         scheduler::SchedulerBoundary::RunLoop,
                         scheduler::SchedulerInput::Idle,
                     );
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     return Ok(());
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
@@ -1753,7 +1757,11 @@ impl RuntimeHandle {
                         scheduler::SchedulerDecisionKind::Sleep
                             | scheduler::SchedulerDecisionKind::StayIdle
                     ) {
-                        scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                        scheduler::append_scheduler_decision(
+                            &self.inner.storage,
+                            &self.inner.default_agent_id,
+                            &decision,
+                        )?;
                     }
                     let next_recheck_at = self.next_blocked_work_item_recheck_at().await?;
                     let idle_state = scheduler_executor::SchedulerDecisionExecutor::new(&self)

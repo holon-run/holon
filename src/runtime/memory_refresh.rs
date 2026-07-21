@@ -170,7 +170,11 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     if let Some(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief(
                         result_brief_id,
                     )) = duplicate
@@ -223,7 +227,11 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     if let Some(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage(
                         message_id,
                     )) = duplicate
@@ -276,7 +284,11 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                     let mut guard = self.inner.agent.lock().await;
                     if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                         guard.state.pending_wake_hint = None;
@@ -286,7 +298,11 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                scheduler::append_scheduler_decision(
+                    &self.inner.storage,
+                    &self.inner.default_agent_id,
+                    &decision,
+                )?;
                 self.emit_system_tick_from_wake_hint(&pending).await?;
 
                 #[cfg(test)]
@@ -316,7 +332,11 @@ impl RuntimeHandle {
                         decision.boundary(scheduler::SchedulerBoundary::IdleTick.as_str())
                     })
                 {
-                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                    scheduler::append_scheduler_decision(
+                        &self.inner.storage,
+                        &self.inner.default_agent_id,
+                        &decision,
+                    )?;
                 }
                 Ok(false)
             }
@@ -497,7 +517,11 @@ impl RuntimeHandle {
                 duplicate,
             }),
         );
-        scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+        scheduler::append_scheduler_decision(
+            &self.inner.storage,
+            &self.inner.default_agent_id,
+            &decision,
+        )?;
         if !matches!(
             decision.kind,
             scheduler::SchedulerDecisionKind::EmitSystemTick

@@ -1974,13 +1974,75 @@ fn scheduler_decision_append_dedupes_identical_latest_event() {
     .liveness_only(true)
     .evidence("active_waiting_intents=1");
 
-    assert!(scheduler::append_scheduler_decision(&storage, &decision).unwrap());
-    assert!(!scheduler::append_scheduler_decision(&storage, &decision).unwrap());
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &decision).unwrap());
+    assert!(
+        !scheduler::append_scheduler_decision(&storage, "default", &decision).unwrap(),
+        "duplicate decision should be suppressed"
+    );
 
     let events = storage.read_recent_events(10).unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].kind, "scheduler_decision");
+    assert_eq!(events.len(), 2, "should emit both typed and legacy events");
+    assert_eq!(events[0].kind, "scheduler_diagnostic");
     assert_eq!(events[0].data["boundary"].as_str(), Some("fixture"));
+    assert_eq!(events[0].data["shadow_matched"], serde_json::Value::Null);
+    assert_eq!(events[1].kind, "scheduler_decision");
+    assert_eq!(events[1].data["boundary"].as_str(), Some("fixture"));
+}
+
+// --- public scheduler diagnostic event stream tests ---
+
+#[test]
+fn scheduler_diagnostic_audit_event_carries_decision_without_shadow() {
+    let mut decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "message_admitted",
+    )
+    .boundary("run_loop")
+    .evidence("queue_len=1");
+    decision.message_id = Some("msg-test-1".into());
+
+    let event = scheduler::scheduler_diagnostic_audit_event("default", &decision, None);
+    assert_eq!(event.agent_id, "default");
+    assert_eq!(event.decision, "StartModelTurn");
+    assert_eq!(event.reason, "message_admitted");
+    assert_eq!(event.boundary.as_deref(), Some("run_loop"));
+    assert_eq!(event.message_id.as_deref(), Some("msg-test-1"));
+    assert!(event.evidence.contains(&"queue_len=1".to_string()));
+    assert_eq!(event.scenario_class, None);
+    assert_eq!(event.shadow_matched, None);
+    assert_eq!(event.divergence_code, None);
+}
+
+#[test]
+fn scheduler_diagnostic_audit_event_carries_shadow_comparison_outcome() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-shadow-1");
+    let shadow = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::AfterProviderRound,
+    )
+    .expect("interjection should produce comparison");
+
+    let mut decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "operator_interjection",
+    )
+    .boundary("run_loop")
+    .evidence("interjection_boundary=after_provider_round");
+    decision.message_id = Some("msg-shadow-1".into());
+
+    let event = scheduler::scheduler_diagnostic_audit_event("default", &decision, Some(&shadow));
+    assert_eq!(
+        event.scenario_class.as_deref(),
+        Some("operator_interjection")
+    );
+    assert_eq!(event.shadow_matched, Some(true));
+    assert_eq!(event.divergence_code, None);
 }
 
 #[test]

@@ -980,9 +980,74 @@ pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEve
 
 pub(crate) fn append_scheduler_decision(
     storage: &AppStorage,
+    agent_id: &str,
     decision: &SchedulerDecision,
 ) -> Result<bool> {
     let event = scheduler_decision_event(decision);
+    // Also emit the typed public diagnostic event alongside the legacy record.
+    let _ = append_scheduler_diagnostic_event(storage, agent_id, decision, None)?;
+    let duplicate = storage
+        .read_recent_events(32)?
+        .into_iter()
+        .rev()
+        .find(|latest| latest.kind == event.kind)
+        .is_some_and(|latest| latest.data == event.data);
+    if duplicate {
+        return Ok(false);
+    }
+    storage.append_event(&event)?;
+    Ok(true)
+}
+
+/// Construct a public `SchedulerDiagnosticAuditEvent` from a scheduler decision
+/// and an optional shadow comparison. When a shadow comparison is present, the
+/// event carries the scenario class, match status, and divergence code so the
+/// diagnostic stream exposes both the decision and its protocol-path audit
+/// outcome in one record.
+pub(crate) fn scheduler_diagnostic_audit_event(
+    agent_id: &str,
+    decision: &SchedulerDecision,
+    shadow: Option<&SchedulerShadowComparison>,
+) -> crate::types::SchedulerDiagnosticAuditEvent {
+    let (scenario_class, shadow_matched, divergence_code) = shadow
+        .map(|sc| {
+            (
+                Some(sc.scenario_class.to_string()),
+                Some(sc.matched),
+                sc.divergence_code.map(|c| c.to_string()),
+            )
+        })
+        .unwrap_or((None, None, None));
+
+    crate::types::SchedulerDiagnosticAuditEvent {
+        agent_id: agent_id.to_string(),
+        decision: decision.kind.as_str().to_string(),
+        reason: decision.reason.clone(),
+        boundary: decision.boundary.clone(),
+        scenario_class,
+        shadow_matched,
+        divergence_code,
+        work_item_id: decision.work_item_id.clone(),
+        message_id: decision.message_id.clone(),
+        task_id: decision.task_id.clone(),
+        evidence: decision.evidence.clone(),
+    }
+}
+
+/// Emit a typed scheduler diagnostic event alongside the legacy audit record.
+/// The legacy `scheduler_decision` event is retained for backward compatibility;
+/// the typed event extends observability into the public event stream.
+pub(crate) fn append_scheduler_diagnostic_event(
+    storage: &AppStorage,
+    agent_id: &str,
+    decision: &SchedulerDecision,
+    shadow: Option<&SchedulerShadowComparison>,
+) -> Result<bool> {
+    let payload = scheduler_diagnostic_audit_event(agent_id, decision, shadow);
+    let event = crate::types::AuditEvent::typed(
+        crate::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
+        &payload,
+    )?;
     let duplicate = storage
         .read_recent_events(32)?
         .into_iter()
