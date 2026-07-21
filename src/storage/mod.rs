@@ -887,6 +887,15 @@ impl AppStorage {
         self.read_models().agent_posture(agent)
     }
 
+    pub fn agent_posture_projection_with_work_queue(
+        &self,
+        agent: &AgentState,
+        work_queue: &WorkQueueReadModel,
+    ) -> Result<AgentPostureProjection> {
+        self.read_models()
+            .agent_posture_with_work_queue(agent, work_queue)
+    }
+
     pub fn waiting_contract_anchor(&self) -> Result<Option<WorkItemRecord>> {
         self.read_models().waiting_contract_anchor()
     }

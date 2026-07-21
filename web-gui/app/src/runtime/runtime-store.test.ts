@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentBriefPatchFromEvents,
+  buildResumeRefreshes,
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
   isSessionCacheContextCurrent,
@@ -14,6 +15,7 @@ import {
   resetSessionsForResume,
   resetTransientRuntimeStateForResume,
   readStoredRuntimeConnectionConfig,
+  runWithConcurrencyLimit,
   sessionForEventLogEpoch,
   streamEventFromBackfill,
   useRuntimeStore,
@@ -731,6 +733,120 @@ describe("runtime client generation", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("projection saturation refresh handling", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the current roster when a best-effort bootstrap refresh is rejected", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+
+    let saturated = false;
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/agents/list")) {
+        return Promise.resolve(
+          saturated
+            ? new Response(
+                JSON.stringify({
+                  ok: false,
+                  error: "projection capacity is busy; retry later",
+                  code: "projection_busy",
+                  retryable: true,
+                }),
+                {
+                  status: 429,
+                  headers: {
+                    "content-type": "application/json",
+                    "retry-after": "1",
+                  },
+                },
+              )
+            : jsonResponse([{ id: "agent-a", lifecycle: "asleep" }]),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await Promise.resolve();
+    const currentRoster = useRuntimeStore.getState().bootstrap.agents;
+
+    saturated = true;
+    await useRuntimeStore.getState().refreshBootstrap({ syncEvents: false });
+
+    expect(useRuntimeStore.getState()).toMatchObject({
+      bootstrap: { agents: currentRoster },
+      bootstrapLoading: false,
+      bootstrapError: undefined,
+    });
+  });
+});
+
+describe("bounded resume refresh scheduling", () => {
+  it("only schedules a detail refresh for the selected agent", () => {
+    expect(buildResumeRefreshes(["agent-a", "agent-b", "agent-c"], "agent-b")).toEqual([
+      { agentId: "agent-b", detail: true },
+    ]);
+  });
+
+  it("schedules no resume refresh when the selected agent is absent from the refreshed roster", () => {
+    expect(buildResumeRefreshes(["agent-a", "agent-c"], "agent-b")).toEqual([]);
+  });
+
+  it("limits concurrent refreshes", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const releases: Array<() => void> = [];
+
+    const scheduled = runWithConcurrencyLimit(
+      Array.from({ length: 10 }, (_, index) => index),
+      4,
+      async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+      },
+    );
+
+    await vi.waitFor(() => expect(active).toBe(4));
+    while (releases.length) {
+      releases.shift()?.();
+      await Promise.resolve();
+    }
+    await scheduled;
+
+    expect(maxActive).toBe(4);
+  });
+
+  it("stops starting queued refreshes after the generation becomes stale", async () => {
+    let current = true;
+    const started: number[] = [];
+
+    await runWithConcurrencyLimit(
+      [1, 2, 3, 4, 5],
+      1,
+      async (value) => {
+        started.push(value);
+        current = false;
+      },
+      () => current,
+    );
+
+    expect(started).toEqual([1]);
   });
 });
 

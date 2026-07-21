@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import {
   createRuntimeClient,
+  isProjectionBusyError,
   type AgentEventStreamSubscription,
   type OperatorPromptAttachment,
   type StreamEventEnvelopeDto,
@@ -476,6 +477,8 @@ const workItemDetailInFlight = new Set<string>();
 const taskDetailInFlight = new Set<string>();
 const toolExecutionDetailInFlight = new Set<string>();
 const agentStateRefreshInFlight = new Map<string, number>();
+const agentDetailRefreshInFlight = new Map<string, { generation: number; promise: Promise<void> }>();
+const agentDetailRequestSequence = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 let clientGeneration = 0;
@@ -525,12 +528,42 @@ function cancelClientGenerationWork(): void {
     bootstrapRefreshTimer = undefined;
   }
   agentStateRefreshInFlight.clear();
+  agentDetailRefreshInFlight.clear();
+  agentDetailRequestSequence.clear();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
   workItemDetailInFlight.clear();
   taskDetailInFlight.clear();
   toolExecutionDetailInFlight.clear();
   clearInFlightHydration();
+}
+
+export async function runWithConcurrencyLimit<T>(
+  values: readonly T[],
+  limit: number,
+  run: (value: T) => Promise<void>,
+  shouldContinue: () => boolean = () => true,
+): Promise<void> {
+  const workerCount = Math.min(values.length, Math.max(1, Math.floor(limit)));
+  let nextIndex = 0;
+  const worker = async () => {
+    while (shouldContinue()) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= values.length) return;
+      await run(values[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, worker));
+}
+
+export function buildResumeRefreshes(
+  agentIds: readonly string[],
+  selectedAgentId: string,
+): Array<{ agentId: string; detail: boolean }> {
+  return agentIds
+    .filter((agentId) => agentId === selectedAgentId)
+    .map((agentId) => ({ agentId, detail: true }));
 }
 
 function closeEventStreamsForResume(set: StoreSet): void {
@@ -1380,6 +1413,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         }
       } catch (error) {
         if (!isCurrentClientGeneration(generation)) return;
+        if (isProjectionBusyError(error)) {
+          set({ bootstrapLoading: false });
+          return;
+        }
         set({
           bootstrapLoading: false,
           bootstrapError: error instanceof Error ? error.message : String(error),
@@ -1413,13 +1450,25 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       try {
         await get().refreshBootstrap({ background: true, syncEvents: false });
         if (!isCurrentClientGeneration(generation)) return;
-        await Promise.all(get().bootstrap.agents.map((agent) => get().refreshAgentState(agent.id)));
+        const selectedAgentId = get().selectedAgentId;
+        const refreshes = buildResumeRefreshes(
+          get().bootstrap.agents.map((agent) => agent.id),
+          selectedAgentId,
+        );
+        await runWithConcurrencyLimit(
+          refreshes,
+          4,
+          async ({ agentId, detail }) => {
+            if (detail) {
+              await get().refreshAgentDetail(agentId, get().displayLevel);
+            } else {
+              await get().refreshAgentState(agentId);
+            }
+          },
+          () => isCurrentClientGeneration(generation),
+        );
         if (!isCurrentClientGeneration(generation)) return;
         syncGlobalEventRoster(get, set);
-        const selectedAgentId = get().selectedAgentId;
-        if (selectedAgentId) {
-          await get().refreshAgentDetail(selectedAgentId, get().displayLevel);
-        }
       } finally {
         if (isCurrentClientGeneration(generation)) {
           // Then remeasure once more after the reconciled projections and hydration are scheduled.
@@ -2154,6 +2203,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
 
     const request = captureClientRequest();
+    const key = `${agentId}:${displayLevel}`;
+    const existing = agentDetailRefreshInFlight.get(key);
+    if (existing?.generation === request.generation) {
+      return existing.promise;
+    }
+    const sequence = (agentDetailRequestSequence.get(agentId) ?? 0) + 1;
+    agentDetailRequestSequence.set(agentId, sequence);
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -2166,31 +2222,63 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       },
     }));
 
-    try {
-      const detail = await request.client.getAgentDetail(agentId, displayLevel);
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
-      await loadTargetAgentEventWindow(get, set, agentId, displayLevel);
-      if (!isCurrentClientRequest(request)) return;
-      scheduleMessageHydration(get, set, agentId, displayLevel);
-      scheduleTranscriptHydration(get, set, agentId, displayLevel);
-      scheduleBriefHydration(get, set, agentId, displayLevel);
-      scheduleCacheWrite(get, agentId);
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...emptyAgentSession(),
-            ...state.sessionsByAgentId[agentId],
-            loading: false,
-            liveStatus: "error",
-            error: error instanceof Error ? error.message : String(error),
+    let promise!: Promise<void>;
+    promise = (async () => {
+      try {
+        const detail = await request.client.getAgentDetail(agentId, displayLevel);
+        if (
+          !isCurrentClientRequest(request) ||
+          agentDetailRequestSequence.get(agentId) !== sequence
+        ) return;
+        set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
+        await loadTargetAgentEventWindow(get, set, agentId, displayLevel);
+        if (
+          !isCurrentClientRequest(request) ||
+          agentDetailRequestSequence.get(agentId) !== sequence
+        ) return;
+        scheduleMessageHydration(get, set, agentId, displayLevel);
+        scheduleTranscriptHydration(get, set, agentId, displayLevel);
+        scheduleBriefHydration(get, set, agentId, displayLevel);
+        scheduleCacheWrite(get, agentId);
+      } catch (error) {
+        if (
+          !isCurrentClientRequest(request) ||
+          agentDetailRequestSequence.get(agentId) !== sequence
+        ) return;
+        if (isProjectionBusyError(error)) {
+          set((state) => ({
+            sessionsByAgentId: {
+              ...state.sessionsByAgentId,
+              [agentId]: {
+                ...emptyAgentSession(),
+                ...state.sessionsByAgentId[agentId],
+                loading: false,
+              },
+            },
+          }));
+          return;
+        }
+        set((state) => ({
+          sessionsByAgentId: {
+            ...state.sessionsByAgentId,
+            [agentId]: {
+              ...emptyAgentSession(),
+              ...state.sessionsByAgentId[agentId],
+              loading: false,
+              liveStatus: "error",
+              error: error instanceof Error ? error.message : String(error),
+            },
           },
-        },
-      }));
-    }
+        }));
+      } finally {
+        const current = agentDetailRefreshInFlight.get(key);
+        if (current?.promise === promise) {
+          agentDetailRefreshInFlight.delete(key);
+        }
+      }
+    })();
+    agentDetailRefreshInFlight.set(key, { generation: request.generation, promise });
+    return promise;
   },
 
   refreshAgentWorkItems: async (agentId) => {
@@ -2568,7 +2656,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         if (!isCurrentClientRequest(request)) return;
         markStreamActivity(set, agentId);
         enqueueStreamEvent(set, agentId, event);
-        scheduleBootstrapRefresh(get);
       },
       onClose: () => {
         if (isCurrentClientRequest(request)) {
@@ -2890,7 +2977,6 @@ function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto)
   }
 
   enqueueStreamEvent(set, agentId, event);
-  scheduleBootstrapRefresh(useRuntimeStore.getState);
 }
 
 async function backfillAgentEvents(set: StoreSet, agentId: string, force = false): Promise<void> {

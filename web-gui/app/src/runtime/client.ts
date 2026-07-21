@@ -139,21 +139,17 @@ async function fetchAgentDetail(
   displayLevel: DisplayLevel,
 ): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
-  const [entry, state, events, workItems] = await Promise.all([
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
-      .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
-      .catch(() => undefined),
+  const [state, events, workItems] = await Promise.all([
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
     fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel }).catch(emptyEventPage),
     // Return undefined on failure so projectAgent falls back to state.work_items.
     // Returning [] would shadow the state endpoint's work_items (empty array is not nullish).
     fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch(() => undefined),
   ]);
-  const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
   const briefRecordsById = await fetchBriefRecordsForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
   const agent = projectAgent(
-    fallbackEntry,
+    { identity: state.agent?.identity ?? { agent_id: agentId } },
     state,
     newestBriefFromEvents(events.events ?? [], briefRecordsById),
     workItems,
@@ -180,14 +176,13 @@ async function fetchAgentState(
   agentId: string,
 ): Promise<AgentSummary> {
   const encodedAgentId = encodeURIComponent(agentId);
-  const [entry, state] = await Promise.all([
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
-      .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
-      .catch(() => undefined),
-    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
-  ]);
-  const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
-  return projectAgent(fallbackEntry, state);
+  const state = await getJson<AgentStateDto>(
+    fetchImpl,
+    baseUrl,
+    `/agents/${encodedAgentId}/state`,
+    { headers },
+  );
+  return projectAgent({ identity: state.agent?.identity ?? { agent_id: agentId } }, state);
 }
 
 interface AgentListEntryDto {
@@ -644,6 +639,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       try {
         return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders, connectionMode, hasToken);
       } catch (error) {
+        if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken, isAuthRequiredError(error));
       }
@@ -656,6 +652,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       try {
         return await fetchAgentDetail(baseUrl, fetchImpl, requestHeaders, agentId, displayLevel);
       } catch (error) {
+        if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentDetail(agentId, message);
       }
@@ -667,6 +664,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       try {
         return await fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
       } catch (error) {
+        if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentSummary(agentId, message);
       }
@@ -2203,6 +2201,10 @@ async function readErrorEnvelope(response: Response): Promise<{ error?: string; 
 
 function isAuthRequiredError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.code === "auth_required";
+}
+
+export function isProjectionBusyError(error: unknown): boolean {
+  return error instanceof RuntimeHttpError && error.status === 429 && error.code === "projection_busy";
 }
 
 function buildDisconnectedBootstrap(

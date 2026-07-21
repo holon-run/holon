@@ -33,7 +33,7 @@ use crate::{
     ids,
     prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{build_provider_from_config, AgentProvider},
-    runtime::{InitialWorkspaceBinding, RuntimeHandle},
+    runtime::{InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle},
     runtime_db::RuntimeDb,
     skills::{
         effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
@@ -49,8 +49,8 @@ use crate::{
         ClosureOutcome, ExternalTriggerRecord, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
         RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
-        TaskKind, TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        TaskKind, TaskRecord, TaskStatus, TimerRecord, TranscriptEntry, TranscriptEntryKind,
+        WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -60,6 +60,29 @@ pub struct PublicAgentActivitySnapshot {
     pub status: AgentStatus,
     pub active_task_count: usize,
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentStateProjectionSource {
+    Loaded,
+    Storage,
+}
+
+impl AgentStateProjectionSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Loaded => "loaded",
+            Self::Storage => "storage",
+        }
+    }
+}
+
+pub(crate) struct AgentStateReadProjection {
+    pub(crate) source: AgentStateProjectionSource,
+    pub(crate) agent: LightweightAgentStateProjection,
+    pub(crate) tasks: Vec<TaskRecord>,
+    pub(crate) timers: Vec<TimerRecord>,
+    pub(crate) external_triggers: Vec<ExternalTriggerRecord>,
 }
 
 #[derive(Clone)]
@@ -622,6 +645,141 @@ impl RuntimeHost {
         self.get_or_create_agent(agent_id)
             .await
             .map_err(PublicAgentError::Runtime)
+    }
+
+    pub(crate) async fn public_agent_state_projection(
+        &self,
+        agent_id: &str,
+        task_limit: usize,
+        timer_limit: usize,
+    ) -> std::result::Result<AgentStateReadProjection, PublicAgentError> {
+        let identity = self.public_agent_identity(agent_id)?;
+        let runtime = {
+            let agents = self.inner.agents.read().await;
+            agents
+                .get(agent_id)
+                .filter(|entry| !entry.task.is_finished())
+                .map(|entry| entry.runtime.clone())
+        };
+
+        if let Some(runtime) = runtime {
+            crate::diagnostics::record_projection_state_source_loaded();
+            tracing::debug!(
+                agent_id,
+                state_projection_source = AgentStateProjectionSource::Loaded.as_str(),
+                "building public agent state projection"
+            );
+            let agent_started = std::time::Instant::now();
+            let agent = runtime
+                .lightweight_agent_state_projection()
+                .await
+                .map_err(PublicAgentError::Runtime)?;
+            crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
+
+            let tasks_started = std::time::Instant::now();
+            let tasks = runtime
+                .active_tasks(task_limit)
+                .await
+                .map_err(PublicAgentError::Runtime)?;
+            crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
+
+            let timers_started = std::time::Instant::now();
+            let timers = runtime
+                .recent_timers(timer_limit)
+                .await
+                .map_err(PublicAgentError::Runtime)?;
+            crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
+
+            let triggers_started = std::time::Instant::now();
+            let external_triggers = runtime
+                .latest_external_triggers()
+                .await
+                .map_err(PublicAgentError::Runtime)?;
+            crate::diagnostics::record_projection_state_external_triggers(
+                triggers_started.elapsed(),
+            );
+
+            return Ok(AgentStateReadProjection {
+                source: AgentStateProjectionSource::Loaded,
+                agent,
+                tasks,
+                timers,
+                external_triggers,
+            });
+        }
+
+        crate::diagnostics::record_projection_state_source_storage();
+        crate::diagnostics::record_projection_state_runtime_spawn_avoided();
+        tracing::debug!(
+            agent_id,
+            state_projection_source = AgentStateProjectionSource::Storage.as_str(),
+            "building public agent state projection"
+        );
+        let storage = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+
+        let agent_started = std::time::Instant::now();
+        let agent_state = storage
+            .read_agent()
+            .map_err(PublicAgentError::Runtime)?
+            .unwrap_or_else(|| stopped_unloaded_agent(agent_id));
+        let work_queue = storage
+            .work_queue_read_model()
+            .map_err(PublicAgentError::Runtime)?;
+        let scheduling_posture = storage
+            .agent_posture_projection_with_work_queue(&agent_state, &work_queue)
+            .map_err(PublicAgentError::Runtime)?;
+        let closure = RuntimeHandle::closure_decision_from_storage(&storage, &agent_state)
+            .map_err(PublicAgentError::Runtime)?;
+        let active_children = self
+            .child_agent_summaries(agent_id)
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        let agent = LightweightAgentStateProjection {
+            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            active_task_count: storage
+                .active_task_count_for_agent(agent_id)
+                .map_err(PublicAgentError::Runtime)?,
+            lifecycle: AgentLifecycleHint::from_status(agent_id, agent_state.status.clone()),
+            model: crate::runtime::agent_model_state_for_catalog(
+                &RuntimeModelCatalog::from_config(&self.config()),
+                &self.runtime_context_config(),
+                &agent_state,
+            ),
+            agent: agent_state,
+            scheduling_posture,
+            closure,
+            active_children,
+            work_queue,
+        };
+        crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
+
+        let tasks_started = std::time::Instant::now();
+        let tasks = storage
+            .latest_active_task_records(task_limit)
+            .map_err(PublicAgentError::Runtime)?;
+        crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
+
+        let timers_started = std::time::Instant::now();
+        let timers = storage
+            .read_recent_timers(timer_limit)
+            .map_err(PublicAgentError::Runtime)?;
+        crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
+
+        let triggers_started = std::time::Instant::now();
+        let external_triggers = storage
+            .latest_external_triggers()
+            .map_err(PublicAgentError::Runtime)?;
+        crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
+
+        Ok(AgentStateReadProjection {
+            source: AgentStateProjectionSource::Storage,
+            agent,
+            tasks,
+            timers,
+            external_triggers,
+        })
     }
 
     /// Get an agent for the local control/status API, allowing private child
@@ -1325,7 +1483,7 @@ impl RuntimeHost {
                 && record.kind == AgentKind::Child
                 && record.parent_agent_id.as_deref() == Some(parent_agent_id)
         }) {
-            let storage = self.agent_storage(&identity.agent_id)?;
+            let storage = self.agent_storage_read_only(&identity.agent_id)?;
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
@@ -2700,6 +2858,48 @@ mod tests {
             .find(|entry| entry.identity.agent_id == "release-bot")
             .expect("release-bot should be listed from DB-only state");
         assert_eq!(entry.status, AgentStatus::Asleep);
+    }
+
+    #[tokio::test]
+    async fn unloaded_public_agent_state_projection_reads_storage_without_starting_runtime() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let mut state = AgentState::new(&agent_id);
+        state.status = AgentStatus::Asleep;
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+
+        assert!(host.inner.agents.read().await.is_empty());
+        assert!(!host
+            .agent_data_dir(&agent_id)
+            .join(".holon/state/agent.json")
+            .exists());
+
+        let projection = host
+            .public_agent_state_projection(&agent_id, 10, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(projection.source, AgentStateProjectionSource::Storage);
+        assert_eq!(projection.agent.agent.status, AgentStatus::Asleep);
+        assert!(host.inner.agents.read().await.is_empty());
+        assert!(!host
+            .agent_data_dir(&agent_id)
+            .join(".holon/state/agent.json")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn loaded_public_agent_state_projection_prefers_runtime() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        host.default_runtime().await.unwrap();
+
+        let projection = host
+            .public_agent_state_projection(&agent_id, 10, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(projection.source, AgentStateProjectionSource::Loaded);
     }
 
     #[tokio::test]

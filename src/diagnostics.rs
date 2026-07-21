@@ -58,6 +58,8 @@ static STORAGE_PERSIST_STATE: MetricAccumulator = MetricAccumulator::new("storag
 // Projection/API substeps
 static PROJECTION_STATE_TASKS: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.tasks");
+static PROJECTION_STATE_AGENT: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.agent");
 static PROJECTION_STATE_TIMERS: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.timers");
 static PROJECTION_STATE_WORK_ITEMS: MetricAccumulator =
@@ -66,7 +68,26 @@ static PROJECTION_STATE_WAITING: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.waiting_intents");
 static PROJECTION_STATE_TRIGGERS: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.external_triggers");
+static PROJECTION_STATE_WORKSPACE: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.workspace");
+static PROJECTION_STATE_SERIALIZATION: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.serialization");
+static PROJECTION_STATE_SOURCE_LOADED: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.source.loaded");
+static PROJECTION_STATE_SOURCE_STORAGE: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.source.storage");
+static PROJECTION_STATE_RUNTIME_SPAWN_AVOIDED: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.runtime_spawn_avoided");
 static PROJECTION_AGENTS_LIST: MetricAccumulator = MetricAccumulator::new("projection.agents_list");
+static PROJECTION_GATE_LEADERS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_JOINED_WAITERS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_REJECTED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_FAILED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_CANCELLED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_MAX_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PerformanceDiagnosticsSnapshot {
@@ -74,10 +95,24 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub process_uptime_ms: u64,
     pub http: Vec<MetricSnapshot>,
     pub projections: Vec<MetricSnapshot>,
+    pub projection_gate: ProjectionGateDiagnosticsSnapshot,
     pub db: Vec<MetricSnapshot>,
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectionGateDiagnosticsSnapshot {
+    pub leaders: u64,
+    pub joined_waiters: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub rejected: u64,
+    pub failed: u64,
+    pub cancelled: u64,
+    pub active_permits: u64,
+    pub max_active_permits: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -262,6 +297,11 @@ pub fn record_projection_state_tasks(elapsed: Duration) {
     PROJECTION_STATE_TASKS.record(elapsed, None);
 }
 
+pub fn record_projection_state_agent(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_AGENT.record(elapsed, None);
+}
+
 pub fn record_projection_state_timers(elapsed: Duration) {
     process_started_at();
     PROJECTION_STATE_TIMERS.record(elapsed, None);
@@ -282,9 +322,86 @@ pub fn record_projection_state_external_triggers(elapsed: Duration) {
     PROJECTION_STATE_TRIGGERS.record(elapsed, None);
 }
 
+pub fn record_projection_state_workspace(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_WORKSPACE.record(elapsed, None);
+}
+
+pub fn record_projection_state_serialization(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_SERIALIZATION.record(elapsed, None);
+}
+
+pub fn record_projection_state_source_loaded() {
+    process_started_at();
+    PROJECTION_STATE_SOURCE_LOADED.record(Duration::ZERO, None);
+}
+
+pub fn record_projection_state_source_storage() {
+    process_started_at();
+    PROJECTION_STATE_SOURCE_STORAGE.record(Duration::ZERO, None);
+}
+
+pub fn record_projection_state_runtime_spawn_avoided() {
+    process_started_at();
+    PROJECTION_STATE_RUNTIME_SPAWN_AVOIDED.record(Duration::ZERO, None);
+}
+
 pub fn record_projection_agents_list(elapsed: Duration) {
     process_started_at();
     PROJECTION_AGENTS_LIST.record(elapsed, None);
+}
+
+pub fn record_projection_gate_cache_hit() {
+    process_started_at();
+    PROJECTION_GATE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_cache_miss() {
+    process_started_at();
+    PROJECTION_GATE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_joined_waiter() {
+    process_started_at();
+    PROJECTION_GATE_JOINED_WAITERS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_rejected() {
+    process_started_at();
+    PROJECTION_GATE_REJECTED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_failed() {
+    process_started_at();
+    PROJECTION_GATE_FAILED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_cancelled() {
+    process_started_at();
+    PROJECTION_GATE_CANCELLED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_leader_started() {
+    process_started_at();
+    PROJECTION_GATE_LEADERS.fetch_add(1, Ordering::Relaxed);
+    let active = PROJECTION_GATE_ACTIVE_PERMITS.fetch_add(1, Ordering::Relaxed) + 1;
+    update_max(&PROJECTION_GATE_MAX_ACTIVE_PERMITS, active);
+}
+
+pub fn record_projection_gate_leader_finished() {
+    let mut current = PROJECTION_GATE_ACTIVE_PERMITS.load(Ordering::Relaxed);
+    while current > 0 {
+        match PROJECTION_GATE_ACTIVE_PERMITS.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
+    }
 }
 
 pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
@@ -306,7 +423,30 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROJECTION_RUNTIME_CACHE_READ.snapshot(false),
             OBJECT_QUERY_CACHE_HIT.snapshot(false),
             OBJECT_QUERY_CACHE_MISS.snapshot(false),
+            PROJECTION_AGENTS_LIST.snapshot(false),
+            PROJECTION_STATE_AGENT.snapshot(false),
+            PROJECTION_STATE_TASKS.snapshot(false),
+            PROJECTION_STATE_TIMERS.snapshot(false),
+            PROJECTION_STATE_WORK_ITEMS.snapshot(false),
+            PROJECTION_STATE_WAITING.snapshot(false),
+            PROJECTION_STATE_TRIGGERS.snapshot(false),
+            PROJECTION_STATE_WORKSPACE.snapshot(false),
+            PROJECTION_STATE_SERIALIZATION.snapshot(false),
+            PROJECTION_STATE_SOURCE_LOADED.snapshot(false),
+            PROJECTION_STATE_SOURCE_STORAGE.snapshot(false),
+            PROJECTION_STATE_RUNTIME_SPAWN_AVOIDED.snapshot(false),
         ],
+        projection_gate: ProjectionGateDiagnosticsSnapshot {
+            leaders: PROJECTION_GATE_LEADERS.load(Ordering::Relaxed),
+            joined_waiters: PROJECTION_GATE_JOINED_WAITERS.load(Ordering::Relaxed),
+            cache_hits: PROJECTION_GATE_CACHE_HITS.load(Ordering::Relaxed),
+            cache_misses: PROJECTION_GATE_CACHE_MISSES.load(Ordering::Relaxed),
+            rejected: PROJECTION_GATE_REJECTED.load(Ordering::Relaxed),
+            failed: PROJECTION_GATE_FAILED.load(Ordering::Relaxed),
+            cancelled: PROJECTION_GATE_CANCELLED.load(Ordering::Relaxed),
+            active_permits: PROJECTION_GATE_ACTIVE_PERMITS.load(Ordering::Relaxed),
+            max_active_permits: PROJECTION_GATE_MAX_ACTIVE_PERMITS.load(Ordering::Relaxed),
+        },
         db: vec![DB_CONNECTION_OPEN.snapshot(false)],
         scheduler: vec![
             SCHEDULER_POLL_ALL.snapshot(false),
@@ -328,6 +468,16 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROVIDER_ROUND_TOTAL.snapshot(false),
             PROVIDER_RETRY.snapshot(false),
         ],
+    }
+}
+
+fn update_max(target: &AtomicU64, value: u64) {
+    let mut current = target.load(Ordering::Relaxed);
+    while value > current {
+        match target.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
     }
 }
 
@@ -418,12 +568,26 @@ mod tests {
         record_tool_execution("ExecCommand", Duration::from_millis(20), Some(512));
         record_storage_append_event(Duration::from_millis(1));
         record_storage_persist_state(Duration::from_millis(2));
+        record_projection_state_agent(Duration::from_millis(4));
         record_projection_state_tasks(Duration::from_millis(3));
         record_projection_state_timers(Duration::from_millis(1));
         record_projection_state_work_items(Duration::from_millis(2));
         record_projection_state_waiting_intents(Duration::from_millis(1));
         record_projection_state_external_triggers(Duration::from_millis(1));
+        record_projection_state_workspace(Duration::from_millis(1));
+        record_projection_state_serialization(Duration::from_millis(1));
+        record_projection_state_source_loaded();
+        record_projection_state_source_storage();
+        record_projection_state_runtime_spawn_avoided();
         record_projection_agents_list(Duration::from_millis(10));
+        record_projection_gate_cache_hit();
+        record_projection_gate_cache_miss();
+        record_projection_gate_joined_waiter();
+        record_projection_gate_rejected();
+        record_projection_gate_failed();
+        record_projection_gate_cancelled();
+        record_projection_gate_leader_started();
+        record_projection_gate_leader_finished();
 
         let snapshot = performance_snapshot();
 
@@ -459,5 +623,36 @@ mod tests {
             .provider
             .iter()
             .any(|metric| metric.name == "provider.retry" && metric.count >= 1));
+        assert!(snapshot.projection_gate.leaders >= 1);
+        assert!(snapshot.projection_gate.joined_waiters >= 1);
+        assert!(snapshot.projection_gate.cache_hits >= 1);
+        assert!(snapshot.projection_gate.cache_misses >= 1);
+        assert!(snapshot.projection_gate.rejected >= 1);
+        assert!(snapshot.projection_gate.failed >= 1);
+        assert!(snapshot.projection_gate.cancelled >= 1);
+        assert_eq!(snapshot.projection_gate.active_permits, 0);
+        assert!(snapshot.projection_gate.max_active_permits >= 1);
+        for name in [
+            "projection.agents_list",
+            "projection.agent_state.agent",
+            "projection.agent_state.tasks",
+            "projection.agent_state.timers",
+            "projection.agent_state.work_items",
+            "projection.agent_state.waiting_intents",
+            "projection.agent_state.external_triggers",
+            "projection.agent_state.workspace",
+            "projection.agent_state.serialization",
+            "projection.agent_state.source.loaded",
+            "projection.agent_state.source.storage",
+            "projection.agent_state.runtime_spawn_avoided",
+        ] {
+            assert!(
+                snapshot
+                    .projections
+                    .iter()
+                    .any(|metric| metric.name == name && metric.count >= 1),
+                "missing projection metric {name}"
+            );
+        }
     }
 }

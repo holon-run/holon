@@ -509,7 +509,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                 </p>
               ) : null}
               {isMarkdownFile && showRendered ? (
-                <div className="file-browser-markdown" ref={contentScrollRef}>
+                <div className="file-browser-markdown markdown-content" ref={contentScrollRef}>
                   <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                     {selectedFile.content}
                   </Markdown>

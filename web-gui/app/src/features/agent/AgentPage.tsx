@@ -216,7 +216,7 @@ function useReconciledVirtualMeasurements({
   scrollToBottom: () => void;
 }) {
   const scrollToBottomRef = useRef(scrollToBottom);
-  const rafRef = useRef<{ measure: number | null; restore: number | null }>({ measure: null, restore: null });
+  const rafRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     scrollToBottomRef.current = scrollToBottom;
@@ -237,41 +237,48 @@ function useReconciledVirtualMeasurements({
     const fallbackTop = list.scrollTop;
     cancelReconciledMeasurement(rafRef.current);
 
-    rafRef.current.measure = window.requestAnimationFrame(() => {
-      rafRef.current.measure = null;
-      virtualizer.measure();
-      rafRef.current.restore = window.requestAnimationFrame(() => {
-        rafRef.current.restore = null;
-        const currentList = scrollElementRef.current;
-        if (!currentList) return;
-        if (wasAtBottom) {
-          scrollToBottomRef.current();
-          return;
-        }
-        stickToBottomRef.current = false;
-        const anchorIndex = anchor ? anchorIndexByKey.get(String(anchor.key)) ?? anchor.index : undefined;
-        currentList.scrollTop = restoredScrollTop(
-          anchor,
-          anchorIndex,
-          (index) => virtualizer.getOffsetForIndex(index, "start")?.[0],
-          fallbackTop,
-          contentElementRef.current?.offsetTop ?? 0,
-        );
+    // Synchronously re-measure visible elements without clearing the entire
+    // size cache. virtualizer.measure() clears itemSizeCache wholesale, which
+    // makes every row fall back to the 320px estimate. Because row keys are
+    // stable (turn.id), React reuses the same DOM nodes, so the measureElement
+    // ref callback never re-fires and the ResizeObserver does not fire either
+    // (the element's real height did not change). Rows taller than 320px then
+    // overlap with their neighbours until some unrelated event triggers a
+    // re-measure. Calling measureElement(el) directly reads the true height
+    // and calls resizeItem, updating only that item's cached size.
+    const wrapper = contentElementRef.current;
+    if (wrapper) {
+      wrapper.querySelectorAll<HTMLElement>("[data-index]").forEach((el) => {
+        virtualizer.measureElement(el);
       });
+    }
+
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      const currentList = scrollElementRef.current;
+      if (!currentList) return;
+      if (wasAtBottom) {
+        scrollToBottomRef.current();
+        return;
+      }
+      stickToBottomRef.current = false;
+      const anchorIndex = anchor ? anchorIndexByKey.get(String(anchor.key)) ?? anchor.index : undefined;
+      currentList.scrollTop = restoredScrollTop(
+        anchor,
+        anchorIndex,
+        (index) => virtualizer.getOffsetForIndex(index, "start")?.[0],
+        fallbackTop,
+        contentElementRef.current?.offsetTop ?? 0,
+      );
     });
 
     return () => cancelReconciledMeasurement(rafRef.current);
   }, [anchorIndexByKey, contentElementRef, layoutRevision, pendingAnchorRef, scrollElementRef, stickToBottomRef, virtualizer]);
 }
 
-function cancelReconciledMeasurement(raf: { measure: number | null; restore: number | null }): void {
-  if (raf.measure !== null) {
-    window.cancelAnimationFrame(raf.measure);
-    raf.measure = null;
-  }
-  if (raf.restore !== null) {
-    window.cancelAnimationFrame(raf.restore);
-    raf.restore = null;
+function cancelReconciledMeasurement(raf: number | null): void {
+  if (raf !== null) {
+    window.cancelAnimationFrame(raf);
   }
 }
 
@@ -344,8 +351,8 @@ export function AgentPage({
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
   const timelineLayoutVersion = useMemo(() => `${resumeRevision}:${timelineLayoutRevision(timelineTurns)}`, [resumeRevision, timelineTurns]);
   const timelineTurnIndexById = useMemo(
-    () => new Map(timelineTurns.flatMap((turn, index) => [[turn.id, index], [`${timelineLayoutVersion}:${turn.id}`, index]])),
-    [timelineLayoutVersion, timelineTurns],
+    () => new Map(timelineTurns.map((turn, index) => [turn.id, index])),
+    [timelineTurns],
   );
   const rowVirtualizer = useVirtualizer({
     count: timelineTurns.length,
@@ -353,7 +360,7 @@ export function AgentPage({
     estimateSize: () => 320,
     paddingEnd: MESSAGE_LIST_BOTTOM_SAFE_SPACE,
     overscan: 4,
-    getItemKey: (index) => `${timelineLayoutVersion}:${timelineTurns[index]?.id ?? `empty:${index}`}`,
+    getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
   });
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
@@ -405,32 +412,22 @@ export function AgentPage({
     autoStickToBottomRef.current = true;
 
     const lastTurnIndex = timelineTurns.length - 1;
-    const scrollNow = () => {
-      const currentList = messageListRef.current;
-      if (!currentList) return;
-      if (lastTurnIndex >= 0) {
-        rowVirtualizer.scrollToIndex(lastTurnIndex, { align: "end", behavior: "auto" });
-      }
-      currentList.scrollTop = currentList.scrollHeight;
-    };
-
     if (scheduledBottomScrollRef.current !== null) {
       window.cancelAnimationFrame(scheduledBottomScrollRef.current);
       scheduledBottomScrollRef.current = null;
     }
 
-    scrollNow();
+    if (lastTurnIndex >= 0) {
+      rowVirtualizer.scrollToIndex(lastTurnIndex, { align: "end", behavior: "auto" });
+    }
+    list.scrollTop = list.scrollHeight;
     scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
-      scrollNow();
-      scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
-        scrollNow();
-        scheduledBottomScrollRef.current = null;
-        autoStickToBottomRef.current = false;
-        const currentList = messageListRef.current;
-        if (currentList) {
-          stickToBottomRef.current = isScrolledNearBottom(currentList);
-        }
-      });
+      scheduledBottomScrollRef.current = null;
+      const currentList = messageListRef.current;
+      if (currentList && stickToBottomRef.current) {
+        currentList.scrollTop = currentList.scrollHeight;
+      }
+      autoStickToBottomRef.current = false;
     });
   }
 
@@ -460,6 +457,20 @@ export function AgentPage({
     anchorIndexByKey: timelineTurnIndexById,
     scrollToBottom: scrollToConversationBottom,
   });
+
+  useEffect(() => {
+    if (timelineTurns.length === 0) return;
+    const wrapper = virtualWrapperRef.current;
+    const list = messageListRef.current;
+    if (!wrapper || !list) return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottomRef.current) {
+        list.scrollTop = list.scrollHeight;
+      }
+    });
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, [timelineTurns.length]);
 
   useLayoutEffect(() => {
     if (!targetTimelineItemId) return;

@@ -20,7 +20,7 @@ use holon::{
     provider::{AgentProvider, StubProvider},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
+        AdmissionContext, AgentState, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority, TodoItem,
         TodoItemState, WorkItemState,
@@ -346,6 +346,38 @@ pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
     Ok(())
 }
 
+pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let agent_id = host.config().default_agent_id.clone();
+    let agent_state_path = host
+        .config()
+        .data_dir
+        .join("agents")
+        .join(&agent_id)
+        .join(".holon/state/agent.json");
+    let mut state = AgentState::new(&agent_id);
+    state.status = AgentStatus::Asleep;
+    host.runtime_db().agent_states().upsert(&state)?;
+
+    assert!(!agent_state_path.exists());
+
+    let response = reqwest::Client::new()
+        .get(format!("{base}/api/agents/{agent_id}/state"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+
+    assert_eq!(payload["agent"]["agent"]["status"], "asleep");
+    assert!(
+        !agent_state_path.exists(),
+        "GET /state must not initialize agent storage or start a runtime"
+    );
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn agent_state_route_scopes_work_items_to_requested_agent() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     attach_default_workspace(&host).await?;
@@ -404,6 +436,44 @@ pub async fn agent_state_route_scopes_work_items_to_requested_agent() -> Result<
         !beta_ids.iter().any(|id| id == &alpha_item.id),
         "beta state must not leak alpha work items: {beta_ids:?}",
     );
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn agent_state_route_does_not_prune_stale_workspaces() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let stale_dir = tempdir()?;
+    let workspace = host.ensure_workspace_entry(stale_dir.path().to_path_buf())?;
+    let workspace_id = workspace.workspace_id.clone();
+    runtime.attach_workspace(&workspace).await?;
+    drop(stale_dir);
+    let detached_before = runtime
+        .storage()
+        .read_recent_events(100)?
+        .into_iter()
+        .filter(|event| event.kind == "workspace_detached")
+        .count();
+
+    let response = reqwest::Client::new()
+        .get(format!("{base}/api/agents/default/state"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let state = runtime.agent_state().await?;
+    assert!(
+        state.attached_workspaces.contains(&workspace_id),
+        "GET /state must not mutate stale workspace attachments"
+    );
+    let detached_after = runtime
+        .storage()
+        .read_recent_events(100)?
+        .into_iter()
+        .filter(|event| event.kind == "workspace_detached")
+        .count();
+    assert_eq!(detached_after, detached_before);
 
     server.abort();
     Ok(())

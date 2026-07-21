@@ -184,24 +184,46 @@ impl RuntimeReadModels {
     }
 
     pub fn agent_posture(&self, agent: &AgentState) -> Result<AgentPostureProjection> {
+        if let Some(posture) = self.agent_posture_before_work_queue(agent)? {
+            return Ok(posture);
+        }
+        let work_queue = self.work_queue()?;
+        self.agent_posture_from_work_queue(&work_queue)
+    }
+
+    pub fn agent_posture_with_work_queue(
+        &self,
+        agent: &AgentState,
+        work_queue: &WorkQueueReadModel,
+    ) -> Result<AgentPostureProjection> {
+        if let Some(posture) = self.agent_posture_before_work_queue(agent)? {
+            return Ok(posture);
+        }
+        self.agent_posture_from_work_queue(work_queue)
+    }
+
+    fn agent_posture_before_work_queue(
+        &self,
+        agent: &AgentState,
+    ) -> Result<Option<AgentPostureProjection>> {
         if matches!(agent.status, AgentStatus::Stopped) {
-            return Ok(AgentPostureProjection {
+            return Ok(Some(AgentPostureProjection {
                 posture: AgentSchedulingPosture::Archived,
                 reason: "agent lifecycle is stopped".into(),
                 work_item_id: None,
                 task_id: None,
                 run_id: None,
-            });
+            }));
         }
 
         if let Some(run_id) = agent.current_run_id.clone() {
-            return Ok(AgentPostureProjection {
+            return Ok(Some(AgentPostureProjection {
                 posture: AgentSchedulingPosture::ActiveTurn,
                 reason: "agent has an active turn".into(),
                 work_item_id: agent.current_turn_work_item_id.clone(),
                 task_id: None,
                 run_id: Some(run_id),
-            });
+            }));
         }
 
         if self
@@ -209,16 +231,22 @@ impl RuntimeReadModels {
             .queue_entries()
             .has_queued_for_agent(&agent.id)?
         {
-            return Ok(AgentPostureProjection {
+            return Ok(Some(AgentPostureProjection {
                 posture: AgentSchedulingPosture::HasQueuedInput,
                 reason: "agent has queued input".into(),
                 work_item_id: None,
                 task_id: None,
                 run_id: None,
-            });
+            }));
         }
 
-        let work_queue = self.work_queue()?;
+        Ok(None)
+    }
+
+    fn agent_posture_from_work_queue(
+        &self,
+        work_queue: &WorkQueueReadModel,
+    ) -> Result<AgentPostureProjection> {
         if let Some(item) = work_queue
             .current_runnable
             .as_ref()

@@ -193,10 +193,7 @@ pub async fn status(
     traced_json("/agents/{agent_id}/status", started_at, agent)
 }
 
-pub async fn state_default(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {
     agent_state(
         Path(state.host.config().default_agent_id.clone()),
         State(state),
@@ -209,73 +206,94 @@ pub async fn agent_state(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> AxumResponse {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let runtime = state
+    if let Err(error) = authorize_remote_access(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    let key = ProjectionKey::AgentState(agent_id.clone());
+    let result = state
+        .projection_gate
+        .run(key, || build_agent_state_projection(&state, &agent_id))
+        .await;
+    match result {
+        Ok(bytes) => traced_json_bytes("/agents/{agent_id}/state", started_at, bytes),
+        Err(error) => projection_gate_error_response(error),
+    }
+}
+
+async fn build_agent_state_projection(
+    state: &Arc<AppState>,
+    agent_id: &str,
+) -> Result<Bytes, ProjectionFailure> {
+    let projection = state
         .host
-        .get_public_agent(&agent_id)
+        .public_agent_state_projection(agent_id, STATE_BOOTSTRAP_TASK_LIMIT, 50)
         .await
-        .map_err(agent_access_error)?;
-    runtime.prune_stale_attached_workspaces().await.ok();
-    let agent = runtime.agent_summary().await.map_err(error_response)?;
-    let tasks_started = std::time::Instant::now();
-    let tasks = runtime
-        .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
-        .await
-        .map_err(error_response)?
+        .map_err(agent_access_error)
+        .map_err(ProjectionFailure::from)?;
+    let source = projection.source;
+    let tasks = projection
+        .tasks
         .into_iter()
         .map(crate::http_dto::SlimTaskDto::from)
         .collect();
-    crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
-    let timers_started = std::time::Instant::now();
-    let timers = runtime.recent_timers(50).await.map_err(error_response)?;
-    crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
+    let timers = projection.timers;
+    let external_triggers = projection
+        .external_triggers
+        .into_iter()
+        .map(ExternalTriggerStateSnapshot::from)
+        .collect();
+    let projection = projection.agent;
     let work_items_started = std::time::Instant::now();
-    let work_items = runtime
-        .storage()
-        .work_queue_read_model()
-        .map_err(error_response)?
+    let work_items = projection
+        .work_queue
         .items
         .into_iter()
         .take(STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
         .map(slim_state_work_item_dto)
         .collect::<Vec<_>>();
     crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
-    let triggers_started = std::time::Instant::now();
-    let external_triggers = runtime
-        .latest_external_triggers()
-        .await
-        .map_err(error_response)?
-        .into_iter()
-        .map(ExternalTriggerStateSnapshot::from)
-        .collect();
-    crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
-    let workspace = state_workspace_snapshot(&agent, &state);
-    let mut agent_dto = crate::http_dto::SlimAgentDto::from(&agent);
-    agent_dto.agent.last_turn_terminal = agent
+    let workspace_started = std::time::Instant::now();
+    let workspace = state_workspace_snapshot(&projection.agent, &state);
+    crate::diagnostics::record_projection_state_workspace(workspace_started.elapsed());
+    let mut agent_dto = crate::http_dto::SlimAgentDto {
+        identity: projection.identity,
+        agent: (&projection.agent).into(),
+        scheduling_posture: projection.scheduling_posture,
+        active_task_count: projection.active_task_count,
+        lifecycle: projection.lifecycle,
+        model: (&projection.model).into(),
+        closure: (&projection.closure).into(),
+        active_children: projection.active_children.iter().map(Into::into).collect(),
+    };
+    agent_dto.agent.last_turn_terminal = projection
         .agent
         .last_turn_terminal
         .clone()
         .map(slim_state_turn_terminal_record);
-    agent_dto.agent.last_runtime_failure = agent
+    agent_dto.agent.last_runtime_failure = projection
         .agent
         .last_runtime_failure
         .clone()
         .map(slim_state_runtime_failure);
     let session = crate::http_dto::StateSessionSnapshotDto {
-        current_run_id: agent.agent.current_run_id.clone(),
-        pending_count: agent.agent.pending,
-        last_turn: agent
+        current_run_id: projection.agent.current_run_id.clone(),
+        pending_count: projection.agent.pending,
+        last_turn: projection
             .agent
             .last_turn_terminal
             .clone()
             .map(slim_state_turn_terminal_record),
     };
-    traced_json(
+    tracing::debug!(
+        agent_id,
+        state_projection_source = source.as_str(),
+        "serializing public agent state projection"
+    );
+    serialize_json(
         "/agents/{agent_id}/state",
-        started_at,
-        crate::http_dto::AgentStateSnapshotDto {
+        &crate::http_dto::AgentStateSnapshotDto {
             agent: agent_dto,
             session,
             tasks,
@@ -285,6 +303,7 @@ pub async fn agent_state(
             workspace,
         },
     )
+    .map_err(ProjectionFailure::from)
 }
 
 fn slim_state_work_item_dto(
@@ -441,7 +460,7 @@ fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
 }
 
 fn state_workspace_snapshot(
-    agent: &AgentSummary,
+    agent: &AgentState,
     state: &AppState,
 ) -> crate::http_dto::StateWorkspaceSnapshotDto {
     let all_entries = state.host.workspace_entries().unwrap_or_default();
@@ -453,7 +472,7 @@ fn state_workspace_snapshot(
     let mut workspaces: Vec<AgentWorkspaceInfo> = Vec::new();
 
     // Add active workspace first (with full runtime info).
-    if let Some(active_entry) = agent.agent.active_workspace_entry.as_ref() {
+    if let Some(active_entry) = agent.active_workspace_entry.as_ref() {
         seen_ids.insert(active_entry.workspace_id.clone());
 
         // Try to enrich with registry data (alias, repo_name).
@@ -462,7 +481,7 @@ fn state_workspace_snapshot(
             .find(|e| e.workspace_id == active_entry.workspace_id);
         let worktree = build_worktree_info(
             active_entry.projection_metadata.as_ref(),
-            agent.agent.worktree_session.as_ref(),
+            agent.worktree_session.as_ref(),
         );
 
         workspaces.push(AgentWorkspaceInfo {
@@ -481,7 +500,7 @@ fn state_workspace_snapshot(
     }
 
     // Add remaining attached workspaces (identity-only info from registry).
-    for ws_id in &agent.agent.attached_workspaces {
+    for ws_id in &agent.attached_workspaces {
         if seen_ids.contains(ws_id) {
             continue;
         }
