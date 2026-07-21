@@ -949,7 +949,7 @@ fn background_work_item_task_does_not_block_runnable_work() {
 }
 
 #[test]
-fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
+fn scheduling_advisories_detect_idle_posture_with_runnable_work() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
@@ -968,13 +968,8 @@ fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
         run_id: None,
     };
 
-    let diagnostics = scheduler::scheduling_diagnostics_for_facts(
-        &agent,
-        &projection,
-        &posture,
-        &work_queue,
-        &[],
-    );
+    let diagnostics =
+        scheduler::scheduling_advisories_for_facts(&agent, &projection, &posture, &work_queue, &[]);
 
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].kind, "idle_posture_has_runnable_work");
@@ -985,7 +980,7 @@ fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
 }
 
 #[test]
-fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() {
+fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -1023,7 +1018,7 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
     blocked.blocked_by = Some("manual blocker".into());
     storage.append_work_item(&blocked).unwrap();
 
-    let diagnostics = scheduler::scheduling_diagnostics(&storage, &agent).unwrap();
+    let diagnostics = scheduler::scheduling_advisories(&storage, &agent).unwrap();
     let kinds = diagnostics
         .iter()
         .map(|diagnostic| diagnostic.kind.as_str())
@@ -1043,14 +1038,13 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
 }
 
 #[test]
-fn scheduling_diagnostics_use_authoritative_queue_len() {
+fn scheduling_advisories_use_authoritative_queue_len() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
 
-    let diagnostics =
-        scheduler::scheduling_diagnostics_with_queue_len(&storage, &agent, 1).unwrap();
+    let diagnostics = scheduler::scheduling_advisories_with_queue_len(&storage, &agent, 1).unwrap();
 
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].kind, "idle_posture_has_queued_input");
@@ -1061,7 +1055,7 @@ fn scheduling_diagnostics_use_authoritative_queue_len() {
 }
 
 #[test]
-fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
+fn scheduling_advisories_do_not_warn_for_common_legal_waits() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -1102,7 +1096,7 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
     blocked_with_recheck.recheck_at = Some(now + chrono::Duration::hours(1));
     storage.append_work_item(&blocked_with_recheck).unwrap();
 
-    let diagnostics = scheduler::scheduling_diagnostics(&storage, &agent).unwrap();
+    let diagnostics = scheduler::scheduling_advisories(&storage, &agent).unwrap();
 
     assert!(
         diagnostics.is_empty(),
@@ -1111,7 +1105,7 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
 }
 
 #[test]
-fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
+fn scheduling_advisory_append_dedupes_interleaved_recent_events() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -1141,17 +1135,17 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
             turn_id: None,
         })
         .unwrap();
-    let appended = scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap();
+    let appended = scheduler::append_scheduling_advisories(&storage, &agent, 0).unwrap();
     assert_eq!(appended, 1);
     assert_eq!(
-        scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap(),
+        scheduler::append_scheduling_advisories(&storage, &agent, 0).unwrap(),
         0
     );
 
     let events = storage.read_recent_events(10).unwrap();
     let diagnostic_kinds = events
         .iter()
-        .filter(|event| event.kind == "scheduler_diagnostic")
+        .filter(|event| event.kind == "scheduling_advisory")
         .map(|event| event.data["kind"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(diagnostic_kinds.len(), appended);

@@ -245,20 +245,20 @@ impl SchedulerProjection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SchedulerDiagnostic {
+pub(crate) struct SchedulingAdvisory {
     pub kind: String,
-    pub severity: SchedulerDiagnosticSeverity,
+    pub severity: SchedulingAdvisorySeverity,
     pub message: String,
     pub work_item_id: Option<String>,
     pub wait_condition_id: Option<String>,
     pub evidence: Vec<String>,
 }
 
-impl SchedulerDiagnostic {
+impl SchedulingAdvisory {
     fn warning(kind: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             kind: kind.into(),
-            severity: SchedulerDiagnosticSeverity::Warning,
+            severity: SchedulingAdvisorySeverity::Warning,
             message: message.into(),
             work_item_id: None,
             wait_condition_id: None,
@@ -283,11 +283,11 @@ impl SchedulerDiagnostic {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SchedulerDiagnosticSeverity {
+pub(crate) enum SchedulingAdvisorySeverity {
     Warning,
 }
 
-impl SchedulerDiagnosticSeverity {
+impl SchedulingAdvisorySeverity {
     fn as_str(self) -> &'static str {
         match self {
             Self::Warning => "warning",
@@ -301,24 +301,24 @@ impl SchedulerDiagnosticSeverity {
 /// scheduler decisions or as a replacement for the posture/work-item state
 /// derivation itself.
 #[cfg(test)]
-pub(crate) fn scheduling_diagnostics(
+pub(crate) fn scheduling_advisories(
     storage: &AppStorage,
     agent: &AgentState,
-) -> Result<Vec<SchedulerDiagnostic>> {
-    scheduling_diagnostics_with_queue_len(storage, agent, agent.pending)
+) -> Result<Vec<SchedulingAdvisory>> {
+    scheduling_advisories_with_queue_len(storage, agent, agent.pending)
 }
 
-pub(crate) fn scheduling_diagnostics_with_queue_len(
+pub(crate) fn scheduling_advisories_with_queue_len(
     storage: &AppStorage,
     agent: &AgentState,
     queue_len: usize,
-) -> Result<Vec<SchedulerDiagnostic>> {
+) -> Result<Vec<SchedulingAdvisory>> {
     let projection = SchedulerProjection::from_state_with_queue_len(storage, agent, queue_len)?;
     let posture = storage.agent_posture_projection(agent)?;
     let work_queue = storage.work_queue_prompt_projection()?;
     let wait_conditions = storage.active_wait_conditions()?;
 
-    Ok(scheduling_diagnostics_for_facts(
+    Ok(scheduling_advisories_for_facts(
         agent,
         &projection,
         &posture,
@@ -327,19 +327,19 @@ pub(crate) fn scheduling_diagnostics_with_queue_len(
     ))
 }
 
-pub(crate) fn scheduling_diagnostics_for_facts(
+pub(crate) fn scheduling_advisories_for_facts(
     agent: &AgentState,
     projection: &SchedulerProjection,
     posture: &AgentPostureProjection,
     work_queue: &WorkQueueReadModel,
     wait_conditions: &[WaitConditionRecord],
-) -> Vec<SchedulerDiagnostic> {
+) -> Vec<SchedulingAdvisory> {
     let mut diagnostics = Vec::new();
 
     if posture.posture == AgentSchedulingPosture::Idle {
         if let Some(signal) = projection.work_reactivation_signal() {
             diagnostics.push(
-                SchedulerDiagnostic::warning(
+                SchedulingAdvisory::warning(
                     "idle_posture_has_runnable_work",
                     "agent posture is idle while scheduler facts contain runnable work",
                 )
@@ -349,7 +349,7 @@ pub(crate) fn scheduling_diagnostics_for_facts(
             );
         } else if projection.queue_len > 0 {
             diagnostics.push(
-                SchedulerDiagnostic::warning(
+                SchedulingAdvisory::warning(
                     "idle_posture_has_queued_input",
                     "agent posture is idle while scheduler facts contain queued input",
                 )
@@ -365,7 +365,7 @@ pub(crate) fn scheduling_diagnostics_for_facts(
         match condition.external_recoverability() {
             Some(ExternalWaitRecoverability::Weak) => {
                 diagnostics.push(
-                    SchedulerDiagnostic::warning(
+                    SchedulingAdvisory::warning(
                         "external_wait_has_weak_recoverability",
                         "active external wait lacks a durable recovery path",
                     )
@@ -376,7 +376,7 @@ pub(crate) fn scheduling_diagnostics_for_facts(
                 );
             }
             Some(ExternalWaitRecoverability::ExplicitNoFallback) => {
-                let mut diagnostic = SchedulerDiagnostic::warning(
+                let mut diagnostic = SchedulingAdvisory::warning(
                     "external_wait_has_no_fallback",
                     "active external wait explicitly has no fallback recovery path",
                 )
@@ -402,7 +402,7 @@ pub(crate) fn scheduling_diagnostics_for_facts(
             && !item.has_active_task_waits
     }) {
         diagnostics.push(
-            SchedulerDiagnostic::warning(
+            SchedulingAdvisory::warning(
                 "blocked_work_item_without_recheck_or_wait",
                 "blocked WorkItem has no recheck deadline or active wait condition",
             )
@@ -417,9 +417,9 @@ pub(crate) fn scheduling_diagnostics_for_facts(
     diagnostics
 }
 
-pub(crate) fn scheduler_diagnostic_event(diagnostic: &SchedulerDiagnostic) -> AuditEvent {
+pub(crate) fn scheduling_advisory_event(diagnostic: &SchedulingAdvisory) -> AuditEvent {
     AuditEvent::legacy(
-        "scheduler_diagnostic",
+        "scheduling_advisory",
         serde_json::json!({
             "kind": &diagnostic.kind,
             "severity": diagnostic.severity.as_str(),
@@ -431,18 +431,18 @@ pub(crate) fn scheduler_diagnostic_event(diagnostic: &SchedulerDiagnostic) -> Au
     )
 }
 
-pub(crate) fn append_scheduling_diagnostics(
+pub(crate) fn append_scheduling_advisories(
     storage: &AppStorage,
     agent: &AgentState,
     queue_len: usize,
 ) -> Result<usize> {
-    let diagnostics = scheduling_diagnostics_with_queue_len(storage, agent, queue_len)?;
+    let diagnostics = scheduling_advisories_with_queue_len(storage, agent, queue_len)?;
     let recent_events = storage.read_recent_events(64)?;
     let mut seen_data = Vec::new();
     let mut appended = 0;
 
     for diagnostic in diagnostics {
-        let event = scheduler_diagnostic_event(&diagnostic);
+        let event = scheduling_advisory_event(&diagnostic);
         if seen_data.iter().any(|data| data == &event.data) {
             continue;
         }
@@ -461,11 +461,11 @@ pub(crate) fn append_scheduling_diagnostics(
     Ok(appended)
 }
 
-trait SchedulerDiagnosticExt {
+trait SchedulingAdvisoryExt {
     fn maybe_work_item_id(self, work_item_id: Option<String>) -> Self;
 }
 
-impl SchedulerDiagnosticExt for SchedulerDiagnostic {
+impl SchedulingAdvisoryExt for SchedulingAdvisory {
     fn maybe_work_item_id(mut self, work_item_id: Option<String>) -> Self {
         self.work_item_id = work_item_id;
         self

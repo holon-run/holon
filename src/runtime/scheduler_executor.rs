@@ -364,7 +364,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &persisted_message,
         )?
         .map(scheduler_semantic_shadow_command);
-        scheduler::append_scheduling_diagnostics(
+        scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,
             candidate.queue_len,
