@@ -13,7 +13,10 @@ pub(super) fn should_ignore_task_update(latest: Option<TaskRecord>, task: &TaskR
         return false;
     };
 
-    if is_terminal_task_status(&latest.status) && is_terminal_task_status(&task.status) {
+    if is_terminal_task_status(&latest.status)
+        && is_terminal_task_status(&task.status)
+        && latest.status != task.status
+    {
         return true;
     }
 
@@ -65,15 +68,29 @@ impl RuntimeHandle {
         if should_ignore_task_update(latest_task.clone(), task) {
             return Ok(());
         }
-        let task_will_change = latest_task
-            .as_ref()
-            .map(|latest| {
-                crate::runtime_db::repositories::task_transition(latest, task).map(|outcome| {
-                    outcome == crate::runtime_db::repositories::StateTransitionOutcome::Applied
+        let repeated_terminal = latest_task.as_ref().is_some_and(|latest| {
+            is_terminal_task_status(&latest.status)
+                && is_terminal_task_status(&task.status)
+                && latest.status == task.status
+        });
+        let persisted_task = if repeated_terminal {
+            latest_task.clone().expect("repeated terminal task exists")
+        } else {
+            task.clone()
+        };
+        let task_will_change = if repeated_terminal {
+            false
+        } else {
+            latest_task
+                .as_ref()
+                .map(|latest| {
+                    crate::runtime_db::repositories::task_transition(latest, task).map(|outcome| {
+                        outcome == crate::runtime_db::repositories::StateTransitionOutcome::Applied
+                    })
                 })
-            })
-            .transpose()?
-            .unwrap_or(true);
+                .transpose()?
+                .unwrap_or(true)
+        };
 
         let agent_id = self.agent_id().await?;
         let mut state = self.agent_state().await?;
@@ -191,7 +208,7 @@ impl RuntimeHandle {
         let commit = self.inner.runtime_db.transitions().commit_task(
             &crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
-                task: task.clone(),
+                task: persisted_task,
                 work_items,
                 wait_conditions,
                 agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
@@ -232,19 +249,11 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
-        let latest = self.inner.runtime_db.tasks().latest(&task.id)?;
-        let repeated_terminal = latest.as_ref().is_some_and(|latest| {
-            is_terminal_task_status(&latest.status)
-                && is_terminal_task_status(&task.status)
-                && latest.status == task.status
-        });
-        if should_ignore_task_update(latest, &task) && !repeated_terminal {
+        if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
             return Ok(());
         }
-        if !repeated_terminal {
-            self.persist_task_transition(&task, "task_result_received")
-                .await?;
-        }
+        self.persist_task_transition(&task, "task_result_received")
+            .await?;
 
         let task_status_label = match task.status {
             TaskStatus::Completed => "completed",
@@ -440,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_same_terminal_updates_are_ignored() {
+    fn repeated_same_terminal_updates_are_preserved_for_result_events() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         storage
@@ -449,7 +458,7 @@ mod tests {
 
         let latest = storage.latest_task_record("task-1").unwrap();
         let repeated_terminal = task("task-1", TaskStatus::Failed, true);
-        assert!(should_ignore_task_update(latest, &repeated_terminal));
+        assert!(!should_ignore_task_update(latest, &repeated_terminal));
     }
 
     #[test]
@@ -649,6 +658,12 @@ mod tests {
         let latest = runtime.task_record("task-1").await.unwrap().unwrap();
         assert_eq!(latest.parent_message_id.as_deref(), Some("original-parent"));
         assert_eq!(latest.detail, recorded.detail);
+        let events = runtime.recent_events(20).await.unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "task_result_received"
+                && event.data.get("task_id").and_then(|value| value.as_str()) == Some("task-1")
+                && event.data.get("status").and_then(|value| value.as_str()) == Some("completed")
+        }));
         let briefs = runtime.storage().read_recent_briefs(10).unwrap();
         assert!(briefs.iter().any(|brief| {
             brief.kind == crate::types::BriefKind::Result
