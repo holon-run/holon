@@ -45,7 +45,7 @@ use tokio::time::{sleep, Duration};
 use crate::support::runtime_helpers::{
     aggressive_compaction_config, git, init_git_repo, operator_transport_binding,
     parse_tool_result_payload, parse_tool_result_value, test_config, wait_for_worktree_presence,
-    wait_until, wait_until_async, wait_until_async_for,
+    wait_until, wait_until_async_for,
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
@@ -305,7 +305,7 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
         )
         .await?;
 
-    wait_until_async(|| {
+    wait_until_async_for(Duration::from_secs(30), || {
         let runtime = runtime.clone();
         let task_id = task.id.clone();
         async move {
@@ -349,7 +349,7 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
         ChildAgentPhase::Running | ChildAgentPhase::Waiting
     ));
 
-    wait_until_async(|| {
+    wait_until_async_for(Duration::from_secs(30), || {
         let runtime = runtime.clone();
         let task_id = task.id.clone();
         async move { Ok(runtime.task_status_snapshot(&task_id).await?.status == TaskStatus::Completed) }
