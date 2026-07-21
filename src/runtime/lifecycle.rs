@@ -4,11 +4,25 @@ use std::path::{Path, PathBuf};
 use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
 use crate::storage::AppStorage;
 use crate::types::{
-    AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
-    ChildAgentObservabilitySnapshot, ChildAgentPhase, ExecutionRootEntry, TaskRecord, TaskStatus,
-    TokenUsage, WaitingReason, WorkItemState, WorkspaceOccupancyRecord,
-    WorkspaceProjectionMetadata, WorktreeSession,
+    AgentLifecycleHint, AgentListEntry, AgentModelState, AgentPostureProjection,
+    AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason, ChildAgentObservabilitySnapshot,
+    ChildAgentPhase, ChildAgentSummary, ExecutionRootEntry, TaskRecord, TaskStatus, TokenUsage,
+    WaitingReason, WorkItemState, WorkspaceOccupancyRecord, WorkspaceProjectionMetadata,
+    WorktreeSession,
 };
+use crate::work_item_scheduling::WorkQueueReadModel;
+
+pub(crate) struct LightweightAgentStateProjection {
+    pub(crate) identity: AgentIdentityView,
+    pub(crate) agent: AgentState,
+    pub(crate) scheduling_posture: AgentPostureProjection,
+    pub(crate) active_task_count: usize,
+    pub(crate) lifecycle: AgentLifecycleHint,
+    pub(crate) model: AgentModelState,
+    pub(crate) closure: ClosureDecision,
+    pub(crate) active_children: Vec<ChildAgentSummary>,
+    pub(crate) work_queue: WorkQueueReadModel,
+}
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
     let selected_cwd = match cwd {
@@ -155,6 +169,20 @@ impl RuntimeHandle {
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
         let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
+        self.closure_decision_for_state_with_work_queue(
+            state,
+            runtime_error_override,
+            work_queue_projection,
+        )
+        .await
+    }
+
+    async fn closure_decision_for_state_with_work_queue(
+        &self,
+        state: &AgentState,
+        runtime_error_override: Option<bool>,
+        work_queue_projection: WorkQueueReadModel,
+    ) -> Result<ClosureDecision> {
         let projection = scheduler::SchedulerProjection::from_state_with_work_queue_at(
             &self.inner.storage,
             state,
@@ -416,6 +444,39 @@ impl RuntimeHandle {
     pub async fn agent_summary(&self) -> Result<AgentSummary> {
         // Fast path: return current agent summary.
         self.build_agent_summary().await
+    }
+
+    pub(crate) async fn lightweight_agent_state_projection(
+        &self,
+    ) -> Result<LightweightAgentStateProjection> {
+        let agent = self.agent_state().await?;
+        let work_queue = self.inner.storage.work_queue_read_model()?;
+        let scheduling_posture = self
+            .inner
+            .storage
+            .agent_posture_projection_with_work_queue(&agent, &work_queue)?;
+        let closure = self
+            .closure_decision_for_state_with_work_queue(&agent, None, work_queue.clone())
+            .await?;
+        let active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
+            bridge.child_summaries(&agent.id).await?
+        } else {
+            Vec::new()
+        };
+        Ok(LightweightAgentStateProjection {
+            identity: self.agent_identity_view().await?,
+            active_task_count: self.inner.storage.active_task_count_for_agent(&agent.id)?,
+            lifecycle: crate::types::AgentLifecycleHint::from_status(
+                &agent.id,
+                agent.status.clone(),
+            ),
+            model: self.model_state_for(&agent),
+            agent,
+            scheduling_posture,
+            closure,
+            active_children,
+            work_queue,
+        })
     }
 
     /// Get a full AgentSummary for a different agent through the host bridge.
@@ -883,6 +944,9 @@ impl RuntimeHandle {
     }
 
     pub async fn attach_workspace(&self, workspace: &WorkspaceEntry) -> Result<()> {
+        // Workspace cleanup is a mutation concern. Keep GET projections read-only while
+        // opportunistically repairing stale attachments before applying a new binding.
+        self.prune_stale_attached_workspaces().await?;
         let mut guard = self.inner.agent.lock().await;
         if !guard
             .state

@@ -409,6 +409,44 @@ pub async fn agent_state_route_scopes_work_items_to_requested_agent() -> Result<
     Ok(())
 }
 
+pub async fn agent_state_route_does_not_prune_stale_workspaces() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let stale_dir = tempdir()?;
+    let workspace = host.ensure_workspace_entry(stale_dir.path().to_path_buf())?;
+    let workspace_id = workspace.workspace_id.clone();
+    runtime.attach_workspace(&workspace).await?;
+    drop(stale_dir);
+    let detached_before = runtime
+        .storage()
+        .read_recent_events(100)?
+        .into_iter()
+        .filter(|event| event.kind == "workspace_detached")
+        .count();
+
+    let response = reqwest::Client::new()
+        .get(format!("{base}/api/agents/default/state"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let state = runtime.agent_state().await?;
+    assert!(
+        state.attached_workspaces.contains(&workspace_id),
+        "GET /state must not mutate stale workspace attachments"
+    );
+    let detached_after = runtime
+        .storage()
+        .read_recent_events(100)?
+        .into_iter()
+        .filter(|event| event.kind == "workspace_detached")
+        .count();
+    assert_eq!(detached_after, detached_before);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present() -> Result<()> {
     let mut config = test_config();
     let (host, base, server) = spawn_server_with_config(config.clone()).await?;

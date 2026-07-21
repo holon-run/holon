@@ -179,6 +179,60 @@ describe("projectModelOptions", () => {
 });
 
 describe("createRuntimeClient", () => {
+  it("loads agent state without fetching the full roster", async () => {
+    const seen: string[] = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        seen.push(url);
+        if (url.endsWith("/agents/agent-one/state")) {
+          return Response.json(agentStateFixture("agent-one"));
+        }
+        return new Response("not found", { status: 404 });
+      }) as typeof fetch,
+    });
+
+    await expect(client.getAgentState("agent-one")).resolves.toEqual(
+      expect.objectContaining({
+        id: "agent-one",
+        profile: "public · self_owned · public_named",
+      }),
+    );
+    expect(seen).toEqual(["http://example.test:7878/api/agents/agent-one/state"]);
+  });
+
+  it("loads agent detail without fetching the full roster", async () => {
+    const seen: string[] = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        seen.push(url);
+        if (url.endsWith("/agents/agent-one/state")) {
+          return Response.json(agentStateFixture("agent-one"));
+        }
+        if (url.includes("/agents/agent-one/events?")) {
+          return Response.json({ events: [], has_older: false });
+        }
+        if (url.endsWith("/agents/agent-one/work-items?limit=50")) {
+          return Response.json([]);
+        }
+        return new Response("not found", { status: 404 });
+      }) as typeof fetch,
+    });
+
+    await expect(client.getAgentDetail("agent-one")).resolves.toEqual(
+      expect.objectContaining({
+        agent: expect.objectContaining({ id: "agent-one" }),
+        source: "http",
+      }),
+    );
+    expect(seen).not.toContain("http://example.test:7878/api/agents/list");
+  });
+
   it("preserves the configured remote connection mode even when the runtime auth mode is local", async () => {
     const fetchImpl = async (input: RequestInfo | URL) => {
       const url = String(input);

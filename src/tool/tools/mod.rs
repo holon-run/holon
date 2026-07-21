@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::Value;
+use std::{future::Future, pin::Pin};
 
 use crate::{
     runtime::RuntimeHandle,
@@ -109,7 +110,21 @@ pub(crate) fn builtin_tool_definitions_for_apply_patch_surface(
         .collect()
 }
 
-pub(crate) async fn execute_builtin_tool(
+pub(crate) fn execute_builtin_tool<'a>(
+    runtime: &'a RuntimeHandle,
+    agent_id: &'a str,
+    authority_class: &'a AuthorityClass,
+    call: &'a ToolCall,
+) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+    Box::pin(execute_builtin_tool_inner(
+        runtime,
+        agent_id,
+        authority_class,
+        call,
+    ))
+}
+
+async fn execute_builtin_tool_inner(
     runtime: &RuntimeHandle,
     agent_id: &str,
     authority_class: &AuthorityClass,

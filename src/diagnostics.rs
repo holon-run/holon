@@ -58,6 +58,8 @@ static STORAGE_PERSIST_STATE: MetricAccumulator = MetricAccumulator::new("storag
 // Projection/API substeps
 static PROJECTION_STATE_TASKS: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.tasks");
+static PROJECTION_STATE_AGENT: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.agent");
 static PROJECTION_STATE_TIMERS: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.timers");
 static PROJECTION_STATE_WORK_ITEMS: MetricAccumulator =
@@ -66,6 +68,10 @@ static PROJECTION_STATE_WAITING: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.waiting_intents");
 static PROJECTION_STATE_TRIGGERS: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.external_triggers");
+static PROJECTION_STATE_WORKSPACE: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.workspace");
+static PROJECTION_STATE_SERIALIZATION: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.serialization");
 static PROJECTION_AGENTS_LIST: MetricAccumulator = MetricAccumulator::new("projection.agents_list");
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -262,6 +268,11 @@ pub fn record_projection_state_tasks(elapsed: Duration) {
     PROJECTION_STATE_TASKS.record(elapsed, None);
 }
 
+pub fn record_projection_state_agent(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_AGENT.record(elapsed, None);
+}
+
 pub fn record_projection_state_timers(elapsed: Duration) {
     process_started_at();
     PROJECTION_STATE_TIMERS.record(elapsed, None);
@@ -280,6 +291,16 @@ pub fn record_projection_state_waiting_intents(elapsed: Duration) {
 pub fn record_projection_state_external_triggers(elapsed: Duration) {
     process_started_at();
     PROJECTION_STATE_TRIGGERS.record(elapsed, None);
+}
+
+pub fn record_projection_state_workspace(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_WORKSPACE.record(elapsed, None);
+}
+
+pub fn record_projection_state_serialization(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_SERIALIZATION.record(elapsed, None);
 }
 
 pub fn record_projection_agents_list(elapsed: Duration) {
@@ -306,6 +327,15 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROJECTION_RUNTIME_CACHE_READ.snapshot(false),
             OBJECT_QUERY_CACHE_HIT.snapshot(false),
             OBJECT_QUERY_CACHE_MISS.snapshot(false),
+            PROJECTION_AGENTS_LIST.snapshot(false),
+            PROJECTION_STATE_AGENT.snapshot(false),
+            PROJECTION_STATE_TASKS.snapshot(false),
+            PROJECTION_STATE_TIMERS.snapshot(false),
+            PROJECTION_STATE_WORK_ITEMS.snapshot(false),
+            PROJECTION_STATE_WAITING.snapshot(false),
+            PROJECTION_STATE_TRIGGERS.snapshot(false),
+            PROJECTION_STATE_WORKSPACE.snapshot(false),
+            PROJECTION_STATE_SERIALIZATION.snapshot(false),
         ],
         db: vec![DB_CONNECTION_OPEN.snapshot(false)],
         scheduler: vec![
@@ -418,11 +448,14 @@ mod tests {
         record_tool_execution("ExecCommand", Duration::from_millis(20), Some(512));
         record_storage_append_event(Duration::from_millis(1));
         record_storage_persist_state(Duration::from_millis(2));
+        record_projection_state_agent(Duration::from_millis(4));
         record_projection_state_tasks(Duration::from_millis(3));
         record_projection_state_timers(Duration::from_millis(1));
         record_projection_state_work_items(Duration::from_millis(2));
         record_projection_state_waiting_intents(Duration::from_millis(1));
         record_projection_state_external_triggers(Duration::from_millis(1));
+        record_projection_state_workspace(Duration::from_millis(1));
+        record_projection_state_serialization(Duration::from_millis(1));
         record_projection_agents_list(Duration::from_millis(10));
 
         let snapshot = performance_snapshot();
@@ -459,5 +492,24 @@ mod tests {
             .provider
             .iter()
             .any(|metric| metric.name == "provider.retry" && metric.count >= 1));
+        for name in [
+            "projection.agents_list",
+            "projection.agent_state.agent",
+            "projection.agent_state.tasks",
+            "projection.agent_state.timers",
+            "projection.agent_state.work_items",
+            "projection.agent_state.waiting_intents",
+            "projection.agent_state.external_triggers",
+            "projection.agent_state.workspace",
+            "projection.agent_state.serialization",
+        ] {
+            assert!(
+                snapshot
+                    .projections
+                    .iter()
+                    .any(|metric| metric.name == name && metric.count >= 1),
+                "missing projection metric {name}"
+            );
+        }
     }
 }
