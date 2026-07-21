@@ -15,7 +15,7 @@ plane integration, and a public diagnostic event stream.
 > **Last verified:** 2026-07-21 against `src/runtime/scheduler.rs`,
 > `src/runtime/scheduler_executor.rs`, `src/runtime/waiting.rs`,
 > `src/runtime/closure.rs`, `src/runtime/turn/execution.rs`,
-> `src/runtime/runtime_event.rs`, `src/types.rs`.
+> `src/runtime_event.rs`, `src/types.rs`.
 
 ## Source RFCs
 
