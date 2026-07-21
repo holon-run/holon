@@ -342,6 +342,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
+        let scheduler_authority_scenarios = scheduler::authority_scenarios_for_message_claim(
+            &projection,
+            &candidate.message,
+            dispatch_plan.continuation_resolution.as_ref(),
+        )
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
         let shadow_comparison = scheduler::shadow_comparison_for_message_admission(
             &projection,
             &candidate.message,
@@ -351,10 +359,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         .or_else(|| {
             scheduler::shadow_comparison_for_wait_resume(&projection, &candidate.message, &decision)
         });
-        let scheduler_authority_scenarios = shadow_comparison
-            .iter()
-            .map(|comparison| comparison.scenario_class.into())
-            .collect();
         let shadow_comparison = shadow_comparison
             .map(scheduler_shadow_comparison_command)
             .transpose()?;

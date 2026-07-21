@@ -1092,16 +1092,7 @@ pub(crate) fn shadow_comparison_for_message_admission(
     decision: &SchedulerDecision,
     continuation_resolution: Option<&ContinuationResolution>,
 ) -> Option<SchedulerShadowComparison> {
-    if !matches!(
-        continuation_resolution.map(|resolution| resolution.class),
-        None | Some(
-            crate::types::ContinuationClass::LocalContinuation
-                | crate::types::ContinuationClass::LivenessOnly
-        )
-    ) || matches!(
-        message.kind,
-        MessageKind::OperatorPrompt | MessageKind::TaskResult | MessageKind::SystemTick
-    ) {
+    if !message_admission_scenario_applies(message, continuation_resolution) {
         return None;
     }
 
@@ -1151,15 +1142,44 @@ pub(crate) fn shadow_comparison_for_message_admission(
         divergence_code: (!matched).then_some("message_admission_outcome_mismatch"),
     })
 }
+
+pub(crate) fn authority_scenarios_for_message_claim(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+    continuation_resolution: Option<&ContinuationResolution>,
+) -> Vec<&'static str> {
+    let mut scenarios = Vec::with_capacity(1);
+    if message_admission_scenario_applies(message, continuation_resolution) {
+        scenarios.push(REDUCER_ONLY_CANDIDATES_SCENARIO);
+    }
+    if wait_resume_scenario_applies(projection, message) {
+        scenarios.push(WAIT_RESUME_SCENARIO);
+    }
+    scenarios
+}
+
+fn message_admission_scenario_applies(
+    message: &MessageEnvelope,
+    continuation_resolution: Option<&ContinuationResolution>,
+) -> bool {
+    matches!(
+        continuation_resolution.map(|resolution| resolution.class),
+        None | Some(
+            crate::types::ContinuationClass::LocalContinuation
+                | crate::types::ContinuationClass::LivenessOnly
+        )
+    ) && !matches!(
+        message.kind,
+        MessageKind::OperatorPrompt | MessageKind::TaskResult | MessageKind::SystemTick
+    )
+}
+
 pub(crate) fn shadow_comparison_for_wait_resume(
     projection: &SchedulerProjection,
     message: &MessageEnvelope,
     decision: &SchedulerDecision,
 ) -> Option<SchedulerShadowComparison> {
-    if !matches!(
-        message.kind,
-        MessageKind::TaskResult | MessageKind::SystemTick
-    ) {
+    if !wait_resume_scenario_applies(projection, message) {
         return None;
     }
     let matching_waits: Vec<&WaitConditionRecord> = projection
@@ -1230,6 +1250,19 @@ pub(crate) fn shadow_comparison_for_wait_resume(
         shadow_candidate: candidate,
         matched,
         divergence_code: (!matched).then_some("wait_resume_outcome_mismatch"),
+    })
+}
+
+fn wait_resume_scenario_applies(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+) -> bool {
+    matches!(
+        message.kind,
+        MessageKind::TaskResult | MessageKind::SystemTick
+    ) && projection.semantic_waits.iter().any(|condition| {
+        condition.status == WaitConditionStatus::Active
+            && message_matches_wait_condition(message, condition)
     })
 }
 

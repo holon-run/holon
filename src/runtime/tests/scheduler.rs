@@ -1357,6 +1357,61 @@ fn wait_resume_shadow_comparison_records_task_result_matching_active_wait() {
 }
 
 #[test]
+fn message_claim_authority_scope_is_derived_without_shadow_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "test".into(),
+            event_type: None,
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claim".into(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::REDUCER_ONLY_CANDIDATES_SCENARIO]
+    );
+}
+
+#[test]
+fn wait_resume_claim_authority_scope_is_derived_without_shadow_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::WAIT_RESUME_SCENARIO]
+    );
+}
+
+#[test]
 fn wait_resume_shadow_comparison_returns_none_when_no_matching_wait() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
