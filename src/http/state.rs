@@ -193,10 +193,7 @@ pub async fn status(
     traced_json("/agents/{agent_id}/status", started_at, agent)
 }
 
-pub async fn state_default(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {
     agent_state(
         Path(state.host.config().default_agent_id.clone()),
         State(state),
@@ -209,31 +206,55 @@ pub async fn agent_state(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> AxumResponse {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    if let Err(error) = authorize_remote_access(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    let key = ProjectionKey::AgentState(agent_id.clone());
+    let result = state
+        .projection_gate
+        .run(key, || build_agent_state_projection(&state, &agent_id))
+        .await;
+    match result {
+        Ok(bytes) => traced_json_bytes("/agents/{agent_id}/state", started_at, bytes),
+        Err(error) => projection_gate_error_response(error),
+    }
+}
+
+async fn build_agent_state_projection(
+    state: &Arc<AppState>,
+    agent_id: &str,
+) -> Result<Bytes, ProjectionFailure> {
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_public_agent(agent_id)
         .await
-        .map_err(agent_access_error)?;
+        .map_err(agent_access_error)
+        .map_err(ProjectionFailure::from)?;
     let agent_started = std::time::Instant::now();
     let projection = runtime
         .lightweight_agent_state_projection()
         .await
-        .map_err(error_response)?;
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?;
     crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
     let tasks_started = std::time::Instant::now();
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
         .await
-        .map_err(error_response)?
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?
         .into_iter()
         .map(crate::http_dto::SlimTaskDto::from)
         .collect();
     crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
     let timers_started = std::time::Instant::now();
-    let timers = runtime.recent_timers(50).await.map_err(error_response)?;
+    let timers = runtime
+        .recent_timers(50)
+        .await
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?;
     crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
     let work_items_started = std::time::Instant::now();
     let work_items = projection
@@ -248,7 +269,8 @@ pub async fn agent_state(
     let external_triggers = runtime
         .latest_external_triggers()
         .await
-        .map_err(error_response)?
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?
         .into_iter()
         .map(ExternalTriggerStateSnapshot::from)
         .collect();
@@ -285,10 +307,9 @@ pub async fn agent_state(
             .clone()
             .map(slim_state_turn_terminal_record),
     };
-    traced_json(
+    serialize_json(
         "/agents/{agent_id}/state",
-        started_at,
-        crate::http_dto::AgentStateSnapshotDto {
+        &crate::http_dto::AgentStateSnapshotDto {
             agent: agent_dto,
             session,
             tasks,
@@ -298,6 +319,7 @@ pub async fn agent_state(
             workspace,
         },
     )
+    .map_err(ProjectionFailure::from)
 }
 
 fn slim_state_work_item_dto(

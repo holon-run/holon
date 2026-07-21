@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import {
   createRuntimeClient,
+  isProjectionBusyError,
   type AgentEventStreamSubscription,
   type OperatorPromptAttachment,
   type StreamEventEnvelopeDto,
@@ -1413,6 +1414,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         }
       } catch (error) {
         if (!isCurrentClientGeneration(generation)) return;
+        if (isProjectionBusyError(error)) {
+          set({ bootstrapLoading: false });
+          return;
+        }
         set({
           bootstrapLoading: false,
           bootstrapError: error instanceof Error ? error.message : String(error),
@@ -2241,6 +2246,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           !isCurrentClientRequest(request) ||
           agentDetailRequestSequence.get(agentId) !== sequence
         ) return;
+        if (isProjectionBusyError(error)) {
+          set((state) => ({
+            sessionsByAgentId: {
+              ...state.sessionsByAgentId,
+              [agentId]: {
+                ...emptyAgentSession(),
+                ...state.sessionsByAgentId[agentId],
+                loading: false,
+              },
+            },
+          }));
+          return;
+        }
         set((state) => ({
           sessionsByAgentId: {
             ...state.sessionsByAgentId,
