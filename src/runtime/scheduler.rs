@@ -468,7 +468,6 @@ impl SchedulerDiagnosticExt for SchedulerDiagnostic {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum SchedulerDecisionKind {
     StartModelTurn,
     ReduceMessageOnly,
@@ -604,7 +603,6 @@ pub(crate) enum SchedulerBoundary {
     RunLoop,
     RunLoopIdle,
     LifecycleSleep,
-    #[allow(dead_code)]
     MessageProcessing,
     IdleTick,
 }
@@ -691,13 +689,6 @@ impl SchedulerDecision {
         self.work_item_id = Some(work_item_id.into());
         self
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn task_id(mut self, task_id: impl Into<String>) -> Self {
-        self.task_id = Some(task_id.into());
-        self
-    }
-
     pub(crate) fn boundary(mut self, boundary: impl Into<String>) -> Self {
         self.boundary = Some(boundary.into());
         self
@@ -1282,7 +1273,6 @@ pub(crate) fn shadow_comparison_for_work_queue_tick(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerDecision {
     let (kind, reason) = if matches!(projection.status, AgentStatus::Stopped) {
         (SchedulerDecisionKind::Stop, "stopped")
@@ -1301,7 +1291,6 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
         .evidence(format!("queue_len={}", projection.queue_len))
 }
 
-#[allow(dead_code)]
 pub(crate) fn wait_decision_for_projection(
     projection: &SchedulerProjection,
 ) -> Option<SchedulerDecision> {
