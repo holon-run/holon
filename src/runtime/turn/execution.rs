@@ -332,7 +332,7 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(super) async fn drain_operator_interjections(
+    pub(in crate::runtime) async fn drain_operator_interjections(
         &self,
         agent_id: &str,
         round: usize,
@@ -399,15 +399,18 @@ impl RuntimeHandle {
                 let mut commit = self.inner.runtime_db.transitions().commit_queue(
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: message.agent_id.clone(),
-                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
+                        operation: crate::runtime_db::transitions::QueueOperation::Interject,
+                        mutation: crate::runtime_db::transitions::QueueMutation::Consume(
                             queue_record,
                         ),
                         agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                             expected: Some(Box::new(expected_state)),
                             record: Box::new(committed_state.clone()),
                         }),
+                        message_evidence: Vec::new(),
                         transcript_entries: vec![transcript],
                         audit_events: vec![audit_event],
+                        scheduler_shadow_comparison: None,
                         notify_scheduler: false,
                         fault: None,
                     },

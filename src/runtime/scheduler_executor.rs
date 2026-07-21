@@ -268,31 +268,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         Ok(Some(guard.state.clone()))
     }
 
-    pub(super) async fn admit_message_wake(
-        &self,
-        message: &MessageEnvelope,
-    ) -> Result<Option<AgentState>> {
-        let mut guard = self.runtime.inner.agent.lock().await;
-        let previous_status = guard.state.status.clone();
-        let previous_sleeping_until = guard.state.sleeping_until;
-        if !scheduler::apply_message_wake_projection(&mut guard.state) {
-            return Ok(None);
-        }
-        self.append_posture_decision(
-            "message_admission",
-            "message_admission_wake",
-            &previous_status,
-            &guard.state.status,
-            vec![
-                format!("message_id={}", message.id),
-                format!("message_kind={:?}", message.kind),
-                format!("previous_sleeping_until={previous_sleeping_until:?}"),
-            ],
-        )?;
-        guard.persist_state(&self.runtime.inner.storage)?;
-        Ok(Some(guard.state.clone()))
-    }
-
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {
         let started_at = std::time::Instant::now();
         let candidate = {
@@ -367,6 +342,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
+        let shadow_comparison = scheduler::shadow_comparison_for_message_admission(
+            &projection,
+            &candidate.message,
+            &decision,
+            dispatch_plan.continuation_resolution.as_ref(),
+        )
+        .map(scheduler_shadow_comparison_command)
+        .transpose()?;
         scheduler::append_scheduling_diagnostics(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -389,7 +372,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(RunLoopPoll::Idle);
             }
 
-            scheduler::append_scheduler_decision(&self.runtime.inner.storage, &decision)?;
             let queue_record = QueueEntryRecord {
                 message_id: candidate.message.id.clone(),
                 agent_id: candidate.message.agent_id.clone(),
@@ -407,23 +389,29 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             let mut commit = self.runtime.inner.runtime_db.transitions().commit_queue(
                 &crate::runtime_db::transitions::QueueTransitionCommand {
                     agent_id: candidate.message.agent_id.clone(),
-                    mutation: crate::runtime_db::transitions::QueueMutation::Claim(
+                    operation: crate::runtime_db::transitions::QueueOperation::Claim,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Consume(
                         queue_record.clone(),
                     ),
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(guard.state.clone())),
                         record: Box::new(running_state.clone()),
                     }),
+                    message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
-                    audit_events: vec![AuditEvent::legacy(
-                        "queue_entry_claimed",
-                        serde_json::json!({
-                            "message_id": queue_record.message_id,
-                            "agent_id": queue_record.agent_id,
-                            "status": QueueEntryStatus::Dequeued,
-                            "run_id": run_id,
-                        }),
-                    )],
+                    audit_events: vec![
+                        scheduler::scheduler_decision_event(&decision),
+                        AuditEvent::legacy(
+                            "queue_entry_claimed",
+                            serde_json::json!({
+                                "message_id": queue_record.message_id,
+                                "agent_id": queue_record.agent_id,
+                                "status": QueueEntryStatus::Dequeued,
+                                "run_id": run_id,
+                            }),
+                        ),
+                    ],
+                    scheduler_shadow_comparison: shadow_comparison,
                     notify_scheduler: false,
                     fault: self.runtime.take_transition_fault(),
                 },
@@ -479,6 +467,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }),
         ))
     }
+}
+
+pub(super) fn scheduler_shadow_comparison_command(
+    comparison: scheduler::SchedulerShadowComparison,
+) -> Result<
+    crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerShadowComparisonCommand,
+> {
+    Ok(
+        crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+            scenario_class: comparison.scenario_class.into(),
+            comparison_identity: comparison.comparison_identity,
+            boundary: comparison.boundary.into(),
+            input_identity: comparison.input_identity,
+            legacy_observation: serde_json::to_value(comparison.legacy_observation)?,
+            shadow_candidate: serde_json::to_value(comparison.shadow_candidate)?,
+            matched: comparison.matched,
+            divergence_code: comparison.divergence_code.map(Into::into),
+        },
+    )
 }
 
 pub(super) fn apply_bootstrap_recovered_projection(

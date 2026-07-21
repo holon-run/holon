@@ -1649,6 +1649,43 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_migrations_created
   ON scheduler_protocol_migrations(agent_id, created_at);
 "#,
     },
+    Migration {
+        version: 32,
+        name: "scheduler_shadow_comparisons",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_shadow_comparisons (
+  agent_id TEXT NOT NULL,
+  scenario_class TEXT NOT NULL,
+  comparison_identity TEXT NOT NULL,
+  canonical_schema_version INTEGER NOT NULL CHECK (canonical_schema_version > 0),
+  payload_hash TEXT NOT NULL,
+  boundary TEXT NOT NULL,
+  input_identity TEXT NOT NULL,
+  authority_mode TEXT NOT NULL CHECK (
+    authority_mode IN ('shadow', 'authoritative')
+  ),
+  legacy_observation_json TEXT NOT NULL,
+  shadow_candidate_json TEXT NOT NULL,
+  comparison_outcome TEXT NOT NULL CHECK (
+    comparison_outcome IN ('matched', 'diverged')
+  ),
+  divergence_code TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, scenario_class, comparison_identity),
+  CHECK (
+    (comparison_outcome = 'matched' AND divergence_code IS NULL)
+    OR (comparison_outcome = 'diverged' AND divergence_code IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_shadow_comparisons_scenario
+  ON scheduler_shadow_comparisons(
+    scenario_class,
+    authority_mode,
+    created_at
+  );
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

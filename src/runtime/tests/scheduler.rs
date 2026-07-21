@@ -1225,6 +1225,60 @@ fn scheduler_decision_event_records_evidence_and_bindings() {
 }
 
 #[test]
+fn message_shadow_candidate_is_reduced_independently_from_legacy_decision() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "shadow-divergence".into(),
+            event_type: Some("ping".into()),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::ExternalEvent,
+        class: ContinuationClass::LivenessOnly,
+        model_reentry: false,
+        prior_closure_outcome: ClosureOutcome::Completed,
+        prior_waiting_reason: None,
+        matched_waiting_reason: false,
+        evidence: Vec::new(),
+    };
+    let inconsistent_legacy = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "injected_legacy_divergence",
+    )
+    .message(&message)
+    .model_reentry(true);
+
+    let comparison = scheduler::shadow_comparison_for_message_admission(
+        &projection,
+        &message,
+        &inconsistent_legacy,
+        Some(&continuation),
+    )
+    .expect("webhook admission should be shadow comparable");
+
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("message_admission_outcome_mismatch")
+    );
+    let candidate = serde_json::to_value(comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "reduce_message_only");
+    assert_eq!(candidate["model_reentry"], false);
+}
+
+#[test]
 fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();

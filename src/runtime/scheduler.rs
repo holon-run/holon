@@ -9,6 +9,10 @@ use crate::types::{
     WorkReactivationMode, WorkReactivationSignal,
 };
 use chrono::{DateTime, Utc};
+use serde::Serialize;
+
+const REDUCER_ONLY_CANDIDATES_SCENARIO: &str = "reducer_only_candidates";
+const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str = "work_item_autonomous_continuation";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -499,10 +503,88 @@ pub(crate) struct SchedulerDecision {
     pub evidence: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct LegacyMessageAdmissionObservation {
+    schema_version: u32,
+    boundary: &'static str,
+    input_identity: String,
+    input_kind: MessageKind,
+    legacy_decision: &'static str,
+    model_reentry: bool,
+    continuation_class: Option<crate::types::ContinuationClass>,
+    work_item_id: Option<String>,
+    queue_len: usize,
+    active_waiting_intents: usize,
+    turn_in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RestrictedMessageAdmissionCandidate {
+    schema_version: u32,
+    action: &'static str,
+    binding_work_item_id: Option<String>,
+    queue_disposition: &'static str,
+    resulting_posture: &'static str,
+    model_reentry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct LegacyWorkQueueTickObservation {
+    schema_version: u32,
+    boundary: &'static str,
+    input_identity: String,
+    reason: String,
+    legacy_decision: &'static str,
+    model_reentry: bool,
+    work_item_id: String,
+    work_item_revision: u64,
+    queue_len: usize,
+    active_waiting_intents: usize,
+    turn_in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RestrictedWorkQueueTickCandidate {
+    schema_version: u32,
+    action: &'static str,
+    binding_work_item_id: String,
+    binding_work_item_revision: u64,
+    queue_disposition: &'static str,
+    resulting_posture: &'static str,
+    model_reentry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum LegacySchedulerObservation {
+    MessageAdmission(LegacyMessageAdmissionObservation),
+    WorkQueueTick(LegacyWorkQueueTickObservation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum RestrictedSchedulerCandidate {
+    MessageAdmission(RestrictedMessageAdmissionCandidate),
+    WorkQueueTick(RestrictedWorkQueueTickCandidate),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedulerShadowComparison {
+    pub scenario_class: &'static str,
+    pub comparison_identity: String,
+    pub boundary: &'static str,
+    pub input_identity: String,
+    pub legacy_observation: LegacySchedulerObservation,
+    pub shadow_candidate: RestrictedSchedulerCandidate,
+    pub matched: bool,
+    pub divergence_code: Option<&'static str>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchedulerBoundary {
     RunLoop,
     RunLoopIdle,
+    LifecycleSleep,
     #[allow(dead_code)]
     MessageProcessing,
     IdleTick,
@@ -513,6 +595,7 @@ impl SchedulerBoundary {
         match self {
             Self::RunLoop => "run_loop",
             Self::RunLoopIdle => "run_loop_idle",
+            Self::LifecycleSleep => "lifecycle_sleep",
             Self::MessageProcessing => "message_processing",
             Self::IdleTick => "idle_tick",
         }
@@ -807,6 +890,293 @@ pub(crate) fn message_processing_decision(
         decision = decision.evidence("model_turn_blocked_by_control_posture");
     }
     decision
+}
+
+pub(crate) fn shadow_comparison_for_message_admission(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+    decision: &SchedulerDecision,
+    continuation_resolution: Option<&ContinuationResolution>,
+) -> Option<SchedulerShadowComparison> {
+    if !matches!(
+        continuation_resolution.map(|resolution| resolution.class),
+        None | Some(
+            crate::types::ContinuationClass::LocalContinuation
+                | crate::types::ContinuationClass::LivenessOnly
+        )
+    ) || matches!(
+        message.kind,
+        MessageKind::OperatorPrompt | MessageKind::TaskResult | MessageKind::SystemTick
+    ) {
+        return None;
+    }
+
+    let input_identity = format!("message:{}", message.id);
+    let observation =
+        LegacySchedulerObservation::MessageAdmission(LegacyMessageAdmissionObservation {
+            schema_version: 1,
+            boundary: SchedulerBoundary::RunLoop.as_str(),
+            input_identity: input_identity.clone(),
+            input_kind: message.kind.clone(),
+            legacy_decision: decision.kind.as_str(),
+            model_reentry: decision.model_reentry,
+            continuation_class: continuation_resolution.map(|resolution| resolution.class),
+            work_item_id: decision.work_item_id.clone(),
+            queue_len: projection.queue_len,
+            active_waiting_intents: projection.active_waiting_intents,
+            turn_in_progress: projection.turn_in_progress,
+        });
+    let candidate = RestrictedSchedulerCandidate::MessageAdmission(
+        restricted_message_admission_candidate(projection, message),
+    );
+    let matched = match (&observation, &candidate) {
+        (
+            LegacySchedulerObservation::MessageAdmission(observation),
+            RestrictedSchedulerCandidate::MessageAdmission(candidate),
+        ) => {
+            observation.legacy_decision
+                == if candidate.model_reentry {
+                    SchedulerDecisionKind::StartModelTurn.as_str()
+                } else {
+                    SchedulerDecisionKind::ReduceMessageOnly.as_str()
+                }
+                && observation.model_reentry == candidate.model_reentry
+                && observation.work_item_id == candidate.binding_work_item_id
+        }
+        _ => unreachable!(),
+    };
+
+    Some(SchedulerShadowComparison {
+        scenario_class: REDUCER_ONLY_CANDIDATES_SCENARIO,
+        comparison_identity: format!("message_admission:{}", message.id),
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity,
+        legacy_observation: observation,
+        shadow_candidate: candidate,
+        matched,
+        divergence_code: (!matched).then_some("message_admission_outcome_mismatch"),
+    })
+}
+
+fn restricted_message_admission_candidate(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+) -> RestrictedMessageAdmissionCandidate {
+    let model_reentry = restricted_message_model_reentry(projection, message);
+    RestrictedMessageAdmissionCandidate {
+        schema_version: 1,
+        action: if model_reentry {
+            "admit_model_turn"
+        } else {
+            "reduce_message_only"
+        },
+        binding_work_item_id: message.work_item_id.clone(),
+        queue_disposition: "claim",
+        resulting_posture: "running",
+        model_reentry,
+    }
+}
+
+fn restricted_message_model_reentry(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+) -> bool {
+    if matches!(projection.status, AgentStatus::Stopped) {
+        return false;
+    }
+    let Some(trigger_kind) = restricted_trigger_kind(message) else {
+        return false;
+    };
+    let contentful = restricted_message_is_contentful(message);
+    let task_terminal = matches!(message.kind, MessageKind::TaskResult)
+        && message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("task_status"))
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|status| {
+                matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
+            });
+    let task_work_item_id = message
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("work_item_id"))
+        .and_then(serde_json::Value::as_str)
+        .or(message.work_item_id.as_deref());
+    let same_work_item = task_work_item_id
+        == projection
+            .current_work_item
+            .as_ref()
+            .map(|work_item| work_item.id.as_str());
+
+    let Some(waiting_reason) = restricted_waiting_reason(projection) else {
+        return (trigger_kind == crate::types::ContinuationTriggerKind::TaskResult
+            && task_terminal
+            && same_work_item)
+            || matches!(
+                trigger_kind,
+                crate::types::ContinuationTriggerKind::OperatorInput
+                    | crate::types::ContinuationTriggerKind::TimerFire
+                    | crate::types::ContinuationTriggerKind::InternalFollowup
+            )
+            || (matches!(
+                trigger_kind,
+                crate::types::ContinuationTriggerKind::ExternalEvent
+                    | crate::types::ContinuationTriggerKind::SystemTick
+            ) && contentful);
+    };
+
+    let expected = matches!(
+        (waiting_reason, trigger_kind),
+        (
+            Some(crate::types::WaitingReason::AwaitingOperatorInput),
+            crate::types::ContinuationTriggerKind::OperatorInput
+        ) | (
+            Some(crate::types::WaitingReason::AwaitingTaskResult),
+            crate::types::ContinuationTriggerKind::TaskResult
+        ) | (
+            Some(crate::types::WaitingReason::AwaitingExternalChange),
+            crate::types::ContinuationTriggerKind::ExternalEvent
+                | crate::types::ContinuationTriggerKind::SystemTick
+        ) | (
+            Some(crate::types::WaitingReason::AwaitingTimer),
+            crate::types::ContinuationTriggerKind::TimerFire
+        )
+    );
+    if expected {
+        return match trigger_kind {
+            crate::types::ContinuationTriggerKind::TaskResult => task_terminal && same_work_item,
+            crate::types::ContinuationTriggerKind::ExternalEvent
+            | crate::types::ContinuationTriggerKind::SystemTick => contentful,
+            _ => true,
+        };
+    }
+    trigger_kind == crate::types::ContinuationTriggerKind::OperatorInput
+        || (trigger_kind == crate::types::ContinuationTriggerKind::TaskResult
+            && task_terminal
+            && same_work_item)
+}
+
+fn restricted_waiting_reason(
+    projection: &SchedulerProjection,
+) -> Option<Option<crate::types::WaitingReason>> {
+    if projection.runtime_error || projection.work_reactivation_signal().is_some() {
+        return None;
+    }
+    if projection.turn_in_progress {
+        return Some(Some(crate::types::WaitingReason::AwaitingExternalChange));
+    }
+    if projection.current_work_item_waits_for_operator() {
+        return Some(Some(crate::types::WaitingReason::AwaitingOperatorInput));
+    }
+    if projection.active_agent_waiting_intents > 0 {
+        return Some(Some(crate::types::WaitingReason::AwaitingExternalChange));
+    }
+    if projection.active_timers > 0 {
+        return Some(Some(crate::types::WaitingReason::AwaitingTimer));
+    }
+    match projection.waiting_work_item_scheduling_state {
+        Some(WorkItemSchedulingState::WaitingTask) => {
+            Some(Some(crate::types::WaitingReason::AwaitingTaskResult))
+        }
+        Some(WorkItemSchedulingState::WaitingExternal) => {
+            Some(Some(crate::types::WaitingReason::AwaitingExternalChange))
+        }
+        Some(WorkItemSchedulingState::WaitingTimer) => {
+            Some(Some(crate::types::WaitingReason::AwaitingTimer))
+        }
+        Some(WorkItemSchedulingState::WaitingOperator) => {
+            Some(Some(crate::types::WaitingReason::AwaitingOperatorInput))
+        }
+        Some(WorkItemSchedulingState::WaitingSystem) => Some(None),
+        _ => None,
+    }
+}
+
+fn restricted_trigger_kind(
+    message: &MessageEnvelope,
+) -> Option<crate::types::ContinuationTriggerKind> {
+    match message.kind {
+        MessageKind::TaskStatus
+        | MessageKind::Control
+        | MessageKind::BriefAck
+        | MessageKind::BriefResult => None,
+        _ => Some(crate::types::admission_trigger_kind_for_message_kind(
+            &message.kind,
+        )),
+    }
+}
+
+fn restricted_message_is_contentful(message: &MessageEnvelope) -> bool {
+    let body_is_contentful = |body: &crate::types::MessageBody| match body {
+        crate::types::MessageBody::Text { text } => !text.trim().is_empty(),
+        crate::types::MessageBody::Json { .. } => true,
+        crate::types::MessageBody::Brief { text, .. } => !text.trim().is_empty(),
+    };
+    if matches!(message.kind, MessageKind::SystemTick) {
+        if let Some(wake_hint) = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("wake_hint"))
+        {
+            return wake_hint
+                .get("body")
+                .cloned()
+                .and_then(|body| serde_json::from_value(body).ok())
+                .is_some_and(|body| body_is_contentful(&body));
+        }
+    }
+    body_is_contentful(&message.body)
+}
+
+pub(crate) fn shadow_comparison_for_work_queue_tick(
+    projection: &SchedulerProjection,
+    work_item: &WorkItemRecord,
+    reason: &str,
+    decision: &SchedulerDecision,
+    boundary: SchedulerBoundary,
+) -> Option<SchedulerShadowComparison> {
+    if !matches!(reason, "continue_active" | "queued_available") {
+        return None;
+    }
+    let idempotency_key = work_queue_tick_idempotency_key(work_item, reason);
+    let input_identity = format!("work_queue_tick:{idempotency_key}");
+    let observation = LegacySchedulerObservation::WorkQueueTick(LegacyWorkQueueTickObservation {
+        schema_version: 1,
+        boundary: boundary.as_str(),
+        input_identity: input_identity.clone(),
+        reason: reason.into(),
+        legacy_decision: decision.kind.as_str(),
+        model_reentry: decision.model_reentry,
+        work_item_id: work_item.id.clone(),
+        work_item_revision: work_item.revision,
+        queue_len: projection.queue_len,
+        active_waiting_intents: projection.active_waiting_intents,
+        turn_in_progress: projection.turn_in_progress,
+    });
+    let candidate = RestrictedSchedulerCandidate::WorkQueueTick(RestrictedWorkQueueTickCandidate {
+        schema_version: 1,
+        action: "emit_work_queue_tick",
+        binding_work_item_id: work_item.id.clone(),
+        binding_work_item_revision: work_item.revision,
+        queue_disposition: "enqueue",
+        resulting_posture: "awake",
+        model_reentry: true,
+    });
+    let matched = matches!(decision.kind, SchedulerDecisionKind::EmitSystemTick)
+        && decision.model_reentry
+        && decision.work_item_id.as_deref() == Some(work_item.id.as_str());
+
+    Some(SchedulerShadowComparison {
+        scenario_class: WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
+        comparison_identity: format!("work_queue_idle_tick:{idempotency_key}"),
+        boundary: boundary.as_str(),
+        input_identity,
+        legacy_observation: observation,
+        shadow_candidate: candidate,
+        matched,
+        divergence_code: (!matched).then_some("work_queue_tick_outcome_mismatch"),
+    })
 }
 
 #[allow(dead_code)]

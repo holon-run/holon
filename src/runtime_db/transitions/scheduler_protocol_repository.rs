@@ -24,6 +24,27 @@ use crate::domain::scheduler_protocol::{
 use super::{inject_fault, RuntimeTransitionRepository, TransitionFaultPoint};
 
 const CANONICAL_COMMAND_SCHEMA_VERSION: i64 = 1;
+const SHADOW_COMPARISON_SCHEMA_VERSION: i64 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SchedulerShadowComparisonCommand {
+    pub scenario_class: String,
+    pub comparison_identity: String,
+    pub boundary: String,
+    pub input_identity: String,
+    pub legacy_observation: serde_json::Value,
+    pub shadow_candidate: serde_json::Value,
+    pub matched: bool,
+    #[serde(default)]
+    pub divergence_code: Option<String>,
+}
+
+pub(super) struct PreparedShadowComparison {
+    command: SchedulerShadowComparisonCommand,
+    payload_hash: String,
+    authority_mode: ScenarioMode,
+    already_recorded: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SchedulerProtocolCommandResult {
@@ -107,6 +128,196 @@ struct StoredCommandResult {
 enum CommandTransactionOutcome<T> {
     Commit(T),
     Conflict(SchedulerProtocolCommandIdentityConflict),
+}
+
+pub(super) fn validate_shadow_comparison_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: Option<&SchedulerShadowComparisonCommand>,
+) -> Result<Option<PreparedShadowComparison>> {
+    let Some(command) = command else {
+        return Ok(None);
+    };
+    if agent_id.is_empty()
+        || command.scenario_class.is_empty()
+        || command.comparison_identity.is_empty()
+        || command.boundary.is_empty()
+        || command.input_identity.is_empty()
+    {
+        bail!("scheduler shadow comparison requires non-empty canonical identities");
+    }
+    if command.matched != command.divergence_code.is_none() {
+        bail!("scheduler shadow comparison divergence code disagrees with outcome");
+    }
+
+    let authority_mode = effective_scenario_mode_tx(tx, &command.scenario_class)?;
+    match authority_mode {
+        ScenarioMode::Off => return Ok(None),
+        ScenarioMode::Authoritative => {
+            bail!(
+                "scheduler scenario {} is authoritative, but production authority is not wired",
+                command.scenario_class
+            );
+        }
+        ScenarioMode::Shadow => {}
+    }
+
+    let payload_hash = canonical_shadow_comparison_hash(command)?;
+    let existing_payload_hash = tx
+        .query_row(
+            "SELECT payload_hash
+             FROM scheduler_shadow_comparisons
+             WHERE agent_id = ?1
+               AND scenario_class = ?2
+               AND comparison_identity = ?3",
+            params![
+                agent_id,
+                command.scenario_class,
+                command.comparison_identity
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(existing_payload_hash) = existing_payload_hash.as_ref() {
+        if existing_payload_hash != &payload_hash {
+            bail!(
+                "scheduler shadow comparison identity conflict for agent {}, scenario {}, comparison {}",
+                agent_id,
+                command.scenario_class,
+                command.comparison_identity
+            );
+        }
+    }
+
+    Ok(Some(PreparedShadowComparison {
+        command: command.clone(),
+        payload_hash,
+        authority_mode,
+        already_recorded: existing_payload_hash.is_some(),
+    }))
+}
+
+pub(super) fn validate_queue_admission_authority_tx(tx: &Transaction<'_>) -> Result<()> {
+    let protocol_mode = tx.query_row(
+        "SELECT protocol_mode
+         FROM scheduler_protocol_config
+         WHERE config_id = 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    if protocol_mode != "authoritative" {
+        return Ok(());
+    }
+    let authoritative_scenario = tx
+        .query_row(
+            "SELECT scenario_class
+             FROM scheduler_scenario_authorities
+             WHERE mode = 'authoritative'
+             ORDER BY scenario_class ASC
+             LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(scenario_class) = authoritative_scenario {
+        bail!(
+            "scheduler scenario {scenario_class} is authoritative, but production authority is not wired"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn persist_shadow_comparison_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    prepared: Option<PreparedShadowComparison>,
+) -> Result<()> {
+    let Some(prepared) = prepared else {
+        return Ok(());
+    };
+    if prepared.already_recorded {
+        return Ok(());
+    }
+    let command = prepared.command;
+    tx.execute(
+        "INSERT INTO scheduler_shadow_comparisons (
+           agent_id, scenario_class, comparison_identity,
+           canonical_schema_version, payload_hash, boundary, input_identity,
+           authority_mode, legacy_observation_json, shadow_candidate_json,
+           comparison_outcome, divergence_code, created_at
+         ) VALUES (
+           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+         )",
+        params![
+            agent_id,
+            command.scenario_class,
+            command.comparison_identity,
+            SHADOW_COMPARISON_SCHEMA_VERSION,
+            prepared.payload_hash,
+            command.boundary,
+            command.input_identity,
+            scenario_mode_token(prepared.authority_mode),
+            serde_json::to_string(&command.legacy_observation)?,
+            serde_json::to_string(&command.shadow_candidate)?,
+            if command.matched {
+                "matched"
+            } else {
+                "diverged"
+            },
+            command.divergence_code,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn effective_scenario_mode_tx(tx: &Transaction<'_>, scenario_class: &str) -> Result<ScenarioMode> {
+    let protocol_mode = tx.query_row(
+        "SELECT protocol_mode
+         FROM scheduler_protocol_config
+         WHERE config_id = 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    let scenario_mode = tx
+        .query_row(
+            "SELECT mode
+             FROM scheduler_scenario_authorities
+             WHERE scenario_class = ?1",
+            [scenario_class],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    match (protocol_mode.as_str(), scenario_mode.as_deref()) {
+        ("legacy", _) | (_, None | Some("off")) => Ok(ScenarioMode::Off),
+        ("shadow", Some("shadow")) | ("authoritative", Some("shadow")) => {
+            Ok(ScenarioMode::Shadow)
+        }
+        ("authoritative", Some("authoritative")) => Ok(ScenarioMode::Authoritative),
+        ("shadow", Some("authoritative")) => {
+            bail!("scheduler scenario authority exceeds the protocol mode ceiling")
+        }
+        (mode, scenario) => bail!(
+            "invalid scheduler rollout authority state: protocol_mode={mode}, scenario_mode={scenario:?}"
+        ),
+    }
+}
+
+fn canonical_shadow_comparison_hash(command: &SchedulerShadowComparisonCommand) -> Result<String> {
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "schema_version": SHADOW_COMPARISON_SCHEMA_VERSION,
+        "command": command,
+    }))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(canonical)))
+}
+
+fn scenario_mode_token(mode: ScenarioMode) -> &'static str {
+    match mode {
+        ScenarioMode::Off => "off",
+        ScenarioMode::Shadow => "shadow",
+        ScenarioMode::Authoritative => "authoritative",
+    }
 }
 
 impl RuntimeTransitionRepository<'_> {

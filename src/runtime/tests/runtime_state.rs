@@ -348,6 +348,606 @@ async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
 }
 
 #[tokio::test]
+async fn run_loop_claim_persists_message_shadow_comparison_in_the_same_transition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'shadow',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'shadow', 'off',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )
+        .unwrap();
+
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "phase3-shadow-test".into(),
+                event_type: Some("ping".into()),
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Normal,
+            MessageBody::Text {
+                text: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    let (queue_status, comparison_outcome, authority_mode, input_identity): (
+        String,
+        String,
+        String,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT
+               queue_entries.status,
+               scheduler_shadow_comparisons.comparison_outcome,
+               scheduler_shadow_comparisons.authority_mode,
+               scheduler_shadow_comparisons.input_identity
+             FROM queue_entries
+             JOIN scheduler_shadow_comparisons
+               ON scheduler_shadow_comparisons.agent_id = queue_entries.agent_id
+              AND scheduler_shadow_comparisons.comparison_identity =
+                  'message_admission:' || queue_entries.message_id
+             WHERE queue_entries.message_id = ?1",
+            [&message.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(queue_status, "dequeued");
+    assert_eq!(comparison_outcome, "matched");
+    assert_eq!(authority_mode, "shadow");
+    assert_eq!(input_identity, format!("message:{}", message.id));
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_decision"
+            && event.data["boundary"] == "run_loop"
+            && event.data["message_id"] == message.id
+    }));
+}
+
+#[tokio::test]
+async fn run_loop_claim_fault_rolls_back_scheduler_decision_with_claim_facts() {
+    for fault in PRE_COMMIT_FAULTS {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let connection = runtime.inner.runtime_db.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_protocol_config
+                 SET protocol_mode = 'shadow',
+                     config_revision = 1,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE config_id = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO scheduler_scenario_authorities (
+                   scenario_class, mode, rollback_target,
+                   manifest_revision, preflight_revision, updated_at
+                 ) VALUES (
+                   'reducer_only_candidates', 'shadow', 'off',
+                   NULL, NULL, CURRENT_TIMESTAMP
+                 )",
+                [],
+            )
+            .unwrap();
+
+        let message = runtime
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::WebhookEvent,
+                MessageOrigin::Webhook {
+                    source: "phase3-shadow-fault-test".into(),
+                    event_type: Some("ping".into()),
+                },
+                AuthorityClass::ExternalEvidence,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: String::new(),
+                },
+            ))
+            .await
+            .unwrap();
+        runtime.inject_next_transition_fault(fault);
+
+        let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+        {
+            Ok(_) => panic!("expected injected runtime transition fault for {fault:?}"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("injected runtime transition fault"),
+            "unexpected error for {fault:?}: {error:#}"
+        );
+
+        let connection = runtime.inner.runtime_db.connection().unwrap();
+        let queue_status: String = connection
+            .query_row(
+                "SELECT status FROM queue_entries WHERE message_id = ?1",
+                [&message.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queue_status, "queued");
+        let comparison_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM scheduler_shadow_comparisons
+                 WHERE comparison_identity = ?1",
+                [format!("message_admission:{}", message.id)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(comparison_count, 0);
+        let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+        assert!(!events.iter().any(|event| {
+            event.kind == "scheduler_decision"
+                && event.data["boundary"] == "run_loop"
+                && event.data["message_id"] == message.id
+        }));
+        assert!(!events.iter().any(|event| {
+            event.kind == "queue_entry_claimed" && event.data["message_id"] == message.id
+        }));
+    }
+}
+
+#[tokio::test]
+async fn message_admission_fault_rolls_back_all_canonical_facts() {
+    for fault in PRE_COMMIT_FAULTS {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let initial_state = runtime.agent_state().await.unwrap();
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "atomic admission".into(),
+            },
+        );
+        runtime.inject_next_transition_fault(fault);
+
+        let error = runtime.enqueue(message.clone()).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected runtime transition fault"),
+            "unexpected error for {fault:?}: {error:#}"
+        );
+        assert_eq!(runtime.agent_state().await.unwrap(), initial_state);
+        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
+        assert!(runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.message_id != message.id));
+        assert!(runtime
+            .storage()
+            .read_message_by_id(&message.id)
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .storage()
+            .read_recent_events(usize::MAX)
+            .unwrap()
+            .iter()
+            .all(|event| event.data["message_id"] != message.id));
+    }
+}
+
+#[tokio::test]
+async fn authoritative_mode_fences_message_admission_without_shadow_comparison() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'authoritative', 'shadow',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )
+        .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::Control,
+        MessageOrigin::System {
+            subsystem: "authoritative-admission-fence".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "excluded from shadow comparison".into(),
+        },
+    );
+
+    let error = runtime.enqueue(message.clone()).await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("production authority is not wired"));
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
+    assert!(runtime
+        .storage()
+        .read_message_by_id(&message.id)
+        .unwrap()
+        .is_none());
+    assert!(runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest_all()
+        .unwrap()
+        .iter()
+        .all(|entry| entry.message_id != message.id));
+}
+
+#[tokio::test]
+async fn authoritative_mode_fences_pending_claims_without_shadow_comparison() {
+    for (case, message) in [
+        (
+            "operator_prompt",
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "queued before authority switch".into(),
+                },
+            ),
+        ),
+        (
+            "system_tick",
+            MessageEnvelope::new(
+                "default",
+                MessageKind::SystemTick,
+                MessageOrigin::System {
+                    subsystem: "authoritative-claim-fence".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "queued before authority switch".into(),
+                },
+            ),
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let connection = runtime.inner.runtime_db.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_protocol_config
+                 SET protocol_mode = 'shadow',
+                     config_revision = 1,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE config_id = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO scheduler_scenario_authorities (
+                   scenario_class, mode, rollback_target,
+                   manifest_revision, preflight_revision, updated_at
+                 ) VALUES (
+                   'reducer_only_candidates', 'shadow', 'off',
+                   NULL, NULL, CURRENT_TIMESTAMP
+                 )",
+                [],
+            )
+            .unwrap();
+
+        let message = runtime.enqueue(message).await.unwrap();
+        let queued_state = runtime.agent_state().await.unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_protocol_config
+                 SET protocol_mode = 'authoritative',
+                     config_revision = 2,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE config_id = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE scheduler_scenario_authorities
+                 SET mode = 'authoritative',
+                     rollback_target = 'shadow',
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE scenario_class = 'reducer_only_candidates'",
+                [],
+            )
+            .unwrap();
+
+        let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+        {
+            Ok(_) => panic!("unexpected successful {case} claim"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("production authority is not wired"),
+            "unexpected {case} claim error: {error:#}"
+        );
+        assert_eq!(runtime.agent_state().await.unwrap(), queued_state);
+        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+        let entries = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message_id, message.id);
+        assert_eq!(entries[0].status, QueueEntryStatus::Queued);
+        let comparison_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+                 WHERE comparison_identity = ?1",
+                [format!("message_admission:{}", message.id)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(comparison_count, 0);
+        assert!(!runtime
+            .storage()
+            .read_recent_events(usize::MAX)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.kind == "queue_entry_claimed" && event.data["message_id"] == message.id
+            }));
+    }
+}
+
+#[tokio::test]
+async fn run_loop_stale_head_noops_before_authoritative_fence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'shadow',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'shadow', 'off',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )
+        .unwrap();
+
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "claim-race".into(),
+                event_type: Some("ping".into()),
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Normal,
+            MessageBody::Text {
+                text: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
+    let mut competing_claim = QueueEntryRecord {
+        message_id: message.id.clone(),
+        agent_id: message.agent_id.clone(),
+        priority: message.priority.clone(),
+        status: QueueEntryStatus::Dequeued,
+        created_at: message.created_at,
+        updated_at: Utc::now(),
+    };
+    competing_claim.updated_at = Utc::now();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .try_claim_queued_message(&competing_claim)
+        .unwrap());
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 2,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_scenario_authorities
+             SET mode = 'authoritative',
+                 rollback_target = 'shadow',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE scenario_class = 'reducer_only_candidates'",
+            [],
+        )
+        .unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Idle));
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    let comparison_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+             WHERE comparison_identity = ?1",
+            [format!("message_admission:{}", message.id)],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(comparison_count, 0);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_decision" && event.data["message_id"] == message.id
+    }));
+    assert!(!events.iter().any(|event| {
+        event.kind == "queue_entry_claimed" && event.data["message_id"] == message.id
+    }));
+}
+
+#[tokio::test]
 async fn run_loop_idle_sleep_records_scheduler_owned_posture_decision() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -584,7 +1184,7 @@ async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tic
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
         guard.state.current_work_item_id = Some(work_item_id.clone());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime.transition_to_sleep(None).await.unwrap();
@@ -628,6 +1228,75 @@ async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tic
 }
 
 #[tokio::test]
+async fn lifecycle_sleep_work_queue_override_obeys_authoritative_fence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-authoritative-fence".into());
+        guard.state.current_work_item_id = Some(work_item_id);
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'work_item_autonomous_continuation', 'authoritative', 'shadow',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )
+        .unwrap();
+
+    let error = runtime.transition_to_sleep(None).await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("production authority is not wired"));
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    assert!(runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .iter()
+        .all(|message| message.kind != MessageKind::SystemTick));
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .all(|event| event.data["reason"] != "sleep_overridden_runnable_work"));
+}
+
+#[tokio::test]
 async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -652,7 +1321,7 @@ async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() 
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime.transition_to_sleep(None).await.unwrap();
@@ -1024,7 +1693,7 @@ async fn message_admission_wakes_asleep_and_booting_agents() {
             let mut guard = runtime.inner.agent.lock().await;
             guard.state.status = status.clone();
             guard.state.sleeping_until = Some(Utc::now() + chrono::Duration::seconds(60));
-            runtime.storage().write_agent(&guard.state).unwrap();
+            guard.persist_state(&runtime.inner.storage).unwrap();
         }
 
         runtime
@@ -1099,7 +1768,7 @@ async fn message_admission_does_not_wake_stopped_agents() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Stopped;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime
@@ -1912,6 +2581,120 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
         .await
         .unwrap();
     runner.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn authoritative_mode_fences_operator_interjection_at_tool_boundary() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'shadow',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'shadow', 'off',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )
+        .unwrap();
+
+    let interjection = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("control".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: "queued before authority switch".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    let state_before = runtime.agent_state().await.unwrap();
+    let queue_before = runtime.storage().latest_queue_entries().unwrap();
+    let transcript_before = runtime.storage().read_all_transcript().unwrap();
+    let audit_before = runtime.storage().read_recent_events(usize::MAX).unwrap();
+
+    connection
+        .execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 2,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE scheduler_scenario_authorities
+             SET mode = 'authoritative',
+                 rollback_target = 'shadow',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE scenario_class = 'reducer_only_candidates'",
+            [],
+        )
+        .unwrap();
+
+    let error = runtime
+        .drain_operator_interjections("default", 1, "before_tool_execution")
+        .await
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("production authority is not wired"));
+    assert_eq!(runtime.agent_state().await.unwrap(), state_before);
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+    assert_eq!(
+        runtime
+            .inner
+            .agent
+            .lock()
+            .await
+            .queue
+            .peek()
+            .map(|message| message.id.as_str()),
+        Some(interjection.id.as_str())
+    );
+    assert_eq!(
+        runtime.storage().latest_queue_entries().unwrap(),
+        queue_before
+    );
+    assert_eq!(
+        runtime.storage().read_all_transcript().unwrap(),
+        transcript_before
+    );
+    assert_eq!(
+        runtime.storage().read_recent_events(usize::MAX).unwrap(),
+        audit_before
+    );
 }
 
 #[tokio::test]
@@ -3586,6 +4369,7 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
         .transitions()
         .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
             agent_id: "default".into(),
+            operation: crate::runtime_db::transitions::QueueOperation::Admit,
             mutation: crate::runtime_db::transitions::QueueMutation::Upsert(QueueEntryRecord {
                 message_id: "message-agent-state-race".into(),
                 agent_id: "default".into(),
@@ -3598,8 +4382,10 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
                 expected: Some(Box::new(expected)),
                 record: Box::new(committed),
             }),
+            message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
             audit_events: Vec::new(),
+            scheduler_shadow_comparison: None,
             notify_scheduler: false,
             fault: None,
         })

@@ -86,8 +86,10 @@ mod tests {
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
-            scheduler_protocol_repository::SchedulerProtocolCommandIdentityConflict,
-            TransitionFaultPoint,
+            scheduler_protocol_repository::{
+                SchedulerProtocolCommandIdentityConflict, SchedulerShadowComparisonCommand,
+            },
+            QueueMutation, QueueOperation, QueueTransitionCommand, TransitionFaultPoint,
         },
         system::WorkspaceAccessMode,
         types::{
@@ -428,6 +430,74 @@ mod tests {
         }
     }
 
+    fn scheduler_phase3_rollout_manifest(
+        scenario_class: &str,
+        revision: u64,
+        preflight_revision: u64,
+    ) -> RolloutManifest {
+        let (minimum_shadow_samples, minimum_shadow_duration_secs, scenario_evidence) =
+            match scenario_class {
+                "reducer_only_candidates" => (
+                    10_000,
+                    72 * 60 * 60,
+                    vec!["deterministic_replay", "duplicate_command_idempotency"],
+                ),
+                "work_item_autonomous_continuation" => (
+                    2_000,
+                    14 * 24 * 60 * 60,
+                    vec![
+                        "concurrent_claim",
+                        "reservation_conflict",
+                        "yield_return",
+                        "work_item_rollback",
+                    ],
+                ),
+                _ => panic!("unsupported Phase 3 scenario {scenario_class}"),
+            };
+        let evidence: BTreeSet<String> = ["restart", "fault_injection", "rollback_drill"]
+            .into_iter()
+            .chain(scenario_evidence)
+            .map(Into::into)
+            .collect();
+        RolloutManifest {
+            revision,
+            preflight_revision,
+            preflight_for_manifest_revision: revision,
+            preflight_succeeded: true,
+            protocol_build: format!("holon-0.30.0-phase3-{revision}"),
+            schema_build: format!("scheduler-protocol-schema-v{revision}"),
+            schema_revision: revision,
+            fixture_corpus_revision: format!("scheduler-workitem-phase3-v{revision}"),
+            classes: BTreeMap::from([(
+                scenario_class.into(),
+                RolloutClassEvidence {
+                    configured_mode: ScenarioMode::Authoritative,
+                    minimum_shadow_samples,
+                    minimum_shadow_duration_secs,
+                    observed_shadow_samples: minimum_shadow_samples,
+                    observed_shadow_duration_secs: minimum_shadow_duration_secs,
+                    maximum_p99_latency_regression_bps: 500,
+                    observed_p99_latency_regression_bps: 100,
+                    hard_blocker_count: 0,
+                    unresolved_divergence_count: 0,
+                    required_evidence: evidence.clone(),
+                    verified_evidence: evidence,
+                    rollback_policy: RollbackPolicy {
+                        trigger: RollbackTrigger::AnyHardBlocker,
+                        action: RollbackAction::StopAdmissionsAndRevert {
+                            target: ScenarioMode::Shadow,
+                        },
+                    },
+                },
+            )]),
+            safety_divergence_bps: 0,
+            canonical_state_divergence_bps: 0,
+            allowed_observational_divergence: BTreeMap::new(),
+            approver: "phase3-reviewer".into(),
+            approved_at: "2026-07-21T00:00:00Z".into(),
+        }
+    }
+
     fn scheduler_rollout_canonical_counts(db: &RuntimeDb) -> Result<[i64; 5]> {
         let connection = db.connection()?;
         Ok([
@@ -663,6 +733,7 @@ mod tests {
             "scheduler_rollout_manifests",
             "scheduler_scenario_authorities",
             "scheduler_scenario_hard_blockers",
+            "scheduler_shadow_comparisons",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -1840,6 +1911,153 @@ mod tests {
             after_restart.rollout.scenarios["exact_wait_resume"].mode,
             ScenarioMode::Off
         );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_phase3_scenarios_require_preflight_and_rollback_before_admission() -> Result<()> {
+        for scenario_class in [
+            "reducer_only_candidates",
+            "work_item_autonomous_continuation",
+        ] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.transitions().initialize_scheduler_protocol_partition(
+                "agent-a",
+                &scheduler_protocol_snapshot(1),
+            )?;
+            let manifest = scheduler_phase3_rollout_manifest(scenario_class, 1, 1);
+            for (identity, command, expected_decision) in [
+                (
+                    format!("{scenario_class}-open"),
+                    RolloutCommand::OpenPreflight {
+                        expected_config_revision: 0,
+                        manifest_revision: 1,
+                    },
+                    Decision::RolloutPreflightOpened,
+                ),
+                (
+                    format!("{scenario_class}-complete"),
+                    RolloutCommand::CompletePreflight {
+                        expected_config_revision: 0,
+                        expected_preflight_revision: 1,
+                        manifest: manifest.clone(),
+                    },
+                    Decision::RolloutPreflightCompleted,
+                ),
+                (
+                    format!("{scenario_class}-install"),
+                    RolloutCommand::InstallManifest {
+                        expected_config_revision: 0,
+                        manifest: manifest.clone(),
+                    },
+                    Decision::ManifestInstalled,
+                ),
+                (
+                    format!("{scenario_class}-protocol"),
+                    RolloutCommand::ConfigureProtocol {
+                        expected_config_revision: 1,
+                        mode: ProtocolMode::Authoritative,
+                    },
+                    Decision::ProtocolConfigured,
+                ),
+                (
+                    format!("{scenario_class}-shadow"),
+                    RolloutCommand::ChangeScenarioAuthority {
+                        scenario_class: scenario_class.into(),
+                        expected_config_revision: 2,
+                        expected_manifest_revision: 1,
+                        expected_preflight_revision: 1,
+                        mode: ScenarioMode::Shadow,
+                    },
+                    Decision::ScenarioAuthorityChanged,
+                ),
+                (
+                    format!("{scenario_class}-authoritative"),
+                    RolloutCommand::ChangeScenarioAuthority {
+                        scenario_class: scenario_class.into(),
+                        expected_config_revision: 3,
+                        expected_manifest_revision: 1,
+                        expected_preflight_revision: 1,
+                        mode: ScenarioMode::Authoritative,
+                    },
+                    Decision::ScenarioAuthorityChanged,
+                ),
+            ] {
+                let committed = db
+                    .transitions()
+                    .commit_scheduler_rollout_command(&identity, &command, None)?;
+                assert_eq!(committed.result.decision, expected_decision);
+            }
+
+            let now = Utc::now();
+            let queue_record = QueueEntryRecord {
+                message_id: format!("message-{scenario_class}"),
+                agent_id: "agent-a".into(),
+                priority: crate::types::Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            };
+            let queue_command = QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(queue_record.clone()),
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                audit_events: Vec::new(),
+                scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
+                    scenario_class: scenario_class.into(),
+                    comparison_identity: format!("comparison-{scenario_class}"),
+                    boundary: "phase3_test".into(),
+                    input_identity: format!("input-{scenario_class}"),
+                    legacy_observation: serde_json::json!({"decision": "legacy"}),
+                    shadow_candidate: serde_json::json!({"decision": "candidate"}),
+                    matched: true,
+                    divergence_code: None,
+                }),
+                notify_scheduler: false,
+                fault: None,
+            };
+            let error = db.transitions().commit_queue(&queue_command).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("production authority is not wired"));
+            assert!(db.queue_entries().latest_all()?.is_empty());
+
+            let rolled_back = db.transitions().commit_scheduler_rollout_command(
+                &format!("{scenario_class}-hard-blocker"),
+                &RolloutCommand::ReportScenarioHardBlocker {
+                    scenario_class: scenario_class.into(),
+                    blocker_code: "authoritative_admission_not_wired".into(),
+                    expected_config_revision: 4,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                },
+                None,
+            )?;
+            assert_eq!(rolled_back.result.decision, Decision::RollbackTripped);
+            assert!(db.transitions().commit_queue(&queue_command)?.applied);
+            drop(db);
+
+            let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let snapshot = reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?;
+            assert_eq!(
+                snapshot.rollout.scenarios[scenario_class].mode,
+                ScenarioMode::Shadow
+            );
+            assert_eq!(reopened.queue_entries().latest_all()?, vec![queue_record]);
+            let comparison_count: i64 = reopened.connection()?.query_row(
+                "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+                 WHERE agent_id = 'agent-a' AND scenario_class = ?1",
+                [scenario_class],
+                |row| row.get(0),
+            )?;
+            assert_eq!(comparison_count, 1);
+        }
         Ok(())
     }
 
