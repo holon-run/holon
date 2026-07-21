@@ -3,7 +3,7 @@ use super::support::*;
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
     WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
-    WorkItemSchedulingState, WorkReactivationMode,
+    WorkItemSchedulingState, WorkItemState, WorkReactivationMode,
 };
 use chrono::DateTime;
 use serde::de::DeserializeOwned;
@@ -1276,6 +1276,242 @@ fn message_shadow_candidate_is_reduced_independently_from_legacy_decision() {
     let candidate = serde_json::to_value(comparison.shadow_candidate).unwrap();
     assert_eq!(candidate["action"], "reduce_message_only");
     assert_eq!(candidate["model_reentry"], false);
+}
+
+// --- wait resume shadow comparison ---
+
+fn append_task_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    task_id: &str,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: format!("task_result:{task_id}"),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: task_id.into(),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+}
+fn append_open_work_item(storage: &AppStorage, id: &str, agent_id: &str) {
+    let mut record = WorkItemRecord::new(agent_id, "test objective", WorkItemState::Open);
+    record.id = id.into();
+    storage.append_work_item(&record).unwrap();
+}
+
+#[test]
+fn wait_resume_shadow_comparison_records_task_result_matching_active_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "task_result_wait_resume",
+    )
+    .message(&message)
+    .model_reentry(true)
+    .work_item_id("wi-1");
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("task result matching active wait should produce wait resume comparison");
+    assert_eq!(comparison.scenario_class, "wait_resume");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["wake_source"], "task_result");
+    assert_eq!(observation["legacy_decision"], "StartModelTurn");
+    assert_eq!(observation["model_reentry"], true);
+    assert_eq!(observation["work_item_id"], "wi-1");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "wait_resume");
+    assert_eq!(candidate["model_reentry"], true);
+    assert_eq!(candidate["binding_work_item_id"], "wi-1");
+    assert_eq!(candidate["queue_disposition"], "claim");
+    assert_eq!(candidate["resulting_posture"], "running");
+}
+
+#[test]
+fn wait_resume_shadow_comparison_returns_none_when_no_matching_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    // No wait condition inserted
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "task_result_no_wait",
+    )
+    .model_reentry(true);
+    assert!(
+        scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision,).is_none()
+    );
+}
+
+#[test]
+fn wait_resume_shadow_comparison_returns_none_for_non_task_result_message() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_task_wait_condition(&storage, "wait-1", "default", None, "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "test".into(),
+            event_type: None,
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "webhook_not_wait_resume",
+    )
+    .model_reentry(true);
+    assert!(
+        scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision,).is_none()
+    );
+}
+
+#[test]
+fn wait_resume_shadow_comparison_skips_work_queue_system_tick() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    // Insert a system wait condition
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-sys".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::System,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "system_tick".into(),
+            wake_sources: vec![WakeSource::SystemTick],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "work_queue_tick",
+    )
+    .model_reentry(true);
+    assert!(
+        scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision,).is_none()
+    );
+}
+
+#[test]
+fn wait_resume_shadow_comparison_detects_model_reentry_divergence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    // Turn in progress — candidate should say no model reentry
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    // Legacy says model_reentry=true but protocol candidate computes false (turn in progress)
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "divergent_task_result",
+    )
+    .message(&message)
+    .model_reentry(true)
+    .work_item_id("wi-1");
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("wait_resume_outcome_mismatch"),
+    );
 }
 
 #[test]

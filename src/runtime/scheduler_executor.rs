@@ -348,6 +348,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &decision,
             dispatch_plan.continuation_resolution.as_ref(),
         )
+        .or_else(|| {
+            scheduler::shadow_comparison_for_wait_resume(&projection, &candidate.message, &decision)
+        })
         .map(scheduler_shadow_comparison_command)
         .transpose()?;
         let persisted_message = self

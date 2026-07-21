@@ -11,7 +11,7 @@ use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
     ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
     Priority, TaskRecord, TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionKind,
-    WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemSchedulingState,
+    WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemSchedulingState,
     WorkItemState, WorkReactivationMode, WorkReactivationSignal,
 };
 use crate::work_item_scheduling::WorkItemSchedulingProjection;
@@ -20,6 +20,7 @@ use serde::Serialize;
 
 const REDUCER_ONLY_CANDIDATES_SCENARIO: &str = "reducer_only_candidates";
 const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str = "work_item_autonomous_continuation";
+const WAIT_RESUME_SCENARIO: &str = "wait_resume";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -565,10 +566,38 @@ pub(crate) struct RestrictedWorkQueueTickCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct LegacyWaitResumeObservation {
+    schema_version: u32,
+    boundary: &'static str,
+    input_identity: String,
+    input_kind: MessageKind,
+    wake_source: String,
+    resolved_wait_condition_ids: Vec<String>,
+    legacy_decision: &'static str,
+    model_reentry: bool,
+    work_item_id: Option<String>,
+    queue_len: usize,
+    active_waiting_intents: usize,
+    turn_in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RestrictedWaitResumeCandidate {
+    schema_version: u32,
+    action: &'static str,
+    consumed_wait_condition_ids: Vec<String>,
+    binding_work_item_id: Option<String>,
+    queue_disposition: &'static str,
+    resulting_posture: &'static str,
+    model_reentry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum LegacySchedulerObservation {
     MessageAdmission(LegacyMessageAdmissionObservation),
     WorkQueueTick(LegacyWorkQueueTickObservation),
+    WaitResume(LegacyWaitResumeObservation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -576,6 +605,7 @@ pub(crate) enum LegacySchedulerObservation {
 pub(crate) enum RestrictedSchedulerCandidate {
     MessageAdmission(RestrictedMessageAdmissionCandidate),
     WorkQueueTick(RestrictedWorkQueueTickCandidate),
+    WaitResume(RestrictedWaitResumeCandidate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -966,6 +996,117 @@ pub(crate) fn shadow_comparison_for_message_admission(
         matched,
         divergence_code: (!matched).then_some("message_admission_outcome_mismatch"),
     })
+}
+pub(crate) fn shadow_comparison_for_wait_resume(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+    decision: &SchedulerDecision,
+) -> Option<SchedulerShadowComparison> {
+    if !matches!(
+        message.kind,
+        MessageKind::TaskResult | MessageKind::SystemTick
+    ) {
+        return None;
+    }
+    let matching_waits: Vec<&WaitConditionRecord> = projection
+        .semantic_waits
+        .iter()
+        .filter(|condition| {
+            condition.status == WaitConditionStatus::Active
+                && message_matches_wait_condition(message, condition)
+        })
+        .collect();
+    if matching_waits.is_empty() {
+        return None;
+    }
+    let resolved_wait_condition_ids: Vec<String> = matching_waits
+        .iter()
+        .map(|condition| condition.id.clone())
+        .collect();
+    let binding_work_item_id = matching_waits
+        .iter()
+        .filter_map(|condition| condition.work_item_id.clone())
+        .next();
+    let wake_source = match message.kind {
+        MessageKind::TaskResult => "task_result",
+        MessageKind::SystemTick => "system_tick",
+        _ => "unknown",
+    }
+    .to_string();
+    let input_identity = format!("message:{}", message.id);
+    let candidate_model_reentry = restricted_wait_resume_model_reentry(projection);
+    let observation = LegacySchedulerObservation::WaitResume(LegacyWaitResumeObservation {
+        schema_version: 1,
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity: input_identity.clone(),
+        input_kind: message.kind.clone(),
+        wake_source,
+        resolved_wait_condition_ids: resolved_wait_condition_ids.clone(),
+        legacy_decision: decision.kind.as_str(),
+        model_reentry: decision.model_reentry,
+        work_item_id: decision.work_item_id.clone(),
+        queue_len: projection.queue_len,
+        active_waiting_intents: projection.active_waiting_intents,
+        turn_in_progress: projection.turn_in_progress,
+    });
+    let candidate = RestrictedSchedulerCandidate::WaitResume(RestrictedWaitResumeCandidate {
+        schema_version: 1,
+        action: "wait_resume",
+        consumed_wait_condition_ids: resolved_wait_condition_ids,
+        binding_work_item_id: binding_work_item_id.clone(),
+        queue_disposition: "claim",
+        resulting_posture: "running",
+        model_reentry: candidate_model_reentry,
+    });
+    let matched = match (&observation, &candidate) {
+        (
+            LegacySchedulerObservation::WaitResume(obs),
+            RestrictedSchedulerCandidate::WaitResume(cand),
+        ) => {
+            obs.model_reentry == cand.model_reentry && obs.work_item_id == cand.binding_work_item_id
+        }
+        _ => unreachable!(),
+    };
+    Some(SchedulerShadowComparison {
+        scenario_class: WAIT_RESUME_SCENARIO,
+        comparison_identity: format!("wait_resume:{}", message.id),
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity,
+        legacy_observation: observation,
+        shadow_candidate: candidate,
+        matched,
+        divergence_code: (!matched).then_some("wait_resume_outcome_mismatch"),
+    })
+}
+
+fn message_matches_wait_condition(
+    message: &MessageEnvelope,
+    condition: &WaitConditionRecord,
+) -> bool {
+    match (&message.kind, &message.origin) {
+        (MessageKind::TaskResult, MessageOrigin::Task { task_id }) => {
+            condition.wake_sources.iter().any(
+                |source| matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id),
+            )
+        }
+        (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
+            if subsystem == "work_queue" {
+                return false;
+            }
+            condition
+                .wake_sources
+                .iter()
+                .any(|source| matches!(source, WakeSource::SystemTick))
+        }
+        _ => false,
+    }
+}
+
+fn restricted_wait_resume_model_reentry(projection: &SchedulerProjection) -> bool {
+    if matches!(projection.status, AgentStatus::Stopped) {
+        return false;
+    }
+    !projection.turn_in_progress
 }
 
 pub(crate) fn semantic_shadow_decision_for_message_admission(
