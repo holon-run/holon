@@ -712,6 +712,42 @@ pub enum ProtocolCommand {
     TriggerWait(TriggerWaitCommand),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RolloutCommand {
+    ConfigureProtocol {
+        expected_config_revision: u64,
+        mode: ProtocolMode,
+    },
+    OpenPreflight {
+        expected_config_revision: u64,
+        manifest_revision: u64,
+    },
+    CompletePreflight {
+        expected_config_revision: u64,
+        expected_preflight_revision: u64,
+        manifest: RolloutManifest,
+    },
+    InstallManifest {
+        expected_config_revision: u64,
+        manifest: RolloutManifest,
+    },
+    ChangeScenarioAuthority {
+        scenario_class: String,
+        expected_config_revision: u64,
+        expected_manifest_revision: u64,
+        expected_preflight_revision: u64,
+        mode: ScenarioMode,
+    },
+    ReportScenarioHardBlocker {
+        scenario_class: String,
+        blocker_code: String,
+        expected_config_revision: u64,
+        expected_manifest_revision: u64,
+        expected_preflight_revision: u64,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProtocolConflictKind {
@@ -987,6 +1023,74 @@ pub fn reduce(snapshot: &Snapshot, event: &Event) -> Outcome {
         return rejected(snapshot, "typed_protocol_command_required");
     }
     reduce_event(snapshot, event)
+}
+
+pub fn reduce_rollout_command(
+    snapshot: &Snapshot,
+    command: &RolloutCommand,
+) -> ProtocolCommandOutcome {
+    let event = match command {
+        RolloutCommand::ConfigureProtocol {
+            expected_config_revision,
+            mode,
+        } => Event::ConfigureProtocol {
+            expected_config_revision: *expected_config_revision,
+            mode: *mode,
+        },
+        RolloutCommand::OpenPreflight {
+            expected_config_revision,
+            manifest_revision,
+        } => Event::OpenRolloutPreflight {
+            expected_config_revision: *expected_config_revision,
+            manifest_revision: *manifest_revision,
+        },
+        RolloutCommand::CompletePreflight {
+            expected_config_revision,
+            expected_preflight_revision,
+            manifest,
+        } => Event::CompleteRolloutPreflight {
+            expected_config_revision: *expected_config_revision,
+            expected_preflight_revision: *expected_preflight_revision,
+            manifest: manifest.clone(),
+        },
+        RolloutCommand::InstallManifest {
+            expected_config_revision,
+            manifest,
+        } => Event::InstallRolloutManifest {
+            expected_config_revision: *expected_config_revision,
+            manifest: manifest.clone(),
+        },
+        RolloutCommand::ChangeScenarioAuthority {
+            scenario_class,
+            expected_config_revision,
+            expected_manifest_revision,
+            expected_preflight_revision,
+            mode,
+        } => Event::ChangeScenarioAuthority {
+            scenario_class: scenario_class.clone(),
+            expected_config_revision: *expected_config_revision,
+            expected_manifest_revision: *expected_manifest_revision,
+            expected_preflight_revision: *expected_preflight_revision,
+            mode: *mode,
+        },
+        RolloutCommand::ReportScenarioHardBlocker {
+            scenario_class,
+            blocker_code,
+            expected_config_revision,
+            expected_manifest_revision,
+            expected_preflight_revision,
+        } => Event::ReportScenarioHardBlocker {
+            scenario_class: scenario_class.clone(),
+            blocker_code: blocker_code.clone(),
+            expected_config_revision: *expected_config_revision,
+            expected_manifest_revision: *expected_manifest_revision,
+            expected_preflight_revision: *expected_preflight_revision,
+        },
+    };
+    let outcome = reduce_event(snapshot, &event);
+    let conflict =
+        (outcome.decision == Decision::Rejected).then(|| reducer_conflict(&outcome.diagnostics[0]));
+    ProtocolCommandOutcome { outcome, conflict }
 }
 
 pub fn migrate_legacy_event(
@@ -1982,7 +2086,10 @@ fn activation_work_item_id(activation: &AgentActivation) -> Option<&str> {
 fn reducer_conflict(code: &str) -> ProtocolConflict {
     let kind = match code {
         "typed_protocol_command_required" => ProtocolConflictKind::UnsupportedCommand,
-        "stale_dispatch_revision" => ProtocolConflictKind::StaleRevision,
+        "stale_dispatch_revision"
+        | "stale_rollout_config_revision"
+        | "stale_rollout_manifest_revision"
+        | "stale_rollout_preflight_revision" => ProtocolConflictKind::StaleRevision,
         "stale_scheduling_generation"
         | "stale_wait_generation"
         | "stale_recovery_generation"
@@ -2945,6 +3052,24 @@ fn change_scenario_authority(
         return rejected(snapshot, "stale_rollout_preflight_revision");
     }
     let class = manifest.classes.get(scenario_class);
+    let current_mode = snapshot
+        .rollout
+        .scenarios
+        .get(scenario_class)
+        .map(|scenario| scenario.mode)
+        .unwrap_or(ScenarioMode::Off);
+    if mode == ScenarioMode::Authoritative && current_mode != ScenarioMode::Shadow {
+        return rejected(snapshot, "scenario_not_shadow");
+    }
+    if !matches!(
+        (current_mode, mode),
+        (ScenarioMode::Off, ScenarioMode::Shadow)
+            | (ScenarioMode::Shadow, ScenarioMode::Off)
+            | (ScenarioMode::Shadow, ScenarioMode::Authoritative)
+            | (ScenarioMode::Authoritative, ScenarioMode::Shadow)
+    ) {
+        return rejected(snapshot, "invalid_scenario_authority_transition");
+    }
     if mode == ScenarioMode::Shadow
         && !class.is_some_and(|class| {
             matches!(
@@ -2956,14 +3081,6 @@ fn change_scenario_authority(
         return rejected(snapshot, "scenario_not_enabled_by_manifest");
     }
     if mode == ScenarioMode::Authoritative {
-        if !snapshot
-            .rollout
-            .scenarios
-            .get(scenario_class)
-            .is_some_and(|scenario| scenario.mode == ScenarioMode::Shadow)
-        {
-            return rejected(snapshot, "scenario_not_shadow");
-        }
         if !manifest.preflight_succeeded {
             return rejected(snapshot, "rollout_preflight_failed");
         }

@@ -1918,6 +1918,23 @@ fn rollout_authority_requires_complete_evidence_and_fenced_rollback() {
     );
     assert_eq!(authorized.decision, Decision::ScenarioAuthorityChanged);
 
+    let skipped_shadow_on_downgrade = apply_event(
+        &authorized.snapshot,
+        &Event::ChangeScenarioAuthority {
+            scenario_class: "exact_wait_resume".into(),
+            expected_config_revision: 4,
+            expected_manifest_revision: 1,
+            expected_preflight_revision: 1,
+            mode: ScenarioMode::Off,
+        },
+    );
+    assert_eq!(skipped_shadow_on_downgrade.decision, Decision::Rejected);
+    assert_eq!(
+        skipped_shadow_on_downgrade.diagnostics,
+        ["invalid_scenario_authority_transition"]
+    );
+    assert_eq!(skipped_shadow_on_downgrade.snapshot, authorized.snapshot);
+
     let stale = apply_event(
         &authorized.snapshot,
         &Event::ReportScenarioHardBlocker {

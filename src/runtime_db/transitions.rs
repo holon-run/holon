@@ -1,5 +1,10 @@
 //! Restricted runtime business-transition unit of work.
 
+// Phase 2 keeps this additive persistence seam dormant until production shadow
+// wiring begins; repository tests exercise it without granting scheduler authority.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod scheduler_protocol_repository;
+
 use anyhow::{anyhow, Result};
 use rusqlite::{OptionalExtension, Transaction};
 

@@ -735,6 +735,10 @@ records:
   result per canonical command identity, including command kind, versioned
   payload hash, decision, typed conflict or rejection, result fact
   references, and pre- and post-state fences;
+- `scheduler_protocol_command_conflict_attempts`: one immutable audit row per
+  same-identity/different-payload attempt, including the agent or global
+  rollout partition, both payload hashes, and the typed payload conflict,
+  without replacing the first-seen command result;
 - `scheduler_protocol_migrations`: one immutable import result per migration
   identity and legacy source identity, including migration version,
   provenance, payload hash, decision, typed rejection, and imported fact
