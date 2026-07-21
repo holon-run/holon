@@ -37,55 +37,107 @@ The base image contains Holon plus basic shell, Git, SSH, CA, archive, and HTTP
 utilities. Project-specific acceptance fixtures may derive from it to install
 additional language toolchains.
 
-## Manual real-LLM suite
+## Release real-LLM suite
 
-`make docker-live-acceptance` runs the production image against a real model.
-It is intentionally manual: it requires network access, consumes provider
-quota, and may expose model nondeterminism. It must not be added to
-credential-free CI.
+`make docker-e2e` runs the core production-image suite against a real model.
+The default route is:
 
-Set the model and its credential environment variable:
-
-```bash
-HOLON_LIVE_MODEL='openai/gpt-5.4' \
-OPENAI_API_KEY='...' \
-make docker-live-acceptance DOCKER_IMAGE=holon:live-acceptance
+```text
+deepseek/deepseek-v4-flash
 ```
 
-The runner infers the standard credential variable for OpenAI, Anthropic,
-DeepSeek, and xAI. For a built-in provider whose variables cannot be inferred,
-pass comma-separated variable names:
+The suite requires network access and provider quota, so ordinary pull-request
+CI only validates its manifest and Python runner. Each release candidate runs
+the real suite through the protected `Release E2E` workflow.
+
+Run locally with a credential environment variable:
 
 ```bash
-HOLON_LIVE_MODEL='openrouter/model' \
-HOLON_LIVE_CREDENTIAL_ENVS='OPENROUTER_API_KEY' \
+DEEPSEEK_API_KEY='...' \
+make docker-e2e DOCKER_IMAGE=holon:release-candidate
+```
+
+Override the model explicitly when running a focused provider check:
+
+```bash
+HOLON_E2E_MODEL='openrouter/model' \
+HOLON_E2E_CREDENTIAL_ENVS='OPENROUTER_API_KEY' \
 OPENROUTER_API_KEY='...' \
-make docker-live-acceptance
+make docker-e2e
 ```
 
-Alternatively, set `HOLON_LIVE_DOCKER_ENV_FILE` to an untracked Docker env
-file. The runner records only that an env file was used, not its path or
-contents.
+Alternatively, set `HOLON_E2E_DOCKER_ENV_FILE` or pass `--env-file` to an
+untracked Docker env file with mode `0600`. The runner records only the
+credential variable names and whether a file was used. It never records the
+file path or values. Existing `HOLON_LIVE_*` variables remain accepted during
+the compatibility period.
 
 The checked-in case definitions live in
-`tests/manual/docker-live-acceptance.json`. The runner is
-`scripts/docker-live-acceptance.py`. Run one case with:
+`tests/e2e/docker/manifest.json`. The stable runner is
+`scripts/docker-e2e.py`; `scripts/docker-live-acceptance.py` remains a
+compatibility entry point. Run one case with:
 
 ```bash
-python3 scripts/docker-live-acceptance.py \
-  --image holon:live-acceptance \
+python3 scripts/docker-e2e.py \
+  --image holon:release-candidate \
   --skip-build \
   --case workspace-restart-lifecycle
 ```
 
-Evidence is written below `target/docker-live-acceptance/<timestamp>/` and
-includes prompts, state snapshots, WorkItem read models, event pages,
-transcripts, briefs, tool execution details, Git state, and container logs.
-Credential values are never written deliberately. Set
-`HOLON_LIVE_KEEP=1` only when containers and volumes must be retained for
+Useful runner operations:
+
+```bash
+python3 scripts/docker-e2e.py --validate-manifest
+python3 scripts/docker-e2e.py --list
+python3 scripts/docker-e2e.py --suite core --tag restart ...
+```
+
+Evidence is written below `target/docker-e2e/<timestamp>/`. Every run produces
+`run.json`, `summary.json`, `junit.xml`, `secret-scan.json`, per-case results,
+prompts, state snapshots, WorkItem read models, event pages, transcripts,
+briefs, tool execution details, Git state, and container logs. Callback
+capabilities are redacted at the write boundary. A final scan checks known
+credential values, control tokens, bearer headers, and unredacted callback
+URLs. Use `--keep-on-failure` or `HOLON_E2E_KEEP=1` only for explicit
 interactive diagnosis.
 
+When a candidate image is already published, use an immutable reference:
+
+```bash
+python3 scripts/docker-e2e.py \
+  --image-digest ghcr.io/holon-run/holon@sha256:... \
+  --skip-build \
+  --suite core
+```
+
+The summary records the Git SHA, image ID and repository digest, requested
+model route, manifest hash, timings, provider attempts, token usage, tool
+counts, cleanup status, and previous image when supplied.
+
 ### Checked-in cases
+
+#### `runtime-auth-model-delivery`
+
+1. Verify the control readiness endpoint rejects a request without the bearer
+   token.
+2. Assert the configured model route is exact and provider fallback is
+   disabled.
+3. Ask the real model to use `AgentGet`, `ListModelProviders`, and
+   `ListProviderModels`.
+4. Assert one provider attempt, positive token usage, the exact winning model,
+   successful tool events, a correlated assistant round, and one canonical
+   marker brief.
+
+#### `memory-agent-home-persistence`
+
+1. Place a unique English/CJK marker in the isolated agent's `memory/self.md`.
+2. Require the real model to call `MemorySearch`, use the returned real
+   `source_ref`, and call `MemoryGet`.
+3. Restart the service with the same persistent home volume.
+4. Require `MemoryGet` with the exact same source reference and assert the
+   marker remains available.
+5. Keep AgentHome evidence separate from the mounted project workspace and
+   scan all captured output for capability or credential leakage.
 
 #### `workspace-restart-lifecycle`
 
@@ -122,6 +174,22 @@ real LLM -> tool selection -> holon serve -> runtime persistence -> HTTP evidenc
 They complement the ignored Rust live tests, which construct `RuntimeHost`
 directly and therefore do not cover image packaging, HTTP authentication,
 container restart, or persistent Docker volumes.
+
+### Release workflow
+
+`.github/workflows/release-e2e.yml` is a protected manual workflow with two
+jobs:
+
+1. Build and push `candidate-<git-sha>` with OCI version, revision, and source
+   labels.
+2. Pull and test the resulting immutable digest in the `release-e2e`
+   environment using `DEEPSEEK_API_KEY`.
+
+The E2E job has read-only repository/package permissions and cannot publish a
+GitHub release, promote `latest`, or update Homebrew. Evidence is retained as a
+workflow artifact. The tag-triggered release workflow verifies the matching
+attestation before publishing, then promotes the exact candidate digest that
+passed this suite instead of rebuilding the container image.
 
 ## Phases
 
@@ -176,8 +244,10 @@ After a tag release:
 2. Run the same image smoke against the pulled digest.
 3. Verify the OCI version/revision labels and image tag agree with the GitHub
    release tag.
-4. Promote Phase 1 and Phase 2 to release gates after their deterministic
-   harness is stable.
+4. Run the protected real-LLM core suite against the published digest.
+5. Keep the protected pre-publish core gate aligned with the checked-in suite,
+   and add deterministic recovery/upgrade cases as their failure evidence
+   becomes stable.
 
 ## Host-only coverage
 

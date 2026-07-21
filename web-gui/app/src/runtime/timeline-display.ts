@@ -251,6 +251,16 @@ const mergeableStateObjectKinds = new Set(["task", "work_item"]);
  */
 function stateObjectRefId(item: AgentTimelineItem): string | undefined {
   if (item.stateObjectRef && mergeableStateObjectKinds.has(item.stateObjectRef.kind)) return item.stateObjectRef.id;
+  // A command promoted to a background task is the launch event for that task.
+  // Treat only that promoted tool execution as part of the task lifecycle so it
+  // does not split the task card from its queued/running/completed updates.
+  if (
+    item.stateObjectRef?.kind === "tool_execution"
+    && item.relatedStateObjectRef?.kind === "task"
+    && item.executionMeta?.outcome === "promoted"
+  ) {
+    return item.relatedStateObjectRef.id;
+  }
   // Only match flattened activities (no own stateObjectRef) to avoid merging tool executions
   // that have relatedStateObjectRef pointing to a state object but are separate objects.
   if (!item.stateObjectRef && item.relatedStateObjectRef && mergeableStateObjectKinds.has(item.relatedStateObjectRef.kind)) return item.relatedStateObjectRef.id;

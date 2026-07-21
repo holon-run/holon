@@ -1583,10 +1583,15 @@ code {
   color: var(--accent);
 }
 
-.source-chip.live-status.stale,
 .source-chip.live-status.error {
   border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
   color: var(--danger);
+}
+
+.source-chip.live-status.stale {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: var(--muted);
 }
 
 .message-list {
