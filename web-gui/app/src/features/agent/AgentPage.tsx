@@ -344,8 +344,8 @@ export function AgentPage({
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
   const timelineLayoutVersion = useMemo(() => `${resumeRevision}:${timelineLayoutRevision(timelineTurns)}`, [resumeRevision, timelineTurns]);
   const timelineTurnIndexById = useMemo(
-    () => new Map(timelineTurns.flatMap((turn, index) => [[turn.id, index], [`${timelineLayoutVersion}:${turn.id}`, index]])),
-    [timelineLayoutVersion, timelineTurns],
+    () => new Map(timelineTurns.map((turn, index) => [turn.id, index])),
+    [timelineTurns],
   );
   const rowVirtualizer = useVirtualizer({
     count: timelineTurns.length,
@@ -353,7 +353,7 @@ export function AgentPage({
     estimateSize: () => 320,
     paddingEnd: MESSAGE_LIST_BOTTOM_SAFE_SPACE,
     overscan: 4,
-    getItemKey: (index) => `${timelineLayoutVersion}:${timelineTurns[index]?.id ?? `empty:${index}`}`,
+    getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
   });
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
@@ -405,32 +405,22 @@ export function AgentPage({
     autoStickToBottomRef.current = true;
 
     const lastTurnIndex = timelineTurns.length - 1;
-    const scrollNow = () => {
-      const currentList = messageListRef.current;
-      if (!currentList) return;
-      if (lastTurnIndex >= 0) {
-        rowVirtualizer.scrollToIndex(lastTurnIndex, { align: "end", behavior: "auto" });
-      }
-      currentList.scrollTop = currentList.scrollHeight;
-    };
-
     if (scheduledBottomScrollRef.current !== null) {
       window.cancelAnimationFrame(scheduledBottomScrollRef.current);
       scheduledBottomScrollRef.current = null;
     }
 
-    scrollNow();
+    if (lastTurnIndex >= 0) {
+      rowVirtualizer.scrollToIndex(lastTurnIndex, { align: "end", behavior: "auto" });
+    }
+    list.scrollTop = list.scrollHeight;
     scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
-      scrollNow();
-      scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
-        scrollNow();
-        scheduledBottomScrollRef.current = null;
-        autoStickToBottomRef.current = false;
-        const currentList = messageListRef.current;
-        if (currentList) {
-          stickToBottomRef.current = isScrolledNearBottom(currentList);
-        }
-      });
+      scheduledBottomScrollRef.current = null;
+      const currentList = messageListRef.current;
+      if (currentList && stickToBottomRef.current) {
+        currentList.scrollTop = currentList.scrollHeight;
+      }
+      autoStickToBottomRef.current = false;
     });
   }
 
@@ -460,6 +450,20 @@ export function AgentPage({
     anchorIndexByKey: timelineTurnIndexById,
     scrollToBottom: scrollToConversationBottom,
   });
+
+  useEffect(() => {
+    if (timelineTurns.length === 0) return;
+    const wrapper = virtualWrapperRef.current;
+    const list = messageListRef.current;
+    if (!wrapper || !list) return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottomRef.current) {
+        list.scrollTop = list.scrollHeight;
+      }
+    });
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, [timelineTurns.length]);
 
   useLayoutEffect(() => {
     if (!targetTimelineItemId) return;
