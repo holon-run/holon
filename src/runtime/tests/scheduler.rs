@@ -1780,6 +1780,131 @@ fn delivery_shadow_comparison_detects_divergence_when_turn_in_progress() {
     assert_eq!(candidate["delivery_disposition"], "pending");
 }
 
+// --- operator interjection shadow comparison (per-boundary) ---
+
+fn make_interjection_message(id: &str) -> MessageEnvelope {
+    let mut msg = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "interject".into(),
+        },
+    );
+    msg.id = id.into();
+    msg
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_after_provider_round() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-1");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::AfterProviderRound,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["interjection_boundary"], "after_provider_round");
+    assert_eq!(observation["turn_in_progress"], false);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "interject");
+    assert_eq!(candidate["interjection_boundary"], "after_provider_round");
+    assert_eq!(candidate["queue_disposition"], "consumed");
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_before_tool_execution() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-2");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::BeforeToolExecution,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(
+        observation["interjection_boundary"],
+        "before_tool_execution"
+    );
+    assert_eq!(observation["turn_in_progress"], true);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["interjection_boundary"], "before_tool_execution");
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_after_tool_results() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-3");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::AfterToolResults,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["interjection_boundary"], "after_tool_results");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["interjection_boundary"], "after_tool_results");
+}
+
+#[test]
+fn operator_interjection_shadow_comparison_for_before_provider_continuation() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = make_interjection_message("msg-inter-4");
+    let comparison = scheduler::shadow_comparison_for_operator_interjection(
+        &projection,
+        &message,
+        scheduler::InterjectionBoundary::BeforeProviderContinuation,
+    )
+    .expect("interjection should produce comparison");
+    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert!(comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(
+        observation["interjection_boundary"],
+        "before_provider_continuation"
+    );
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(
+        candidate["interjection_boundary"],
+        "before_provider_continuation"
+    );
+}
+
 #[test]
 fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
     let dir = tempdir().unwrap();

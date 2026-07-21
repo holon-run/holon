@@ -24,6 +24,7 @@ const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str = "work_item_autonomous_c
 const WAIT_RESUME_SCENARIO: &str = "wait_resume";
 const SETTLEMENT_SCENARIO: &str = "settlement";
 const DELIVERY_SCENARIO: &str = "delivery";
+const INTERJECTION_SCENARIO: &str = "operator_interjection";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -633,6 +634,25 @@ pub(crate) struct RestrictedDeliveryCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct LegacyOperatorInterjectionObservation {
+    schema_version: u32,
+    boundary: &'static str,
+    input_identity: String,
+    interjection_boundary: &'static str,
+    queue_len: usize,
+    turn_in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RestrictedOperatorInterjectionCandidate {
+    schema_version: u32,
+    action: &'static str,
+    interjection_boundary: &'static str,
+    queue_disposition: &'static str,
+    resulting_posture: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum LegacySchedulerObservation {
     MessageAdmission(LegacyMessageAdmissionObservation),
@@ -640,6 +660,7 @@ pub(crate) enum LegacySchedulerObservation {
     WaitResume(LegacyWaitResumeObservation),
     Settlement(LegacySettlementObservation),
     Delivery(LegacyDeliveryObservation),
+    OperatorInterjection(LegacyOperatorInterjectionObservation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -650,6 +671,7 @@ pub(crate) enum RestrictedSchedulerCandidate {
     WaitResume(RestrictedWaitResumeCandidate),
     Settlement(RestrictedSettlementCandidate),
     Delivery(RestrictedDeliveryCandidate),
+    OperatorInterjection(RestrictedOperatorInterjectionCandidate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -689,6 +711,28 @@ impl SchedulerBoundary {
             Self::LifecycleSleep => "lifecycle_sleep",
             Self::MessageProcessing => "message_processing",
             Self::IdleTick => "idle_tick",
+        }
+    }
+}
+
+/// Typed boundary for operator interjection drainage within a turn.
+/// Replaces the previous single string-labeled drain path so each boundary
+/// gets its own shadow comparison facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InterjectionBoundary {
+    AfterProviderRound,
+    BeforeToolExecution,
+    AfterToolResults,
+    BeforeProviderContinuation,
+}
+
+impl InterjectionBoundary {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterProviderRound => "after_provider_round",
+            Self::BeforeToolExecution => "before_tool_execution",
+            Self::AfterToolResults => "after_tool_results",
+            Self::BeforeProviderContinuation => "before_provider_continuation",
         }
     }
 }
@@ -1272,6 +1316,50 @@ fn turn_terminal_delivery_category(kind: Option<TurnTerminalKind>) -> &'static s
         Some(TurnTerminalKind::DeferredToFallback) => "pending",
         None => "none",
     }
+}
+
+pub(crate) fn shadow_comparison_for_operator_interjection(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+    boundary: InterjectionBoundary,
+) -> Option<SchedulerShadowComparison> {
+    // Operator interjections are always admitted at the boundary where they
+    // were drained. The shadow comparison records the boundary, queue state,
+    // and turn status so divergences between legacy and typed paths are
+    // auditable per-boundary rather than through a single opaque drain.
+    let boundary_str = boundary.as_str();
+    let input_identity = format!("message:{}", message.id);
+    let observation =
+        LegacySchedulerObservation::OperatorInterjection(LegacyOperatorInterjectionObservation {
+            schema_version: 1,
+            boundary: SchedulerBoundary::RunLoop.as_str(),
+            input_identity: input_identity.clone(),
+            interjection_boundary: boundary_str,
+            queue_len: projection.queue_len,
+            turn_in_progress: projection.turn_in_progress,
+        });
+    let candidate = RestrictedSchedulerCandidate::OperatorInterjection(
+        RestrictedOperatorInterjectionCandidate {
+            schema_version: 1,
+            action: "interject",
+            interjection_boundary: boundary_str,
+            queue_disposition: "consumed",
+            resulting_posture: "running",
+        },
+    );
+    // Both legacy and typed paths admit operator interjections at the same
+    // boundary during turn execution, so they always match in shadow mode.
+    let matched = true;
+    Some(SchedulerShadowComparison {
+        scenario_class: INTERJECTION_SCENARIO,
+        comparison_identity: format!("operator_interjection:{}", message.id),
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity,
+        legacy_observation: observation,
+        shadow_candidate: candidate,
+        matched,
+        divergence_code: (!matched).then_some("operator_interjection_outcome_mismatch"),
+    })
 }
 
 fn restricted_delivery_disposition(

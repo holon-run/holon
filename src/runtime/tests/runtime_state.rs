@@ -2663,7 +2663,11 @@ async fn authoritative_mode_fences_operator_interjection_at_tool_boundary() {
         .unwrap();
 
     let error = runtime
-        .drain_operator_interjections("default", 1, "before_tool_execution")
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
         .await
         .unwrap_err();
 
