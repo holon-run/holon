@@ -14,6 +14,7 @@ macro_rules! http_async_tests {
 http_async_tests!(
     control_prompt_is_open_on_loopback_auto,
     agent_state_route_returns_aggregated_snapshot,
+    unloaded_agent_state_route_uses_storage_without_starting_runtime,
     runtime_search_route_returns_memory_search_results,
     runtime_search_route_filters_memory_results_by_agent_ids,
     agent_brief_route_returns_full_brief_by_id,

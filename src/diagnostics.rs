@@ -72,6 +72,12 @@ static PROJECTION_STATE_WORKSPACE: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.workspace");
 static PROJECTION_STATE_SERIALIZATION: MetricAccumulator =
     MetricAccumulator::new("projection.agent_state.serialization");
+static PROJECTION_STATE_SOURCE_LOADED: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.source.loaded");
+static PROJECTION_STATE_SOURCE_STORAGE: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.source.storage");
+static PROJECTION_STATE_RUNTIME_SPAWN_AVOIDED: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.runtime_spawn_avoided");
 static PROJECTION_AGENTS_LIST: MetricAccumulator = MetricAccumulator::new("projection.agents_list");
 static PROJECTION_GATE_LEADERS: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_JOINED_WAITERS: AtomicU64 = AtomicU64::new(0);
@@ -326,6 +332,21 @@ pub fn record_projection_state_serialization(elapsed: Duration) {
     PROJECTION_STATE_SERIALIZATION.record(elapsed, None);
 }
 
+pub fn record_projection_state_source_loaded() {
+    process_started_at();
+    PROJECTION_STATE_SOURCE_LOADED.record(Duration::ZERO, None);
+}
+
+pub fn record_projection_state_source_storage() {
+    process_started_at();
+    PROJECTION_STATE_SOURCE_STORAGE.record(Duration::ZERO, None);
+}
+
+pub fn record_projection_state_runtime_spawn_avoided() {
+    process_started_at();
+    PROJECTION_STATE_RUNTIME_SPAWN_AVOIDED.record(Duration::ZERO, None);
+}
+
 pub fn record_projection_agents_list(elapsed: Duration) {
     process_started_at();
     PROJECTION_AGENTS_LIST.record(elapsed, None);
@@ -411,6 +432,9 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROJECTION_STATE_TRIGGERS.snapshot(false),
             PROJECTION_STATE_WORKSPACE.snapshot(false),
             PROJECTION_STATE_SERIALIZATION.snapshot(false),
+            PROJECTION_STATE_SOURCE_LOADED.snapshot(false),
+            PROJECTION_STATE_SOURCE_STORAGE.snapshot(false),
+            PROJECTION_STATE_RUNTIME_SPAWN_AVOIDED.snapshot(false),
         ],
         projection_gate: ProjectionGateDiagnosticsSnapshot {
             leaders: PROJECTION_GATE_LEADERS.load(Ordering::Relaxed),
@@ -552,6 +576,9 @@ mod tests {
         record_projection_state_external_triggers(Duration::from_millis(1));
         record_projection_state_workspace(Duration::from_millis(1));
         record_projection_state_serialization(Duration::from_millis(1));
+        record_projection_state_source_loaded();
+        record_projection_state_source_storage();
+        record_projection_state_runtime_spawn_avoided();
         record_projection_agents_list(Duration::from_millis(10));
         record_projection_gate_cache_hit();
         record_projection_gate_cache_miss();
@@ -615,6 +642,9 @@ mod tests {
             "projection.agent_state.external_triggers",
             "projection.agent_state.workspace",
             "projection.agent_state.serialization",
+            "projection.agent_state.source.loaded",
+            "projection.agent_state.source.storage",
+            "projection.agent_state.runtime_spawn_avoided",
         ] {
             assert!(
                 snapshot

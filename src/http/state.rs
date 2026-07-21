@@ -226,36 +226,25 @@ async fn build_agent_state_projection(
     state: &Arc<AppState>,
     agent_id: &str,
 ) -> Result<Bytes, ProjectionFailure> {
-    let runtime = state
+    let projection = state
         .host
-        .get_public_agent(agent_id)
+        .public_agent_state_projection(agent_id, STATE_BOOTSTRAP_TASK_LIMIT, 50)
         .await
         .map_err(agent_access_error)
         .map_err(ProjectionFailure::from)?;
-    let agent_started = std::time::Instant::now();
-    let projection = runtime
-        .lightweight_agent_state_projection()
-        .await
-        .map_err(error_response)
-        .map_err(ProjectionFailure::from)?;
-    crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
-    let tasks_started = std::time::Instant::now();
-    let tasks = runtime
-        .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
-        .await
-        .map_err(error_response)
-        .map_err(ProjectionFailure::from)?
+    let source = projection.source;
+    let tasks = projection
+        .tasks
         .into_iter()
         .map(crate::http_dto::SlimTaskDto::from)
         .collect();
-    crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
-    let timers_started = std::time::Instant::now();
-    let timers = runtime
-        .recent_timers(50)
-        .await
-        .map_err(error_response)
-        .map_err(ProjectionFailure::from)?;
-    crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
+    let timers = projection.timers;
+    let external_triggers = projection
+        .external_triggers
+        .into_iter()
+        .map(ExternalTriggerStateSnapshot::from)
+        .collect();
+    let projection = projection.agent;
     let work_items_started = std::time::Instant::now();
     let work_items = projection
         .work_queue
@@ -265,16 +254,6 @@ async fn build_agent_state_projection(
         .map(slim_state_work_item_dto)
         .collect::<Vec<_>>();
     crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
-    let triggers_started = std::time::Instant::now();
-    let external_triggers = runtime
-        .latest_external_triggers()
-        .await
-        .map_err(error_response)
-        .map_err(ProjectionFailure::from)?
-        .into_iter()
-        .map(ExternalTriggerStateSnapshot::from)
-        .collect();
-    crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
     let workspace_started = std::time::Instant::now();
     let workspace = state_workspace_snapshot(&projection.agent, &state);
     crate::diagnostics::record_projection_state_workspace(workspace_started.elapsed());
@@ -307,6 +286,11 @@ async fn build_agent_state_projection(
             .clone()
             .map(slim_state_turn_terminal_record),
     };
+    tracing::debug!(
+        agent_id,
+        state_projection_source = source.as_str(),
+        "serializing public agent state projection"
+    );
     serialize_json(
         "/agents/{agent_id}/state",
         &crate::http_dto::AgentStateSnapshotDto {
