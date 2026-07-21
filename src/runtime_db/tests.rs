@@ -2018,8 +2018,10 @@ mod tests {
                     matched: true,
                     divergence_code: None,
                 }),
+                scheduler_delivery_shadow_comparison: None,
                 notify_scheduler: false,
                 fault: None,
+                brief_evidence: Vec::new(),
             };
             let error = db.transitions().commit_queue(&queue_command).unwrap_err();
             assert!(error

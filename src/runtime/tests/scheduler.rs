@@ -1637,6 +1637,149 @@ fn settlement_shadow_comparison_matches_aborted_with_stopped_agent() {
     assert_eq!(candidate["settlement_disposition"], "failed");
 }
 
+// --- delivery shadow comparison ---
+
+#[test]
+fn delivery_shadow_comparison_records_processed_with_completed_turn() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.last_turn_terminal = Some(TurnTerminalRecord {
+        turn_id: "turn-1".into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        last_assistant_message: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 100,
+    });
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("processed delivery should produce comparison");
+    assert_eq!(comparison.scenario_class, "delivery");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["turn_terminal"], "completed");
+    assert_eq!(observation["turn_in_progress"], false);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["action"], "deliver");
+    assert_eq!(candidate["delivery_disposition"], "completed");
+}
+
+#[test]
+fn delivery_shadow_comparison_returns_none_for_queued_entry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Queued);
+    assert!(scheduler::shadow_comparison_for_delivery(&projection, &record).is_none());
+}
+
+#[test]
+fn delivery_shadow_comparison_detects_divergence_when_turn_aborted_but_settled_processed() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.last_turn_terminal = Some(TurnTerminalRecord {
+        turn_id: "turn-1".into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::Aborted,
+        reason: None,
+        last_assistant_message: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 100,
+    });
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Queue settled as Processed but the turn was Aborted
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    assert_eq!(
+        comparison.divergence_code,
+        Some("delivery_outcome_mismatch"),
+    );
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["turn_terminal"], "aborted");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "completed");
+}
+
+#[test]
+fn delivery_shadow_comparison_matches_aborted_settlement_with_failed_terminal() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.last_turn_terminal = Some(TurnTerminalRecord {
+        turn_id: "turn-1".into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::ProviderFailedNeedsRecovery,
+        reason: None,
+        last_assistant_message: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 100,
+    });
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Aborted);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("aborted delivery should produce comparison");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(
+        observation["turn_terminal"],
+        "provider_failed_needs_recovery"
+    );
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "failed");
+}
+
+#[test]
+fn delivery_shadow_comparison_matches_interrupted_settlement() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Interrupted);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("interrupted delivery should produce comparison");
+    // No turn terminal → "none", restricted says "interrupted" → divergence
+    assert!(!comparison.matched);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["turn_terminal"], "none");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "interrupted");
+}
+
+#[test]
+fn delivery_shadow_comparison_detects_divergence_when_turn_in_progress() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::AwakeRunning;
+    agent.current_run_id = Some("run-1".into());
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    // Queue settled as Processed but turn is still in progress
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("should produce comparison even with divergence");
+    assert!(!comparison.matched);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "pending");
+}
+
 #[test]
 fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
     let dir = tempdir().unwrap();

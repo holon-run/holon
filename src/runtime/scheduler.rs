@@ -23,6 +23,7 @@ const REDUCER_ONLY_CANDIDATES_SCENARIO: &str = "reducer_only_candidates";
 const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str = "work_item_autonomous_continuation";
 const WAIT_RESUME_SCENARIO: &str = "wait_resume";
 const SETTLEMENT_SCENARIO: &str = "settlement";
+const DELIVERY_SCENARIO: &str = "delivery";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -614,12 +615,31 @@ pub(crate) struct RestrictedSettlementCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct LegacyDeliveryObservation {
+    schema_version: u32,
+    boundary: &'static str,
+    input_identity: String,
+    turn_terminal: &'static str,
+    queue_len: usize,
+    turn_in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RestrictedDeliveryCandidate {
+    schema_version: u32,
+    action: &'static str,
+    delivery_disposition: &'static str,
+    resulting_posture: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum LegacySchedulerObservation {
     MessageAdmission(LegacyMessageAdmissionObservation),
     WorkQueueTick(LegacyWorkQueueTickObservation),
     WaitResume(LegacyWaitResumeObservation),
     Settlement(LegacySettlementObservation),
+    Delivery(LegacyDeliveryObservation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -629,6 +649,7 @@ pub(crate) enum RestrictedSchedulerCandidate {
     WorkQueueTick(RestrictedWorkQueueTickCandidate),
     WaitResume(RestrictedWaitResumeCandidate),
     Settlement(RestrictedSettlementCandidate),
+    Delivery(RestrictedDeliveryCandidate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1182,6 +1203,95 @@ fn restricted_settlement_disposition(projection: &SchedulerProjection) -> &'stat
         return "pending";
     }
     "complete"
+}
+
+pub(crate) fn shadow_comparison_for_delivery(
+    projection: &SchedulerProjection,
+    record: &QueueEntryRecord,
+) -> Option<SchedulerShadowComparison> {
+    // Only produce a delivery comparison for terminal settlement statuses;
+    // Queued/Dequeued are not settled and have no delivery to compare.
+    if !matches!(
+        record.status,
+        QueueEntryStatus::Processed
+            | QueueEntryStatus::Aborted
+            | QueueEntryStatus::Interrupted
+            | QueueEntryStatus::Interjected
+            | QueueEntryStatus::Dropped
+    ) {
+        return None;
+    }
+    let legacy_terminal = projection
+        .last_turn_terminal
+        .map(|kind| match kind {
+            TurnTerminalKind::Completed => "completed",
+            TurnTerminalKind::Aborted => "aborted",
+            TurnTerminalKind::BaselineOverBudget => "baseline_over_budget",
+            TurnTerminalKind::DeferredToFallback => "deferred_to_fallback",
+            TurnTerminalKind::ProviderFailedNeedsRecovery => "provider_failed_needs_recovery",
+        })
+        .unwrap_or("none");
+    let candidate_disposition = restricted_delivery_disposition(projection, record);
+    let input_identity = format!("message:{}", record.message_id);
+    let observation = LegacySchedulerObservation::Delivery(LegacyDeliveryObservation {
+        schema_version: 1,
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity: input_identity.clone(),
+        turn_terminal: legacy_terminal,
+        queue_len: projection.queue_len,
+        turn_in_progress: projection.turn_in_progress,
+    });
+    let candidate = RestrictedSchedulerCandidate::Delivery(RestrictedDeliveryCandidate {
+        schema_version: 1,
+        action: "deliver",
+        delivery_disposition: candidate_disposition,
+        resulting_posture: "open",
+    });
+    let legacy_category = turn_terminal_delivery_category(projection.last_turn_terminal);
+    let matched = legacy_category == candidate_disposition;
+    Some(SchedulerShadowComparison {
+        scenario_class: DELIVERY_SCENARIO,
+        comparison_identity: format!("delivery:{}", record.message_id),
+        boundary: SchedulerBoundary::RunLoop.as_str(),
+        input_identity,
+        legacy_observation: observation,
+        shadow_candidate: candidate,
+        matched,
+        divergence_code: (!matched).then_some("delivery_outcome_mismatch"),
+    })
+}
+
+fn turn_terminal_delivery_category(kind: Option<TurnTerminalKind>) -> &'static str {
+    match kind {
+        Some(TurnTerminalKind::Completed) => "completed",
+        Some(
+            TurnTerminalKind::Aborted
+            | TurnTerminalKind::ProviderFailedNeedsRecovery
+            | TurnTerminalKind::BaselineOverBudget,
+        ) => "failed",
+        Some(TurnTerminalKind::DeferredToFallback) => "pending",
+        None => "none",
+    }
+}
+
+fn restricted_delivery_disposition(
+    projection: &SchedulerProjection,
+    record: &QueueEntryRecord,
+) -> &'static str {
+    match record.status {
+        QueueEntryStatus::Aborted | QueueEntryStatus::Dropped => "failed",
+        QueueEntryStatus::Interrupted | QueueEntryStatus::Interjected => "interrupted",
+        QueueEntryStatus::Processed => {
+            if matches!(projection.status, AgentStatus::Stopped) {
+                "failed"
+            } else if projection.turn_in_progress {
+                "pending"
+            } else {
+                "completed"
+            }
+        }
+        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued => "none",
+    }
 }
 
 pub(crate) fn semantic_shadow_decision_for_message_admission(

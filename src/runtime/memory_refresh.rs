@@ -786,9 +786,11 @@ impl RuntimeHandle {
                     transcript_entries: Vec::new(),
                     audit_events,
                     scheduler_shadow_comparison,
+                    scheduler_delivery_shadow_comparison: None,
                     scheduler_semantic_shadow: None,
                     notify_scheduler: true,
                     fault: self.take_transition_fault(),
+                    brief_evidence: Vec::new(),
                 },
             )?;
             if !commit.applied {

@@ -426,9 +426,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         ),
                     ],
                     scheduler_shadow_comparison: shadow_comparison,
+                    scheduler_delivery_shadow_comparison: None,
                     scheduler_semantic_shadow: semantic_shadow,
                     notify_scheduler: false,
                     fault: self.runtime.take_transition_fault(),
+                    brief_evidence: Vec::new(),
                 },
             )?;
             if !commit.applied {

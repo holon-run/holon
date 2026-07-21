@@ -12,7 +12,7 @@ use crate::{
     runtime_db::{
         evidence::{
             append_audit_event_tx, append_message_tx, append_transcript_entry_tx,
-            insert_runtime_index_changes_tx, upsert_agent_state_tx,
+            insert_brief_evidence_tx, insert_runtime_index_changes_tx, upsert_agent_state_tx,
         },
         repositories::{
             insert_new_work_item_tx, queue_entry_transition, task_transition,
@@ -24,9 +24,9 @@ use crate::{
     },
     runtime_error::RuntimeError,
     types::{
-        AgentState, AuditEvent, MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord,
-        TranscriptEntry, WaitConditionRecord, WorkItemContinuationFrame, WorkItemRecord,
-        WorkItemState,
+        AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
+        TaskRecord, TranscriptEntry, WaitConditionRecord, WorkItemContinuationFrame,
+        WorkItemRecord, WorkItemState,
     },
 };
 
@@ -167,10 +167,13 @@ pub(crate) struct QueueTransitionCommand {
     pub audit_events: Vec<AuditEvent>,
     pub scheduler_shadow_comparison:
         Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
+    pub scheduler_delivery_shadow_comparison:
+        Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
     pub scheduler_semantic_shadow:
         Option<scheduler_protocol_repository::SchedulerSemanticShadowCommand>,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
+    pub brief_evidence: Vec<BriefRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -374,6 +377,12 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 command.scheduler_shadow_comparison.as_ref(),
             )?;
+            let delivery_shadow_comparison =
+                scheduler_protocol_repository::validate_shadow_comparison_tx(
+                    tx,
+                    &command.agent_id,
+                    command.scheduler_delivery_shadow_comparison.as_ref(),
+                )?;
             let semantic_shadow =
                 scheduler_protocol_repository::validate_semantic_shadow_decision_tx(
                     tx,
@@ -391,6 +400,11 @@ impl RuntimeTransitionRepository<'_> {
                 &command.agent_id,
                 shadow_comparison,
             )?;
+            scheduler_protocol_repository::persist_shadow_comparison_tx(
+                tx,
+                &command.agent_id,
+                delivery_shadow_comparison,
+            )?;
             scheduler_protocol_repository::persist_semantic_shadow_decision_tx(
                 tx,
                 &command.agent_id,
@@ -401,6 +415,9 @@ impl RuntimeTransitionRepository<'_> {
             }
             for entry in &command.transcript_entries {
                 append_transcript_entry_tx(tx, entry)?;
+            }
+            for brief in &command.brief_evidence {
+                insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             finish_transition_tx(
@@ -1197,8 +1214,10 @@ mod tests {
                     audit_events: vec![AuditEvent::legacy("queue_settled", serde_json::json!({}))],
                     scheduler_semantic_shadow: None,
                     scheduler_shadow_comparison: None,
+                    scheduler_delivery_shadow_comparison: None,
                     notify_scheduler: true,
                     fault: Some(fault),
+                    brief_evidence: Vec::new(),
                 })
                 .unwrap_err();
 
@@ -1294,8 +1313,10 @@ mod tests {
                             divergence_code: None,
                         },
                     ),
+                    scheduler_delivery_shadow_comparison: None,
                     notify_scheduler: false,
                     fault: Some(fault),
+                    brief_evidence: Vec::new(),
                 })
                 .unwrap_err();
 

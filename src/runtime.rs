@@ -1604,9 +1604,11 @@ impl RuntimeHandle {
                     transcript_entries: Vec::new(),
                     audit_events,
                     scheduler_shadow_comparison: None,
+                    scheduler_delivery_shadow_comparison: None,
                     scheduler_semantic_shadow: None,
                     notify_scheduler: true,
                     fault: self.take_transition_fault(),
+                    brief_evidence: Vec::new(),
                 },
             )?;
             guard.queue.push(message.clone());
@@ -1645,6 +1647,18 @@ impl RuntimeHandle {
                 .map(scheduler_executor::scheduler_shadow_comparison_command)
                 .transpose()?
         };
+        let delivery_shadow_comparison = {
+            let guard = self.inner.agent.lock().await;
+            let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+                &self.inner.storage,
+                &guard.state,
+                guard.queue.len(),
+                self.now(),
+            )?;
+            scheduler::shadow_comparison_for_delivery(&projection, &record)
+                .map(scheduler_executor::scheduler_shadow_comparison_command)
+                .transpose()?
+        };
         let commit = self.inner.runtime_db.transitions().commit_queue(
             &crate::runtime_db::transitions::QueueTransitionCommand {
                 agent_id: record.agent_id.clone(),
@@ -1655,9 +1669,11 @@ impl RuntimeHandle {
                 transcript_entries: Vec::new(),
                 audit_events,
                 scheduler_shadow_comparison: shadow_comparison,
+                scheduler_delivery_shadow_comparison: delivery_shadow_comparison,
                 scheduler_semantic_shadow: None,
                 notify_scheduler,
                 fault: self.take_transition_fault(),
+                brief_evidence: Vec::new(),
             },
         )?;
         Ok(self.apply_transition_commit(commit).await.applied)
