@@ -1,4 +1,4 @@
-# Scheduler Protocol Transition Wraps Legacy Boundaries Atomically
+# Scheduler Protocol Transition Wraps All Scheduler Boundaries Atomically
 
 ## Choice
 
@@ -6,7 +6,13 @@ Every scheduler boundary (message admission, work-queue idle tick, operator
 interjection, and turn-end queue transition) commits through a single
 `QueueTransitionCommand` that wraps the queue operation, agent state
 projection, message evidence, audit events, shadow comparison, and semantic
-shadow decision in one SQLite transaction.
+shadow decision in one SQLite transaction. After Phase 5a–5e, the same
+transactional wrapping extends to wait resume (`.or_else` within message
+admission), settlement recovery and delivery disposition (within
+`commit_queue_settlement`), and operator interjection at four typed
+boundaries (`AfterProviderRound`, `BeforeToolExecution`, `AfterToolResults`,
+`BeforeProviderContinuation`). A public `SchedulerDiagnosticAuditEvent`
+stream is emitted alongside the legacy audit for every decision.
 
 The semantic decision plane returns `Ok(None)` when trusted ingress
 conditions are not met, rather than propagating the error. This prevents
