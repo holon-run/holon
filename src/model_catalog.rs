@@ -1645,7 +1645,12 @@ fn reasoning_effort_options(
             &["low", "medium", "high"][..]
         }
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
-        ("xiaomi" | "xiaomi-token-plan", "mimo-v2.5-pro" | "mimo-v2.5") => &["none", "high"][..],
+        ("xiaomi", "mimo-v2.5-pro" | "mimo-v2.5")
+            if endpoint
+                .is_none_or(|endpoint| matches!(endpoint.as_str(), "default" | "token-plan")) =>
+        {
+            &["none", "high"][..]
+        }
         ("volcengine", _)
             if endpoint.is_none_or(|endpoint| {
                 matches!(endpoint.as_str(), "default" | "coding" | "plan")
@@ -3569,6 +3574,38 @@ mod tests {
     }
 
     #[test]
+    fn volcengine_doubao_routes_inherit_canonical_intrinsic_capabilities() {
+        let catalog = BuiltInModelCatalog::new();
+
+        for endpoint in ["default", "coding", "plan"] {
+            let pro = catalog.resolve_route_policy(
+                &ModelRouteRef::parse(&format!("volcengine@{endpoint}/doubao-seed-2-0-pro-260215"))
+                    .unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert!(pro.capabilities.supports_reasoning, "{endpoint}");
+            assert!(pro.capabilities.image_input, "{endpoint}");
+
+            let code = catalog.resolve_route_policy(
+                &ModelRouteRef::parse(&format!(
+                    "volcengine@{endpoint}/doubao-seed-2-0-code-preview-260215"
+                ))
+                .unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert!(code.capabilities.image_input, "{endpoint}");
+        }
+    }
+
+    #[test]
     fn moonshot_catalog_tracks_current_models_and_retirements() {
         let catalog = BuiltInModelCatalog::new();
         let moonshot = ProviderId::parse("moonshot").unwrap();
@@ -3765,6 +3802,29 @@ mod tests {
                 "{model}"
             );
         }
+    }
+
+    #[test]
+    fn built_in_catalog_registers_each_canonical_model_metadata_once() {
+        let mut registrations = HashMap::<ModelRef, Vec<ModelRef>>::new();
+        for entry in built_in_entries() {
+            let legacy_model_ref = entry.model_ref;
+            let (provider, _) =
+                built_in_provider_endpoint_identity(&legacy_model_ref.provider).unwrap();
+            registrations
+                .entry(ModelRef::new(provider, legacy_model_ref.model.clone()))
+                .or_default()
+                .push(legacy_model_ref);
+        }
+
+        let duplicates = registrations
+            .into_iter()
+            .filter(|(_, legacy_refs)| legacy_refs.len() > 1)
+            .collect::<Vec<_>>();
+        assert!(
+            duplicates.is_empty(),
+            "canonical model metadata must be registered once: {duplicates:#?}"
+        );
     }
 
     #[test]

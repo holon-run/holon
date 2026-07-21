@@ -148,6 +148,36 @@ describe("projectModelOptions", () => {
     );
   });
 
+  it("projects resolved vision capability for an available Volcengine plan route", () => {
+    const options = projectModelOptions({
+      model_availability: [
+        {
+          model: "volcengine/doubao-seed-2-0-pro-260215",
+          provider: "volcengine",
+          provider_family: "volcengine",
+          endpoint: "plan",
+          route_provider: "volcengine-agent",
+          available: true,
+          policy: {
+            capabilities: {
+              image_input: true,
+              supports_reasoning: true,
+            },
+          },
+        },
+      ],
+    });
+
+    expect(options[0]).toEqual(
+      expect.objectContaining({
+        routeRef: "volcengine@plan/doubao-seed-2-0-pro-260215",
+        routeProvider: "volcengine-agent",
+        available: true,
+        supportsImageInput: true,
+      }),
+    );
+  });
+
   it("preserves route identity and image capabilities from available models", () => {
     const options = projectModelOptions({
       available_models: [
