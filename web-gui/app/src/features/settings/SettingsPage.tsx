@@ -800,13 +800,11 @@ export function SettingsPage({
                          placeholder={modelFallbacks.length === 0 ? "provider@endpoint/model" : ""}
                      />
                      {fallbackInput && (
-                       availableModels
-                         .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.routeRef))
+                       filterAvailableModelOptions(modelCatalog.options, fallbackInput, modelFallbacks)
                          .slice(0, 10)
                          .length > 0 && (
                          <div className="settings-chip-suggestions">
-                           {availableModels
-                             .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.routeRef))
+                           {filterAvailableModelOptions(modelCatalog.options, fallbackInput, modelFallbacks)
                              .slice(0, 10)
                              .map((model) => (
                                <button
@@ -821,7 +819,7 @@ export function SettingsPage({
                                  }}
                                >
                                  <span className="settings-chip-suggestion-name">{model.displayName}</span>
-                                 <span className="settings-chip-suggestion-model">{model.model}</span>
+                                 <span className="settings-chip-suggestion-model">{model.routeRef}</span>
                                </button>
                              ))}
                          </div>
@@ -1642,6 +1640,28 @@ export function SettingsPage({
       </div>
     </section>
   );
+}
+
+export function filterAvailableModelOptions(
+  options: RuntimeModelOption[],
+  query: string,
+  excludedRouteRefs: string[] = [],
+): RuntimeModelOption[] {
+  const q = query.trim().toLowerCase();
+  const excluded = new Set(excludedRouteRefs);
+  return options.filter((model) => (
+    model.available &&
+    !excluded.has(model.routeRef) &&
+    (
+      !q ||
+      model.model.toLowerCase().includes(q) ||
+      model.routeRef.toLowerCase().includes(q) ||
+      model.routeProvider.toLowerCase().includes(q) ||
+      model.displayName.toLowerCase().includes(q) ||
+      model.endpoint.toLowerCase().includes(q) ||
+      model.providerFamily.toLowerCase().includes(q)
+    )
+  ));
 }
 
 function groupModelsByProvider(options: RuntimeModelOption[]): Array<[string, RuntimeModelOption[]]> {

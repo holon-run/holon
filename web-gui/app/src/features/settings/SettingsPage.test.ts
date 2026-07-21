@@ -5,10 +5,12 @@ import {
   buildSearchProviderConfigUpdates,
   buildStandardSearchProviderDefinitions,
   buildVisionConfigUpdates,
+  filterAvailableModelOptions,
   sortProvidersForSettings,
   sortSearchProvidersForSettings,
 } from "./SettingsPage";
 import type {
+  RuntimeModelOption,
   RuntimeProviderSummary,
   RuntimeWebSearchProviderCapabilities,
   RuntimeWebSearchProviderSummary,
@@ -35,6 +37,25 @@ function searchProvider(id: string, credentialConfigured: boolean): RuntimeWebSe
     kind: "brave",
     credentialProfile: `${id}:default`,
     credentialConfigured,
+  };
+}
+
+function modelOption(routeRef: string, available = true): RuntimeModelOption {
+  const [providerRoute, model] = routeRef.split("/");
+  const [providerFamily, endpoint] = providerRoute.split("@");
+  return {
+    model: `${providerFamily}/${model}`,
+    routeRef,
+    provider: providerFamily,
+    providerFamily,
+    endpoint,
+    routeProvider: endpoint === "default" ? providerFamily : `${providerFamily}-${endpoint}`,
+    displayName: model,
+    available,
+    supportsImageInput: false,
+    supportsImageGeneration: false,
+    supportsReasoningEffort: false,
+    reasoningEffortOptions: [],
   };
 }
 
@@ -103,6 +124,30 @@ describe("sortSearchProvidersForSettings", () => {
     ]);
 
     expect(sorted.map((entry) => entry.id)).toEqual(["ready-a", "ready-b", "missing-a", "missing-b"]);
+  });
+});
+
+describe("filterAvailableModelOptions", () => {
+  it("matches distinct available routes for the same model by endpoint", () => {
+    const options = [
+      modelOption("volcengine@default/glm-5.2"),
+      modelOption("volcengine@plan/glm-5.2"),
+    ];
+
+    expect(filterAvailableModelOptions(options, "volcengine@plan/glm-5.2").map((model) => model.routeRef))
+      .toEqual(["volcengine@plan/glm-5.2"]);
+    expect(filterAvailableModelOptions(options, "glm-5.2").map((model) => model.routeRef))
+      .toEqual(["volcengine@default/glm-5.2", "volcengine@plan/glm-5.2"]);
+  });
+
+  it("never suggests unavailable or already selected routes", () => {
+    const options = [
+      modelOption("volcengine@default/glm-5.2"),
+      modelOption("volcengine@plan/glm-5.2", false),
+    ];
+
+    expect(filterAvailableModelOptions(options, "glm-5.2", ["volcengine@default/glm-5.2"]))
+      .toEqual([]);
   });
 });
 
