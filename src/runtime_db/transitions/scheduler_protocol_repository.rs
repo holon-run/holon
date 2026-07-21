@@ -176,10 +176,12 @@ pub(super) fn validate_shadow_comparison_tx(
     match authority_mode {
         ScenarioMode::Off => return Ok(None),
         ScenarioMode::Authoritative => {
-            bail!(
-                "scheduler scenario {} is authoritative, but production authority is not wired",
-                command.scenario_class
-            );
+            if !command.matched {
+                bail!(
+                    "scheduler scenario {} rejected divergent canonical evidence",
+                    command.scenario_class
+                );
+            }
         }
         ScenarioMode::Shadow => {}
     }
@@ -284,36 +286,6 @@ pub(super) fn validate_semantic_shadow_decision_tx(
         authority_mode,
         already_recorded: existing_payload_hash.is_some(),
     }))
-}
-
-pub(super) fn validate_queue_admission_authority_tx(tx: &Transaction<'_>) -> Result<()> {
-    let protocol_mode = tx.query_row(
-        "SELECT protocol_mode
-         FROM scheduler_protocol_config
-         WHERE config_id = 1",
-        [],
-        |row| row.get::<_, String>(0),
-    )?;
-    if protocol_mode != "authoritative" {
-        return Ok(());
-    }
-    let authoritative_scenario = tx
-        .query_row(
-            "SELECT scenario_class
-             FROM scheduler_scenario_authorities
-             WHERE mode = 'authoritative'
-             ORDER BY scenario_class ASC
-             LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    if let Some(scenario_class) = authoritative_scenario {
-        bail!(
-            "scheduler scenario {scenario_class} is authoritative, but production authority is not wired"
-        );
-    }
-    Ok(())
 }
 
 pub(super) fn persist_shadow_comparison_tx(

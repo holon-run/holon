@@ -615,7 +615,7 @@ async fn message_admission_fault_rolls_back_all_canonical_facts() {
 }
 
 #[tokio::test]
-async fn authoritative_mode_fences_message_admission_without_shadow_comparison() {
+async fn authoritative_mode_allows_message_admission_outside_authoritative_scenario() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -667,30 +667,32 @@ async fn authoritative_mode_fences_message_admission_without_shadow_comparison()
         },
     );
 
-    let error = runtime.enqueue(message.clone()).await.unwrap_err();
+    let message = runtime.enqueue(message).await.unwrap();
 
-    assert!(error
-        .to_string()
-        .contains("production authority is not wired"));
-    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
-    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
-    assert!(runtime
-        .storage()
-        .read_message_by_id(&message.id)
-        .unwrap()
-        .is_none());
-    assert!(runtime
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+    assert_eq!(
+        runtime
+            .storage()
+            .read_message_by_id(&message.id)
+            .unwrap()
+            .unwrap()
+            .id,
+        message.id
+    );
+    let entries = runtime
         .inner
         .runtime_db
         .queue_entries()
         .latest_all()
-        .unwrap()
-        .iter()
-        .all(|entry| entry.message_id != message.id));
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].message_id, message.id);
+    assert_eq!(entries[0].status, QueueEntryStatus::Queued);
 }
 
 #[tokio::test]
-async fn authoritative_mode_fences_pending_claims_without_shadow_comparison() {
+async fn authoritative_mode_allows_claims_outside_authoritative_scenario() {
     for (case, message) in [
         (
             "operator_prompt",
@@ -761,7 +763,6 @@ async fn authoritative_mode_fences_pending_claims_without_shadow_comparison() {
             .unwrap();
 
         let message = runtime.enqueue(message).await.unwrap();
-        let queued_state = runtime.agent_state().await.unwrap();
         connection
             .execute(
                 "UPDATE scheduler_protocol_config
@@ -783,22 +784,27 @@ async fn authoritative_mode_fences_pending_claims_without_shadow_comparison() {
             )
             .unwrap();
 
-        let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-        {
-            Ok(_) => panic!("unexpected successful {case} claim"),
-            Err(error) => error,
-        };
+            .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("production authority is not wired"),
-            "unexpected {case} claim error: {error:#}"
-        );
-        assert_eq!(runtime.agent_state().await.unwrap(), queued_state);
-        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+        match poll {
+            scheduler_executor::RunLoopPoll::Message(scheduled) => {
+                assert_eq!(scheduled.message.id, message.id, "unexpected {case} claim");
+            }
+            scheduler_executor::RunLoopPoll::Shutdown => {
+                panic!("unexpected {case} poll result: shutdown")
+            }
+            scheduler_executor::RunLoopPoll::Stopped(_, _) => {
+                panic!("unexpected {case} poll result: stopped")
+            }
+            scheduler_executor::RunLoopPoll::Idle => {
+                panic!("unexpected {case} poll result: idle")
+            }
+        }
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
         let entries = runtime
             .inner
             .runtime_db
@@ -807,7 +813,7 @@ async fn authoritative_mode_fences_pending_claims_without_shadow_comparison() {
             .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message_id, message.id);
-        assert_eq!(entries[0].status, QueueEntryStatus::Queued);
+        assert_eq!(entries[0].status, QueueEntryStatus::Dequeued);
         let comparison_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM scheduler_shadow_comparisons
@@ -817,7 +823,7 @@ async fn authoritative_mode_fences_pending_claims_without_shadow_comparison() {
             )
             .unwrap();
         assert_eq!(comparison_count, 0);
-        assert!(!runtime
+        assert!(runtime
             .storage()
             .read_recent_events(usize::MAX)
             .unwrap()
@@ -2584,7 +2590,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
 }
 
 #[tokio::test]
-async fn authoritative_mode_fences_operator_interjection_at_tool_boundary() {
+async fn authoritative_mode_allows_interjection_outside_authoritative_scenario() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -2636,11 +2642,6 @@ async fn authoritative_mode_fences_operator_interjection_at_tool_boundary() {
         ))
         .await
         .unwrap();
-    let state_before = runtime.agent_state().await.unwrap();
-    let queue_before = runtime.storage().latest_queue_entries().unwrap();
-    let transcript_before = runtime.storage().read_all_transcript().unwrap();
-    let audit_before = runtime.storage().read_recent_events(usize::MAX).unwrap();
-
     connection
         .execute(
             "UPDATE scheduler_protocol_config
@@ -2662,43 +2663,45 @@ async fn authoritative_mode_fences_operator_interjection_at_tool_boundary() {
         )
         .unwrap();
 
-    let error = runtime
+    let follow_ups = runtime
         .drain_operator_interjections(
             "default",
             1,
             crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(error
-        .to_string()
-        .contains("production authority is not wired"));
-    assert_eq!(runtime.agent_state().await.unwrap(), state_before);
-    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
-    assert_eq!(
-        runtime
-            .inner
-            .agent
-            .lock()
-            .await
-            .queue
-            .peek()
-            .map(|message| message.id.as_str()),
-        Some(interjection.id.as_str())
-    );
-    assert_eq!(
-        runtime.storage().latest_queue_entries().unwrap(),
-        queue_before
-    );
-    assert_eq!(
-        runtime.storage().read_all_transcript().unwrap(),
-        transcript_before
-    );
-    assert_eq!(
-        runtime.storage().read_recent_events(usize::MAX).unwrap(),
-        audit_before
-    );
+    assert_eq!(follow_ups.len(), 1);
+    assert!(follow_ups[0].contains(&interjection.id));
+    assert!(follow_ups[0].contains("queued before authority switch"));
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
+    let queue_entries = runtime.storage().latest_queue_entries().unwrap();
+    let interjected_entry = queue_entries
+        .iter()
+        .find(|entry| entry.message_id == interjection.id)
+        .expect("interjection queue entry");
+    assert_eq!(interjected_entry.status, QueueEntryStatus::Interjected);
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "operator_interjection_admitted"
+                && event.data["message_id"] == interjection.id
+                && event.data["boundary"] == "before_tool_execution"
+        }));
+    let comparison_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM scheduler_shadow_comparisons
+             WHERE comparison_identity = ?1",
+            [format!("operator_interjection:{}", interjection.id)],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(comparison_count, 0);
 }
 
 #[tokio::test]

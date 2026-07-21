@@ -349,9 +349,6 @@ impl RuntimeTransitionRepository<'_> {
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            if command.operation == QueueOperation::Admit {
-                scheduler_protocol_repository::validate_queue_admission_authority_tx(tx)?;
-            }
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let mutation_applied = match &command.mutation {
                 QueueMutation::Consume(record) => match command.operation {
@@ -365,12 +362,6 @@ impl RuntimeTransitionRepository<'_> {
             };
             if matches!(&command.mutation, QueueMutation::Consume(_)) && !mutation_applied {
                 return Ok(TransitionCommit::default());
-            }
-            if matches!(
-                command.operation,
-                QueueOperation::Claim | QueueOperation::Interject
-            ) {
-                scheduler_protocol_repository::validate_queue_admission_authority_tx(tx)?;
             }
             let shadow_comparison = scheduler_protocol_repository::validate_shadow_comparison_tx(
                 tx,
@@ -1330,6 +1321,180 @@ mod tests {
             )?;
             assert_eq!(comparison_count, 0);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_queue_claim_commits_only_with_matched_canonical_evidence() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let connection = db.connection()?;
+        connection.execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'authoritative', 'shadow',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )?;
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-authoritative-match".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        let committed = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(claimed.clone()),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            audit_events: vec![AuditEvent::legacy(
+                "authoritative_claim",
+                serde_json::json!({}),
+            )],
+            scheduler_semantic_shadow: None,
+            scheduler_shadow_comparison: Some(
+                scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+                    scenario_class: "reducer_only_candidates".into(),
+                    comparison_identity: "message_admission:message-authoritative-match".into(),
+                    boundary: "run_loop".into(),
+                    input_identity: "message:message-authoritative-match".into(),
+                    legacy_observation: serde_json::json!({
+                        "legacy_decision": "reduce_message_only"
+                    }),
+                    shadow_candidate: serde_json::json!({
+                        "action": "reduce_message_only"
+                    }),
+                    matched: true,
+                    divergence_code: None,
+                },
+            ),
+            scheduler_delivery_shadow_comparison: None,
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+
+        assert!(committed.applied);
+        assert_eq!(db.queue_entries().latest_all()?, vec![claimed]);
+        let (outcome, authority_mode): (String, String) = db.connection()?.query_row(
+            "SELECT comparison_outcome, authority_mode
+             FROM scheduler_shadow_comparisons
+             WHERE comparison_identity = 'message_admission:message-authoritative-match'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(outcome, "matched");
+        assert_eq!(authority_mode, "authoritative");
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_queue_claim_rejects_divergence_without_partial_writes() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let connection = db.connection()?;
+        connection.execute(
+            "UPDATE scheduler_protocol_config
+             SET protocol_mode = 'authoritative',
+                 config_revision = 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE config_id = 1",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO scheduler_scenario_authorities (
+               scenario_class, mode, rollback_target,
+               manifest_revision, preflight_revision, updated_at
+             ) VALUES (
+               'reducer_only_candidates', 'authoritative', 'shadow',
+               NULL, NULL, CURRENT_TIMESTAMP
+             )",
+            [],
+        )?;
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-authoritative-divergence".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        let error = db
+            .transitions()
+            .commit_queue(&QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(claimed),
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                audit_events: vec![AuditEvent::legacy(
+                    "authoritative_claim",
+                    serde_json::json!({}),
+                )],
+                scheduler_semantic_shadow: None,
+                scheduler_shadow_comparison: Some(
+                    scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+                        scenario_class: "reducer_only_candidates".into(),
+                        comparison_identity: "message_admission:message-authoritative-divergence"
+                            .into(),
+                        boundary: "run_loop".into(),
+                        input_identity: "message:message-authoritative-divergence".into(),
+                        legacy_observation: serde_json::json!({
+                            "legacy_decision": "start_model_turn"
+                        }),
+                        shadow_candidate: serde_json::json!({
+                            "action": "reduce_message_only"
+                        }),
+                        matched: false,
+                        divergence_code: Some("message_admission_outcome_mismatch".into()),
+                    },
+                ),
+                scheduler_delivery_shadow_comparison: None,
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            })
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("rejected divergent canonical evidence"));
+        assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
+        assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+        let comparison_count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM scheduler_shadow_comparisons",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(comparison_count, 0);
         Ok(())
     }
 
