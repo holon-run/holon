@@ -68,15 +68,29 @@ impl RuntimeHandle {
         if should_ignore_task_update(latest_task.clone(), task) {
             return Ok(());
         }
-        let task_will_change = latest_task
-            .as_ref()
-            .map(|latest| {
-                crate::runtime_db::repositories::task_transition(latest, task).map(|outcome| {
-                    outcome == crate::runtime_db::repositories::StateTransitionOutcome::Applied
+        let repeated_terminal = latest_task.as_ref().is_some_and(|latest| {
+            is_terminal_task_status(&latest.status)
+                && is_terminal_task_status(&task.status)
+                && latest.status == task.status
+        });
+        let persisted_task = if repeated_terminal {
+            latest_task.clone().expect("repeated terminal task exists")
+        } else {
+            task.clone()
+        };
+        let task_will_change = if repeated_terminal {
+            false
+        } else {
+            latest_task
+                .as_ref()
+                .map(|latest| {
+                    crate::runtime_db::repositories::task_transition(latest, task).map(|outcome| {
+                        outcome == crate::runtime_db::repositories::StateTransitionOutcome::Applied
+                    })
                 })
-            })
-            .transpose()?
-            .unwrap_or(true);
+                .transpose()?
+                .unwrap_or(true)
+        };
 
         let agent_id = self.agent_id().await?;
         let mut state = self.agent_state().await?;
@@ -194,7 +208,7 @@ impl RuntimeHandle {
         let commit = self.inner.runtime_db.transitions().commit_task(
             &crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
-                task: task.clone(),
+                task: persisted_task,
                 work_items,
                 wait_conditions,
                 agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
@@ -617,6 +631,44 @@ mod tests {
         }));
         let transcript = runtime.storage().read_recent_transcript(10).unwrap();
         assert!(transcript.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_terminal_task_result_skips_transition_but_processes_message() {
+        let runtime = runtime();
+        let mut recorded = task("task-1", TaskStatus::Completed, false);
+        recorded.parent_message_id = Some("original-parent".into());
+        recorded.detail = Some(json!({"source": "completion"}));
+        runtime
+            .reduce_task_status_message(recorded.clone())
+            .await
+            .unwrap();
+
+        let mut repeated = task("task-1", TaskStatus::Completed, false);
+        repeated.parent_message_id = Some("task-result-message".into());
+        repeated.detail = Some(json!({
+            "source": "message",
+            "parent_turn_id": "turn-1",
+        }));
+        runtime
+            .reduce_task_result_message(&task_result_message("task-1"), repeated, false, None)
+            .await
+            .unwrap();
+
+        let latest = runtime.task_record("task-1").await.unwrap().unwrap();
+        assert_eq!(latest.parent_message_id.as_deref(), Some("original-parent"));
+        assert_eq!(latest.detail, recorded.detail);
+        let events = runtime.recent_events(20).await.unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "task_result_received"
+                && event.data.get("task_id").and_then(|value| value.as_str()) == Some("task-1")
+                && event.data.get("status").and_then(|value| value.as_str()) == Some("completed")
+        }));
+        let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+        assert!(briefs.iter().any(|brief| {
+            brief.kind == crate::types::BriefKind::Result
+                && brief.text.contains("Task task-1 completed")
+        }));
     }
 
     #[tokio::test]
