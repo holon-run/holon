@@ -79,7 +79,7 @@ pub(super) fn clamp_model_picker_selection(
 }
 
 fn inherit_default_row(agent: &AgentSummary) -> ModelPickerRow {
-    let default_model = agent.model.runtime_default_model.as_string();
+    let default_model = agent.model.runtime_default_model.as_compact_display();
     let current = agent.model.override_model.is_none();
     let title = if current {
         format!("inherit runtime default: {default_model} (current)")

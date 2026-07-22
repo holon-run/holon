@@ -937,7 +937,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
         format!("Status: {:?}", agent.agent.status),
         format!(
             "Model: {} ({:?})",
-            agent.model.effective_model.as_string(),
+            agent.model.effective_model.as_compact_display(),
             agent.model.source
         ),
         format!("Pending queue: {}", agent.agent.pending),
@@ -948,7 +948,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
         ),
     ];
     if let Some(model_override) = agent.model.override_model.as_ref() {
-        lines.push(format!("Override: {}", model_override.as_string()));
+        lines.push(format!("Override: {}", model_override.as_compact_display()));
         if let Some(effort) = agent.model.override_reasoning_effort.as_deref() {
             lines.push(format!("Override effort: {}", effort));
         }
@@ -958,7 +958,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
     }
     lines.push(format!(
         "Runtime default: {}",
-        agent.model.runtime_default_model.as_string()
+        agent.model.runtime_default_model.as_compact_display()
     ));
     if !agent.model.effective_fallback_models.is_empty() {
         lines.push(format!(
@@ -967,7 +967,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
                 .model
                 .effective_fallback_models
                 .iter()
-                .map(|model| model.as_string())
+                .map(|model| model.as_compact_display())
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1265,7 +1265,7 @@ mod tests {
         let inherited = sample_agent_summary();
         assert_eq!(
             render_model_status(&inherited),
-            "model: anthropic@default/claude-sonnet-4-6"
+            "model: anthropic/claude-sonnet-4-6"
         );
 
         let mut overridden = sample_agent_summary();
@@ -1274,7 +1274,7 @@ mod tests {
         overridden.model.active_model = Some(route_ref("openai/gpt-5.4"));
         assert_eq!(
             render_model_status(&overridden),
-            "model: openai@default/gpt-5.4 (agent override)"
+            "model: openai/gpt-5.4 (agent override)"
         );
 
         let mut fallback = overridden;
@@ -1283,7 +1283,7 @@ mod tests {
         fallback.model.fallback_active = true;
         assert_eq!(
             render_model_status(&fallback),
-            "model: anthropic@default/claude-sonnet-4-6 (fallback from openai@default/gpt-5.4)"
+            "model: anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"
         );
     }
 

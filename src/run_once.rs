@@ -169,10 +169,13 @@ impl RunOnceResponse {
         }
 
         if let Some(active_model) = self.active_model.as_ref() {
-            let mut line = format!("Model: {}", active_model.as_string());
+            let mut line = format!("Model: {}", active_model.as_compact_display());
             if let Some(requested_model) = self.requested_model.as_ref() {
                 if requested_model != active_model {
-                    line.push_str(&format!(" (requested {})", requested_model.as_string()));
+                    line.push_str(&format!(
+                        " (requested {})",
+                        requested_model.as_compact_display()
+                    ));
                 }
             }
             sections.push(line);
@@ -1367,6 +1370,49 @@ mod tests {
             "default".into(),
             ContextConfig::default(),
         )
+    }
+
+    #[test]
+    fn render_text_uses_compact_model_labels_without_changing_response_identity() {
+        let requested_model = ModelRouteRef::parse("openai@default/gpt-5.4").unwrap();
+        let active_model = ModelRouteRef::parse("volcengine@plan/glm-5.2").unwrap();
+        let response = RunOnceResponse {
+            agent_id: "default".into(),
+            final_status: RunFinalStatus::Completed,
+            waiting_reason: None,
+            final_text: String::new(),
+            raw_final_text: None,
+            sleep_reason: None,
+            failure_artifact: None,
+            tasks: Vec::new(),
+            message_count: 0,
+            changed_files: Vec::new(),
+            token_usage: TokenUsage::new(0, 0),
+            input_tokens: 0,
+            output_tokens: 0,
+            provider_cache_usage: None,
+            requested_model: Some(requested_model.clone()),
+            active_model: Some(active_model.clone()),
+            fallback_active: true,
+            model_rounds: 0,
+            tool_calls: 0,
+            shell_commands: 0,
+            exec_command_items: 0,
+            batched_exec_command_items: 0,
+        };
+
+        assert_eq!(
+            response.render_text(),
+            "Model: volcengine@plan/glm-5.2 (requested openai/gpt-5.4)"
+        );
+        assert_eq!(
+            response.requested_model.unwrap().as_string(),
+            "openai@default/gpt-5.4"
+        );
+        assert_eq!(
+            response.active_model.unwrap().as_string(),
+            "volcengine@plan/glm-5.2"
+        );
     }
 
     #[tokio::test]

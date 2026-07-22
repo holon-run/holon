@@ -17,6 +17,7 @@ use super::{
     ProviderGenerateImageRequest, ProviderGenerateImageResponse, ProviderNativeWebSearchRequest,
     ProviderTurnRequest, ProviderTurnResponse,
 };
+use crate::config::ModelRouteRef;
 use crate::prompt::PromptStability;
 
 #[derive(Clone)]
@@ -224,6 +225,28 @@ mod tests {
             advertised_tool_type: "web_search_20250305".into(),
             backend_kind: backend_kind.into(),
         }
+    }
+
+    #[test]
+    fn runtime_model_hint_compacts_only_canonical_default_routes() {
+        assert_eq!(
+            runtime_model_hint(
+                "openai@default/gpt-5.4",
+                "anthropic@default/claude-sonnet-4-6"
+            ),
+            "Runtime: active_model=anthropic/claude-sonnet-4-6 requested_model=openai/gpt-5.4"
+        );
+        assert_eq!(
+            runtime_model_hint(
+                "dashscope@token-plan/qwen3.7-max",
+                "volcengine@plan/glm-5.2"
+            ),
+            "Runtime: active_model=volcengine@plan/glm-5.2 requested_model=dashscope@token-plan/qwen3.7-max"
+        );
+        assert_eq!(
+            runtime_model_hint("openai/gpt-5.4", "openai/gpt-5.4"),
+            "Runtime: active_model=openai/gpt-5.4"
+        );
     }
 
     #[test]
@@ -735,9 +758,19 @@ fn request_for_model_attempt(
 }
 
 fn runtime_model_hint(requested_model_ref: &str, active_model_ref: &str) -> String {
+    let requested_model_display = compact_model_route_display(requested_model_ref);
+    let active_model_display = compact_model_route_display(active_model_ref);
     if requested_model_ref == active_model_ref || requested_model_ref.is_empty() {
-        format!("Runtime: active_model={active_model_ref}")
+        format!("Runtime: active_model={active_model_display}")
     } else {
-        format!("Runtime: active_model={active_model_ref} requested_model={requested_model_ref}")
+        format!(
+            "Runtime: active_model={active_model_display} requested_model={requested_model_display}"
+        )
     }
+}
+
+fn compact_model_route_display(model_ref: &str) -> String {
+    ModelRouteRef::parse(model_ref)
+        .map(|model_ref| model_ref.as_compact_display())
+        .unwrap_or_else(|_| model_ref.to_string())
 }

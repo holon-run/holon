@@ -6,6 +6,7 @@ import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { AgentStateBadge, StatusBadge } from "../../components/ui/StatusChip";
+import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
 
 interface DashboardPageProps {
@@ -123,9 +124,9 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                       <dt>{t("dashboard.posture")}</dt>
                       <dd>{agent.posture}</dd>
                     </div>
-                    <div title={agent.model}>
+                    <div title={compactModelRouteDisplay(agent.model)}>
                       <dt>{t("dashboard.model")}</dt>
-                      <dd>{agent.model}</dd>
+                      <dd>{compactModelRouteDisplay(agent.model)}</dd>
                     </div>
                   </dl>
                   <footer>

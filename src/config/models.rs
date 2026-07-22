@@ -169,6 +169,13 @@ impl ModelRouteRef {
             self.model
         )
     }
+
+    pub fn as_compact_display(&self) -> String {
+        if self.endpoint == ProviderEndpointId::default_endpoint() {
+            return self.model_ref().as_string();
+        }
+        self.as_string()
+    }
 }
 
 impl Serialize for ModelRouteRef {
@@ -1317,6 +1324,33 @@ mod tests {
         assert_eq!(
             route_ref.as_string(),
             "openrouter@default/anthropic/claude-3.5-sonnet"
+        );
+    }
+
+    #[test]
+    fn model_route_ref_compact_display_only_omits_default_endpoint() {
+        let default_route =
+            ModelRouteRef::parse("openrouter@default/anthropic/claude-3.5-sonnet").unwrap();
+        assert_eq!(
+            default_route.as_compact_display(),
+            "openrouter/anthropic/claude-3.5-sonnet"
+        );
+        assert_eq!(
+            default_route.as_string(),
+            "openrouter@default/anthropic/claude-3.5-sonnet"
+        );
+        assert_eq!(
+            serde_json::to_string(&default_route).unwrap(),
+            r#""openrouter@default/anthropic/claude-3.5-sonnet""#
+        );
+
+        let plan_route = ModelRouteRef::parse("volcengine@plan/glm-5.2").unwrap();
+        assert_eq!(plan_route.as_compact_display(), "volcengine@plan/glm-5.2");
+
+        let token_plan_route = ModelRouteRef::parse("dashscope@token-plan/qwen3.7-max").unwrap();
+        assert_eq!(
+            token_plan_route.as_compact_display(),
+            "dashscope@token-plan/qwen3.7-max"
         );
     }
 
