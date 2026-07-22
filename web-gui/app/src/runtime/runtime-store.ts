@@ -12,10 +12,17 @@ import { cacheClearRemote } from "./idb-cache";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import {
   currentRemoteKey,
+  hydrateAgentSession,
   hydrateAllSessions,
   initSessionCache,
   SessionCacheWriter,
 } from "./session-cache";
+import {
+  createRuntimeTrace,
+  installRuntimeTraceDebugApi,
+  startRuntimeSpan,
+  type RuntimeTraceContext,
+} from "./runtime-trace";
 import type { AgentSessionState as AgentSessionStateBase } from "./runtime-store-helpers";
 import {
   compactAgentTimelineItems,
@@ -79,6 +86,14 @@ export type { AgentLiveStatus, AgentSessionState };
 export interface BootstrapRefreshOptions {
   background?: boolean;
   syncEvents?: boolean;
+  trace?: RuntimeTraceContext;
+  trigger?: string;
+}
+
+export interface AgentDetailRefreshOptions {
+  force?: boolean;
+  trace?: RuntimeTraceContext;
+  trigger?: string;
 }
 
 function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | null {
@@ -253,6 +268,7 @@ export interface RuntimeStoreState {
   bootstrap: RuntimeBootstrap;
   bootstrapLoading: boolean;
   bootstrapError?: string;
+  globalStreamStatus: "idle" | "connecting" | "streaming" | "reconnecting";
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
@@ -352,7 +368,12 @@ export interface RuntimeStoreState {
   clearCodexDeviceLogin: () => void;
   runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   loadSearchResultContent: (sourceRef: string) => Promise<void>;
-  refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  ensureAgentSession: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  refreshAgentDetail: (
+    agentId: string | undefined,
+    displayLevel: DisplayLevel,
+    options?: AgentDetailRefreshOptions,
+  ) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
@@ -478,6 +499,7 @@ const workItemDetailInFlight = new Set<string>();
 const taskDetailInFlight = new Set<string>();
 const toolExecutionDetailInFlight = new Set<string>();
 const agentStateRefreshInFlight = new Map<string, number>();
+const agentEventCatchUpInFlight = new Map<string, Promise<void>>();
 const agentDetailRefreshInFlight = new Map<string, { generation: number; promise: Promise<void> }>();
 const agentDetailRequestSequence = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
@@ -491,6 +513,8 @@ const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
 const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
 const GLOBAL_BACKFILL_LIMIT = 100;
+const AGENT_VALIDATION_TTL_MS = 60_000;
+const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 
 function nextClientGeneration(): number {
   clientGeneration += 1;
@@ -529,6 +553,7 @@ function cancelClientGenerationWork(): void {
     bootstrapRefreshTimer = undefined;
   }
   agentStateRefreshInFlight.clear();
+  agentEventCatchUpInFlight.clear();
   agentDetailRefreshInFlight.clear();
   agentDetailRequestSequence.clear();
   inspectorDetailInFlight.clear();
@@ -965,6 +990,16 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
       if (!sessionCacheContextIsCurrent(context)) return;
       if (!ok) {
         sessionCacheWriter = null;
+        set((state) => ({
+          sessionsByAgentId: Object.fromEntries(
+            Object.entries(state.sessionsByAgentId).map(([agentId, session]) => [
+              agentId,
+              session.cacheStatus === "unchecked"
+                ? { ...session, cacheStatus: "unavailable" as const }
+                : session,
+            ]),
+          ),
+        }));
         return;
       }
 
@@ -997,10 +1032,11 @@ function initSessionCacheForRemote(set: StoreSet, get?: () => RuntimeStoreState)
 
       if (get && sessionCacheContextIsCurrent(context)) {
         const displayLevel = get().displayLevel;
-        for (const agentId of restoredAgentIds) {
-          scheduleMessageHydration(get, set, agentId, displayLevel);
-          scheduleTranscriptHydration(get, set, agentId, displayLevel);
-          scheduleBriefHydration(get, set, agentId, displayLevel);
+        const selectedAgentId = get().selectedAgentId;
+        if (selectedAgentId && restoredAgentIds.includes(selectedAgentId)) {
+          scheduleMessageHydration(get, set, selectedAgentId, displayLevel);
+          scheduleTranscriptHydration(get, set, selectedAgentId, displayLevel);
+          scheduleBriefHydration(get, set, selectedAgentId, displayLevel);
         }
       }
     } catch {
@@ -1055,6 +1091,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
   bootstrapLoading: true,
+  globalStreamStatus: "idle",
   modelCatalog: emptyModelCatalog,
   modelCatalogLoading: false,
   runtimeConfig: emptyRuntimeConfig,
@@ -1363,6 +1400,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   refreshBootstrap: async (options = {}) => {
     if (bootstrapRefreshInFlight) return bootstrapRefreshInFlight;
     const generation = clientGeneration;
+    const trace =
+      options.trace ??
+      createRuntimeTrace("bootstrap.refresh", { trigger: options.trigger ?? "bootstrap" });
+    const span = startRuntimeSpan(trace, "bootstrap.refresh", {
+      background: Boolean(options.background),
+    });
     if (options.background) {
       set({ bootstrapError: undefined });
     } else {
@@ -1412,16 +1455,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         if (options.syncEvents !== false) {
           syncGlobalEventRoster(get, set);
         }
+        span.end("ok", { agentCount: bootstrap.agents.length });
       } catch (error) {
         if (!isCurrentClientGeneration(generation)) return;
         if (isProjectionBusyError(error)) {
           set({ bootstrapLoading: false });
+          span.end("skipped", { reason: "projection_busy" });
           return;
         }
         set({
           bootstrapLoading: false,
           bootstrapError: error instanceof Error ? error.message : String(error),
         });
+        span.end("error");
       }
     })();
     bootstrapRefreshInFlight = request;
@@ -1447,9 +1493,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }));
     resumeSkillInstallJobPolling(set, get);
 
+    const trace = createRuntimeTrace("page.resume", { trigger: "page.resume" });
     const request = (async () => {
       try {
-        await get().refreshBootstrap({ background: true, syncEvents: false });
+        await get().refreshBootstrap({
+          background: true,
+          syncEvents: false,
+          trace,
+          trigger: "page.resume",
+        });
         if (!isCurrentClientGeneration(generation)) return;
         const selectedAgentId = get().selectedAgentId;
         const refreshes = buildResumeRefreshes(
@@ -1461,7 +1513,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           4,
           async ({ agentId, detail }) => {
             if (detail) {
-              await get().refreshAgentDetail(agentId, get().displayLevel);
+              await get().ensureAgentSession(agentId, get().displayLevel);
             } else {
               await get().refreshAgentState(agentId);
             }
@@ -2198,15 +2250,130 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
-  refreshAgentDetail: async (agentId, displayLevel) => {
+  ensureAgentSession: async (agentId, displayLevel) => {
+    if (!agentId) return;
+    const trace = createRuntimeTrace("agent.open", { agentId, trigger: "agent.open" });
+    let session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+
+    if (session.cacheStatus === "unchecked") {
+      if (sessionCacheInitPromise) await sessionCacheInitPromise;
+      session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+    }
+    if (session.cacheStatus === "unchecked") {
+      const cacheSpan = startRuntimeSpan(trace, "cache.read");
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            cacheStatus: "loading",
+            loading: !state.sessionsByAgentId[agentId]?.detail,
+          },
+        },
+      }));
+      const cached = await hydrateAgentSession(
+        currentRemoteKey(runtimeConnectionConfig),
+        agentId,
+      );
+      set((state) => {
+        const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+        const restored = cached ? mergeCachedSessionIntoCurrent(current, cached) : current;
+        const available = Boolean(restored.detail?.timeline.length || restored.eventSeqs.length);
+        return {
+          sessionsByAgentId: {
+            ...state.sessionsByAgentId,
+            [agentId]: {
+              ...restored,
+              cacheStatus: cached ? "hit" : "miss",
+              contentStatus: available ? "available" : "unknown",
+              syncStatus: cached ? "stale" : "refreshing",
+              loading: !restored.detail,
+            },
+          },
+        };
+      });
+      startRuntimeSpan(trace, "ui.session_state_transition", {
+        state: cached ? "cache_hit/stale" : "cache_miss/refreshing",
+      }).end("ok");
+      cacheSpan.end("ok", { cacheHit: Boolean(cached) });
+    }
+
+    session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const hasCachedContent = Boolean(session.detail && session.eventSeqs.length);
+    const fresh =
+      session.lastValidatedAt != null &&
+      Date.now() - session.lastValidatedAt < AGENT_VALIDATION_TTL_MS;
+    if (hasCachedContent && fresh && get().globalStreamStatus === "streaming") {
+      startRuntimeSpan(trace, "agent.validate", { reason: "fresh_stream" }).end("skipped");
+      return;
+    }
+    if (hasCachedContent) {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...state.sessionsByAgentId[agentId],
+            loading: false,
+            syncStatus: "refreshing",
+          },
+        },
+      }));
+      try {
+        await catchUpAgentEvents(get, set, agentId, displayLevel, trace);
+        if (!fresh) void get().refreshAgentState(agentId);
+        set((state) => ({
+          sessionsByAgentId: {
+            ...state.sessionsByAgentId,
+            [agentId]: {
+              ...state.sessionsByAgentId[agentId],
+              loading: false,
+              syncStatus: get().globalStreamStatus === "streaming" ? "streaming" : "idle",
+              contentStatus: "available",
+              lastValidatedAt: Date.now(),
+            },
+          },
+        }));
+        startRuntimeSpan(trace, "ui.session_state_transition", {
+          state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
+            get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
+          }`,
+        }).end("ok");
+      } catch (error) {
+        set((state) => ({
+          sessionsByAgentId: {
+            ...state.sessionsByAgentId,
+            [agentId]: {
+              ...state.sessionsByAgentId[agentId],
+              loading: false,
+              syncStatus: "error",
+              error: error instanceof Error ? error.message : String(error),
+            },
+          },
+        }));
+      }
+      return;
+    }
+    await get().refreshAgentDetail(agentId, displayLevel, { trace, trigger: "agent.open" });
+  },
+
+  refreshAgentDetail: async (agentId, displayLevel, options = {}) => {
     if (!agentId) {
       return;
     }
 
     const request = captureClientRequest();
+    const trace =
+      options.trace ??
+      createRuntimeTrace("manual.refresh", {
+        agentId,
+        trigger: options.trigger ?? "manual.refresh",
+      });
+    const span = startRuntimeSpan(trace, "agent.detail", { force: Boolean(options.force) });
     const key = `${agentId}:${displayLevel}`;
     const existing = agentDetailRefreshInFlight.get(key);
     if (existing?.generation === request.generation) {
+      span.end("deduped");
       return existing.promise;
     }
     const sequence = (agentDetailRequestSequence.get(agentId) ?? 0) + 1;
@@ -2217,7 +2384,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         [agentId]: {
           ...emptyAgentSession(),
           ...state.sessionsByAgentId[agentId],
-          loading: true,
+          loading: !state.sessionsByAgentId[agentId]?.detail,
+          syncStatus: "refreshing",
           error: undefined,
         },
       },
@@ -2232,6 +2400,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           agentDetailRequestSequence.get(agentId) !== sequence
         ) return;
         set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
+        startRuntimeSpan(trace, "ui.session_state_transition", {
+          state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
+            get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
+          }`,
+        }).end(detail.error ? "error" : "ok");
         await loadTargetAgentEventWindow(get, set, agentId, displayLevel);
         if (
           !isCurrentClientRequest(request) ||
@@ -2241,6 +2414,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         scheduleTranscriptHydration(get, set, agentId, displayLevel);
         scheduleBriefHydration(get, set, agentId, displayLevel);
         scheduleCacheWrite(get, agentId);
+        span.end(detail.error ? "error" : "ok", {
+          eventCount: detail.events?.length ?? 0,
+        });
       } catch (error) {
         if (
           !isCurrentClientRequest(request) ||
@@ -2254,9 +2430,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
                 ...emptyAgentSession(),
                 ...state.sessionsByAgentId[agentId],
                 loading: false,
+                syncStatus: "stale",
               },
             },
           }));
+          span.end("skipped", { reason: "projection_busy" });
           return;
         }
         set((state) => ({
@@ -2267,10 +2445,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               ...state.sessionsByAgentId[agentId],
               loading: false,
               liveStatus: "error",
+              syncStatus: "error",
               error: error instanceof Error ? error.message : String(error),
             },
           },
         }));
+        span.end("error");
       } finally {
         const current = agentDetailRefreshInFlight.get(key);
         if (current?.promise === promise) {
@@ -2695,7 +2875,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     stopGlobalEventStream(set);
   },
   registerAgentForEvents: (agentId) => {
-    registerAgentForEvents(get, set, agentId);
+    registerAgentForEvents(get, set, agentId, false);
   },
   unregisterAgentForEvents: (agentId) => {
     unregisterAgentForEvents(agentId);
@@ -2704,6 +2884,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
 // Initialize session cache on first load.
 if (typeof window !== "undefined") {
+  installRuntimeTraceDebugApi();
   initSessionCacheForRemote((partial) => useRuntimeStore.setState(partial), () => useRuntimeStore.getState());
   resumeReconciliationCoordinator = installResumeReconciliationListeners();
   void resumeReconciliationCoordinator;
@@ -2720,13 +2901,28 @@ function installResumeReconciliationListeners(): ResumeReconciliationCoordinator
     window,
     100,
   );
+  let hiddenAt: number | undefined;
   const scheduleIfVisible = () => {
-    if (document.visibilityState === "visible") coordinator.schedule();
+    if (document.visibilityState === "hidden") {
+      hiddenAt = Date.now();
+      return;
+    }
+    if (
+      document.visibilityState === "visible" &&
+      hiddenAt != null &&
+      Date.now() - hiddenAt >= RESUME_RECONCILIATION_THRESHOLD_MS
+    ) {
+      coordinator.schedule();
+    }
+    hiddenAt = undefined;
   };
-  const schedule = () => coordinator.schedule();
+  const schedulePageShow = (event: PageTransitionEvent) => {
+    if (event.persisted) coordinator.schedule();
+  };
+  const scheduleOnline = () => coordinator.schedule();
   document.addEventListener("visibilitychange", scheduleIfVisible);
-  window.addEventListener("pageshow", schedule);
-  window.addEventListener("online", schedule);
+  window.addEventListener("pageshow", schedulePageShow);
+  window.addEventListener("online", scheduleOnline);
   return coordinator;
 }
 
@@ -2736,6 +2932,9 @@ function emptyAgentSession(): AgentSessionState {
     loading: false,
     loadingOlder: false,
     liveStatus: "idle",
+    cacheStatus: "unchecked",
+    contentStatus: "unknown",
+    syncStatus: "idle",
     sendingPrompt: false,
     detail: null,
     workItemDetailsById: {},
@@ -2884,16 +3083,17 @@ function scheduleCacheWrite(get: () => RuntimeStoreState, agentId: string): void
 function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): void {
   if (globalEventStream) return;
 
+  set({ globalStreamStatus: "connecting" });
+  const trace = createRuntimeTrace("stream.connect", { trigger: "stream.connect" });
+  const connectSpan = startRuntimeSpan(trace, "sse.connect");
   const request = captureClientRequest();
   const subscription = request.client.streamGlobalEvents({
     onOpen: () => {
       if (!isCurrentClientRequest(request)) return;
       globalStreamReconnectAttempt = 0;
+      set({ globalStreamStatus: "streaming" });
+      connectSpan.end("ok");
       scheduleGlobalStaleWatchdog(get, set);
-      // Backfill all registered agents on (re)connect.
-      for (const agentId of globalStreamSubscribedAgents) {
-        void backfillAgentEvents(set, agentId, true);
-      }
     },
     onActivity: () => {
       if (!isCurrentClientRequest(request)) return;
@@ -2931,13 +3131,19 @@ function stopGlobalEventStream(set: StoreSet): void {
     globalStreamStaleTimer = undefined;
   }
   globalStreamReconnectAttempt = 0;
+  set({ globalStreamStatus: "idle" });
   // Flush any pending events for all agents.
   for (const agentId of globalStreamSubscribedAgents) {
     flushStreamEvents(set, agentId);
   }
 }
 
-function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, agentId: string): void {
+function registerAgentForEvents(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  backfill = true,
+): void {
   const wasSubscribed = globalStreamSubscribedAgents.has(agentId);
   globalStreamSubscribedAgents.add(agentId);
   // Initialize seq tracking from existing session state.
@@ -2949,7 +3155,7 @@ function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, age
   // Start global stream if not running.
   startGlobalEventStream(get, set);
   // Initial backfill from the last known seq.
-  if (!wasSubscribed) void backfillAgentEvents(set, agentId);
+  if (!wasSubscribed && backfill) void backfillAgentEvents(set, agentId);
 }
 
 function unregisterAgentForEvents(agentId: string): void {
@@ -2963,7 +3169,7 @@ function syncGlobalEventRoster(get: () => RuntimeStoreState, set: StoreSet): voi
     if (!agentIds.has(agentId)) unregisterAgentForEvents(agentId);
   }
   for (const agentId of agentIds) {
-    registerAgentForEvents(get, set, agentId);
+    registerAgentForEvents(get, set, agentId, false);
   }
 }
 
@@ -2990,6 +3196,12 @@ function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto)
 
 async function backfillAgentEvents(set: StoreSet, agentId: string, force = false): Promise<void> {
   const generation = clientGeneration;
+  const span = startRuntimeSpan(
+    createRuntimeTrace("stream.reconnect", { agentId, trigger: "events.backfill" }),
+    "events.backfill",
+    { force },
+  );
+  let eventCount = 0;
   try {
     await recoverEventGap(globalEventRecovery, agentId, {
       force,
@@ -3009,12 +3221,15 @@ async function backfillAgentEvents(set: StoreSet, agentId: string, force = false
         };
       },
       applyEvents: (events) => {
+        eventCount += events.length;
         if (isCurrentClientGeneration(generation)) {
           applyStreamEvents(set, agentId, events);
         }
       },
     });
+    span.end("ok", { eventCount });
   } catch {
+    span.end("error");
     // Silently ignore backfill errors; the stream will retry.
   }
 }
@@ -3056,6 +3271,7 @@ function scheduleGlobalStreamReconnect(
   if (globalStreamReconnectTimer != null) return;
 
   globalStreamReconnectAttempt += 1;
+  set({ globalStreamStatus: "reconnecting" });
   const delay = reconnectDelayMs(globalStreamReconnectAttempt);
   for (const agentId of globalStreamSubscribedAgents) {
     setStreamState(set, agentId, "reconnecting", {
@@ -3848,6 +4064,16 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
         ...projected,
         loading: false,
         liveStatus: detail.error ? "error" : current.liveStatus,
+        cacheStatus: current.cacheStatus === "unchecked" ? "miss" : current.cacheStatus,
+        contentStatus: detail.error
+          ? projected.eventSeqs.length
+            ? "available"
+            : "unknown"
+          : projected.eventSeqs.length
+            ? "available"
+            : "confirmed-empty",
+        syncStatus: detail.error ? "error" : "idle",
+        lastValidatedAt: detail.error ? current.lastValidatedAt : Date.now(),
         newestSeq: newestSeq || undefined,
         oldestSeq: detail.oldestEventSeq ?? projected.oldestSeq,
         hasOlder: detail.hasOlderEvents,
@@ -3862,31 +4088,59 @@ async function catchUpAgentEvents(
   set: StoreSet,
   agentId: string,
   _displayLevel: DisplayLevel,
+  trace = createRuntimeTrace("events.catch_up", { agentId, trigger: "events.catch_up" }),
 ): Promise<void> {
-  const generation = clientGeneration;
-  const afterSeq = get().sessionsByAgentId[agentId]?.newestSeq;
-  const page = await runtimeClient.getAgentEvents(agentId, {
-    afterSeq,
-    limit: 100,
-    order: "asc",
+  const existing = agentEventCatchUpInFlight.get(agentId);
+  if (existing) {
+    startRuntimeSpan(trace, "events.catch_up").end("deduped");
+    return existing;
+  }
+  const span = startRuntimeSpan(trace, "events.catch_up");
+  const request = (async () => {
+    const generation = clientGeneration;
+    const afterSeq = get().sessionsByAgentId[agentId]?.newestSeq;
+    const page = await runtimeClient.getAgentEvents(agentId, {
+      afterSeq,
+      limit: 100,
+      order: "asc",
+    });
+    if (!isCurrentClientGeneration(generation)) {
+      span.end("cancelled");
+      return;
+    }
+    set((state) =>
+      mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq ?? undefined, page.has_older, "debug", {
+        newestSeq: page.cursor_seq ?? page.newest_seq ?? undefined,
+        append: true,
+        eventLogEpoch: page.event_log_epoch,
+      }),
+    );
+    if ((page.events ?? []).some(isWorkItemCacheInvalidationEvent)) {
+      void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
+    }
+    if ((page.events ?? []).some(isAgentStateCacheInvalidationEvent)) {
+      void useRuntimeStore.getState().refreshAgentState(agentId);
+    }
+    if (get().selectedAgentId === agentId) {
+      scheduleMessageHydration(get, set, agentId, "debug");
+      scheduleTranscriptHydration(get, set, agentId, "debug");
+      scheduleBriefHydration(get, set, agentId, "debug");
+    }
+    scheduleCacheWrite(get, agentId);
+    span.end("ok", {
+      afterSeq,
+      eventCount: page.events?.length ?? 0,
+    });
+  })().catch((error) => {
+    span.end("error");
+    throw error;
+  }).finally(() => {
+    if (agentEventCatchUpInFlight.get(agentId) === request) {
+      agentEventCatchUpInFlight.delete(agentId);
+    }
   });
-  if (!isCurrentClientGeneration(generation)) return;
-  set((state) =>
-    mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq ?? undefined, page.has_older, "debug", {
-      newestSeq: page.cursor_seq ?? page.newest_seq ?? undefined,
-      append: true,
-      eventLogEpoch: page.event_log_epoch,
-    }),
-  );
-  if ((page.events ?? []).some(isWorkItemCacheInvalidationEvent)) {
-    void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
-  }
-  if ((page.events ?? []).some(isAgentStateCacheInvalidationEvent)) {
-    void useRuntimeStore.getState().refreshAgentState(agentId);
-  }
-  scheduleMessageHydration(get, set, agentId, "debug");
-  scheduleTranscriptHydration(get, set, agentId, "debug");
-  scheduleBriefHydration(get, set, agentId, "debug");
+  agentEventCatchUpInFlight.set(agentId, request);
+  return request;
 }
 
 function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
@@ -3968,9 +4222,11 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       },
     };
   });
-  scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
-  scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
-  scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  if (useRuntimeStore.getState().selectedAgentId === agentId) {
+    scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+    scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+    scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  }
   scheduleCacheWrite(useRuntimeStore.getState, agentId);
   if (events.some((event) => canApplySessionEvent(event) && isWorkItemCacheInvalidationEvent(event))) {
     void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
@@ -4024,12 +4280,18 @@ function scheduleMessageHydration(
   if (!requestIds.length) return;
   requestIds.forEach((messageId) => inFlight.add(messageId));
 
+  const hydrationSpan = startRuntimeSpan(
+    createRuntimeTrace("object.hydration", { agentId, trigger: "message.hydration" }),
+    "object.hydration",
+    { resource: "message", idCount: requestIds.length },
+  );
   const generation = clientGeneration;
   void runtimeClient
     .getAgentMessagesBatch(agentId, requestIds)
     .then((response) => {
       if (!isCurrentClientGeneration(generation)) return;
       set((state) => mergeHydratedMessagesIntoSession(state, agentId, response.messages ?? [], response.missing_message_ids ?? [], displayLevel));
+      hydrationSpan.end("ok", { returnedCount: response.messages?.length ?? 0 });
     })
     .catch((error) => {
       if (!isCurrentClientGeneration(generation)) return;
@@ -4071,6 +4333,11 @@ function scheduleTranscriptHydration(
   if (!requestIds.length) return;
   requestIds.forEach((entryId) => inFlight.add(entryId));
 
+  const hydrationSpan = startRuntimeSpan(
+    createRuntimeTrace("object.hydration", { agentId, trigger: "transcript.hydration" }),
+    "object.hydration",
+    { resource: "transcript", idCount: requestIds.length },
+  );
   const generation = clientGeneration;
   void runtimeClient
     .getAgentTranscriptEntriesBatch(agentId, requestIds)
@@ -4085,6 +4352,7 @@ function scheduleTranscriptHydration(
           displayLevel,
         ),
       );
+      hydrationSpan.end("ok", { returnedCount: response.entries?.length ?? 0 });
     })
     .catch((error) => {
       if (!isCurrentClientGeneration(generation)) return;
@@ -4126,12 +4394,18 @@ function scheduleBriefHydration(
   if (!requestIds.length) return;
   requestIds.forEach((briefId) => inFlight.add(briefId));
 
+  const hydrationSpan = startRuntimeSpan(
+    createRuntimeTrace("object.hydration", { agentId, trigger: "brief.hydration" }),
+    "object.hydration",
+    { resource: "brief", idCount: requestIds.length },
+  );
   const generation = clientGeneration;
   void runtimeClient
     .getAgentBriefsById(agentId, requestIds)
     .then(({ recordsById, notFoundIds }) => {
       if (!isCurrentClientGeneration(generation)) return;
       set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, notFoundIds, displayLevel));
+      hydrationSpan.end("ok", { returnedCount: Object.keys(recordsById).length });
     })
     .catch((error) => {
       if (!isCurrentClientGeneration(generation)) return;
@@ -4176,15 +4450,15 @@ export function agentBriefPatchFromEvents(
 }
 
 function missingMessageIdsForHydration(session: AgentSessionState | undefined): string[] {
-  return session ? messageIdsForProjectionHydration(session) : [];
+  return session ? messageIdsForProjectionHydration(session).slice(-100) : [];
 }
 
 function missingTranscriptEntryIdsForHydration(session: AgentSessionState | undefined): string[] {
-  return session ? transcriptEntryIdsForProjectionHydration(session) : [];
+  return session ? transcriptEntryIdsForProjectionHydration(session).slice(-100) : [];
 }
 
 export function missingBriefIdsForHydration(session: AgentSessionState | undefined): string[] {
-  return session ? briefIdsForProjectionHydration(session) : [];
+  return session ? briefIdsForProjectionHydration(session).slice(-100) : [];
 }
 
 function mergeHydratedMessagesIntoSession(

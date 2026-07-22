@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { type BootstrapRefreshOptions, useRuntimeStore } from "./runtime-store";
 import type { RuntimeBootstrap } from "./types";
 
-const DASHBOARD_AUTO_REFRESH_MS = 30_000;
+const DASHBOARD_SAFETY_REFRESH_MS = 5 * 60_000;
 
 interface RuntimeDashboardState {
   bootstrap: RuntimeBootstrap;
@@ -21,13 +21,17 @@ export function useRuntimeDashboard(): RuntimeDashboardState {
   }, [refresh]);
 
   useEffect(() => {
-    const refreshIfVisible = () => {
+    const refreshIfNeeded = () => {
       if (document.visibilityState === "visible") {
-        void refresh({ background: true });
+        void refresh({ background: true, trigger: "safety.refresh" });
       }
     };
 
-    const interval = window.setInterval(refreshIfVisible, DASHBOARD_AUTO_REFRESH_MS);
+    const jitter = Math.floor(Math.random() * 30_000);
+    const interval = window.setInterval(
+      refreshIfNeeded,
+      DASHBOARD_SAFETY_REFRESH_MS + jitter,
+    );
     return () => {
       window.clearInterval(interval);
     };

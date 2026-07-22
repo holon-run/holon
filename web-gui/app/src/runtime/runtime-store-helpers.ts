@@ -18,11 +18,18 @@ import type { SessionProjectionState } from "./session-projection";
 export type { WorkItemDetailState, TaskDetailState, ToolExecutionDetailState };
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
+export type AgentCacheStatus = "unchecked" | "loading" | "hit" | "miss" | "unavailable";
+export type AgentContentStatus = "unknown" | "available" | "confirmed-empty";
+export type AgentSyncStatus = "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
 
 export interface AgentSessionState extends SessionProjectionState {
   loading: boolean;
   loadingOlder: boolean;
   liveStatus: AgentLiveStatus;
+  cacheStatus: AgentCacheStatus;
+  contentStatus: AgentContentStatus;
+  syncStatus: AgentSyncStatus;
+  lastValidatedAt?: number;
   sendingPrompt: boolean;
   detail: AgentDetail | null;
   hasOlder?: boolean;

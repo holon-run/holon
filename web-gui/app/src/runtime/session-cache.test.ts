@@ -21,6 +21,9 @@ function makeSession(overrides: Partial<AgentSessionState> = {}): AgentSessionSt
     loading: false,
     loadingOlder: false,
     liveStatus: "idle",
+    cacheStatus: "unchecked",
+    contentStatus: "unknown",
+    syncStatus: "idle",
     sendingPrompt: false,
     detail: null,
     workItemDetailsById: {},
@@ -66,9 +69,44 @@ describe("extractCacheableSession", () => {
     expect(result.eventsBySeq).toEqual(session.eventsBySeq);
     expect(result.eventSeqs).toEqual(session.eventSeqs);
     expect(result.messagesById).toEqual(session.messagesById);
+    expect(result.agentSummary).toBeUndefined();
     expect(result.newestSeq).toBe(2);
     expect(result.oldestSeq).toBe(1);
     expect(result.cachedAt).toBeGreaterThan(0);
+  });
+
+  it("persists the agent summary needed to render cached history", () => {
+    const session = makeSession({
+      detail: {
+        agent: {
+          id: "agent-1",
+          badge: "A",
+          profile: "default",
+          lifecycle: "asleep",
+          focusSummary: "",
+          workspace: "",
+          attention: "",
+          model: "default",
+          footer: "",
+          subtitle: "",
+          lastBrief: "",
+          lastTurnTime: "",
+          pending: 0,
+          activeTaskCount: 0,
+          waitingCount: 0,
+          posture: "",
+          postureReason: "",
+        },
+        timeline: [],
+        source: "http",
+        events: [],
+      },
+    });
+
+    expect(extractCacheableSession("local", "agent-1", session).agentSummary).toMatchObject({
+      id: "agent-1",
+      lifecycle: "asleep",
+    });
   });
 
   it("excludes UI state fields", () => {
@@ -130,6 +168,47 @@ describe("hydrateSessionFromCache", () => {
     expect(result.eventSeqs).toEqual([1]);
     expect(result.newestSeq).toBe(1);
     expect(result.oldestSeq).toBe(1);
+  });
+
+  it("restores a renderable detail when the cache includes an agent summary", () => {
+    const cached = {
+      remoteKey: "local",
+      agentId: "agent-1",
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      projectionGeneration: SESSION_PROJECTION_GENERATION,
+      agentSummary: {
+        id: "agent-1",
+        badge: "A",
+        profile: "default",
+        lifecycle: "asleep",
+        focusSummary: "",
+        workspace: "",
+        attention: "",
+        model: "default",
+        footer: "",
+        subtitle: "",
+        lastBrief: "",
+        lastTurnTime: "",
+        pending: 0,
+        activeTaskCount: 0,
+        waitingCount: 0,
+        posture: "",
+        postureReason: "",
+      },
+      eventsBySeq: { 1: { id: "e1", event_seq: 1 } },
+      eventSeqs: [1],
+      messagesById: {},
+      transcriptEntriesById: {},
+      briefRecordsById: {},
+      cachedAt: Date.now(),
+    };
+
+    const result = hydrateSessionFromCache(cached);
+
+    expect(result.detail?.agent.id).toBe("agent-1");
+    expect(result.cacheStatus).toBe("hit");
+    expect(result.contentStatus).toBe("available");
+    expect(result.syncStatus).toBe("stale");
   });
 
   it("does not include UI state fields", () => {

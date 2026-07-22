@@ -8,7 +8,7 @@
 
 const DB_NAME = "holon-webgui-cache";
 const DB_VERSION = 1;
-export const CACHE_SCHEMA_VERSION = 3;
+export const CACHE_SCHEMA_VERSION = 4;
 const SESSIONS_STORE = "sessions";
 const META_STORE = "meta";
 
@@ -17,6 +17,7 @@ export interface CachedAgentSession {
   agentId: string;
   schemaVersion: number;
   projectionGeneration?: number;
+  agentSummary?: unknown;
   eventLogEpoch?: string;
   eventsBySeq: Record<number, unknown>;
   eventSeqs: number[];

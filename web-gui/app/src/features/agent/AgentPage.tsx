@@ -34,6 +34,8 @@ interface AgentPageProps {
   agent: AgentSummary;
   detail: AgentDetail | null;
   detailLoading?: boolean;
+  contentStatus?: "unknown" | "available" | "confirmed-empty";
+  syncStatus?: "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
   displayLevel: DisplayLevel;
   sendingPrompt: boolean;
   hasOlderEvents: boolean;
@@ -287,6 +289,8 @@ export function AgentPage({
   agent,
   detail,
   detailLoading,
+  contentStatus = "unknown",
+  syncStatus = "idle",
   displayLevel,
   sendingPrompt,
   hasOlderEvents,
@@ -720,11 +724,12 @@ export function AgentPage({
               </div>
             ) : null}
             {timeline.length === 0 ? (
-              detailLoading ? (
+              detailLoading || (contentStatus === "unknown" && syncStatus !== "error") ? (
                 <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
                   <LoaderCircle size={24} className="spin" />
+                  <span>{t("common.syncing")}</span>
                 </div>
-              ) : (
+              ) : contentStatus === "confirmed-empty" ? (
               <EmptyState
                 className="conversation-empty"
                 icon="↵"
@@ -735,7 +740,12 @@ export function AgentPage({
                     : t("agent.noEventsYet")
                 }
               />
-              )
+              ) : null
+            ) : null}
+            {timeline.length > 0 && (syncStatus === "refreshing" || syncStatus === "stale") ? (
+              <div className="history-status" role="status">
+                {syncStatus === "refreshing" ? t("common.refreshing") : t("common.syncing")}
+              </div>
             ) : null}
           </div>
 
