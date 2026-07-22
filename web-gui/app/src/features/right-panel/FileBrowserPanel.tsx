@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
+  ArrowUp,
   Braces,
   File as FileIcon,
   FileCode2,
@@ -10,6 +11,8 @@ import {
   Folder,
   Link,
   RefreshCw,
+  Search,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { createHighlighter, type Highlighter } from "shiki";
@@ -28,6 +31,7 @@ interface FileBrowserPanelProps {
   executionRootId?: string;
   initialFilePath?: string;
   initialPath?: string;
+  workspaceLabel?: string;
   onClose?: () => void;
 }
 
@@ -155,7 +159,7 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
   return highlighted;
 }
 
-export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, onClose }: FileBrowserPanelProps) {
+export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, workspaceLabel, onClose }: FileBrowserPanelProps) {
   const { t } = useTranslation();
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
@@ -174,6 +178,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const autoOpenedRef = useRef(false);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const [showRendered, setShowRendered] = useState(true);
+  const [viewMode, setViewMode] = useState<"files" | "preview">("files");
+  const [filterText, setFilterText] = useState("");
 
   // Determine whether the selected file is markdown.
   const isMarkdownFile = selectedFile?.path?.toLowerCase().endsWith(".md") ?? false;
@@ -195,6 +201,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       setLoading(true);
       setError(undefined);
       setSelectedFile(null);
+      setViewMode("files");
+      setFilterText("");
       try {
         const result = await browseWorkspaceDir(workspaceId, path || undefined, executionRootId);
         setListing(result);
@@ -247,6 +255,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     const entry = listing.entries.find((e) => e.name === fileName);
     if (!entry) return;
     autoOpenedRef.current = true;
+    setViewMode("preview");
     void openEntry(entry);
   }, [listing, initialFilePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -269,6 +278,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
 
     const filePath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+    setViewMode("preview");
 
     if (isImageFile(entry.mimeType)) {
       setSelectedFile({ path: filePath, loading: false, mimeType: entry.mimeType });
@@ -369,24 +379,27 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const dirs = visibleEntries.filter((e) => e.type === "directory" || e.type === "symlink");
   const files = visibleEntries.filter((e) => e.type === "file");
   const sortedEntries = [...dirs, ...files];
-  if (!atRoot) {
-    sortedEntries.unshift({ name: "..", type: "directory" as const, size: 0, mimeType: undefined });
-  }
+  const filteredEntries = filterText
+    ? sortedEntries.filter((e) => e.name.toLowerCase().includes(filterText.toLowerCase()))
+    : sortedEntries;
 
   return (
     <div className="file-browser">
       <div className="file-browser-toolbar">
         <button type="button" className="file-browser-back-btn" onClick={() => onClose?.()}>
           <ArrowLeft size={14} />
-          {t("fileBrowser.back")}
+          {t("fileBrowser.overview")}
         </button>
-        <nav className="file-browser-breadcrumb" aria-label="Path breadcrumb">
+        {workspaceLabel ? (
+          <span className="file-browser-ws-label">{workspaceLabel}</span>
+        ) : null}
+        <nav className="file-browser-breadcrumb" aria-label={t("fileBrowser.pathBreadcrumb")}>
           <button
             type="button"
             className="file-browser-crumb"
             onClick={() => void loadDir("")}
           >
-            root
+            {t("fileBrowser.root")}
           </button>
           {breadcrumbParts.map((part, i) => (
             <span key={i} className="file-browser-crumb-group">
@@ -401,40 +414,101 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             </span>
           ))}
         </nav>
-        {!selectedFile ? (
+        <button
+          type="button"
+          className="file-browser-up-btn"
+          disabled={atRoot}
+          aria-label={t("fileBrowser.upDir")}
+          onClick={() => void loadDir(parentPath)}
+        >
+          <ArrowUp size={14} />
+        </button>
+        {viewMode === "files" ? (
         <label className="file-browser-hidden-toggle">
           <input
             type="checkbox"
             checked={showHidden}
             onChange={(e) => setShowHidden(e.target.checked)}
           />
-          <small>hidden</small>
+          <small>{t("fileBrowser.hidden")}</small>
         </label>
         ) : null}
         <button
           type="button"
           className="file-browser-refresh"
-          aria-label={selectedFile ? t("fileBrowser.refreshFile") : t("fileBrowser.refreshDir")}
-          onClick={() => void (selectedFile ? reloadFile() : loadDir(currentPath))}
+          aria-label={viewMode === "preview" && selectedFile ? t("fileBrowser.refreshFile") : t("fileBrowser.refreshDir")}
+          onClick={() => void (viewMode === "preview" && selectedFile ? reloadFile() : loadDir(currentPath))}
         >
           <RefreshCw size={14} />
         </button>
       </div>
 
+      <div className="file-browser-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === "files"}
+          className={viewMode === "files" ? "active" : ""}
+          onClick={() => setViewMode("files")}
+        >
+          {t("fileBrowser.files")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === "preview"}
+          className={viewMode === "preview" ? "active" : ""}
+          disabled={!selectedFile}
+          onClick={() => setViewMode("preview")}
+        >
+          {t("fileBrowser.preview")}
+        </button>
+      </div>
+
+      {viewMode === "files" ? (
+        <div className="file-browser-filter">
+          <Search size={14} className="file-browser-filter-icon" />
+          <input
+            type="text"
+            placeholder={t("fileBrowser.filterPlaceholder")}
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+          />
+          {filterText ? (
+            <>
+              <small className="file-browser-filter-count">
+                {filteredEntries.length}/{sortedEntries.length}
+              </small>
+              <button
+                type="button"
+                className="file-browser-filter-clear"
+                aria-label={t("fileBrowser.filterClear")}
+                onClick={() => setFilterText("")}
+              >
+                <X size={14} />
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
       {error ? <p className="inspector-error">{error}</p> : null}
 
-      {loading && !listing ? (
+      {viewMode === "files" ? (
+        <>
+          {loading && !listing ? (
         <p className="inspector-muted">{t("common.loading")}</p>
-      ) : sortedEntries.length === 0 ? (
-        <p className="inspector-muted">Empty directory</p>
+          ) : filteredEntries.length === 0 ? (
+            <p className="inspector-muted">
+              {filterText ? t("fileBrowser.noMatch") : t("fileBrowser.emptyDir")}
+            </p>
       ) : (
         <ul className="file-browser-list">
-          {sortedEntries.map((entry) => (
+          {filteredEntries.map((entry) => (
             <li key={entry.name}>
               <button
                 type="button"
                 className="file-browser-entry"
-                data-parent-dir={entry.name === ".." ? true : undefined}
                 data-selected={selectedFile?.path === (currentPath ? `${currentPath}/${entry.name}` : entry.name)}
                 onClick={() => void openEntry(entry)}
               >
@@ -449,26 +523,27 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         </ul>
       )}
 
-      {selectedFile ? (
+        </>
+      ) : selectedFile ? (
         <div className="file-browser-viewer">
           <div className="file-browser-viewer-head">
-            <strong>{selectedFile.path.split("/").pop()}</strong>
+            <strong title={selectedFile.path}>{selectedFile.path}</strong>
             <div className="file-browser-viewer-actions">
               {isMarkdownFile ? (
-                <div className="file-browser-md-toggle" role="group" aria-label="Markdown view mode">
+                <div className="file-browser-md-toggle" role="group" aria-label={t("fileBrowser.markdownView")}>
                   <button
                     type="button"
                     className={showRendered ? "active" : ""}
                     onClick={() => setShowRendered(true)}
                   >
-                    Rendered
+                    {t("fileBrowser.rendered")}
                   </button>
                   <button
                     type="button"
                     className={!showRendered ? "active" : ""}
                     onClick={() => setShowRendered(false)}
                   >
-                    Source
+                    {t("fileBrowser.source")}
                   </button>
                 </div>
               ) : null}
@@ -482,14 +557,14 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                   ? t("fileBrowser.downloading")
                   : t("fileBrowser.download")}
               </button>
-              <button type="button" className="file-browser-close-btn" aria-label="Close file" onClick={() => setSelectedFile(null)}>× Close</button>
+              <button type="button" className="file-browser-close-btn" aria-label={t("fileBrowser.closeFile")} onClick={() => { setSelectedFile(null); setViewMode("files"); }}>{t("fileBrowser.closeFile")}</button>
             </div>
           </div>
           {downloadState?.path === selectedFile.path && downloadState.error ? (
             <p className="inspector-error">{downloadState.error}</p>
           ) : null}
           {selectedFile.loading ? (
-            <p className="inspector-muted">Loading file…</p>
+            <p className="inspector-muted">{t("fileBrowser.loadingFile")}</p>
           ) : selectedFile.error ? (
             <p className="inspector-error">{selectedFile.error}</p>
           ) : isImageFile(selectedFile.mimeType) ? (
@@ -504,8 +579,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             <>
               {selectedFile.truncated ? (
                 <p className="inspector-muted">
-                  File truncated — showing partial content
-                  {selectedFile.totalSize ? ` (${formatSize(selectedFile.totalSize)} total)` : ""}.
+                  {selectedFile.totalSize
+                    ? t("fileBrowser.fileTruncated", { size: formatSize(selectedFile.totalSize) })
+                    : t("fileBrowser.fileTruncatedNoSize")}
                 </p>
               ) : null}
               {isMarkdownFile && showRendered ? (
@@ -532,7 +608,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             </div>
           )}
         </div>
-      ) : null}
+      ) : (
+        <p className="inspector-muted">{t("fileBrowser.noFileSelected")}</p>
+      )}
     </div>
   );
 }
