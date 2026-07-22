@@ -1340,7 +1340,7 @@ fn wait_resume_shadow_comparison_records_task_result_matching_active_wait() {
     .work_item_id("wi-1");
     let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
         .expect("task result matching active wait should produce wait resume comparison");
-    assert_eq!(comparison.scenario_class, "wait_resume");
+    assert_eq!(comparison.scenario_class.as_str(), "exact_task_rejoin");
     assert!(comparison.matched);
     assert_eq!(comparison.divergence_code, None);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
@@ -1407,8 +1407,63 @@ fn wait_resume_claim_authority_scope_is_derived_without_shadow_evidence() {
 
     assert_eq!(
         scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
-        vec![scheduler::WAIT_RESUME_SCENARIO]
+        vec![scheduler::EXACT_TASK_REJOIN_SCENARIO]
     );
+}
+
+#[test]
+fn system_wait_resume_uses_exact_wait_resume_authority_class() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-system".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::System,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "system_tick".into(),
+            wake_sources: vec![WakeSource::SystemTick],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "scheduler".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "system_wait_resume",
+    )
+    .message(&message)
+    .model_reentry(true);
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::EXACT_WAIT_RESUME_SCENARIO]
+    );
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("system tick matching an active wait should produce a comparison");
+    assert_eq!(comparison.scenario_class.as_str(), "exact_wait_resume");
 }
 
 #[test]
@@ -1587,7 +1642,7 @@ fn settlement_shadow_comparison_records_processed_settlement() {
     let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
     let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
         .expect("processed settlement should produce comparison");
-    assert_eq!(comparison.scenario_class, "settlement");
+    assert_eq!(comparison.scenario_class.as_str(), "settlement");
     assert!(comparison.matched);
     assert_eq!(comparison.divergence_code, None);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
@@ -1708,7 +1763,7 @@ fn delivery_shadow_comparison_records_processed_with_completed_turn() {
     let record = make_settlement_record("msg-1", QueueEntryStatus::Processed);
     let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
         .expect("processed delivery should produce comparison");
-    assert_eq!(comparison.scenario_class, "delivery");
+    assert_eq!(comparison.scenario_class.as_str(), "delivery");
     assert!(comparison.matched);
     assert_eq!(comparison.divergence_code, None);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
@@ -1860,7 +1915,7 @@ fn operator_interjection_shadow_comparison_for_after_provider_round() {
         scheduler::InterjectionBoundary::AfterProviderRound,
     )
     .expect("interjection should produce comparison");
-    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert_eq!(comparison.scenario_class.as_str(), "operator_interjection");
     assert!(comparison.matched);
     assert_eq!(comparison.divergence_code, None);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
@@ -1888,7 +1943,7 @@ fn operator_interjection_shadow_comparison_for_before_tool_execution() {
         scheduler::InterjectionBoundary::BeforeToolExecution,
     )
     .expect("interjection should produce comparison");
-    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert_eq!(comparison.scenario_class.as_str(), "operator_interjection");
     assert!(comparison.matched);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
     assert_eq!(
@@ -1916,7 +1971,7 @@ fn operator_interjection_shadow_comparison_for_after_tool_results() {
         scheduler::InterjectionBoundary::AfterToolResults,
     )
     .expect("interjection should produce comparison");
-    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert_eq!(comparison.scenario_class.as_str(), "operator_interjection");
     assert!(comparison.matched);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
     assert_eq!(observation["interjection_boundary"], "after_tool_results");
@@ -1940,7 +1995,7 @@ fn operator_interjection_shadow_comparison_for_before_provider_continuation() {
         scheduler::InterjectionBoundary::BeforeProviderContinuation,
     )
     .expect("interjection should produce comparison");
-    assert_eq!(comparison.scenario_class, "operator_interjection");
+    assert_eq!(comparison.scenario_class.as_str(), "operator_interjection");
     assert!(comparison.matched);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
     assert_eq!(

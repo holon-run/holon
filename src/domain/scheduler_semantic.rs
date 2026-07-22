@@ -9,14 +9,17 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-use super::scheduler_protocol::{activation_provenance_has_valid_authority, ActivationProvenance};
+use super::scheduler_protocol::{
+    activation_provenance_has_valid_authority, ActivationProvenance, SchedulerScenarioClass,
+};
 use crate::types::{
     AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageEnvelope, MessageOrigin,
 };
 
 pub const MAX_CONFIDENCE_BPS: u16 = 10_000;
 pub const SEMANTIC_CONTRACT_REVISION: u64 = 2;
-pub const SEMANTIC_OPERATOR_BINDING_SCENARIO: &str = "ordinary_semantic_operator_binding";
+pub const SEMANTIC_OPERATOR_BINDING_SCENARIO: SchedulerScenarioClass =
+    SchedulerScenarioClass::OrdinarySemanticOperatorBinding;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

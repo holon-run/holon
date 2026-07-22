@@ -11,10 +11,11 @@ use model::{
     ActivationSlot, ActivationState, ActivationTrust, AdmissionCause, AdmitActivationCommand,
     AgentActivation, AgentDispatchDisposition, AgentDispatchState, Decision, Event,
     IssueActivationAuthorityCommand, MissingSettlementRecord, ObservationalDivergenceAllowance,
-    PreemptionPolicy, ProtocolCommand, ProtocolConflictKind, ProtocolMode, RollbackAction,
-    RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutManifest, RolloutPreflightState,
-    RolloutState, ScenarioMode, SettleActivationCommand, Settlement, Snapshot,
-    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand, WorkStatus,
+    PreemptionPolicy, ProtocolCommand, ProtocolConflictKind, ProtocolMode,
+    RegisterWorkDemandCommand, RollbackAction, RollbackPolicy, RollbackTrigger,
+    RolloutClassEvidence, RolloutManifest, RolloutPreflightState, RolloutState, ScenarioMode,
+    SettleActivationCommand, Settlement, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
+    WaitState, WaitTrigger, WorkDemand, WorkStatus,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -2243,6 +2244,54 @@ fn typed_settlement_has_one_canonical_identity_and_idempotent_replay() {
         conflicting.outcome.diagnostics,
         ["activation_terminal_settlement_already_recorded"]
     );
+}
+
+#[test]
+fn work_demand_registration_is_typed_idempotent_and_conflict_safe() {
+    let snapshot = minimal_snapshot(1);
+    let demand = WorkDemand {
+        metadata_revision: 3,
+        scheduling_generation: 1,
+        status: WorkStatus::Runnable,
+        capabilities: BTreeSet::from(["workspace_write".into()]),
+        locks: BTreeSet::from(["workspace:holon".into()]),
+        locality: "workspace:holon".into(),
+        cost_class: "standard".into(),
+    };
+    let command = ProtocolCommand::RegisterWorkDemand(RegisterWorkDemandCommand {
+        work_item_id: "work-b".into(),
+        demand: demand.clone(),
+    });
+
+    let registered = reduce_command(&snapshot, &command);
+    assert_eq!(registered.outcome.decision, Decision::WorkDemandRegistered);
+    assert_eq!(registered.outcome.snapshot.work["work-b"], demand);
+    assert_invariants(&registered.outcome.snapshot).expect("registered demand must be canonical");
+
+    let replay = reduce_command(&registered.outcome.snapshot, &command);
+    assert_eq!(replay.outcome.decision, Decision::DuplicateIgnored);
+    assert_eq!(replay.outcome.snapshot, registered.outcome.snapshot);
+
+    let conflicting = reduce_command(
+        &registered.outcome.snapshot,
+        &ProtocolCommand::RegisterWorkDemand(RegisterWorkDemandCommand {
+            work_item_id: "work-b".into(),
+            demand: WorkDemand {
+                metadata_revision: 4,
+                ..registered.outcome.snapshot.work["work-b"].clone()
+            },
+        }),
+    );
+    assert_eq!(conflicting.outcome.decision, Decision::Rejected);
+    assert_eq!(
+        conflicting.conflict.expect("typed conflict").kind,
+        ProtocolConflictKind::IdentityConflict
+    );
+    assert_eq!(
+        conflicting.outcome.diagnostics,
+        ["work_demand_registration_conflict"]
+    );
+    assert_eq!(conflicting.outcome.snapshot, registered.outcome.snapshot);
 }
 
 #[test]

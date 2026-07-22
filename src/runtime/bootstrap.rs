@@ -40,8 +40,9 @@ use crate::{
 
 use super::{
     clock::{Clock, SystemClock},
-    scheduler_executor, workspace, AgentRuntimeProjectionCache, InitialWorkspaceBinding,
-    RuntimeAgent, RuntimeHandle, RuntimeInner,
+    scheduler_executor, scheduler_protocol_production_commands_enabled_from_env, workspace,
+    AgentRuntimeProjectionCache, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle,
+    RuntimeInner,
 };
 
 /// Snapshot of config-derived runtime fields that can be hot-swapped at runtime.
@@ -357,6 +358,9 @@ impl RuntimeHandle {
                 recovered_timers: Mutex::new(Some(active_timers)),
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
+                scheduler_protocol_production_commands_enabled: AtomicBool::new(
+                    scheduler_protocol_production_commands_enabled_from_env()?,
+                ),
                 #[cfg(test)]
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]

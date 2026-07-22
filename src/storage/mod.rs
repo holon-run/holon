@@ -357,6 +357,10 @@ impl AppStorage {
         self.store.event_log().append(event)
     }
 
+    pub fn append_events(&self, events: &[AuditEvent]) -> Result<()> {
+        self.store.event_log().append_many(events)
+    }
+
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         self.store.append_brief(brief)
     }

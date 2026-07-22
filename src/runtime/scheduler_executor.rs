@@ -74,6 +74,12 @@ pub(super) struct ScheduledMessage {
     pub(super) scheduler_decision: scheduler::SchedulerDecision,
 }
 
+struct CanonicalClaimPlan {
+    work_item: crate::types::WorkItemRecord,
+    bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
+    commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
+}
+
 pub(super) struct SchedulerDecisionExecutor<'a> {
     runtime: &'a RuntimeHandle,
 }
@@ -346,10 +352,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &projection,
             &candidate.message,
             dispatch_plan.continuation_resolution.as_ref(),
-        )
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+        );
         let shadow_comparison = scheduler::shadow_comparison_for_message_admission(
             &projection,
             &candidate.message,
@@ -359,6 +362,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         .or_else(|| {
             scheduler::shadow_comparison_for_wait_resume(&projection, &candidate.message, &decision)
         });
+        let scheduler_decision_events = scheduler::scheduler_decision_events(
+            &candidate.message.agent_id,
+            &decision,
+            shadow_comparison.as_ref(),
+        )?;
         let shadow_comparison = shadow_comparison
             .map(scheduler_shadow_comparison_command)
             .transpose()?;
@@ -384,6 +392,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &persisted_message,
         )?
         .map(scheduler_semantic_shadow_command);
+        let canonical_claim =
+            self.canonical_work_queue_claim_plan(&projection, &candidate.message)?;
         scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -427,6 +437,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     mutation: crate::runtime_db::transitions::QueueMutation::Consume(
                         queue_record.clone(),
                     ),
+                    scheduler_claim_work_item: canonical_claim
+                        .as_ref()
+                        .map(|plan| plan.work_item.clone()),
+                    scheduler_protocol_bootstrap: canonical_claim
+                        .as_ref()
+                        .and_then(|plan| plan.bootstrap.clone()),
+                    scheduler_protocol_commands: canonical_claim
+                        .as_ref()
+                        .map(|plan| plan.commands.clone())
+                        .unwrap_or_default(),
                     scheduler_authority_scenarios,
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(guard.state.clone())),
@@ -435,7 +455,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
                     audit_events: vec![
-                        scheduler::scheduler_decision_event(&decision),
+                        scheduler_decision_events[0].clone(),
+                        scheduler_decision_events[1].clone(),
                         AuditEvent::legacy(
                             "queue_entry_claimed",
                             serde_json::json!({
@@ -486,6 +507,183 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
+    fn canonical_work_queue_claim_plan(
+        &self,
+        _projection: &scheduler::SchedulerProjection,
+        message: &MessageEnvelope,
+    ) -> Result<Option<CanonicalClaimPlan>> {
+        if !self
+            .runtime
+            .scheduler_protocol_production_commands_enabled()
+        {
+            return Ok(None);
+        }
+        if !matches!(
+            (&message.kind, &message.origin),
+            (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                if subsystem == "work_queue"
+        ) {
+            return Ok(None);
+        }
+
+        let work_item_id = message
+            .work_item_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("canonical work queue claim requires a WorkItem binding"))?;
+        let work_item = self
+            .runtime
+            .inner
+            .storage
+            .latest_work_item(work_item_id)?
+            .ok_or_else(|| anyhow!("canonical work queue claim references unknown WorkItem"))?;
+        let work_queue = self.runtime.inner.storage.work_queue_prompt_projection()?;
+        if work_item.agent_id != message.agent_id
+            || work_item.state != crate::types::WorkItemState::Open
+            || !work_queue.items.iter().any(|candidate| {
+                candidate.id == work_item.id
+                    && candidate.scheduling_state == crate::types::WorkItemSchedulingState::Runnable
+            })
+        {
+            return Err(anyhow!(
+                "canonical work queue claim requires a runnable same-agent WorkItem"
+            ));
+        }
+
+        use crate::domain::scheduler_protocol::{
+            ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
+            ActivationPriority, ActivationProvenance, ActivationSlot, ActivationTrust,
+            AdmitActivationCommand, AgentActivation, AgentDispatchState,
+            IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand,
+            RegisterWorkDemandCommand, RolloutState, Snapshot, WorkDemand, WorkStatus,
+        };
+
+        let existing = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?;
+        let new_demand = || WorkDemand {
+            metadata_revision: work_item.revision.max(1),
+            scheduling_generation: work_item.revision.max(1),
+            status: WorkStatus::Runnable,
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        };
+        let (bootstrap, expected_dispatch_revision, scheduling_generation, register) =
+            if let Some(snapshot) = existing.as_ref() {
+                if let Some(demand) = snapshot.work.get(work_item_id) {
+                    if demand.status != WorkStatus::Runnable {
+                        return Err(anyhow!(
+                            "canonical WorkItem demand is not runnable for claim"
+                        ));
+                    }
+                    (
+                        None,
+                        snapshot.dispatch_revision,
+                        demand.scheduling_generation,
+                        None,
+                    )
+                } else {
+                    let demand = new_demand();
+                    (
+                        None,
+                        snapshot.dispatch_revision,
+                        demand.scheduling_generation,
+                        Some(ProtocolCommand::RegisterWorkDemand(
+                            RegisterWorkDemandCommand {
+                                work_item_id: work_item.id.clone(),
+                                demand,
+                            },
+                        )),
+                    )
+                }
+            } else {
+                let demand = new_demand();
+                (
+                    Some(Snapshot {
+                        slot: ActivationSlot::Idle,
+                        dispatch: AgentDispatchState::Open,
+                        dispatch_revision: 0,
+                        focus: None,
+                        work: Default::default(),
+                        waits: Default::default(),
+                        activations: Default::default(),
+                        activation_authorities: Default::default(),
+                        activation_admissions: Default::default(),
+                        settlements: Default::default(),
+                        missing_settlements: Default::default(),
+                        rollout: RolloutState::default(),
+                        admitted_generations: Default::default(),
+                        continuation_admissions: Default::default(),
+                    }),
+                    0,
+                    demand.scheduling_generation,
+                    Some(ProtocolCommand::RegisterWorkDemand(
+                        RegisterWorkDemandCommand {
+                            work_item_id: work_item.id.clone(),
+                            demand,
+                        },
+                    )),
+                )
+            };
+
+        let activation_id = canonical_activation_id(&message.id);
+        let activation = AgentActivation {
+            id: activation_id.clone(),
+            agent_id: message.agent_id.clone(),
+            state: ActivationLifecycleState::Admitted,
+            cause: ActivationCause::WorkItemRunnable {
+                work_item_id: work_item.id.clone(),
+                scheduling_generation,
+            },
+            binding: ActivationBinding::WorkItem {
+                work_item_id: work_item.id.clone(),
+            },
+            priority: match message.priority {
+                Priority::Interject => ActivationPriority::Interject,
+                Priority::Next => ActivationPriority::Next,
+                Priority::Normal => ActivationPriority::Normal,
+                Priority::Background => ActivationPriority::Background,
+            },
+            preemption: PreemptionPolicy::NonPreemptive,
+            source_revision: Some(work_item.revision),
+            idempotency_key: format!("work-queue-message:{}", message.id),
+            provenance: ActivationProvenance {
+                origin: ActivationOrigin::System,
+                trust: ActivationTrust::RuntimeInstruction,
+                source_id: message.id.clone(),
+                correlation_id: message.correlation_id.clone(),
+                causation_id: message.causation_id.clone(),
+            },
+        };
+        let authority_id = format!("authority:{activation_id}");
+        let authority = IssueActivationAuthorityCommand {
+            authority_id: authority_id.clone(),
+            activation: activation.clone(),
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision,
+        };
+        let admission = AdmitActivationCommand {
+            authority_id,
+            activation,
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision,
+        };
+        let mut commands = Vec::with_capacity(3);
+        commands.extend(register);
+        commands.push(ProtocolCommand::IssueActivationAuthority(authority));
+        commands.push(ProtocolCommand::AdmitActivation(admission));
+
+        Ok(Some(CanonicalClaimPlan {
+            work_item,
+            bootstrap,
+            commands,
+        }))
+    }
+
     fn append_posture_decision(
         &self,
         boundary: &'static str,
@@ -507,6 +705,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     }
 }
 
+pub(super) fn canonical_activation_id(message_id: &str) -> String {
+    format!("activation:message:{message_id}")
+}
+
 fn scheduler_semantic_shadow_command(
     decision: scheduler::SchedulerSemanticShadowDecision,
 ) -> crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerSemanticShadowCommand {
@@ -525,7 +727,7 @@ pub(super) fn scheduler_shadow_comparison_command(
 > {
     Ok(
         crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerShadowComparisonCommand {
-            scenario_class: comparison.scenario_class.into(),
+            scenario_class: comparison.scenario_class.as_str().into(),
             comparison_identity: comparison.comparison_identity,
             boundary: comparison.boundary.into(),
             input_identity: comparison.input_identity,

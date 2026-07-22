@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::scheduler_protocol::SchedulerScenarioClass;
 use crate::domain::scheduler_semantic::{
     structural_semantic_proposal, SemanticProposalProviderConfig, SemanticProposalProviderIdentity,
     SemanticProposalResponse, SemanticValidationPolicy, SemanticWaitCandidate,
@@ -19,13 +20,18 @@ use crate::work_item_scheduling::WorkItemSchedulingProjection;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: &str = "reducer_only_candidates";
-pub(crate) const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: &str =
-    "work_item_autonomous_continuation";
-pub(crate) const WAIT_RESUME_SCENARIO: &str = "wait_resume";
-pub(crate) const SETTLEMENT_SCENARIO: &str = "settlement";
-pub(crate) const DELIVERY_SCENARIO: &str = "delivery";
-pub(crate) const INTERJECTION_SCENARIO: &str = "operator_interjection";
+pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: SchedulerScenarioClass =
+    SchedulerScenarioClass::ReducerOnlyCandidates;
+pub(crate) const WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO: SchedulerScenarioClass =
+    SchedulerScenarioClass::WorkItemAutonomousContinuation;
+pub(crate) const EXACT_TASK_REJOIN_SCENARIO: SchedulerScenarioClass =
+    SchedulerScenarioClass::ExactTaskRejoin;
+pub(crate) const EXACT_WAIT_RESUME_SCENARIO: SchedulerScenarioClass =
+    SchedulerScenarioClass::ExactWaitResume;
+pub(crate) const SETTLEMENT_SCENARIO: SchedulerScenarioClass = SchedulerScenarioClass::Settlement;
+pub(crate) const DELIVERY_SCENARIO: SchedulerScenarioClass = SchedulerScenarioClass::Delivery;
+pub(crate) const INTERJECTION_SCENARIO: SchedulerScenarioClass =
+    SchedulerScenarioClass::OperatorInterjection;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -677,7 +683,7 @@ pub(crate) enum RestrictedSchedulerCandidate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SchedulerShadowComparison {
-    pub scenario_class: &'static str,
+    pub scenario_class: SchedulerScenarioClass,
     pub comparison_identity: String,
     pub boundary: &'static str,
     pub input_identity: String,
@@ -979,24 +985,46 @@ pub(crate) fn scheduler_decision_event(decision: &SchedulerDecision) -> AuditEve
     )
 }
 
+pub(crate) fn scheduler_diagnostic_event(
+    agent_id: &str,
+    decision: &SchedulerDecision,
+    shadow: Option<&SchedulerShadowComparison>,
+) -> Result<AuditEvent> {
+    let payload = scheduler_diagnostic_audit_event(agent_id, decision, shadow);
+    AuditEvent::typed(
+        crate::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
+        &payload,
+    )
+}
+
+pub(crate) fn scheduler_decision_events(
+    agent_id: &str,
+    decision: &SchedulerDecision,
+    shadow: Option<&SchedulerShadowComparison>,
+) -> Result<[AuditEvent; 2]> {
+    Ok([
+        scheduler_diagnostic_event(agent_id, decision, shadow)?,
+        scheduler_decision_event(decision),
+    ])
+}
+
 pub(crate) fn append_scheduler_decision(
     storage: &AppStorage,
     agent_id: &str,
     decision: &SchedulerDecision,
 ) -> Result<bool> {
-    let event = scheduler_decision_event(decision);
-    // Also emit the typed public diagnostic event alongside the legacy record.
-    let _ = append_scheduler_diagnostic_event(storage, agent_id, decision, None)?;
+    let events = scheduler_decision_events(agent_id, decision, None)?;
+    let legacy_event = &events[1];
     let duplicate = storage
         .read_recent_events(32)?
         .into_iter()
         .rev()
-        .find(|latest| latest.kind == event.kind)
-        .is_some_and(|latest| latest.data == event.data);
+        .find(|latest| latest.kind == legacy_event.kind)
+        .is_some_and(|latest| latest.data == legacy_event.data);
     if duplicate {
         return Ok(false);
     }
-    storage.append_event(&event)?;
+    storage.append_events(&events)?;
     Ok(true)
 }
 
@@ -1013,7 +1041,7 @@ pub(crate) fn scheduler_diagnostic_audit_event(
     let (scenario_class, shadow_matched, divergence_code) = shadow
         .map(|sc| {
             (
-                Some(sc.scenario_class.to_string()),
+                Some(sc.scenario_class.as_str().to_string()),
                 Some(sc.matched),
                 sc.divergence_code.map(|c| c.to_string()),
             )
@@ -1033,33 +1061,6 @@ pub(crate) fn scheduler_diagnostic_audit_event(
         task_id: decision.task_id.clone(),
         evidence: decision.evidence.clone(),
     }
-}
-
-/// Emit a typed scheduler diagnostic event alongside the legacy audit record.
-/// The legacy `scheduler_decision` event is retained for backward compatibility;
-/// the typed event extends observability into the public event stream.
-pub(crate) fn append_scheduler_diagnostic_event(
-    storage: &AppStorage,
-    agent_id: &str,
-    decision: &SchedulerDecision,
-    shadow: Option<&SchedulerShadowComparison>,
-) -> Result<bool> {
-    let payload = scheduler_diagnostic_audit_event(agent_id, decision, shadow);
-    let event = crate::types::AuditEvent::typed(
-        crate::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
-        &payload,
-    )?;
-    let duplicate = storage
-        .read_recent_events(32)?
-        .into_iter()
-        .rev()
-        .find(|latest| latest.kind == event.kind)
-        .is_some_and(|latest| latest.data == event.data);
-    if duplicate {
-        return Ok(false);
-    }
-    storage.append_event(&event)?;
-    Ok(true)
 }
 
 pub(crate) fn message_processing_decision(
@@ -1147,13 +1148,16 @@ pub(crate) fn authority_scenarios_for_message_claim(
     projection: &SchedulerProjection,
     message: &MessageEnvelope,
     continuation_resolution: Option<&ContinuationResolution>,
-) -> Vec<&'static str> {
+) -> Vec<SchedulerScenarioClass> {
     let mut scenarios = Vec::with_capacity(1);
     if message_admission_scenario_applies(message, continuation_resolution) {
         scenarios.push(REDUCER_ONLY_CANDIDATES_SCENARIO);
     }
     if wait_resume_scenario_applies(projection, message) {
-        scenarios.push(WAIT_RESUME_SCENARIO);
+        scenarios.push(
+            wait_resume_scenario_class(message)
+                .expect("applicable wait resume has a registered scenario class"),
+        );
     }
     scenarios
 }
@@ -1242,7 +1246,8 @@ pub(crate) fn shadow_comparison_for_wait_resume(
         _ => unreachable!(),
     };
     Some(SchedulerShadowComparison {
-        scenario_class: WAIT_RESUME_SCENARIO,
+        scenario_class: wait_resume_scenario_class(message)
+            .expect("applicable wait resume has a registered scenario class"),
         comparison_identity: format!("wait_resume:{}", message.id),
         boundary: SchedulerBoundary::RunLoop.as_str(),
         input_identity,
@@ -1251,6 +1256,14 @@ pub(crate) fn shadow_comparison_for_wait_resume(
         matched,
         divergence_code: (!matched).then_some("wait_resume_outcome_mismatch"),
     })
+}
+
+fn wait_resume_scenario_class(message: &MessageEnvelope) -> Option<SchedulerScenarioClass> {
+    match message.kind {
+        MessageKind::TaskResult => Some(EXACT_TASK_REJOIN_SCENARIO),
+        MessageKind::SystemTick => Some(EXACT_WAIT_RESUME_SCENARIO),
+        _ => None,
+    }
 }
 
 fn wait_resume_scenario_applies(

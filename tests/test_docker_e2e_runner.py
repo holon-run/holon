@@ -129,6 +129,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 model="deepseek/deepseek-v4-flash",
                 credential_envs=[],
                 env_file=None,
+                runtime_env={},
                 evidence_root=Path(directory),
                 timeout_seconds=1,
                 keep=False,
@@ -152,6 +153,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 model="deepseek/deepseek-v4-flash",
                 credential_envs=[],
                 env_file=None,
+                runtime_env={},
                 evidence_root=Path(directory),
                 timeout_seconds=1,
                 keep=False,
@@ -177,6 +179,59 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "runtime failure occurred in complete: provider: connection closed",
             ):
                 harness.assert_tools("complete", 3, ["CompleteWorkItem"])
+
+    def test_scheduler_extended_cases_declare_explicit_feature_flag(self) -> None:
+        selected = runner.select_cases(
+            self.manifest, requested=None, suite="extended", tags=["scheduler"]
+        )
+        self.assertEqual(
+            [case["id"] for case in selected],
+            [
+                "scheduler-autonomous-legacy",
+                "scheduler-autonomous-authoritative",
+            ],
+        )
+        self.assertEqual(
+            [
+                (
+                    case["scheduler_protocol_commands_enabled"],
+                    case["runtime_env"][
+                        "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS"
+                    ],
+                )
+                for case in selected
+            ],
+            [(False, "false"), (True, "true")],
+        )
+        for case in selected:
+            phase = case["phases"][0]
+            self.assertEqual(
+                phase["required_tools"],
+                [
+                    "CreateWorkItem",
+                    "ListWorkItems",
+                    "UpdateWorkItem",
+                    "CompleteWorkItem",
+                ],
+            )
+            self.assertNotIn("GetWorkItem", phase["required_tools"])
+            self.assertNotIn("PickWorkItem", phase["forbidden_tools"])
+
+    def test_scheduler_queue_oracle_uses_current_processed_state(self) -> None:
+        runner.require_processed_queue_entries(
+            [
+                {"message_id": "other", "status": "queued"},
+                {"message_id": "scheduler-tick", "status": "processed"},
+            ],
+            {"scheduler-tick"},
+        )
+        with self.assertRaisesRegex(
+            AssertionError, "did not reach processed current state"
+        ):
+            runner.require_processed_queue_entries(
+                [{"message_id": "scheduler-tick", "status": "dequeued"}],
+                {"scheduler-tick"},
+            )
 
 
 if __name__ == "__main__":

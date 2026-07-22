@@ -207,6 +207,48 @@ impl RuntimeEventLog {
         result
     }
 
+    pub fn append_many(&self, events: &[AuditEvent]) -> Result<()> {
+        let started = std::time::Instant::now();
+        self.ensure_writable()?;
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        let sink = self
+            .audit_event_index
+            .lock()
+            .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
+            .clone();
+        let (agent_id, events) = if let Some(sink) = sink {
+            let agent_id = sink.agent_id.clone();
+            let events = sink
+                .runtime_db
+                .audit_events()
+                .append_many(agent_id.as_deref(), events)?;
+            (agent_id, events)
+        } else {
+            let events = self
+                .runtime_db
+                .audit_events()
+                .append_many(self.agent_id.as_deref(), events)?;
+            (self.agent_id.clone(), events)
+        };
+        for event in &events {
+            if let Err(error) = self.publish(agent_id.clone(), event) {
+                tracing::warn!(
+                    error = %error,
+                    event_id = %event.id,
+                    event_kind = %event.kind,
+                    event_seq = event.event_seq,
+                    agent_id = agent_id.as_deref().unwrap_or("<global>"),
+                    "failed to publish committed audit event"
+                );
+            }
+        }
+        crate::diagnostics::record_storage_append_event(started.elapsed());
+        Ok(())
+    }
+
     pub(super) fn append_with_append_mutex_held(&self, event: &AuditEvent) -> Result<()> {
         self.ensure_writable()?;
         let sink = self
