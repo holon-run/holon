@@ -180,6 +180,8 @@ export function App() {
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
+    contentStatus: agentContentStatus,
+    syncStatus: agentSyncStatus,
     refresh: refreshAgentDetail,
   } = useAgentDetail(activeAgentId, displayLevel);
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
@@ -580,6 +582,8 @@ export function App() {
             agent={activeAgent}
             detail={selectedAgentDetail}
             detailLoading={agentDetailLoading}
+            contentStatus={agentContentStatus}
+            syncStatus={agentSyncStatus}
             displayLevel={displayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             promptError={selectedAgentSession?.promptError}
@@ -588,7 +592,7 @@ export function App() {
             modelCatalogError={selectedAgentSession?.modelError ?? modelCatalogError}
             hasOlderEvents={selectedAgentSession?.hasOlder ?? selectedAgentDetail?.hasOlderEvents ?? false}
             loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
-            historyError={selectedAgentSession?.historyError}
+            historyError={selectedAgentSession?.historyError ?? selectedAgentSession?.error}
             targetEventSeq={selectedAgentSession?.targetEventSeq}
             resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}

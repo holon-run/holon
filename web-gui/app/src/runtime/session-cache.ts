@@ -9,6 +9,7 @@ import {
   CACHE_SCHEMA_VERSION,
   cacheDeleteSession,
   cacheGetAllSessions,
+  cacheGetSession,
   cachePutSession,
   ensureCacheSchemaVersion,
   type CachedAgentSession,
@@ -17,10 +18,12 @@ import type { AgentSessionState } from "./runtime-store-helpers";
 import {
   SESSION_PROJECTION_GENERATION,
   createSessionProjectionState,
+  deriveSessionTimeline,
   reduceSessionProjection,
   type ProjectionEvent,
 } from "./session-projection";
 import type {
+  AgentSummary,
   RuntimeBriefRecord,
   RuntimeMessageEnvelope,
   RuntimeTranscriptEntry,
@@ -32,6 +35,15 @@ export type { CachedAgentSession };
 const MAX_CACHED_AGENTS_PER_REMOTE = 50;
 const MAX_EVENTS_PER_AGENT = 5000;
 const WRITE_DEBOUNCE_MS = 2000;
+
+function cachedAgentSummary(
+  value: unknown,
+  expectedAgentId: string,
+): AgentSummary | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const agent = value as Partial<AgentSummary>;
+  return agent.id === expectedAgentId ? (agent as AgentSummary) : undefined;
+}
 
 /**
  * Compute the isolation key for a remote connection.
@@ -72,6 +84,7 @@ export function extractCacheableSession(
     agentId,
     schemaVersion: CACHE_SCHEMA_VERSION,
     projectionGeneration: session.generation,
+    agentSummary: session.detail?.agent,
     eventLogEpoch: session.eventLogEpoch,
     eventsBySeq,
     eventSeqs,
@@ -89,7 +102,7 @@ export function extractCacheableSession(
  * The caller merges this into an emptyAgentSession() base.
  */
 export function hydrateSessionFromCache(cached: CachedAgentSession): Partial<AgentSessionState> {
-  return reduceSessionProjection(createSessionProjectionState(), {
+  const projection = reduceSessionProjection(createSessionProjectionState(), {
     type: "cache_restored",
     generation: cached.projectionGeneration ?? SESSION_PROJECTION_GENERATION - 1,
     eventLogEpoch: cached.eventLogEpoch,
@@ -101,6 +114,35 @@ export function hydrateSessionFromCache(cached: CachedAgentSession): Partial<Age
     newestSeq: cached.newestSeq,
     oldestSeq: cached.oldestSeq,
   });
+  const agent = cachedAgentSummary(cached.agentSummary, cached.agentId);
+  const events = projection.eventSeqs
+    .map((seq) => projection.eventsBySeq[seq])
+    .filter((event): event is ProjectionEvent => Boolean(event));
+  return {
+    ...projection,
+    cacheStatus: "hit",
+    contentStatus: projection.eventSeqs.length ? "available" : "unknown",
+    syncStatus: "stale",
+    ...(agent
+      ? { detail: {
+          agent,
+          timeline: deriveSessionTimeline(projection, "debug"),
+          source: "http",
+          events,
+          eventLogEpoch: cached.eventLogEpoch,
+          newestEventSeq: cached.newestSeq,
+          oldestEventSeq: cached.oldestSeq,
+        } }
+      : {}),
+  };
+}
+
+export async function hydrateAgentSession(
+  remoteKey: string,
+  agentId: string,
+): Promise<Partial<AgentSessionState> | undefined> {
+  const cached = await cacheGetSession(remoteKey, agentId);
+  return cached ? hydrateSessionFromCache(cached) : undefined;
 }
 
 /**
@@ -181,7 +223,8 @@ export class SessionCacheWriter {
  * Returns true if the cache is usable.
  */
 export async function initSessionCache(): Promise<boolean> {
-  return ensureCacheSchemaVersion();
+  const compatible = await ensureCacheSchemaVersion();
+  return compatible || ensureCacheSchemaVersion();
 }
 
 /**
