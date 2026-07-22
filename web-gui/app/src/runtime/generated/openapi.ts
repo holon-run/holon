@@ -3344,6 +3344,26 @@ export interface components {
                 /** Format: date-time */
                 created_at: string;
                 kind: string;
+                model_resolution?: {
+                    policy_notes?: string[];
+                    requested?: {
+                        allow_fallback?: boolean | null;
+                        /** Format: uint32 */
+                        max_output_tokens?: number | null;
+                        model: string;
+                        provider: string;
+                        reasoning_effort?: string | null;
+                        /** Format: double */
+                        temperature?: number | null;
+                    } | null;
+                    /** @enum {string} */
+                    resolution_status: "inherited" | "accepted" | "normalized" | "fallback_used" | "rejected";
+                    resolved_model: string;
+                    resolved_parameters?: {
+                        [key: string]: unknown;
+                    } | null;
+                    resolved_provider: string;
+                } | null;
                 parent_message_id?: string | null;
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -3542,6 +3562,26 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             kind: string;
+            model_resolution?: {
+                policy_notes?: string[];
+                requested?: {
+                    allow_fallback?: boolean | null;
+                    /** Format: uint32 */
+                    max_output_tokens?: number | null;
+                    model: string;
+                    provider: string;
+                    reasoning_effort?: string | null;
+                    /** Format: double */
+                    temperature?: number | null;
+                } | null;
+                /** @enum {string} */
+                resolution_status: "inherited" | "accepted" | "normalized" | "fallback_used" | "rejected";
+                resolved_model: string;
+                resolved_parameters?: {
+                    [key: string]: unknown;
+                } | null;
+                resolved_provider: string;
+            } | null;
             parent_message_id?: string | null;
             /** @enum {string} */
             status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -3643,6 +3683,26 @@ export interface components {
                 /** Format: date-time */
                 created_at: string;
                 kind: string;
+                model_resolution?: {
+                    policy_notes?: string[];
+                    requested?: {
+                        allow_fallback?: boolean | null;
+                        /** Format: uint32 */
+                        max_output_tokens?: number | null;
+                        model: string;
+                        provider: string;
+                        reasoning_effort?: string | null;
+                        /** Format: double */
+                        temperature?: number | null;
+                    } | null;
+                    /** @enum {string} */
+                    resolution_status: "inherited" | "accepted" | "normalized" | "fallback_used" | "rejected";
+                    resolved_model: string;
+                    resolved_parameters?: {
+                        [key: string]: unknown;
+                    } | null;
+                    resolved_provider: string;
+                } | null;
                 parent_message_id?: string | null;
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
