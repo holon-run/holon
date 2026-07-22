@@ -153,6 +153,13 @@ fn resolve_and_validate_path(
 
 /// Infer MIME type from file extension.
 fn guess_mime(path: &FsPath) -> String {
+    // Override extensions that mime_guess maps to non-text types
+    // (e.g., .ts -> video/mp2t, which prevents inline text rendering).
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(mime) = custom_mime_for_ext(&ext.to_lowercase()) {
+            return mime.to_string();
+        }
+    }
     let mime = mime_guess::from_path(path)
         .first_or_octet_stream()
         .essence_str()
@@ -200,6 +207,19 @@ fn sniff_is_text(data: &[u8]) -> bool {
         .filter(|&&b| (b < 0x20 || b == 0x7f) && b != 0x09 && b != 0x0a && b != 0x0d)
         .count();
     (non_printable as f64 / data.len() as f64) < 0.30
+}
+
+/// Override MIME types for file extensions that `mime_guess` maps to
+/// non-text types. The notable case is `.ts`, which the IANA registry
+/// maps to `video/mp2t` (MPEG-2 Transport Stream) rather than TypeScript.
+/// Without this override, the server streams raw bytes for `.ts` files,
+/// causing the web GUI's JSON content negotiation to fail.
+fn custom_mime_for_ext(ext: &str) -> Option<&'static str> {
+    match ext {
+        "ts" => Some("text/typescript"),
+        "tsx" => Some("text/tsx"),
+        _ => None,
+    }
 }
 
 /// Determine whether a MIME type represents a text file suitable for inline reading.
