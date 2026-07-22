@@ -1,3 +1,218 @@
+/* Task Detail Panel */
+.task-detail-header {
+  display: grid;
+  gap: 4px;
+}
+
+.task-detail-subhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.task-detail-kind {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+.task-detail-sep {
+  color: var(--line);
+}
+
+.task-detail-duration {
+  color: var(--muted);
+}
+
+.task-detail-refresh {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.task-detail-refresh:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.task-detail-section {
+  margin-top: 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.task-detail-section-title {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.task-detail-command {
+  position: relative;
+}
+
+.task-detail-command .tool-detail-field-content {
+  margin: 0;
+  padding-right: 50px;
+}
+
+.task-detail-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.task-detail-command:hover .task-detail-copy,
+.task-detail-output-body:hover .task-detail-copy {
+  opacity: 1;
+}
+
+.task-detail-output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-detail-output-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+
+.task-detail-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.task-detail-tab {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.task-detail-tab.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.task-detail-tab.error {
+  color: var(--danger);
+}
+
+.task-detail-tab.error.active {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.task-detail-output-body {
+  position: relative;
+}
+
+.task-detail-output-body .tool-detail-field-content {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 50px;
+}
+
+.task-detail-output-body .tool-detail-field-content.error {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--page));
+  color: var(--danger);
+}
+
+.task-detail-failure {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+}
+
+.task-detail-failure-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-detail-failure-head strong {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.task-detail-failure-summary {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.task-detail-failure .inspector-facts {
+  margin-top: 8px;
+}
+
+.task-detail-failure-recovery {
+  margin-top: 8px;
+  display: grid;
+  gap: 3px;
+}
+
+.task-detail-failure-recovery p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.task-detail-failure-chain {
+  margin-top: 6px;
+  display: grid;
+  gap: 3px;
+}
+
+.task-detail-failure-chain code {
+  font-size: 11px;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.task-detail-technical {
+  margin-top: 14px;
+}
 * {
   box-sizing: border-box;
 }

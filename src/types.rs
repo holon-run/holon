@@ -2997,6 +2997,8 @@ pub struct TaskStatusSnapshot {
     pub child_supervision: Option<ChildSupervisionProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<AgentTokenUsageSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_resolution: Option<SpawnAgentModelResolution>,
 }
 
 impl TaskStatusSnapshot {
@@ -3007,6 +3009,8 @@ impl TaskStatusSnapshot {
             .and_then(|value| serde_json::from_value(value.clone()).ok());
         let child_supervision = ChildSupervisionProjection::from_task_record(task);
         let token_usage = task_detail_value(&task.detail, "token_usage")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+        let model_resolution = task_detail_value(&task.detail, "model_resolution")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
 
         Self {
@@ -3023,6 +3027,7 @@ impl TaskStatusSnapshot {
             child_observability,
             child_supervision,
             token_usage,
+            model_resolution,
         }
     }
 }
@@ -3232,7 +3237,7 @@ pub struct SpawnAgentModelRequest {
     pub allow_fallback: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpawnAgentModelResolutionStatus {
     Inherited,
@@ -3242,7 +3247,7 @@ pub enum SpawnAgentModelResolutionStatus {
     Rejected,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct SpawnAgentModelResolution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested: Option<SpawnAgentModelRequest>,

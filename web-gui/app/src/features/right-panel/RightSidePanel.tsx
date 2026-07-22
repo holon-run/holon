@@ -3,7 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentSummary, RightPanelView, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
-import { AgentOverviewPanel, AgentSkillManagerPanel, TaskDetailPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
+import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
+import { TaskDetailPanel } from "./TaskDetailPanel";
 import { FileBrowserPanel } from "./FileBrowserPanel";
 import { useTranslation } from "react-i18next";
 
@@ -190,7 +191,12 @@ export function RightSidePanel({
           </div>
         ) : activeView.kind === "task_detail" ? (
           <div className="inspector-stack">
-            <TaskDetailPanel task={activeView.task} detailState={taskDetailState} />
+            <TaskDetailPanel
+              task={activeView.task}
+              detailState={taskDetailState}
+              agentId={agent.id}
+              onOpenWorkItem={onOpenWorkItemDetail}
+            />
           </div>
         ) : activeView.kind === "tool_execution_detail" ? (
           <div className="inspector-stack">

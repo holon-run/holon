@@ -34,6 +34,7 @@ import type {
   RuntimeToolExecutionRecord,
   ToolExecutionArtifactContent,
   SearchResponse,
+  TaskStatusSnapshot,
   TaskSummary,
   WorkItemSummary,
   WorkspaceSummary,
@@ -738,6 +739,17 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/output?block=false`,
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
+      );
+    },
+    async getTaskStatus(agentId: string, taskId: string): Promise<TaskStatusSnapshot> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      return getJson<TaskStatusSnapshot>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}`,
         { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
       );
     },

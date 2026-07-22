@@ -200,6 +200,118 @@ export interface TaskSummary {
   workdir?: string;
 }
 
+export interface TaskTokenUsage {
+  total: { input_tokens: number; output_tokens: number; total_tokens: number };
+  last_turn?: { input_tokens: number; output_tokens: number; total_tokens: number } | null;
+  total_model_rounds: number;
+}
+
+export interface SpawnAgentModelRequest {
+  provider: string;
+  model: string;
+  reasoning_effort?: string | null;
+  temperature?: number | null;
+  max_output_tokens?: number | null;
+  allow_fallback?: boolean | null;
+}
+
+export interface SpawnAgentModelResolution {
+  requested?: SpawnAgentModelRequest | null;
+  resolved_provider: string;
+  resolved_model: string;
+  resolution_status: "inherited" | "accepted" | "normalized" | "fallback_used" | "rejected";
+  policy_notes?: string[];
+}
+
+export interface TaskChildObservability {
+  phase: "running" | "blocked" | "waiting" | "terminal";
+  blocked_reason?: string | null;
+  waiting_reason?: string | null;
+  current_work_item_id?: string | null;
+  work_summary?: string | null;
+  last_progress_brief?: string | null;
+  last_result_brief?: string | null;
+}
+
+export interface TaskChildSupervision {
+  child_agent_id: string;
+  child_work_item_id?: string | null;
+  cleanup_owner: string;
+  cleanup_status?: string | null;
+  delegation_id?: string | null;
+  followup_target: string;
+  parent_agent_id: string;
+  parent_work_item_id?: string | null;
+  supervision_task_id: string;
+  workspace_mode?: "inherit" | "worktree" | null;
+  worktree?: {
+    worktree_path?: string | null;
+    worktree_branch?: string | null;
+    actual_branch?: string | null;
+    original_branch?: string | null;
+    original_cwd?: string | null;
+    projection_kind?: string | null;
+    changed_files?: string[];
+    cleanup_status?: string | null;
+    cleanup_reason?: string | null;
+    cleanup_error?: string | null;
+    branch_cleanup_status?: string | null;
+    branch_cleanup_error?: string | null;
+    auto_cleaned_up?: boolean | null;
+    retained_for_review?: boolean | null;
+  } | null;
+}
+
+export interface TaskCommandInfo {
+  cmd?: string | null;
+  workdir?: string | null;
+  shell?: string | null;
+  login?: boolean | null;
+  tty?: boolean | null;
+  exit_status?: number | null;
+  output_path?: string | null;
+  accepts_input?: boolean | null;
+  input_target?: string | null;
+  terminal_reentry?: boolean | null;
+  promoted_from_exec_command?: boolean | null;
+  result_summary?: string | null;
+  cmd_digest?: string | null;
+}
+
+export interface TaskFailureArtifact {
+  category: string;
+  kind: string;
+  summary: string;
+  domain?: string | null;
+  retryable?: boolean | null;
+  recovery_hint?: string | null;
+  status?: number | null;
+  exit_status?: number | null;
+  provider?: string | null;
+  model_ref?: string | null;
+  task_id?: string | null;
+  source_chain?: string[];
+  context?: Record<string, unknown>;
+  metadata?: Record<string, string>;
+}
+
+export interface TaskStatusSnapshot {
+  task_id: string;
+  kind: string;
+  status: string;
+  summary?: string | null;
+  created_at: string;
+  updated_at: string;
+  wait_policy: string;
+  parent_message_id?: string | null;
+  command?: TaskCommandInfo | null;
+  child_agent_id?: string | null;
+  child_observability?: TaskChildObservability | null;
+  child_supervision?: TaskChildSupervision | null;
+  token_usage?: TaskTokenUsage | null;
+  model_resolution?: SpawnAgentModelResolution | null;
+}
+
 export interface DashboardMetric {
   label: string;
   value: string;
@@ -572,6 +684,7 @@ export interface TaskDetailState {
   loading?: boolean;
   error?: string;
   output?: RuntimeTaskOutputResult;
+  status?: TaskStatusSnapshot;
 }
 
 export interface ToolExecutionDetailState {

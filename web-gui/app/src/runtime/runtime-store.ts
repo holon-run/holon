@@ -53,6 +53,7 @@ import type {
   TaskSummary,
   RuntimeConnectionProfile,
   RuntimeConfigState,
+  TaskStatusSnapshot,
   CodexDeviceLoginState,
   CredentialProfileStatus,
   CredentialStoreState,
@@ -355,7 +356,7 @@ export interface RuntimeStoreState {
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
-  loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined) => Promise<void>;
+  loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
@@ -2353,18 +2354,26 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
-  loadAgentTaskDetail: async (agentId, taskId) => {
+  loadAgentTaskDetail: async (agentId, taskId, force) => {
     if (!agentId || !taskId) return;
     const request = captureClientRequest();
     const key = `${agentId}:${taskId}`;
     const cached = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
-    if (cached?.output || cached?.loading || taskDetailInFlight.has(key)) return;
+    if (!force && (cached?.output || cached?.loading || taskDetailInFlight.has(key))) return;
     taskDetailInFlight.add(key);
-    setTaskDetailState(set, agentId, taskId, { loading: true, error: undefined });
+    setTaskDetailState(set, agentId, taskId, { loading: !cached?.output, error: undefined });
     try {
-      const output = await request.client.getTaskOutput(agentId, taskId);
+      const [statusResult, outputResult] = await Promise.allSettled([
+        request.client.getTaskStatus(agentId, taskId),
+        request.client.getTaskOutput(agentId, taskId),
+      ]);
       if (!isCurrentClientRequest(request)) return;
-      setTaskDetailState(set, agentId, taskId, { loading: false, output });
+      const status = statusResult.status === "fulfilled" ? statusResult.value : undefined;
+      const output = outputResult.status === "fulfilled" ? outputResult.value : undefined;
+      const error = statusResult.status === "rejected" && outputResult.status === "rejected"
+        ? (statusResult.reason instanceof Error ? statusResult.reason.message : String(statusResult.reason))
+        : undefined;
+      setTaskDetailState(set, agentId, taskId, { loading: false, status, output, error });
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       setTaskDetailState(set, agentId, taskId, {
