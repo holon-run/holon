@@ -889,6 +889,96 @@
                 "kind": {
                   "type": "string"
                 },
+                "model_resolution": {
+                  "properties": {
+                    "policy_notes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "requested": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "allow_fallback": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "max_output_tokens": {
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "reasoning_effort": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "temperature": {
+                          "format": "double",
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "model"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "resolution_status": {
+                      "enum": [
+                        "inherited",
+                        "accepted",
+                        "normalized",
+                        "fallback_used",
+                        "rejected"
+                      ],
+                      "type": "string"
+                    },
+                    "resolved_model": {
+                      "type": "string"
+                    },
+                    "resolved_parameters": {
+                      "additionalProperties": true,
+                      "properties": {},
+                      "required": [],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "resolved_provider": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "resolved_provider",
+                    "resolved_model",
+                    "resolution_status"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
                 "parent_message_id": {
                   "type": [
                     "string",
@@ -1401,6 +1491,96 @@
                 },
                 "kind": {
                   "type": "string"
+                },
+                "model_resolution": {
+                  "properties": {
+                    "policy_notes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "requested": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "allow_fallback": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "max_output_tokens": {
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "reasoning_effort": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "temperature": {
+                          "format": "double",
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "model"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "resolution_status": {
+                      "enum": [
+                        "inherited",
+                        "accepted",
+                        "normalized",
+                        "fallback_used",
+                        "rejected"
+                      ],
+                      "type": "string"
+                    },
+                    "resolved_model": {
+                      "type": "string"
+                    },
+                    "resolved_parameters": {
+                      "additionalProperties": true,
+                      "properties": {},
+                      "required": [],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "resolved_provider": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "resolved_provider",
+                    "resolved_model",
+                    "resolution_status"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
                 },
                 "parent_message_id": {
                   "type": [
@@ -2441,6 +2621,96 @@
                 },
                 "kind": {
                   "type": "string"
+                },
+                "model_resolution": {
+                  "properties": {
+                    "policy_notes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "requested": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "allow_fallback": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "max_output_tokens": {
+                          "format": "uint32",
+                          "minimum": 0.0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "reasoning_effort": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "temperature": {
+                          "format": "double",
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "model"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "resolution_status": {
+                      "enum": [
+                        "inherited",
+                        "accepted",
+                        "normalized",
+                        "fallback_used",
+                        "rejected"
+                      ],
+                      "type": "string"
+                    },
+                    "resolved_model": {
+                      "type": "string"
+                    },
+                    "resolved_parameters": {
+                      "additionalProperties": true,
+                      "properties": {},
+                      "required": [],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "resolved_provider": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "resolved_provider",
+                    "resolved_model",
+                    "resolution_status"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
                 },
                 "parent_message_id": {
                   "type": [

@@ -6,8 +6,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
-import { TaskDetailContent, normalizeTaskDetailContent } from "./TaskDetailRenderers";
-import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -602,44 +601,6 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
           </ul>
         </details>
       ) : null}
-    </article>
-  );
-}
-
-export function TaskDetailPanel({ task, detailState }: { task: TaskSummary; detailState?: TaskDetailState }) {
-  const { t } = useTranslation();
-  const loading = detailState?.loading && !detailState?.output;
-  const output = detailState?.output;
-  const taskRecord = output?.task;
-  const status = taskRecord?.status ?? output?.status ?? task.status;
-  const detail = normalizeTaskDetailContent(task, output);
-  const summary = detail.summary || task.summary;
-
-  return (
-    <article className="task-detail inspector-list-item featured">
-      <div className="inspector-list-head">
-        <strong>{summary || t("inspector.taskOutput")}</strong>
-        <StatusBadge className="state-chip" kind="connection" value={status} spinIcon />
-        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" spinIcon /> : null}
-      </div>
-      {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
-      <dl className="inspector-facts">
-        <div>
-          <dt>{t("inspector.taskId")}</dt>
-          <dd><code>{task.id}</code></dd>
-        </div>
-        <div>
-          <dt>{t("inspector.kind")}</dt>
-          <dd>{task.kind}</dd>
-        </div>
-        {task.workdir ? (
-          <div>
-            <dt>{t("rightPanel.workdir")}</dt>
-            <dd><code>{task.workdir}</code></dd>
-          </div>
-        ) : null}
-      </dl>
-      <TaskDetailContent task={task} output={output} />
     </article>
   );
 }
