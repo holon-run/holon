@@ -268,12 +268,37 @@ struct RuntimeInner {
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
+    scheduler_protocol_production_commands_enabled: AtomicBool,
     #[cfg(test)]
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
     omit_next_scheduler_claim_shadow_comparison: AtomicBool,
     #[cfg(test)]
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
+}
+
+const SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV: &str =
+    "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS";
+
+fn scheduler_protocol_production_commands_enabled_from_env() -> Result<bool> {
+    let Some(value) = std::env::var_os(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV) else {
+        return Ok(false);
+    };
+    match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(anyhow!(
+            "{SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV} expects a boolean"
+        )),
+    }
+}
+
+fn canonical_settlement_id(message_id: &str) -> String {
+    format!("settlement:message:{message_id}")
+}
+
+fn canonical_missing_settlement_id(message_id: &str) -> String {
+    format!("missing-settlement:message:{message_id}")
 }
 
 #[derive(Debug, Clone)]
@@ -617,6 +642,19 @@ impl CurrentRunAbortSnapshot {
 impl RuntimeHandle {
     pub(super) fn now(&self) -> chrono::DateTime<chrono::Utc> {
         self.inner.clock.now()
+    }
+
+    fn scheduler_protocol_production_commands_enabled(&self) -> bool {
+        self.inner
+            .scheduler_protocol_production_commands_enabled
+            .load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_scheduler_protocol_production_commands_enabled(&self, enabled: bool) {
+        self.inner
+            .scheduler_protocol_production_commands_enabled
+            .store(enabled, Ordering::SeqCst);
     }
 
     fn take_transition_fault(&self) -> Option<TransitionFaultPoint> {
@@ -1609,6 +1647,9 @@ impl RuntimeHandle {
                             updated_at: Utc::now(),
                         },
                     ),
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
                     scheduler_authority_scenarios: Vec::new(),
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(expected_persisted_state)),
@@ -1649,6 +1690,7 @@ impl RuntimeHandle {
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
     ) -> Result<bool> {
+        let scheduler_protocol_commands = self.canonical_queue_settlement_commands(&record).await?;
         let shadow_comparison = {
             let guard = self.inner.agent.lock().await;
             let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
@@ -1678,9 +1720,12 @@ impl RuntimeHandle {
                 agent_id: record.agent_id.clone(),
                 operation: crate::runtime_db::transitions::QueueOperation::Settle,
                 mutation: crate::runtime_db::transitions::QueueMutation::Upsert(record),
+                scheduler_claim_work_item: None,
+                scheduler_protocol_bootstrap: None,
+                scheduler_protocol_commands,
                 scheduler_authority_scenarios: vec![
-                    scheduler::SETTLEMENT_SCENARIO.into(),
-                    scheduler::DELIVERY_SCENARIO.into(),
+                    scheduler::SETTLEMENT_SCENARIO,
+                    scheduler::DELIVERY_SCENARIO,
                 ],
                 agent_state: None,
                 message_evidence: Vec::new(),
@@ -1695,6 +1740,123 @@ impl RuntimeHandle {
             },
         )?;
         Ok(self.apply_transition_commit(commit).await.applied)
+    }
+
+    async fn canonical_queue_settlement_commands(
+        &self,
+        record: &QueueEntryRecord,
+    ) -> Result<Vec<crate::domain::scheduler_protocol::ProtocolCommand>> {
+        if !self.scheduler_protocol_production_commands_enabled() {
+            return Ok(Vec::new());
+        }
+        let Some(message) = self.inner.storage.read_message_by_id(&record.message_id)? else {
+            return Err(anyhow!(
+                "canonical queue settlement requires persisted message evidence"
+            ));
+        };
+        if !matches!(
+            (&message.kind, &message.origin),
+            (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                if subsystem == "work_queue"
+        ) {
+            return Ok(Vec::new());
+        }
+
+        use crate::domain::scheduler_protocol::{
+            ActivationDisposition, ActivationSettlement, AgentDispatchDisposition,
+            MissingSettlementRecord, ProtocolCommand, SettleActivationCommand,
+        };
+
+        let snapshot = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&record.agent_id)?
+            .ok_or_else(|| anyhow!("canonical queue settlement has no scheduler partition"))?;
+        let activation_id = scheduler_executor::canonical_activation_id(&record.message_id);
+        let activation = snapshot
+            .activations
+            .get(&activation_id)
+            .ok_or_else(|| anyhow!("canonical queue settlement has no matching activation"))?;
+        let work_item_id = activation.work_item_id.clone();
+        let work_queue = self.inner.storage.work_queue_prompt_projection()?;
+        let scheduling_state = work_queue
+            .items
+            .iter()
+            .find(|candidate| candidate.id == work_item_id)
+            .map(|candidate| candidate.scheduling_state);
+
+        let command = if record.status == QueueEntryStatus::Processed {
+            match scheduling_state {
+                Some(crate::types::WorkItemSchedulingState::Runnable) => {
+                    ProtocolCommand::SettleActivation(SettleActivationCommand {
+                        settlement: ActivationSettlement {
+                            id: canonical_settlement_id(&record.message_id),
+                            activation_id,
+                            turn_terminal: message.turn_id.clone(),
+                            disposition: ActivationDisposition::WorkContinues,
+                            agent_dispatch: AgentDispatchDisposition::Open,
+                            operator_delivery: None,
+                            evidence: vec![
+                                format!("message:{}", record.message_id),
+                                format!("work_item:{work_item_id}"),
+                            ],
+                            created_at: record.updated_at.to_rfc3339(),
+                        },
+                    })
+                }
+                Some(crate::types::WorkItemSchedulingState::Completed) => {
+                    let brief = self
+                        .inner
+                        .storage
+                        .read_recent_briefs(usize::MAX)?
+                        .into_iter()
+                        .filter(|brief| {
+                            brief.kind.is_success()
+                                && brief.work_item_id.as_deref() == Some(work_item_id.as_str())
+                                && !brief.text.trim().is_empty()
+                        })
+                        .max_by_key(|brief| brief.created_at)
+                        .ok_or_else(|| {
+                            anyhow!("canonical WorkItem completion requires a result brief binding")
+                        })?;
+                    let turn_terminal = message.turn_id.clone().ok_or_else(|| {
+                        anyhow!("canonical WorkItem completion requires a turn identity")
+                    })?;
+                    ProtocolCommand::SettleActivation(SettleActivationCommand {
+                        settlement: ActivationSettlement {
+                            id: canonical_settlement_id(&record.message_id),
+                            activation_id,
+                            turn_terminal: Some(turn_terminal.clone()),
+                            disposition: ActivationDisposition::WorkCompleted {
+                                continuation: None,
+                            },
+                            agent_dispatch: AgentDispatchDisposition::Open,
+                            operator_delivery: Some(brief.id.clone()),
+                            evidence: vec![
+                                format!("message:{}", record.message_id),
+                                format!("work_item:{work_item_id}"),
+                                format!("turn:{turn_terminal}"),
+                                format!("brief:{}", brief.id),
+                            ],
+                            created_at: record.updated_at.to_rfc3339(),
+                        },
+                    })
+                }
+                _ => ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
+                    id: canonical_missing_settlement_id(&record.message_id),
+                    activation_id,
+                    created_at: record.updated_at.to_rfc3339(),
+                }),
+            }
+        } else {
+            ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
+                id: canonical_missing_settlement_id(&record.message_id),
+                activation_id,
+                created_at: record.updated_at.to_rfc3339(),
+            })
+        };
+        Ok(vec![command])
     }
 
     pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {

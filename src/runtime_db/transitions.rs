@@ -7,6 +7,7 @@ pub(crate) mod scheduler_protocol_repository;
 
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{OptionalExtension, Transaction};
+use std::collections::BTreeMap;
 
 use crate::{
     runtime_db::{
@@ -26,7 +27,7 @@ use crate::{
     types::{
         AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
         TaskRecord, TranscriptEntry, WaitConditionRecord, WorkItemContinuationFrame,
-        WorkItemRecord, WorkItemState,
+        WorkItemRecord, WorkItemSchedulingState, WorkItemState,
     },
 };
 
@@ -161,7 +162,11 @@ pub(crate) struct QueueTransitionCommand {
     pub agent_id: String,
     pub operation: QueueOperation,
     pub mutation: QueueMutation,
-    pub scheduler_authority_scenarios: Vec<String>,
+    pub scheduler_claim_work_item: Option<WorkItemRecord>,
+    pub scheduler_protocol_bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
+    pub scheduler_protocol_commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
+    pub scheduler_authority_scenarios:
+        Vec<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
@@ -350,6 +355,18 @@ impl RuntimeTransitionRepository<'_> {
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            validate_scheduler_claim_work_item_tx(
+                tx,
+                &command.agent_id,
+                command.operation,
+                command.scheduler_claim_work_item.as_ref(),
+            )?;
+            let scheduler_protocol = scheduler_protocol_repository::validate_protocol_commands_tx(
+                tx,
+                &command.agent_id,
+                command.scheduler_protocol_bootstrap.as_ref(),
+                &command.scheduler_protocol_commands,
+            )?;
             scheduler_protocol_repository::validate_required_shadow_comparisons_tx(
                 tx,
                 &command.scheduler_authority_scenarios,
@@ -395,6 +412,11 @@ impl RuntimeTransitionRepository<'_> {
             if !applied {
                 return Ok(TransitionCommit::default());
             }
+            scheduler_protocol_repository::persist_protocol_commands_tx(
+                tx,
+                &command.agent_id,
+                scheduler_protocol,
+            )?;
             scheduler_protocol_repository::persist_shadow_comparison_tx(
                 tx,
                 &command.agent_id,
@@ -599,6 +621,84 @@ fn validate_focus_target_tx(tx: &Transaction<'_>, state: &AgentState) -> Result<
             format!("cannot focus completed work item {work_item_id}"),
         )
         .with_safe_context("work_item_id", work_item_id)
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_scheduler_claim_work_item_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    operation: QueueOperation,
+    expected: Option<&WorkItemRecord>,
+) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if operation != QueueOperation::Claim {
+        return Err(anyhow!(
+            "scheduler WorkItem claim guard is only valid for queue claim"
+        ));
+    }
+    let actual = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+            [&expected.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<WorkItemRecord>(&payload))
+        .transpose()?;
+    if actual.as_ref() != Some(expected)
+        || expected.agent_id != agent_id
+        || expected.state != WorkItemState::Open
+    {
+        return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+            "scheduler_claim_work_item",
+            &expected.id,
+        )
+        .into());
+    }
+    let mut statement = tx.prepare(
+        "SELECT payload_json
+         FROM wait_conditions
+         WHERE agent_id = ?1
+           AND work_item_id = ?2
+           AND status = 'active'
+         ORDER BY created_at ASC, wait_condition_id ASC",
+    )?;
+    let active_wait_conditions = statement
+        .query_map([agent_id, expected.id.as_str()], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|row| Ok(serde_json::from_str::<WaitConditionRecord>(&row?)?))
+        .collect::<Result<Vec<_>>>()?;
+    let is_yielded = tx.query_row(
+        "SELECT EXISTS(
+               SELECT 1
+               FROM work_item_continuations
+               WHERE agent_id = ?1
+                 AND suspended_work_item_id = ?2
+                 AND state = 'active'
+             )",
+        [agent_id, expected.id.as_str()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let trigger_delivery_by_id = BTreeMap::new();
+    let scheduling = crate::work_item_scheduling::derive_work_item_scheduling(
+        crate::work_item_scheduling::WorkItemSchedulingFacts {
+            work_item: expected,
+            is_current: false,
+            is_yielded,
+            active_wait_conditions: &active_wait_conditions,
+            trigger_delivery_by_id: &trigger_delivery_by_id,
+        },
+    );
+    if scheduling.scheduling_state != WorkItemSchedulingState::Runnable {
+        return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+            "scheduler_claim_work_item",
+            &expected.id,
+        )
         .into());
     }
     Ok(())
@@ -1205,6 +1305,9 @@ mod tests {
                     agent_id: "agent-a".into(),
                     operation: QueueOperation::Settle,
                     mutation: QueueMutation::Upsert(processed),
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
                     scheduler_authority_scenarios: Vec::new(),
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
@@ -1229,6 +1332,71 @@ mod tests {
             assert!(db.transcript_entries().all(Some("agent-a"))?.is_empty());
             assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_revalidates_runnable_work_item_inside_transaction() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let work_item = work_item("work-stale-claim");
+        db.work_items().insert_new(&work_item)?;
+        db.wait_conditions().upsert(&wait_condition(
+            "wait-stale-claim",
+            &work_item.id,
+            "task-1",
+        ))?;
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-stale-claim".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        let error = db
+            .transitions()
+            .commit_queue(&QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(claimed),
+                scheduler_claim_work_item: Some(work_item.clone()),
+                scheduler_protocol_bootstrap: None,
+                scheduler_protocol_commands: Vec::new(),
+                scheduler_authority_scenarios: Vec::new(),
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                audit_events: vec![AuditEvent::legacy(
+                    "queue_entry_claimed",
+                    serde_json::json!({}),
+                )],
+                scheduler_semantic_shadow: None,
+                scheduler_shadow_comparison: None,
+                scheduler_delivery_shadow_comparison: None,
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            })
+            .unwrap_err();
+
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("non-runnable WorkItem claim should return typed conflict");
+        assert_eq!(conflict.domain(), "scheduler_claim_work_item");
+        assert_eq!(conflict.record_id(), work_item.id);
+        assert!(conflict.retryable());
+        assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
+        assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+        assert!(db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized("agent-a")?
+            .is_none());
         Ok(())
     }
 
@@ -1287,7 +1455,12 @@ mod tests {
                     agent_id: "agent-a".into(),
                     operation: QueueOperation::Claim,
                     mutation: QueueMutation::Consume(claimed),
-                    scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
+                    scheduler_authority_scenarios: vec![
+                        crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
+                    ],
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(running_state),
@@ -1376,7 +1549,12 @@ mod tests {
             agent_id: "agent-a".into(),
             operation: QueueOperation::Claim,
             mutation: QueueMutation::Consume(claimed.clone()),
-            scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands: Vec::new(),
+            scheduler_authority_scenarios: vec![
+                crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
+            ],
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -1464,7 +1642,12 @@ mod tests {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Claim,
                 mutation: QueueMutation::Consume(claimed),
-                scheduler_authority_scenarios: vec!["reducer_only_candidates".into()],
+                scheduler_claim_work_item: None,
+                scheduler_protocol_bootstrap: None,
+                scheduler_protocol_commands: Vec::new(),
+                scheduler_authority_scenarios: vec![
+                    crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
+                ],
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),

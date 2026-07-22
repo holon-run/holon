@@ -77,14 +77,16 @@ mod tests {
     use super::*;
     use crate::{
         domain::scheduler_protocol::{
-            self, ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
-            ActivationPriority, ActivationProvenance, ActivationSlot, ActivationTrust,
-            AdmitActivationCommand, AgentActivation, AgentDispatchState, Decision,
+            self, ActivationBinding, ActivationCause, ActivationDisposition,
+            ActivationLifecycleState, ActivationOrigin, ActivationPriority, ActivationProvenance,
+            ActivationSettlement, ActivationSlot, ActivationTrust, AdmitActivationCommand,
+            AgentActivation, AgentDispatchDisposition, AgentDispatchState, Continuation, Decision,
             IssueActivationAuthorityCommand, ObservationalDivergenceAllowance, PreemptionPolicy,
             ProtocolCommand, ProtocolMode, RollbackAction, RollbackPolicy, RollbackTrigger,
             RolloutClassEvidence, RolloutCommand, RolloutManifest, RolloutPreflightState,
-            ScenarioMode, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
-            WaitTrigger, WorkDemand, WorkStatus,
+            ScenarioMode, SchedulerScenarioClass, SettleActivationCommand, Snapshot,
+            WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand,
+            WorkStatus,
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
@@ -374,6 +376,41 @@ mod tests {
         })
     }
 
+    fn scheduler_protocol_admission_command(
+        agent_id: &str,
+        scheduling_generation: u64,
+    ) -> ProtocolCommand {
+        let ProtocolCommand::IssueActivationAuthority(authority) =
+            scheduler_protocol_authority_command(agent_id, scheduling_generation)
+        else {
+            unreachable!("scheduler authority helper must issue authority")
+        };
+        ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id: authority.authority_id,
+            activation: authority.activation,
+            expected_scheduling_generation: authority.expected_scheduling_generation,
+            expected_dispatch_revision: authority.expected_dispatch_revision,
+        })
+    }
+
+    fn scheduler_protocol_completion_command(
+        settlement_id: &str,
+        continuation: Option<Continuation>,
+    ) -> ProtocolCommand {
+        ProtocolCommand::SettleActivation(SettleActivationCommand {
+            settlement: ActivationSettlement {
+                id: settlement_id.into(),
+                activation_id: "activation-a".into(),
+                turn_terminal: Some(format!("turn-terminal-{settlement_id}")),
+                disposition: ActivationDisposition::WorkCompleted { continuation },
+                agent_dispatch: AgentDispatchDisposition::Open,
+                operator_delivery: Some(format!("brief-{settlement_id}")),
+                evidence: vec![format!("trace-{settlement_id}")],
+                created_at: "2026-07-21T00:00:00Z".into(),
+            },
+        })
+    }
+
     fn scheduler_rollout_manifest(revision: u64, preflight_revision: u64) -> RolloutManifest {
         let evidence: BTreeSet<String> = [
             "restart",
@@ -452,6 +489,52 @@ mod tests {
                         "reservation_conflict",
                         "yield_return",
                         "work_item_rollback",
+                    ],
+                ),
+                "exact_task_rejoin" => (
+                    1_000,
+                    7 * 24 * 60 * 60,
+                    vec![
+                        "duplicate_task_result",
+                        "out_of_order_task_result",
+                        "restart_before_rejoin_settlement",
+                    ],
+                ),
+                "exact_wait_resume" => (
+                    1_000,
+                    7 * 24 * 60 * 60,
+                    vec![
+                        "duplicate_trigger",
+                        "stale_generation",
+                        "restart_after_consume",
+                        "rearm",
+                    ],
+                ),
+                "operator_interjection" => (
+                    1_000,
+                    7 * 24 * 60 * 60,
+                    vec![
+                        "duplicate_ingress",
+                        "stale_binding_revision",
+                        "wrong_agent_target",
+                    ],
+                ),
+                "settlement" => (
+                    1_000,
+                    7 * 24 * 60 * 60,
+                    vec![
+                        "duplicate_settlement",
+                        "missing_settlement_recovery",
+                        "restart_before_settlement_commit",
+                    ],
+                ),
+                "delivery" => (
+                    1_000,
+                    7 * 24 * 60 * 60,
+                    vec![
+                        "duplicate_delivery",
+                        "delivery_retry",
+                        "restart_before_delivery_commit",
                     ],
                 ),
                 _ => panic!("unsupported Phase 3 scenario {scenario_class}"),
@@ -1514,6 +1597,89 @@ mod tests {
     }
 
     #[test]
+    fn canonical_focused_completion_releases_focus_before_terminal_constraint() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let initial = scheduler_protocol_snapshot(1);
+        let authority = scheduler_protocol_authority_command(agent_id, 1);
+        let admission = scheduler_protocol_admission_command(agent_id, 1);
+        let completion = scheduler_protocol_completion_command("settlement-a", None);
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+        db.transitions()
+            .commit_scheduler_protocol_command(agent_id, &authority, None)?;
+        db.transitions()
+            .commit_scheduler_protocol_command(agent_id, &admission, None)?;
+        let committed =
+            db.transitions()
+                .commit_scheduler_protocol_command(agent_id, &completion, None)?;
+        assert_eq!(committed.result.decision, Decision::Settled);
+
+        let persisted = db
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        assert_eq!(persisted.focus, None);
+        assert_eq!(persisted.work["work-a"].status, WorkStatus::Terminal);
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_completion_restores_caller_focus_and_generation() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let mut initial = scheduler_protocol_snapshot(1);
+        initial.work.insert(
+            "work-caller".into(),
+            WorkDemand {
+                metadata_revision: 4,
+                scheduling_generation: 4,
+                status: WorkStatus::Runnable,
+                capabilities: BTreeSet::from(["workspace_read".into()]),
+                locks: BTreeSet::new(),
+                locality: "workspace:holon".into(),
+                cost_class: "standard".into(),
+            },
+        );
+        let authority = scheduler_protocol_authority_command(agent_id, 1);
+        let admission = scheduler_protocol_admission_command(agent_id, 1);
+        let completion = scheduler_protocol_completion_command(
+            "settlement-a",
+            Some(Continuation {
+                admission_id: "continuation-a".into(),
+                caller_work_item_id: "work-caller".into(),
+                expected_caller_generation: 4,
+            }),
+        );
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+        db.transitions()
+            .commit_scheduler_protocol_command(agent_id, &authority, None)?;
+        db.transitions()
+            .commit_scheduler_protocol_command(agent_id, &admission, None)?;
+        let committed =
+            db.transitions()
+                .commit_scheduler_protocol_command(agent_id, &completion, None)?;
+        assert_eq!(committed.result.decision, Decision::Settled);
+
+        let persisted = db
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        assert_eq!(persisted.focus.as_deref(), Some("work-caller"));
+        assert_eq!(persisted.work["work-a"].status, WorkStatus::Terminal);
+        assert_eq!(persisted.work["work-caller"].status, WorkStatus::Runnable);
+        assert_eq!(persisted.work["work-caller"].scheduling_generation, 5);
+        assert_eq!(
+            persisted.continuation_admissions["continuation-a"].admitted_caller_generation,
+            5
+        );
+        Ok(())
+    }
+
+    #[test]
     fn scheduler_protocol_repository_faults_roll_back_snapshot_and_ledger() -> Result<()> {
         for fault in [
             TransitionFaultPoint::AfterValidation,
@@ -2066,10 +2232,8 @@ mod tests {
     #[test]
     fn scheduler_authoritative_scenarios_require_matched_evidence_and_restart_safe_rollback(
     ) -> Result<()> {
-        for scenario_class in [
-            "reducer_only_candidates",
-            "work_item_autonomous_continuation",
-        ] {
+        for scenario in SchedulerScenarioClass::PRODUCTION_AUTHORITY {
+            let scenario_class = scenario.as_str();
             let (_temp_dir, db_path, lock_path) = temp_paths()?;
             let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
             db.transitions().initialize_scheduler_protocol_partition(
@@ -2153,7 +2317,10 @@ mod tests {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Admit,
                 mutation: QueueMutation::Upsert(matched_queue_record.clone()),
-                scheduler_authority_scenarios: vec![scenario_class.into()],
+                scheduler_claim_work_item: None,
+                scheduler_protocol_bootstrap: None,
+                scheduler_protocol_commands: Vec::new(),
+                scheduler_authority_scenarios: vec![scenario],
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
@@ -2385,7 +2552,12 @@ mod tests {
                         agent_id: "agent-a".into(),
                         operation: QueueOperation::Admit,
                         mutation: QueueMutation::Upsert(queue_record),
-                        scheduler_authority_scenarios: vec![SCENARIO_CLASS.into()],
+                        scheduler_claim_work_item: None,
+                        scheduler_protocol_bootstrap: None,
+                        scheduler_protocol_commands: Vec::new(),
+                        scheduler_authority_scenarios: vec![SCENARIO_CLASS
+                            .parse::<SchedulerScenarioClass>()
+                            .expect("registered scheduler scenario class")],
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),

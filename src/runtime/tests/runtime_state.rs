@@ -1,5 +1,6 @@
 use super::super::*;
 use super::support::*;
+use crate::domain::scheduler_protocol::{ActivationSlot, SchedulerScenarioClass, WorkStatus};
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, QueueEntryStatus, SkillActivationSource,
     SkillActivationState, SkillLoadReason, SkillScope, WaitConditionKind, WaitConditionRecord,
@@ -348,7 +349,7 @@ async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
 }
 
 #[tokio::test]
-async fn run_loop_claim_persists_message_shadow_comparison_in_the_same_transition() {
+async fn run_loop_claim_atomically_persists_scheduler_events_and_shadow_comparison() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -439,15 +440,38 @@ async fn run_loop_claim_persists_message_shadow_comparison_in_the_same_transitio
     assert_eq!(authority_mode, "shadow");
     assert_eq!(input_identity, format!("message:{}", message.id));
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "scheduler_decision"
-            && event.data["boundary"] == "run_loop"
-            && event.data["message_id"] == message.id
-    }));
+    let claim_events = events
+        .iter()
+        .filter(|event| event.data["message_id"] == message.id)
+        .filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "scheduler_diagnostic" | "scheduler_decision" | "queue_entry_claimed"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        claim_events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "scheduler_diagnostic",
+            "scheduler_decision",
+            "queue_entry_claimed"
+        ]
+    );
+    assert_eq!(claim_events[0].data["boundary"], "run_loop");
+    assert_eq!(
+        claim_events[0].data["scenario_class"],
+        "reducer_only_candidates"
+    );
+    assert_eq!(claim_events[0].data["shadow_matched"], true);
+    assert_eq!(claim_events[1].data["boundary"], "run_loop");
 }
 
 #[tokio::test]
-async fn run_loop_claim_fault_rolls_back_scheduler_decision_with_claim_facts() {
+async fn run_loop_claim_fault_rolls_back_scheduler_events_with_claim_facts() {
     for fault in PRE_COMMIT_FAULTS {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
@@ -541,6 +565,11 @@ async fn run_loop_claim_fault_rolls_back_scheduler_decision_with_claim_facts() {
         assert_eq!(comparison_count, 0);
         let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
         assert!(!events.iter().any(|event| {
+            event.kind == "scheduler_diagnostic"
+                && event.data["boundary"] == "run_loop"
+                && event.data["message_id"] == message.id
+        }));
+        assert!(!events.iter().any(|event| {
             event.kind == "scheduler_decision"
                 && event.data["boundary"] == "run_loop"
                 && event.data["message_id"] == message.id
@@ -548,6 +577,229 @@ async fn run_loop_claim_fault_rolls_back_scheduler_decision_with_claim_facts() {
         assert!(!events.iter().any(|event| {
             event.kind == "queue_entry_claimed" && event.data["message_id"] == message.id
         }));
+    }
+}
+
+#[tokio::test]
+async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    let work_item = runtime
+        .create_work_item("canonical production loop".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "run canonical work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(
+        claimed.slot,
+        ActivationSlot::Running {
+            activation_id: activation_id.clone(),
+            work_item_id: work_item.id.clone(),
+            admitted_generation: work_item.revision,
+            recovery_for: None,
+        }
+    );
+    assert!(claimed.activations.contains_key(&activation_id));
+
+    runtime
+        .commit_queue_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            vec![AuditEvent::legacy(
+                "queue_entry_settled",
+                serde_json::json!({
+                    "message_id": message.id,
+                    "status": QueueEntryStatus::Processed,
+                }),
+            )],
+            true,
+        )
+        .await
+        .unwrap();
+
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(settled.slot, ActivationSlot::Idle);
+    assert_eq!(
+        settled.work.get(&work_item.id).map(|demand| &demand.status),
+        Some(&WorkStatus::Runnable)
+    );
+    assert_eq!(
+        settled
+            .work
+            .get(&work_item.id)
+            .map(|demand| demand.scheduling_generation),
+        Some(work_item.revision + 1)
+    );
+    assert!(settled
+        .settlements
+        .contains_key(&canonical_settlement_id(&message.id)));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
+    );
+}
+
+#[tokio::test]
+async fn production_protocol_settlement_fault_rolls_back_queue_and_canonical_facts() {
+    for fault in PRE_COMMIT_FAULTS {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        runtime.set_scheduler_protocol_production_commands_enabled(true);
+        let work_item = runtime
+            .create_work_item(
+                "canonical settlement rollback".into(),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "run canonical work".into(),
+            },
+        );
+        message.work_item_id = Some(work_item.id);
+        let message = runtime.enqueue(message).await.unwrap();
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap();
+        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+        let claimed = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap();
+        runtime.inject_next_transition_fault(fault);
+
+        let error = runtime
+            .commit_queue_settlement(
+                QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: message.agent_id.clone(),
+                    priority: message.priority.clone(),
+                    status: QueueEntryStatus::Processed,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected runtime transition fault"),
+            "unexpected error for {fault:?}: {error:#}"
+        );
+
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_scheduler_protocol_snapshot("default")
+                .unwrap(),
+            claimed
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest_all()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.message_id == message.id)
+                .map(|entry| entry.status),
+            Some(QueueEntryStatus::Dequeued)
+        );
     }
 }
 
@@ -838,7 +1090,7 @@ async fn authoritative_mode_allows_claims_outside_authoritative_scenario() {
 async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_partial_writes() {
     for (scenario_class, message, waiting_work_item) in [
         (
-            "reducer_only_candidates",
+            SchedulerScenarioClass::ReducerOnlyCandidates,
             MessageEnvelope::new(
                 "default",
                 MessageKind::WebhookEvent,
@@ -855,7 +1107,7 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
             None,
         ),
         (
-            "wait_resume",
+            SchedulerScenarioClass::ExactTaskRejoin,
             task_result_message("task-authoritative-claim"),
             Some("work-authoritative-claim"),
         ),
@@ -905,7 +1157,7 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
                    scenario_class, mode, rollback_target,
                    manifest_revision, preflight_revision, updated_at
                  ) VALUES (?1, 'shadow', 'off', NULL, NULL, CURRENT_TIMESTAMP)",
-                [scenario_class],
+                [scenario_class.as_str()],
             )
             .unwrap();
 
@@ -928,7 +1180,7 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
                      rollback_target = 'shadow',
                      updated_at = CURRENT_TIMESTAMP
                  WHERE scenario_class = ?1",
-                [scenario_class],
+                [scenario_class.as_str()],
             )
             .unwrap();
         runtime.omit_next_scheduler_claim_shadow_comparison();
@@ -937,7 +1189,10 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
             .poll()
             .await
         {
-            Ok(_) => panic!("expected missing authoritative evidence to reject {scenario_class}"),
+            Ok(_) => panic!(
+                "expected missing authoritative evidence to reject {}",
+                scenario_class.as_str()
+            ),
             Err(error) => error,
         };
 
@@ -945,7 +1200,8 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
             error
                 .to_string()
                 .contains("requires matched canonical evidence"),
-            "unexpected {scenario_class} error: {error:#}"
+            "unexpected {} error: {error:#}",
+            scenario_class.as_str()
         );
         assert_eq!(runtime.agent_state().await.unwrap(), state_before_claim);
         assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
@@ -4550,6 +4806,9 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             }),
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands: Vec::new(),
             scheduler_authority_scenarios: Vec::new(),
             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                 expected: Some(Box::new(expected)),

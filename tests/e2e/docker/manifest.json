@@ -116,6 +116,62 @@
           "prompt": "Resume live Docker acceptance case {case_id} after a real holon serve restart. Call ListWorkItems with filter current and include_todo_list=true, then GetWorkItem for {work_item_id} with include_todo_list=true. Confirm it is the same item whose plan contains {plan_marker}. Update that WorkItem to plan_status ready with all three existing todos completed. After UpdateWorkItem succeeds, your very next assistant response must contain an operator-facing text block with a concise completion result and the literal marker {completion_marker}, immediately followed by the CompleteWorkItem tool call for exactly WorkItem {work_item_id} in that same response. The completion text must precede CompleteWorkItem; calling CompleteWorkItem alone and reporting the marker in a later response is a contract failure. Do not place the completion text before UpdateWorkItem, do not put another tool between the completion text and CompleteWorkItem, and do not use transitional text such as \"Now complete it\". Do not create another WorkItem and do not modify project files."
         }
       ]
+    },
+    {
+      "id": "scheduler-autonomous-legacy",
+      "tier": "extended",
+      "tags": ["scheduler", "workitem", "legacy", "restart", "persistence"],
+      "timeout_seconds": 600,
+      "description": "Verify real-LLM autonomous WorkItem scheduling with canonical production commands explicitly disabled.",
+      "scheduler_protocol_commands_enabled": false,
+      "runtime_env": {
+        "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS": "false"
+      },
+      "phases": [
+        {
+          "id": "autonomous-complete",
+          "required_tools": [
+            "CreateWorkItem",
+            "ListWorkItems",
+            "UpdateWorkItem",
+            "CompleteWorkItem"
+          ],
+          "forbidden_tools": [
+            "ApplyPatch",
+            "ExecCommand",
+            "WaitFor"
+          ],
+          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: scheduler-seed completed, autonomous-completion pending. Do not PickWorkItem, UpdateWorkItem, CompleteWorkItem, or WaitFor in this operator-triggered turn. After CreateWorkItem succeeds, end this response with a concise acknowledgement. The objective governs the later autonomous work_queue turn. Do not modify files. The expected completion marker is {completion_marker}."
+        }
+      ]
+    },
+    {
+      "id": "scheduler-autonomous-authoritative",
+      "tier": "extended",
+      "tags": ["scheduler", "workitem", "authoritative", "restart", "persistence"],
+      "timeout_seconds": 600,
+      "description": "Verify the feature-flagged canonical production claim and settlement chain through a real-LLM autonomous WorkItem turn.",
+      "scheduler_protocol_commands_enabled": true,
+      "runtime_env": {
+        "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS": "true"
+      },
+      "phases": [
+        {
+          "id": "autonomous-complete",
+          "required_tools": [
+            "CreateWorkItem",
+            "ListWorkItems",
+            "UpdateWorkItem",
+            "CompleteWorkItem"
+          ],
+          "forbidden_tools": [
+            "ApplyPatch",
+            "ExecCommand",
+            "WaitFor"
+          ],
+          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: scheduler-seed completed, autonomous-completion pending. Do not PickWorkItem, UpdateWorkItem, CompleteWorkItem, or WaitFor in this operator-triggered turn. After CreateWorkItem succeeds, end this response with a concise acknowledgement. The objective governs the later autonomous work_queue turn. Do not modify files. The expected completion marker is {completion_marker}."
+        }
+      ]
     }
   ]
 }

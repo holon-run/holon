@@ -414,32 +414,32 @@ impl RuntimeHandle {
                         ),
                     }),
                 );
-                let mut commit =
-                    self.inner.runtime_db.transitions().commit_queue(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
-                            agent_id: message.agent_id.clone(),
-                            operation: crate::runtime_db::transitions::QueueOperation::Interject,
-                            mutation: crate::runtime_db::transitions::QueueMutation::Consume(
-                                queue_record,
-                            ),
-                            scheduler_authority_scenarios: vec![
-                                scheduler::INTERJECTION_SCENARIO.into()
-                            ],
-                            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                                expected: Some(Box::new(expected_state)),
-                                record: Box::new(committed_state.clone()),
-                            }),
-                            message_evidence: Vec::new(),
-                            transcript_entries: vec![transcript],
-                            audit_events: vec![audit_event],
-                            scheduler_shadow_comparison: shadow_comparison,
-                            scheduler_delivery_shadow_comparison: None,
-                            scheduler_semantic_shadow: None,
-                            notify_scheduler: false,
-                            fault: None,
-                            brief_evidence: Vec::new(),
-                        },
-                    )?;
+                let mut commit = self.inner.runtime_db.transitions().commit_queue(
+                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                        agent_id: message.agent_id.clone(),
+                        operation: crate::runtime_db::transitions::QueueOperation::Interject,
+                        mutation: crate::runtime_db::transitions::QueueMutation::Consume(
+                            queue_record,
+                        ),
+                        scheduler_claim_work_item: None,
+                        scheduler_protocol_bootstrap: None,
+                        scheduler_protocol_commands: Vec::new(),
+                        scheduler_authority_scenarios: vec![scheduler::INTERJECTION_SCENARIO],
+                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(expected_state)),
+                            record: Box::new(committed_state.clone()),
+                        }),
+                        message_evidence: Vec::new(),
+                        transcript_entries: vec![transcript],
+                        audit_events: vec![audit_event],
+                        scheduler_shadow_comparison: shadow_comparison,
+                        scheduler_delivery_shadow_comparison: None,
+                        scheduler_semantic_shadow: None,
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    },
+                )?;
                 if !commit.applied {
                     return Err(anyhow::anyhow!(
                         "interjection settlement made no durable progress"

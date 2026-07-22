@@ -326,6 +326,65 @@ pub enum ScenarioMode {
     Authoritative,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerScenarioClass {
+    ReducerOnlyCandidates,
+    ExactTaskRejoin,
+    ExactWaitResume,
+    ExplicitlyBoundOperatorInput,
+    WorkItemAutonomousContinuation,
+    OrdinarySemanticOperatorBinding,
+    OperatorInterjection,
+    Settlement,
+    Delivery,
+}
+
+impl SchedulerScenarioClass {
+    pub const PRODUCTION_AUTHORITY: [Self; 7] = [
+        Self::ReducerOnlyCandidates,
+        Self::WorkItemAutonomousContinuation,
+        Self::ExactTaskRejoin,
+        Self::ExactWaitResume,
+        Self::OperatorInterjection,
+        Self::Settlement,
+        Self::Delivery,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReducerOnlyCandidates => "reducer_only_candidates",
+            Self::ExactTaskRejoin => "exact_task_rejoin",
+            Self::ExactWaitResume => "exact_wait_resume",
+            Self::ExplicitlyBoundOperatorInput => "explicitly_bound_operator_input",
+            Self::WorkItemAutonomousContinuation => "work_item_autonomous_continuation",
+            Self::OrdinarySemanticOperatorBinding => "ordinary_semantic_operator_binding",
+            Self::OperatorInterjection => "operator_interjection",
+            Self::Settlement => "settlement",
+            Self::Delivery => "delivery",
+        }
+    }
+}
+
+impl std::str::FromStr for SchedulerScenarioClass {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "reducer_only_candidates" => Ok(Self::ReducerOnlyCandidates),
+            "exact_task_rejoin" => Ok(Self::ExactTaskRejoin),
+            "exact_wait_resume" => Ok(Self::ExactWaitResume),
+            "explicitly_bound_operator_input" => Ok(Self::ExplicitlyBoundOperatorInput),
+            "work_item_autonomous_continuation" => Ok(Self::WorkItemAutonomousContinuation),
+            "ordinary_semantic_operator_binding" => Ok(Self::OrdinarySemanticOperatorBinding),
+            "operator_interjection" => Ok(Self::OperatorInterjection),
+            "settlement" => Ok(Self::Settlement),
+            "delivery" => Ok(Self::Delivery),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RolloutManifest {
     pub revision: u64,
@@ -684,6 +743,12 @@ pub struct SettleActivationCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterWorkDemandCommand {
+    pub work_item_id: String,
+    pub demand: WorkDemand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyCompletionReport {
     pub turn_terminal: String,
     pub operator_delivery: String,
@@ -728,6 +793,7 @@ pub struct TriggerWaitCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProtocolCommand {
+    RegisterWorkDemand(RegisterWorkDemandCommand),
     IssueActivationAuthority(IssueActivationAuthorityCommand),
     AdmitActivation(AdmitActivationCommand),
     SettleActivation(SettleActivationCommand),
@@ -1023,6 +1089,7 @@ pub struct Outcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
+    WorkDemandRegistered,
     AuthorityIssued,
     Admitted,
     Settled,
@@ -1444,6 +1511,9 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
     if let Some(outcome) = replay_or_conflict(snapshot, command) {
         return outcome;
     }
+    if let ProtocolCommand::RegisterWorkDemand(command) = command {
+        return register_work_demand(snapshot, command);
+    }
     if let ProtocolCommand::IssueActivationAuthority(command) = command {
         return issue_activation_authority(snapshot, command);
     }
@@ -1522,6 +1592,21 @@ fn replay_or_conflict(
     command: &ProtocolCommand,
 ) -> Option<ProtocolCommandOutcome> {
     match command {
+        ProtocolCommand::RegisterWorkDemand(command) => {
+            if let Some(existing) = snapshot.work.get(&command.work_item_id) {
+                return Some(if existing == &command.demand {
+                    duplicate_command(snapshot, "work_demand_already_registered")
+                } else {
+                    rejected_command(
+                        snapshot,
+                        command_conflict(
+                            ProtocolConflictKind::IdentityConflict,
+                            "work_demand_registration_conflict",
+                        ),
+                    )
+                });
+            }
+        }
         ProtocolCommand::IssueActivationAuthority(command) => {
             if let Some(existing) = snapshot.activation_authorities.get(&command.authority_id) {
                 return Some(if authority_matches_issue(existing, command) {
@@ -1648,6 +1733,9 @@ fn lower_command(
     command: &ProtocolCommand,
 ) -> Result<Event, ProtocolConflict> {
     match command {
+        ProtocolCommand::RegisterWorkDemand(_) => {
+            unreachable!("work demand registration is reduced directly")
+        }
         ProtocolCommand::IssueActivationAuthority(_) => {
             unreachable!("authority issuance is reduced directly")
         }
@@ -1716,6 +1804,51 @@ fn lower_command(
                 trigger_generation: command.trigger_generation,
             })
         }
+    }
+}
+
+fn register_work_demand(
+    snapshot: &Snapshot,
+    command: &RegisterWorkDemandCommand,
+) -> ProtocolCommandOutcome {
+    if command.work_item_id.is_empty()
+        || command.demand.metadata_revision == 0
+        || command.demand.scheduling_generation == 0
+        || command.demand.locality.is_empty()
+        || command.demand.cost_class.is_empty()
+    {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::InvalidCommand,
+                "work_demand_registration_fields_required",
+            ),
+        );
+    }
+    if command.demand.status != WorkStatus::Runnable {
+        return rejected_command(
+            snapshot,
+            command_conflict(
+                ProtocolConflictKind::UnsupportedCommand,
+                "initial_work_demand_must_be_runnable",
+            ),
+        );
+    }
+
+    let mut next = snapshot.clone();
+    next.work
+        .insert(command.work_item_id.clone(), command.demand.clone());
+    ProtocolCommandOutcome {
+        outcome: Outcome {
+            decision: Decision::WorkDemandRegistered,
+            transitions: vec![format!(
+                "work:{}:registered:generation:{}",
+                command.work_item_id, command.demand.scheduling_generation
+            )],
+            diagnostics: Vec::new(),
+            snapshot: next,
+        },
+        conflict: None,
     }
 }
 
@@ -3245,13 +3378,14 @@ const MAXIMUM_P99_LATENCY_REGRESSION_BPS: u32 = 1_000;
 const MAXIMUM_OBSERVATIONAL_DIVERGENCE_BPS: u32 = 100;
 
 fn rollout_class_gate(scenario_class: &str) -> Option<RolloutClassGate> {
+    let scenario_class = scenario_class.parse::<SchedulerScenarioClass>().ok()?;
     let gate = match scenario_class {
-        "reducer_only_candidates" => RolloutClassGate {
+        SchedulerScenarioClass::ReducerOnlyCandidates => RolloutClassGate {
             minimum_shadow_samples: 10_000,
             minimum_shadow_duration_secs: 72 * 60 * 60,
             required_evidence: &["deterministic_replay", "duplicate_command_idempotency"],
         },
-        "exact_task_rejoin" => RolloutClassGate {
+        SchedulerScenarioClass::ExactTaskRejoin => RolloutClassGate {
             minimum_shadow_samples: 1_000,
             minimum_shadow_duration_secs: 7 * 24 * 60 * 60,
             required_evidence: &[
@@ -3260,7 +3394,7 @@ fn rollout_class_gate(scenario_class: &str) -> Option<RolloutClassGate> {
                 "restart_before_rejoin_settlement",
             ],
         },
-        "exact_wait_resume" => RolloutClassGate {
+        SchedulerScenarioClass::ExactWaitResume => RolloutClassGate {
             minimum_shadow_samples: 1_000,
             minimum_shadow_duration_secs: 7 * 24 * 60 * 60,
             required_evidence: &[
@@ -3270,7 +3404,8 @@ fn rollout_class_gate(scenario_class: &str) -> Option<RolloutClassGate> {
                 "rearm",
             ],
         },
-        "explicitly_bound_operator_input" => RolloutClassGate {
+        SchedulerScenarioClass::ExplicitlyBoundOperatorInput
+        | SchedulerScenarioClass::OperatorInterjection => RolloutClassGate {
             minimum_shadow_samples: 1_000,
             minimum_shadow_duration_secs: 7 * 24 * 60 * 60,
             required_evidence: &[
@@ -3279,7 +3414,25 @@ fn rollout_class_gate(scenario_class: &str) -> Option<RolloutClassGate> {
                 "wrong_agent_target",
             ],
         },
-        "work_item_autonomous_continuation" => RolloutClassGate {
+        SchedulerScenarioClass::Settlement => RolloutClassGate {
+            minimum_shadow_samples: 1_000,
+            minimum_shadow_duration_secs: 7 * 24 * 60 * 60,
+            required_evidence: &[
+                "duplicate_settlement",
+                "missing_settlement_recovery",
+                "restart_before_settlement_commit",
+            ],
+        },
+        SchedulerScenarioClass::Delivery => RolloutClassGate {
+            minimum_shadow_samples: 1_000,
+            minimum_shadow_duration_secs: 7 * 24 * 60 * 60,
+            required_evidence: &[
+                "duplicate_delivery",
+                "delivery_retry",
+                "restart_before_delivery_commit",
+            ],
+        },
+        SchedulerScenarioClass::WorkItemAutonomousContinuation => RolloutClassGate {
             minimum_shadow_samples: 2_000,
             minimum_shadow_duration_secs: 14 * 24 * 60 * 60,
             required_evidence: &[
@@ -3289,7 +3442,7 @@ fn rollout_class_gate(scenario_class: &str) -> Option<RolloutClassGate> {
                 "work_item_rollback",
             ],
         },
-        "ordinary_semantic_operator_binding" => RolloutClassGate {
+        SchedulerScenarioClass::OrdinarySemanticOperatorBinding => RolloutClassGate {
             minimum_shadow_samples: 5_000,
             minimum_shadow_duration_secs: 14 * 24 * 60 * 60,
             required_evidence: &[
@@ -3299,7 +3452,6 @@ fn rollout_class_gate(scenario_class: &str) -> Option<RolloutClassGate> {
                 "zero_wrong_automatic_bindings",
             ],
         },
-        _ => return None,
     };
     Some(gate)
 }

@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -126,6 +127,7 @@ class CaseHarness:
         model: str,
         credential_envs: list[str],
         env_file: Path | None,
+        runtime_env: dict[str, str],
         evidence_root: Path,
         timeout_seconds: int,
         keep: bool,
@@ -136,6 +138,7 @@ class CaseHarness:
         self.model = model
         self.credential_envs = credential_envs
         self.env_file = env_file
+        self.runtime_env = runtime_env
         self.evidence = evidence_root / case_id
         self.timeout_seconds = timeout_seconds
         self.keep = keep
@@ -199,6 +202,8 @@ class CaseHarness:
         ]
         for name in self.credential_envs:
             args.extend(["--env", name])
+        for name, value in sorted(self.runtime_env.items()):
+            args.extend(["--env", f"{name}={value}"])
         if self.env_file is not None:
             args.extend(["--env-file", str(self.env_file)])
         args.append(self.image)
@@ -415,6 +420,31 @@ class CaseHarness:
         write_json(self.evidence / f"{label}-work-items.json", value)
         return value
 
+    def wait_work_item(
+        self,
+        *,
+        objective_marker: str,
+        expected_state: str,
+        label: str,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + self.timeout_seconds
+        matches: list[dict[str, Any]] = []
+        while time.monotonic() < deadline:
+            items = self.request("GET", self.agent_path("work-items?limit=50"))
+            matches = [
+                item for item in items if objective_marker in item.get("objective", "")
+            ]
+            if len(matches) == 1 and matches[0].get("state") == expected_state:
+                write_json(self.evidence / f"{label}-work-items.json", items)
+                self.wait_agent_idle()
+                return matches[0]
+            time.sleep(1)
+        write_json(self.evidence / f"{label}-timeout-work-items.json", matches)
+        self.capture_context(f"{label}-timeout")
+        raise TimeoutError(
+            f"timed out waiting for WorkItem {objective_marker} to reach {expected_state}"
+        )
+
     def brief(self, brief_id: str, label: str) -> dict[str, Any]:
         encoded_id = urllib.parse.quote(brief_id, safe="")
         value = self.request("GET", self.agent_path(f"briefs/{encoded_id}"))
@@ -551,10 +581,105 @@ class CaseHarness:
         write_json(self.evidence / f"{label}.json", value)
         return value
 
+    def runtime_db_snapshot(self, label: str) -> dict[str, Any]:
+        snapshot_dir = self.evidence / f"{label}-runtime-state"
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir)
+        snapshot_dir.mkdir(parents=True)
+        self.docker(
+            "cp",
+            f"{self.container}:/var/lib/holon/state/.",
+            str(snapshot_dir),
+        )
+        database = snapshot_dir / "runtime.sqlite"
+        require(database.is_file(), "runtime database snapshot is missing")
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            snapshot = {
+                "work_items": sqlite_rows(
+                    connection,
+                    "SELECT work_item_id, agent_id, state, objective, revision, "
+                    "current_focus, completed_at, payload_json "
+                    "FROM work_items ORDER BY created_at",
+                ),
+                "messages": sqlite_rows(
+                    connection,
+                    "SELECT message_id, agent_id, turn_id, work_item_id, kind, "
+                    "created_at, payload_json FROM messages ORDER BY created_at",
+                ),
+                "queue_entries": sqlite_rows(
+                    connection,
+                    "SELECT message_id, agent_id, priority, status, created_at, "
+                    "updated_at, payload_json FROM queue_entries "
+                    "ORDER BY created_at, updated_at",
+                ),
+                "scheduler_protocol_config": sqlite_rows(
+                    connection,
+                    "SELECT protocol_mode, config_revision, latest_preflight_revision "
+                    "FROM scheduler_protocol_config",
+                ),
+                "scheduler_work_demands": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, work_item_id, scheduling_generation, status, "
+                    "status_reference_id, payload_json FROM scheduler_work_demands",
+                ),
+                "scheduler_agent_slots": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, slot_kind, activation_id, work_item_id, "
+                    "admitted_generation FROM scheduler_agent_slots",
+                ),
+                "scheduler_activations": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, activation_id, authority_id, work_item_id, "
+                    "admitted_generation, admission_kind, lifecycle_state, "
+                    "idempotency_key, payload_json FROM scheduler_activations",
+                ),
+                "scheduler_activation_settlements": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, settlement_id, activation_id, payload_json "
+                    "FROM scheduler_activation_settlements",
+                ),
+                "scheduler_protocol_command_results": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, command_kind, command_identity, decision, "
+                    "conflict_kind, conflict_code, result_references_json, "
+                    "pre_state_fence_json, post_state_fence_json "
+                    "FROM scheduler_protocol_command_results ORDER BY created_at",
+                ),
+                "scheduler_shadow_comparisons": sqlite_rows(
+                    connection,
+                    "SELECT agent_id, scenario_class, boundary, comparison_identity, "
+                    "comparison_outcome, authority_mode, input_identity "
+                    "FROM scheduler_shadow_comparisons ORDER BY created_at",
+                ),
+            }
+        finally:
+            connection.close()
+        write_json(self.evidence / f"{label}-runtime-db.json", snapshot)
+        return snapshot
+
 
 def result_value(detail: dict[str, Any]) -> dict[str, Any]:
     output = detail.get("output", {})
     return output.get("envelope", {}).get("result", output.get("result", output))
+
+
+def sqlite_rows(connection: sqlite3.Connection, query: str) -> list[dict[str, Any]]:
+    return [dict(row) for row in connection.execute(query).fetchall()]
+
+
+def require_processed_queue_entries(
+    queue_entries: list[dict[str, Any]], message_ids: set[str]
+) -> None:
+    matching = [
+        row for row in queue_entries if row.get("message_id") in message_ids
+    ]
+    require(
+        len(matching) == len(message_ids)
+        and all(row.get("status") == "processed" for row in matching),
+        f"work_queue messages did not reach processed current state: {matching}",
+    )
 
 
 def find_case(manifest: dict[str, Any], case_id: str) -> dict[str, Any]:
@@ -939,11 +1064,175 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
     )
 
 
+def run_scheduler_protocol_case(harness: CaseHarness, case: dict[str, Any]) -> None:
+    harness.initialize_workspace()
+    harness.start()
+    marker = secrets.token_hex(4)
+    objective_marker = f"SCHEDULER-AUTONOMOUS-{marker}"
+    completion_marker = f"SCHEDULER-COMPLETE-{marker}"
+    objective = (
+        f"{objective_marker}. Complete this WorkItem only after the Runtime resumes it "
+        "through an autonomous work_queue SystemTick. On that autonomous turn, inspect "
+        "the exact current item with ListWorkItems using filter current and optionally "
+        "GetWorkItem, update both existing todos to completed, then emit a concise "
+        f"completion result containing {completion_marker} immediately followed by "
+        "CompleteWorkItem for that exact item. Do not wait for more operator input."
+    )
+
+    phase = case["phases"][0]
+    baseline, _ = harness.prompt(
+        "scheduler-autonomous",
+        phase["prompt"].format(
+            case_id=case["id"],
+            objective=json.dumps(objective, ensure_ascii=False),
+            objective_marker=objective_marker,
+            completion_marker=completion_marker,
+        ),
+    )
+    item = harness.wait_work_item(
+        objective_marker=objective_marker,
+        expected_state="completed",
+        label="scheduler-autonomous-completed",
+    )
+    required, forbidden = phase_tools(phase)
+    harness.assert_tools("scheduler-autonomous", baseline, required, forbidden)
+
+    items = harness.work_items("scheduler-autonomous-assert")
+    matches = [item for item in items if objective_marker in item["objective"]]
+    require(len(matches) == 1, f"expected one scheduler WorkItem: {matches}")
+    require(
+        matches[0]["id"] == item["id"],
+        f"scheduler WorkItem identity changed during completion: {matches}",
+    )
+    item = matches[0]
+    work_item_id = item["id"]
+    require(item["state"] == "completed", f"scheduler WorkItem not completed: {item}")
+    require(
+        len(item.get("todo_list", [])) == 2
+        and all(todo["state"] == "completed" for todo in item["todo_list"]),
+        f"scheduler WorkItem todos were not completed: {item}",
+    )
+    result_brief_id = item.get("result_brief_id")
+    require(
+        isinstance(result_brief_id, str) and result_brief_id,
+        f"scheduler WorkItem omitted result brief: {item}",
+    )
+    result_brief = harness.brief(result_brief_id, "scheduler-result")
+    require(
+        result_brief.get("work_item_id") == work_item_id
+        and completion_marker in (result_brief.get("text") or ""),
+        f"scheduler completion brief mismatch: {result_brief}",
+    )
+
+    harness.restart()
+    restarted_items = harness.work_items("scheduler-after-restart")
+    restarted = next(item for item in restarted_items if item["id"] == work_item_id)
+    require(
+        restarted["state"] == "completed"
+        and restarted.get("result_brief_id") == result_brief_id,
+        f"scheduler WorkItem identity did not survive restart: {restarted}",
+    )
+
+    snapshot = harness.runtime_db_snapshot("scheduler")
+    message_rows = [
+        row
+        for row in snapshot["messages"]
+        if row.get("work_item_id") == work_item_id
+        and "work_queue" in row.get("payload_json", "")
+        and (
+            "SystemTick" in row.get("payload_json", "")
+            or "system_tick" in row.get("payload_json", "")
+        )
+    ]
+    require(message_rows, "autonomous work_queue SystemTick evidence is missing")
+    message_ids = {row["message_id"] for row in message_rows}
+    # queue_entries is a message_id-keyed current-state view, so queued and
+    # dequeued are intentionally overwritten by the terminal processed row.
+    require_processed_queue_entries(snapshot["queue_entries"], message_ids)
+
+    enabled = case.get("scheduler_protocol_commands_enabled")
+    require(
+        enabled in {True, False},
+        "scheduler case must declare scheduler_protocol_commands_enabled",
+    )
+    demands = [
+        row
+        for row in snapshot["scheduler_work_demands"]
+        if row["work_item_id"] == work_item_id
+    ]
+    activations = [
+        row
+        for row in snapshot["scheduler_activations"]
+        if row["work_item_id"] == work_item_id
+    ]
+    activation_ids = {row["activation_id"] for row in activations}
+    settlements = [
+        row
+        for row in snapshot["scheduler_activation_settlements"]
+        if row["activation_id"] in activation_ids
+    ]
+    command_rows = [
+        row
+        for row in snapshot["scheduler_protocol_command_results"]
+        if row["command_identity"] == work_item_id
+        or any(
+            message_id in row["command_identity"] for message_id in message_ids
+        )
+    ]
+
+    if not enabled:
+        require(not demands, f"legacy mode wrote canonical demand facts: {demands}")
+        require(not activations, f"legacy mode wrote canonical activations: {activations}")
+        require(not settlements, f"legacy mode wrote canonical settlements: {settlements}")
+        require(not command_rows, f"legacy mode wrote protocol commands: {command_rows}")
+        return
+
+    require(
+        len(demands) == 1 and demands[0]["status"] == "terminal",
+        f"canonical demand did not settle terminal: {demands}",
+    )
+    require(
+        len(activations) == 1 and activations[0]["lifecycle_state"] == "settled",
+        f"canonical activation did not settle exactly once: {activations}",
+    )
+    require(
+        len(settlements) == 1,
+        f"canonical settlement is missing or duplicated: {settlements}",
+    )
+    slots = [
+        row
+        for row in snapshot["scheduler_agent_slots"]
+        if row["agent_id"] == harness.agent_id
+    ]
+    require(
+        len(slots) == 1
+        and slots[0]["slot_kind"] == "idle"
+        and slots[0]["activation_id"] is None,
+        f"canonical activation slot was not released: {slots}",
+    )
+    command_kinds = {row["command_kind"] for row in command_rows}
+    require(
+        {
+            "register_work_demand",
+            "issue_activation_authority",
+            "admit_activation",
+            "settle_activation",
+        }.issubset(command_kinds),
+        f"canonical command chain is incomplete: {command_rows}",
+    )
+    require(
+        all(row["conflict_kind"] is None for row in command_rows),
+        f"canonical command chain contains conflicts: {command_rows}",
+    )
+
+
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "memory-agent-home-persistence": run_memory_case,
     "workspace-restart-lifecycle": run_workspace_case,
     "workitem-wait-restart-complete": run_workitem_case,
+    "scheduler-autonomous-legacy": run_scheduler_protocol_case,
+    "scheduler-autonomous-authoritative": run_scheduler_protocol_case,
 }
 
 
@@ -971,6 +1260,22 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             and case["timeout_seconds"] > 0,
             f"{case_id} timeout_seconds must be positive",
         )
+        runtime_env = case.get("runtime_env", {})
+        require(isinstance(runtime_env, dict), f"{case_id} runtime_env must be an object")
+        require(
+            all(
+                isinstance(name, str)
+                and name.startswith("HOLON_")
+                and isinstance(value, str)
+                for name, value in runtime_env.items()
+            ),
+            f"{case_id} runtime_env must contain HOLON_ string entries",
+        )
+        if "scheduler_protocol_commands_enabled" in case:
+            require(
+                isinstance(case["scheduler_protocol_commands_enabled"], bool),
+                f"{case_id} scheduler_protocol_commands_enabled must be boolean",
+            )
         phases = case.get("phases")
         require(isinstance(phases, list) and phases, f"{case_id} needs phases")
         phase_ids: set[str] = set()
@@ -1278,6 +1583,7 @@ def main(argv: list[str] | None = None) -> int:
             model=model,
             credential_envs=credential_envs,
             env_file=env_file,
+            runtime_env=dict(case.get("runtime_env", {})),
             evidence_root=evidence_root,
             timeout_seconds=(
                 int(timeout_override)

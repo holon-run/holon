@@ -17,8 +17,8 @@ use crate::domain::scheduler_protocol::{
     Decision, MissingSettlementRecord, ProtocolCommand, ProtocolConflict, ProtocolConflictKind,
     ProtocolMode, RollbackAction, RollbackTrigger, RolloutCommand, RolloutManifest,
     RolloutPreflightRecord, RolloutPreflightState, RolloutState, ScenarioAuthority,
-    ScenarioHardBlockerRecord, ScenarioMode, Snapshot, WaitGenerationRecord, WaitIdentity,
-    WaitRecord, WaitState, WorkDemand, WorkStatus,
+    ScenarioHardBlockerRecord, ScenarioMode, SchedulerScenarioClass, Snapshot,
+    WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use crate::domain::scheduler_semantic::{
     resolve_semantic_proposal, validate_semantic_decision_input, validate_semantic_provider_config,
@@ -66,6 +66,19 @@ pub(super) struct PreparedSemanticShadowDecision {
     payload_hash: String,
     authority_mode: ScenarioMode,
     already_recorded: bool,
+}
+
+pub(super) struct PreparedProtocolCommands {
+    snapshot: Snapshot,
+    initialized_partition: bool,
+    results: Vec<PreparedProtocolCommandResult>,
+}
+
+struct PreparedProtocolCommandResult {
+    command_kind: &'static str,
+    command_identity: String,
+    payload_hash: String,
+    result: SchedulerProtocolCommandResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,20 +167,133 @@ enum CommandTransactionOutcome<T> {
 
 pub(super) fn validate_required_shadow_comparisons_tx(
     tx: &Transaction<'_>,
-    required_scenarios: &[String],
+    required_scenarios: &[SchedulerScenarioClass],
     commands: [Option<&SchedulerShadowComparisonCommand>; 2],
 ) -> Result<()> {
     for scenario_class in required_scenarios {
-        if effective_scenario_mode_tx(tx, scenario_class)? != ScenarioMode::Authoritative {
+        if effective_scenario_mode_tx(tx, scenario_class.as_str())? != ScenarioMode::Authoritative {
             continue;
         }
         let has_evidence = commands
             .iter()
             .flatten()
-            .any(|command| command.scenario_class == *scenario_class);
+            .any(|command| command.scenario_class == scenario_class.as_str());
         if !has_evidence {
-            bail!("scheduler scenario {scenario_class} requires matched canonical evidence");
+            bail!(
+                "scheduler scenario {} requires matched canonical evidence",
+                scenario_class.as_str()
+            );
         }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_protocol_commands_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    bootstrap: Option<&Snapshot>,
+    commands: &[ProtocolCommand],
+) -> Result<Option<PreparedProtocolCommands>> {
+    if commands.is_empty() {
+        return Ok(None);
+    }
+    for command in commands {
+        validate_command_agent(agent_id, command)?;
+    }
+
+    let initialized_partition = !scheduler_protocol_partition_exists_tx(tx, agent_id)?;
+    let mut snapshot = if initialized_partition {
+        let mut snapshot = bootstrap
+            .cloned()
+            .ok_or_else(|| anyhow!("canonical scheduler claim requires bootstrap state"))?;
+        validate_agent_partition(agent_id, &snapshot)?;
+        snapshot.rollout = load_rollout(tx)?;
+        scheduler_protocol::assert_invariants(&snapshot)
+            .map_err(|error| anyhow!("invalid scheduler protocol bootstrap: {error}"))?;
+        snapshot
+    } else {
+        load_snapshot_tx(tx, agent_id)?
+    };
+    let mut results = Vec::new();
+
+    for command in commands {
+        let (command_kind, command_identity) = command_identity(command)?;
+        let payload_hash = canonical_command_hash(command_kind, command)?;
+        if let Some(stored) =
+            stored_command_result_tx(tx, agent_id, command_kind, &command_identity)?
+        {
+            if stored.payload_hash != payload_hash {
+                bail!(
+                    "scheduler protocol command identity conflict for agent {}, command {} {}",
+                    agent_id,
+                    command_kind,
+                    command_identity
+                );
+            }
+            continue;
+        }
+
+        let pre_state_fence = snapshot_fence(&snapshot)?;
+        let outcome = scheduler_protocol::reduce_command(&snapshot, command);
+        scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
+            anyhow!("scheduler protocol reducer produced invalid state: {error}")
+        })?;
+        if outcome.outcome.decision == Decision::Rejected {
+            let code = outcome
+                .conflict
+                .as_ref()
+                .map(|conflict| conflict.code.as_str())
+                .or_else(|| outcome.outcome.diagnostics.first().map(String::as_str))
+                .unwrap_or("rejected_without_diagnostic");
+            bail!("canonical scheduler command {command_kind} rejected: {code}");
+        }
+        let post_state_fence = snapshot_fence(&outcome.outcome.snapshot)?;
+        let decision = outcome.outcome.decision.clone();
+        let result = SchedulerProtocolCommandResult {
+            decision: decision.clone(),
+            conflict: outcome.conflict,
+            transitions: outcome.outcome.transitions,
+            diagnostics: outcome.outcome.diagnostics,
+            fact_references: decision_fact_references(&decision, command_fact_references(command)),
+            pre_state_fence,
+            post_state_fence,
+        };
+        snapshot = outcome.outcome.snapshot;
+        results.push(PreparedProtocolCommandResult {
+            command_kind,
+            command_identity,
+            payload_hash,
+            result,
+        });
+    }
+
+    Ok(Some(PreparedProtocolCommands {
+        snapshot,
+        initialized_partition,
+        results,
+    }))
+}
+
+pub(super) fn persist_protocol_commands_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    prepared: Option<PreparedProtocolCommands>,
+) -> Result<()> {
+    let Some(prepared) = prepared else {
+        return Ok(());
+    };
+    if prepared.initialized_partition || !prepared.results.is_empty() {
+        persist_agent_snapshot_tx(tx, agent_id, &prepared.snapshot)?;
+    }
+    for result in prepared.results {
+        insert_command_result_tx(
+            tx,
+            agent_id,
+            result.command_kind,
+            &result.command_identity,
+            &result.payload_hash,
+            &result.result,
+        )?;
     }
     Ok(())
 }
@@ -261,13 +387,14 @@ pub(super) fn validate_semantic_shadow_decision_tx(
         .validate()
         .map_err(|error| anyhow!("invalid semantic validation policy: {error:?}"))?;
 
-    let authority_mode = effective_scenario_mode_tx(tx, SEMANTIC_OPERATOR_BINDING_SCENARIO)?;
+    let authority_mode =
+        effective_scenario_mode_tx(tx, SEMANTIC_OPERATOR_BINDING_SCENARIO.as_str())?;
     match authority_mode {
         ScenarioMode::Off => return Ok(None),
         ScenarioMode::Authoritative => {
             bail!(
                 "scheduler scenario {} is authoritative, but semantic production authority is not wired",
-                SEMANTIC_OPERATOR_BINDING_SCENARIO
+                SEMANTIC_OPERATOR_BINDING_SCENARIO.as_str()
             );
         }
         ScenarioMode::Shadow => {}
@@ -466,6 +593,21 @@ impl RuntimeTransitionRepository<'_> {
 
     pub(crate) fn load_scheduler_protocol_snapshot(&self, agent_id: &str) -> Result<Snapshot> {
         self.load_scheduler_protocol_snapshot_with_hook(agent_id, || Ok(()))
+    }
+
+    pub(crate) fn load_scheduler_protocol_snapshot_if_initialized(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<Snapshot>> {
+        let connection = self.db.connection()?;
+        let transaction = Transaction::new_unchecked(&connection, TransactionBehavior::Deferred)?;
+        if !scheduler_protocol_partition_exists_tx(&transaction, agent_id)? {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let snapshot = load_snapshot_tx(&transaction, agent_id)?;
+        transaction.commit()?;
+        Ok(Some(snapshot))
     }
 
     fn load_scheduler_protocol_snapshot_with_hook(
@@ -766,6 +908,9 @@ fn snapshot_fence(snapshot: &Snapshot) -> Result<serde_json::Value> {
 
 fn command_identity(command: &ProtocolCommand) -> Result<(&'static str, String)> {
     Ok(match command {
+        ProtocolCommand::RegisterWorkDemand(command) => {
+            ("register_work_demand", command.work_item_id.clone())
+        }
         ProtocolCommand::IssueActivationAuthority(command) => {
             ("issue_activation_authority", command.authority_id.clone())
         }
@@ -796,6 +941,9 @@ fn canonical_command_hash(command_kind: &str, command: &ProtocolCommand) -> Resu
 
 fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
     match command {
+        ProtocolCommand::RegisterWorkDemand(command) => {
+            vec![format!("work:{}", command.work_item_id)]
+        }
         ProtocolCommand::IssueActivationAuthority(command) => {
             vec![format!("activation_authority:{}", command.authority_id)]
         }
@@ -820,6 +968,7 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
 
 fn validate_command_agent(agent_id: &str, command: &ProtocolCommand) -> Result<()> {
     let command_agent_id = match command {
+        ProtocolCommand::RegisterWorkDemand(_) => None,
         ProtocolCommand::IssueActivationAuthority(command) => Some(&command.activation.agent_id),
         ProtocolCommand::AdmitActivation(command) => Some(&command.activation.agent_id),
         ProtocolCommand::SettleActivation(_)
@@ -1190,6 +1339,11 @@ fn persist_agent_snapshot_tx(
 
     for (work_item_id, demand) in &snapshot.work {
         let (status, status_reference_id) = work_status_columns(&demand.status);
+        let staged_status = if matches!(demand.status, WorkStatus::Terminal) {
+            "runnable"
+        } else {
+            status
+        };
         tx.execute(
             "INSERT INTO scheduler_work_demands (
                agent_id,
@@ -1221,7 +1375,7 @@ fn persist_agent_snapshot_tx(
                 work_item_id,
                 to_i64(demand.metadata_revision, "work metadata revision")?,
                 to_i64(demand.scheduling_generation, "work scheduling generation")?,
-                status,
+                staged_status,
                 status_reference_id,
                 serde_json::to_string(&demand.capabilities)?,
                 serde_json::to_string(&demand.locks)?,
@@ -1477,6 +1631,20 @@ fn persist_agent_snapshot_tx(
             &now,
         ],
     )?;
+
+    for (work_item_id, demand) in &snapshot.work {
+        if matches!(demand.status, WorkStatus::Terminal) {
+            tx.execute(
+                "UPDATE scheduler_work_demands
+                 SET status = 'terminal',
+                     status_reference_id = NULL,
+                     payload_json = ?3,
+                     updated_at = ?4
+                 WHERE agent_id = ?1 AND work_item_id = ?2",
+                params![agent_id, work_item_id, serde_json::to_string(demand)?, &now,],
+            )?;
+        }
+    }
 
     for (settlement_id, settlement) in &snapshot.settlements {
         tx.execute(
