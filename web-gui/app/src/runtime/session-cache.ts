@@ -36,6 +36,15 @@ const MAX_CACHED_AGENTS_PER_REMOTE = 50;
 const MAX_EVENTS_PER_AGENT = 5000;
 const WRITE_DEBOUNCE_MS = 2000;
 
+function cachedAgentSummary(
+  value: unknown,
+  expectedAgentId: string,
+): AgentSummary | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const agent = value as Partial<AgentSummary>;
+  return agent.id === expectedAgentId ? (agent as AgentSummary) : undefined;
+}
+
 /**
  * Compute the isolation key for a remote connection.
  * Local mode uses "local"; remote mode uses the normalized baseUrl.
@@ -105,7 +114,7 @@ export function hydrateSessionFromCache(cached: CachedAgentSession): Partial<Age
     newestSeq: cached.newestSeq,
     oldestSeq: cached.oldestSeq,
   });
-  const agent = cached.agentSummary as AgentSummary | undefined;
+  const agent = cachedAgentSummary(cached.agentSummary, cached.agentId);
   const events = projection.eventSeqs
     .map((seq) => projection.eventsBySeq[seq])
     .filter((event): event is ProjectionEvent => Boolean(event));

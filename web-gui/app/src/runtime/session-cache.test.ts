@@ -211,6 +211,28 @@ describe("hydrateSessionFromCache", () => {
     expect(result.syncStatus).toBe("stale");
   });
 
+  it("ignores a malformed or mismatched cached agent summary", () => {
+    const cached = {
+      remoteKey: "local",
+      agentId: "agent-1",
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      projectionGeneration: SESSION_PROJECTION_GENERATION,
+      agentSummary: { id: "agent-2" },
+      eventsBySeq: { 1: { id: "e1", event_seq: 1 } },
+      eventSeqs: [1],
+      messagesById: {},
+      transcriptEntriesById: {},
+      briefRecordsById: {},
+      cachedAt: Date.now(),
+    };
+
+    const result = hydrateSessionFromCache(cached);
+
+    expect(result.detail).toBeUndefined();
+    expect(result.eventSeqs).toEqual([1]);
+    expect(result.contentStatus).toBe("available");
+  });
+
   it("does not include UI state fields", () => {
     const cached = {
       remoteKey: "local",
