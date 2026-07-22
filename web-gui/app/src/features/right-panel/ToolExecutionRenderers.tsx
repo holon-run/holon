@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { formatToolExecutionDetail } from "../inspector/ActivityInspectorPanel";
+import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import { parseWorkspaceImageRef, WorkspaceImage } from "../../components/MarkdownContent";
 import type { RuntimeToolExecutionRecord } from "../../runtime/types";
@@ -868,7 +869,7 @@ function ListProviderModelsRenderer({ record }: { record: RuntimeToolExecutionRe
               {availability ? <span className={`tool-detail-badge tool-detail-badge--${availability === "available" ? "ok" : "warn"}`}>{availability}</span> : null}
               {selectable != null ? <span className={`tool-detail-badge tool-detail-badge--${selectable ? "ok" : "mute"}`}>{selectable ? "selectable" : "locked"}</span> : null}
             </div>
-            {modelRef ? <p className="tool-detail-result-snippet">{modelRef}</p> : null}
+            {modelRef ? <p className="tool-detail-result-snippet">{compactModelRouteDisplay(modelRef)}</p> : null}
             {unavailableReason ? <p className="tool-detail-result-snippet" style={{ color: "var(--danger)" }}>{unavailableReason}</p> : null}
           </section>
         );
@@ -906,8 +907,8 @@ function AgentGetRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
       {visibility ? <SimpleField label={t("inspector.mode")} value={visibility} /> : null}
       {ownership ? <SimpleField label="Ownership" value={ownership} /> : null}
       {profilePreset ? <SimpleField label="Preset" value={profilePreset} /> : null}
-      {effectiveModel ? <SimpleField label={t("inspector.model", { defaultValue: "Model" })} value={effectiveModel} /> : null}
-      {activeModel && activeModel !== effectiveModel ? <SimpleField label="Active" value={activeModel} /> : null}
+      {effectiveModel ? <SimpleField label={t("inspector.model", { defaultValue: "Model" })} value={compactModelRouteDisplay(effectiveModel)} /> : null}
+      {activeModel && activeModel !== effectiveModel ? <SimpleField label="Active" value={compactModelRouteDisplay(activeModel)} /> : null}
       {activeTaskCount != null ? <SimpleField label={t("inspector.tasks")} value={String(activeTaskCount)} /> : null}
       {children.length ? (
         <section className="tool-detail-field">

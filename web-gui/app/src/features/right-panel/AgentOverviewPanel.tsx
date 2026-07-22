@@ -4,6 +4,7 @@ import type React from "react";
 
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
+import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { TaskDetailContent, normalizeTaskDetailContent } from "./TaskDetailRenderers";
 import type { AgentSummary, SkillCatalogEntry, SkillCatalogState, TaskDetailState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
@@ -128,7 +129,7 @@ export function AgentOverviewPanel({
         <dl className="inspector-facts">
           <div>
             <dt>{t("agent.model")}</dt>
-            <dd>{agent.model}</dd>
+            <dd>{compactModelRouteDisplay(agent.model)}</dd>
           </div>
           <div>
             <dt>{t("agent.currentWork")}</dt>

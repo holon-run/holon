@@ -741,7 +741,7 @@ fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
         .contains("opensource/src/github.com/holon-run/holon)"));
     assert!(view_model
         .context_line
-        .contains("anthropic@default/claude-sonnet-4-6"));
+        .contains("anthropic/claude-sonnet-4-6"));
     assert!(!view_model.context_line.contains("model:"));
 }
 
@@ -816,7 +816,7 @@ fn statusbar_view_model_converges_from_provider_round_model_event() {
 
     assert!(view_model
         .context_line
-        .contains("anthropic@default/claude-sonnet-4-6 (fallback from openai@default/gpt-5.4)"));
+        .contains("anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"));
 }
 
 #[test]

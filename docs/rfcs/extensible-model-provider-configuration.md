@@ -68,6 +68,16 @@ existing built-in alias/catalog endpoint rule, falling back to the provider's
 `default` endpoint. Writers always persist canonical route refs. Reading legacy
 data does not silently rewrite it.
 
+Human-facing labels may use a compact presentation projection:
+
+- `provider@default/model` is displayed as `provider/model`
+- non-default routes such as `provider@plan/model` remain fully qualified
+
+This compact form is presentation only. It is not a canonical serialization,
+persisted identity, API value, map key, cursor, or replacement for legacy input
+semantics. Machine-readable surfaces and runtime lineage continue to use the
+full `provider@endpoint/model` route ref.
+
 Existing data can be inspected and explicitly migrated with:
 
 ```bash

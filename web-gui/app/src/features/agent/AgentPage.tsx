@@ -12,6 +12,7 @@ import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/re
 
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { TimelineTurnGroup, WorkingIndicator } from "./AgentTimeline";
@@ -971,7 +972,7 @@ function shortModelLabel(model: string): string {
 }
 
 function modelButtonTitle(model: string, reasoningEffort: string | undefined, isModelOverride: boolean): string {
-  const details = [model];
+  const details = [compactModelRouteDisplay(model)];
   if (reasoningEffort) details.push(`reasoning effort: ${reasoningEffort}`);
   if (isModelOverride) details.push("model override");
   return details.join(" · ");

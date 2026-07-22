@@ -141,17 +141,21 @@ pub(super) fn render_model_detail(agent: &AgentSummary) -> String {
             .unwrap_or(&agent.model.effective_model);
         return format!(
             "{} (fallback from {})",
-            model.as_string(),
-            requested.as_string()
+            model.as_compact_display(),
+            requested.as_compact_display()
         );
     }
     if agent.model.override_model.is_some() {
         if let Some(effort) = agent.model.override_reasoning_effort.as_deref() {
-            return format!("{} (agent override, effort={})", model.as_string(), effort);
+            return format!(
+                "{} (agent override, effort={})",
+                model.as_compact_display(),
+                effort
+            );
         }
-        return format!("{} (agent override)", model.as_string());
+        return format!("{} (agent override)", model.as_compact_display());
     }
-    model.as_string()
+    model.as_compact_display()
 }
 
 fn statusbar_detail(app: &TuiApp, slash_visible: bool) -> String {
