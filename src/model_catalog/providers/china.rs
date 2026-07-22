@@ -92,6 +92,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         [
             ("qwen3.7-max", None, None),
             ("qwen3.7-plus", None, None),
+            ("qwen3.8-max-preview", None, None),
             ("qwen3.6-plus", None, None),
             ("qwen3.6-flash", None, None),
             ("deepseek-v4-pro", None, Some(65_536)),
@@ -262,6 +263,15 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             65_536,
             true,
             false,
+        ),
+        catalog_model(
+            "dashscope",
+            "qwen3.8-max-preview",
+            "qwen3.8-max-preview",
+            1_000_000,
+            65_536,
+            true,
+            true,
         ),
         catalog_model(
             "dashscope",

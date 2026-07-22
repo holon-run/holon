@@ -1645,6 +1645,7 @@ fn reasoning_effort_options(
             &["low", "medium", "high"][..]
         }
         ("zai" | "bigmodel", "glm-5.2") => &["high", "max"][..],
+        ("moonshot", "kimi-k3") => &["low", "high", "max"][..],
         ("xiaomi", "mimo-v2.5-pro" | "mimo-v2.5")
             if endpoint
                 .is_none_or(|endpoint| matches!(endpoint.as_str(), "default" | "token-plan")) =>
@@ -2288,6 +2289,9 @@ mod tests {
             .get(&ModelRef::parse("dashscope/qwen3.7-max").unwrap())
             .is_some());
         assert!(catalog
+            .get(&ModelRef::parse("dashscope/qwen3.8-max-preview").unwrap())
+            .is_some());
+        assert!(catalog
             .get(&ModelRef::parse("dashscope/MiniMax-M2.5").unwrap())
             .is_some());
         assert!(catalog
@@ -2318,6 +2322,7 @@ mod tests {
         let catalog = BuiltInModelCatalog::new();
         let expected = [
             ("qwen3.5-plus", 1_000_000, true, true),
+            ("qwen3.8-max-preview", 1_000_000, true, true),
             ("qwen3-coder-next", 262_144, true, false),
             ("qwen3-coder-plus", 1_000_000, true, false),
             ("glm-5", 202_752, true, false),
@@ -2991,6 +2996,7 @@ mod tests {
 
         for route_ref in [
             "dashscope@token-plan/qwen3.7-max",
+            "dashscope@token-plan/qwen3.8-max-preview",
             "dashscope@token-plan/kimi-k2.7-code",
             "dashscope@token-plan/glm-5.2",
             "dashscope@token-plan/MiniMax-M2.5",
@@ -3623,6 +3629,7 @@ mod tests {
                 "kimi-k2.6",
                 "kimi-k2.7-code",
                 "kimi-k2.7-code-highspeed",
+                "kimi-k3",
                 "moonshot-v1-128k",
                 "moonshot-v1-128k-vision-preview",
                 "moonshot-v1-32k",
@@ -3651,6 +3658,22 @@ mod tests {
             assert!(policy.capabilities.image_input, "{model_ref}");
             assert!(policy.reasoning_effort_options.is_empty(), "{model_ref}");
         }
+
+        let kimi_k3 = catalog.resolve_policy(
+            &ModelRef::parse("moonshot/kimi-k3").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert!(kimi_k3.capabilities.supports_reasoning, "moonshot/kimi-k3");
+        assert!(kimi_k3.capabilities.image_input, "moonshot/kimi-k3");
+        assert_eq!(
+            kimi_k3.reasoning_effort_options,
+            ["low", "high", "max"],
+            "moonshot/kimi-k3 reasoning effort"
+        );
 
         for model_ref in [
             "moonshot/kimi-k2-thinking",

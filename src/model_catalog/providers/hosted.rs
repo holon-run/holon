@@ -658,6 +658,9 @@ pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
+            "moonshot", "kimi-k3", "Kimi K3", 1_000_000, 262_144, true, true,
+        ),
+        catalog_model(
             "moonshot",
             "kimi-k2.5",
             "Kimi K2.5",
