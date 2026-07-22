@@ -4003,10 +4003,6 @@ code {
   grid-template-rows: minmax(0, 1fr);
 }
 
-.file-browser:has(> .file-browser-viewer) > .file-browser-list {
-  display: none;
-}
-
 .file-browser-toolbar {
   display: flex;
   align-items: center;
@@ -4025,6 +4021,16 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.file-browser-ws-label {
+  font-size: 0.75rem;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+  padding: 2px 6px;
+  background: var(--hover-bg, #f0f0f0);
+  border-radius: 3px;
+  flex-shrink: 0;
 }
 
 .file-browser-breadcrumb {
@@ -4079,6 +4085,99 @@ code {
 
 .file-browser-refresh:hover {
   background: var(--hover-bg, #f0f0f0);
+}
+
+.file-browser-up-btn {
+  background: none;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 2px 8px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+}
+
+.file-browser-up-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.file-browser-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border, #ddd);
+  flex-shrink: 0;
+}
+
+.file-browser-tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  padding: 4px 12px;
+  color: var(--text-muted, #666);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.file-browser-tabs button:hover:not(:disabled) {
+  color: var(--text, #333);
+}
+
+.file-browser-tabs button.active {
+  color: var(--accent, #4a9eff);
+  border-bottom-color: var(--accent, #4a9eff);
+}
+
+.file-browser-tabs button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.file-browser-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+
+.file-browser-filter-icon {
+  color: var(--text-muted, #888);
+  flex-shrink: 0;
+}
+
+.file-browser-filter input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.file-browser-filter-count {
+  color: var(--text-muted, #888);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.file-browser-filter-clear {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted, #888);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  flex-shrink: 0;
+}
+
+.file-browser-filter-clear:hover {
+  color: var(--text, #333);
 }
 
 .file-browser-list {

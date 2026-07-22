@@ -203,7 +203,7 @@ export function RightSidePanel({
             <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel key={`${activeView.workspaceId}:${activeView.initialFilePath ?? ""}`} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} onClose={onNavigateBack} />
+          <FileBrowserPanel key={`${activeView.workspaceId}:${activeView.initialFilePath ?? ""}`} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} workspaceLabel={agent.attachedWorkspaces?.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack} />
         ) : (
           <AgentOverviewPanel
             agent={agent}
