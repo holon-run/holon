@@ -877,6 +877,40 @@ mod tests {
     }
 
     #[test]
+    fn resolved_model_availability_preserves_volcengine_plan_vision_capability() {
+        let mut fixture = test_config(Some("openai-key"));
+        let built_ins = crate::config::built_in_provider_registry_with_settings(
+            &std::collections::HashMap::from([(
+                "VOLCENGINE_AGENT_API_KEY".to_string(),
+                "volcengine-plan-key".to_string(),
+            )]),
+        )
+        .unwrap();
+        let route_provider = ProviderId::parse("volcengine-agent").unwrap();
+        fixture.config.providers.insert(
+            route_provider.clone(),
+            built_ins.get(&route_provider).unwrap().clone(),
+        );
+
+        let availability = resolved_model_availability(&fixture.config);
+        let pro = availability
+            .iter()
+            .find(|entry| {
+                entry.model == "volcengine/doubao-seed-2-0-pro-260215" && entry.endpoint == "plan"
+            })
+            .expect("Volcengine plan Doubao Pro availability");
+
+        assert!(pro.available);
+        assert_eq!(pro.route_provider, "volcengine-agent");
+        assert!(pro.policy.capabilities.supports_reasoning);
+        assert!(pro.policy.capabilities.image_input);
+        assert!(pro
+            .resolved_capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.image_input));
+    }
+
+    #[test]
     fn provider_doctor_includes_chain_model_availability() {
         let fixture = test_config(Some("openai-key"));
         let doctor = provider_doctor(&fixture.config);

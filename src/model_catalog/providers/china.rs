@@ -32,8 +32,46 @@ pub(super) fn stepfun_model(
     }
 }
 
+fn route_definition(
+    legacy_provider: &str,
+    canonical_provider: &str,
+    endpoint: &str,
+    model: &str,
+    context_window_tokens: Option<usize>,
+    max_output_tokens: Option<u32>,
+) -> BuiltInModelRouteDefinition {
+    BuiltInModelRouteDefinition {
+        legacy_provider: provider_id(legacy_provider),
+        model_ref: ModelRef::new(provider_id(canonical_provider), model),
+        endpoint: ProviderEndpointId::parse(endpoint).expect("valid endpoint"),
+        policy: BuiltInModelRoutePolicy {
+            context_window_tokens: context_window_tokens.map(Some),
+            default_max_output_tokens: max_output_tokens.map(Some),
+            max_output_tokens_upper_limit: max_output_tokens.map(Some),
+            ..BuiltInModelRoutePolicy::default()
+        },
+    }
+}
+
+fn volcengine_route_definition(
+    legacy_provider: &str,
+    endpoint: &str,
+    model: &str,
+    display_name: Option<&str>,
+) -> BuiltInModelRouteDefinition {
+    BuiltInModelRouteDefinition {
+        legacy_provider: provider_id(legacy_provider),
+        model_ref: ModelRef::new(provider_id("volcengine"), model),
+        endpoint: ProviderEndpointId::parse(endpoint).expect("valid endpoint"),
+        policy: BuiltInModelRoutePolicy {
+            display_name: display_name.map(str::to_owned),
+            ..BuiltInModelRoutePolicy::default()
+        },
+    }
+}
+
 pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
-    ["step-3.7-flash", "step-3.5-flash-2603", "step-3.5-flash"]
+    let mut definitions = ["step-3.7-flash", "step-3.5-flash-2603", "step-3.5-flash"]
         .into_iter()
         .map(|model| BuiltInModelRouteDefinition {
             legacy_provider: provider_id("stepfun-plan"),
@@ -41,7 +79,105 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             endpoint: ProviderEndpointId::parse("plan").expect("valid endpoint"),
             policy: BuiltInModelRoutePolicy::default(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    definitions.extend(["mimo-v2.5-pro", "mimo-v2.5"].into_iter().map(|model| {
+        BuiltInModelRouteDefinition {
+            legacy_provider: provider_id("xiaomi-token-plan"),
+            model_ref: ModelRef::new(provider_id("xiaomi"), model),
+            endpoint: ProviderEndpointId::parse("token-plan").expect("valid endpoint"),
+            policy: BuiltInModelRoutePolicy::default(),
+        }
+    }));
+    definitions.extend(
+        [
+            ("qwen3.7-max", None, None),
+            ("qwen3.7-plus", None, None),
+            ("qwen3.6-plus", None, None),
+            ("qwen3.6-flash", None, None),
+            ("deepseek-v4-pro", None, Some(65_536)),
+            ("deepseek-v4-flash", None, Some(65_536)),
+            ("deepseek-v3.2", None, None),
+            ("kimi-k2.7-code", None, Some(65_536)),
+            ("kimi-k2.6", None, Some(65_536)),
+            ("kimi-k2.5", None, None),
+            ("glm-5.2", Some(1_000_000), Some(65_536)),
+            ("glm-5.1", None, Some(65_536)),
+            ("glm-5", None, None),
+            ("MiniMax-M2.5", None, None),
+        ]
+        .into_iter()
+        .map(|(model, context, output)| {
+            route_definition(
+                "dashscope-token-plan",
+                "dashscope",
+                "token-plan",
+                model,
+                context,
+                output,
+            )
+        }),
+    );
+    definitions.extend(
+        [
+            "qwen3.7-plus",
+            "qwen3.6-plus",
+            "qwen3.5-plus",
+            "qwen3-max-2026-01-23",
+            "qwen3-coder-next",
+            "qwen3-coder-plus",
+            "MiniMax-M2.5",
+            "glm-5",
+            "glm-4.7",
+            "kimi-k2.5",
+        ]
+        .into_iter()
+        .map(|model| {
+            route_definition(
+                "dashscope-coding-plan",
+                "dashscope",
+                "coding-plan",
+                model,
+                None,
+                None,
+            )
+        }),
+    );
+    definitions.extend(
+        [
+            (
+                "doubao-seed-2-0-code-preview-260215",
+                Some("Doubao Seed 2.0 Code"),
+            ),
+            ("doubao-seed-2-0-pro-260215", None),
+            ("doubao-seed-2-0-lite-260215", None),
+            ("deepseek-v3-2-251201", None),
+        ]
+        .into_iter()
+        .map(|(model, display_name)| {
+            volcengine_route_definition("volcengine-coding", "coding", model, display_name)
+        }),
+    );
+    definitions.extend(
+        [
+            (
+                "doubao-seed-2-0-code-preview-260215",
+                Some("Doubao Seed 2.0 Code"),
+            ),
+            ("doubao-seed-2-0-pro-260215", None),
+            ("doubao-seed-2-0-lite-260215", None),
+            ("ark-code-latest", None),
+            ("deepseek-v4-pro", None),
+            ("deepseek-v4-flash", None),
+            ("kimi-k2.6", None),
+            ("kimi-k2.7-code", None),
+            ("glm-5.2", None),
+        ]
+        .into_iter()
+        .map(|(model, display_name)| {
+            volcengine_route_definition("volcengine-agent", "plan", model, display_name)
+        }),
+    );
+    definitions
 }
 
 pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
@@ -218,220 +354,13 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "dashscope-token-plan",
-            "qwen3.7-max",
-            "qwen3.7-max",
-            1_000_000,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "qwen3.7-plus",
-            "qwen3.7-plus",
-            1_000_000,
-            65_536,
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "qwen3.6-plus",
-            "qwen3.6-plus",
-            1_000_000,
-            65_536,
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "qwen3.6-flash",
-            "qwen3.6-flash",
-            1_000_000,
-            65_536,
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "deepseek-v4-pro",
-            "DeepSeek V4 Pro",
-            1_000_000,
-            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "deepseek-v4-flash",
-            "DeepSeek V4 Flash",
-            1_000_000,
-            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
+            "dashscope",
             "deepseek-v3.2",
             "DeepSeek V3.2",
             128_000,
             32_768,
             true,
             false,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "kimi-k2.7-code",
-            "kimi-k2.7-code",
-            262_144,
-            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "kimi-k2.6",
-            "kimi-k2.6",
-            262_144,
-            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "kimi-k2.5",
-            "kimi-k2.5",
-            262_144,
-            32_768,
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "glm-5.2",
-            "glm-5.2",
-            1_000_000,
-            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "glm-5.1",
-            "glm-5.1",
-            202_752,
-            65_536, // Capped: DashScope gateway leaks </think> when max_output_tokens > 65536
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "glm-5",
-            "glm-5",
-            202_752,
-            16_384,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-token-plan",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5",
-            196_608,
-            32_768,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "qwen3.7-plus",
-            "qwen3.7-plus",
-            1_000_000,
-            65_536,
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "qwen3.6-plus",
-            "qwen3.6-plus",
-            1_000_000,
-            65_536,
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "qwen3.5-plus",
-            "qwen3.5-plus",
-            1_000_000,
-            65_536,
-            true,
-            true,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "qwen3-max-2026-01-23",
-            "qwen3-max-2026-01-23",
-            262_144,
-            65_536,
-            false,
-            false,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "qwen3-coder-next",
-            "qwen3-coder-next",
-            262_144,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "qwen3-coder-plus",
-            "qwen3-coder-plus",
-            1_000_000,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5",
-            196_608,
-            32_768,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "glm-5",
-            "glm-5",
-            202_752,
-            16_384,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "glm-4.7",
-            "glm-4.7",
-            202_752,
-            16_384,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-coding-plan",
-            "kimi-k2.5",
-            "kimi-k2.5",
-            262_144,
-            32_768,
-            true,
-            true,
         ),
         stepfun_model("stepfun", "step-3.7-flash", "Step 3.7 Flash", true),
         stepfun_model(
@@ -502,42 +431,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-coding",
-            "doubao-seed-2-0-code-preview-260215",
-            "Doubao Seed 2.0 Code",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
-            "doubao-seed-2-0-pro-260215",
-            "Doubao Seed 2.0 Pro",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
-            "doubao-seed-2-0-lite-260215",
-            "Doubao Seed 2.0 Lite",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
-            "deepseek-v3-2-251201",
-            "DeepSeek V3.2",
-            128_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             1_000_000,
@@ -575,88 +468,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "volcengine-coding",
-            "glm-5.2",
-            "GLM-5.2",
-            204_800,
-            128_000,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "ark-code-latest",
-            "Ark Code Latest",
-            256_000,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "doubao-seed-2-0-code-preview-260215",
-            "Doubao Seed 2.0 Code",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "doubao-seed-2-0-pro-260215",
-            "Doubao Seed 2.0 Pro",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "doubao-seed-2-0-lite-260215",
-            "Doubao Seed 2.0 Lite",
-            256_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "deepseek-v4-pro",
-            "DeepSeek V4 Pro",
-            1_000_000,
-            8_192,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "deepseek-v4-flash",
-            "DeepSeek V4 Flash",
-            1_000_000,
-            8_192,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "kimi-k2.6",
-            "Kimi K2.6",
-            262_144,
-            32_768,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "kimi-k2.7-code",
-            "Kimi K2.7 Code",
-            262_144,
-            // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
-            32_768,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
             "glm-5.2",
             "GLM-5.2",
             204_800,
@@ -717,24 +528,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "xiaomi",
-            "mimo-v2.5",
-            "Xiaomi MiMo V2.5",
-            1_048_576,
-            131_072,
-            true,
-            true,
-        ),
-        catalog_model(
-            "xiaomi-token-plan",
-            "mimo-v2.5-pro",
-            "Xiaomi MiMo V2.5 Pro",
-            1_048_576,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "xiaomi-token-plan",
             "mimo-v2.5",
             "Xiaomi MiMo V2.5",
             1_048_576,

@@ -1,7 +1,6 @@
 use super::super::*;
 
 fn tencent_tokenhub_model(
-    provider: &str,
     model: &str,
     display_name: &str,
     context_window_tokens: Option<usize>,
@@ -9,7 +8,7 @@ fn tencent_tokenhub_model(
     supports_reasoning: bool,
     image_input: bool,
 ) -> BuiltInModelMetadata {
-    let model_ref = ModelRef::new(provider_id(provider), model);
+    let model_ref = ModelRef::new(provider_id("tencent-tokenhub"), model);
     BuiltInModelMetadata {
         default_verbosity: default_verbosity_for_model(&model_ref),
         model_ref,
@@ -220,14 +219,20 @@ pub(crate) fn is_tencent_tokenhub_model_id(id: &str) -> bool {
 }
 
 pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
-    ["tencent-tokenhub", "tencent-tokenhub-messages"]
-        .into_iter()
-        .flat_map(|provider| {
-            TENCENT_TOKENHUB_MODELS.iter().map(move |model| {
-                tencent_tokenhub_model(
-                    provider, model.0, model.1, model.2, model.3, model.4, model.5,
-                )
-            })
+    TENCENT_TOKENHUB_MODELS
+        .iter()
+        .map(|model| tencent_tokenhub_model(model.0, model.1, model.2, model.3, model.4, model.5))
+        .collect()
+}
+
+pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
+    TENCENT_TOKENHUB_MODELS
+        .iter()
+        .map(|model| BuiltInModelRouteDefinition {
+            legacy_provider: provider_id("tencent-tokenhub-messages"),
+            model_ref: ModelRef::new(provider_id("tencent-tokenhub"), model.0),
+            endpoint: ProviderEndpointId::parse("messages").expect("valid endpoint"),
+            policy: BuiltInModelRoutePolicy::default(),
         })
         .collect()
 }
