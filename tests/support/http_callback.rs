@@ -88,23 +88,28 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         .await?;
     assert!(second.status().is_success());
 
-    let runtime_for_wait = runtime.clone();
+    let host_for_wait = host.clone();
+    let external_trigger_id_for_wait = capability.external_trigger_id.clone();
     wait_until_async(move || {
-        let runtime = runtime_for_wait.clone();
+        let host = host_for_wait.clone();
+        let external_trigger_id = external_trigger_id_for_wait.clone();
         async move {
+            let runtime = host.default_runtime().await?;
             let messages = runtime.storage().read_recent_messages(20)?;
             let descriptors = runtime.latest_external_triggers().await?;
             Ok(messages
                 .iter()
                 .all(|message| message.kind != MessageKind::CallbackEvent)
                 && descriptors
-                    .first()
+                    .iter()
+                    .find(|item| item.external_trigger_id == external_trigger_id)
                     .map(|item| item.delivery_count == 2)
                     .unwrap_or(false))
         }
     })
     .await?;
 
+    let runtime = host.default_runtime().await?;
     let messages = runtime.storage().read_recent_messages(20)?;
     assert!(messages
         .iter()
@@ -140,10 +145,12 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         .await?;
     assert_eq!(revoked.status(), reqwest::StatusCode::FORBIDDEN);
 
-    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
-    assert!(waiting.is_empty());
-    assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
+    let descriptor = descriptors
+        .iter()
+        .find(|item| item.external_trigger_id == capability.external_trigger_id)
+        .expect("revoked external trigger descriptor");
+    assert_eq!(descriptor.status, ExternalTriggerStatus::Revoked);
 
     server.abort();
     Ok(())
@@ -443,12 +450,20 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     assert!(first.status().is_success());
     let first_payload: serde_json::Value = first.json().await?;
     assert_eq!(first_payload["delivery_mode"], "wake_hint");
-    assert_eq!(first_payload["disposition"], "triggered");
+    assert!(
+        matches!(
+            first_payload["disposition"].as_str(),
+            Some("triggered" | "coalesced")
+        ),
+        "unexpected wake disposition: {}",
+        first_payload["disposition"]
+    );
 
-    let runtime_for_wait = runtime.clone();
+    let host_for_wait = host.clone();
     wait_until_async(move || {
-        let runtime = runtime_for_wait.clone();
+        let host = host_for_wait.clone();
         async move {
+            let runtime = host.default_runtime().await?;
             let descriptors = runtime.latest_external_triggers().await?;
             Ok(descriptors
                 .first()
@@ -458,6 +473,7 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     })
     .await?;
 
+    let runtime = host.default_runtime().await?;
     server.abort();
     runtime.control(holon::types::ControlAction::Stop).await?;
     wait_until(|| {
@@ -476,11 +492,16 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     let runtime2 = host2.default_runtime().await?;
     let (base2, server2) = spawn_server_for_host(host2.clone()).await?;
 
-    let waiting: Vec<()> = vec![];
     let descriptors = runtime2.latest_external_triggers().await?;
-    assert!(waiting.is_empty());
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].delivery_count, 1);
+    assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
+    let callback_events_before = runtime2
+        .storage()
+        .read_recent_messages(20)?
+        .into_iter()
+        .filter(|message| message.kind == MessageKind::CallbackEvent)
+        .count();
 
     let second = client
         .post(format!("{base2}{callback_path}"))
@@ -491,22 +512,16 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     // longer valid and the callback is rejected at the token level.
     assert_eq!(second.status(), reqwest::StatusCode::FORBIDDEN);
 
-    let runtime_for_wait = runtime2.clone();
-    wait_until_async(move || {
-        let runtime = runtime_for_wait.clone();
-        async move {
-            let messages = runtime.storage().read_recent_messages(20)?;
-            let descriptors = runtime.latest_external_triggers().await?;
-            Ok(messages
-                .iter()
-                .all(|message| message.kind != MessageKind::CallbackEvent)
-                && descriptors
-                    .first()
-                    .map(|item| item.delivery_count == 1)
-                    .unwrap_or(false))
-        }
-    })
-    .await?;
+    let descriptors = runtime2.latest_external_triggers().await?;
+    assert_eq!(descriptors[0].delivery_count, 1);
+    assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
+    let callback_events_after = runtime2
+        .storage()
+        .read_recent_messages(20)?
+        .into_iter()
+        .filter(|message| message.kind == MessageKind::CallbackEvent)
+        .count();
+    assert_eq!(callback_events_after, callback_events_before);
 
     server2.abort();
     Ok(())

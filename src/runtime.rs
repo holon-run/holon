@@ -2038,6 +2038,7 @@ impl RuntimeHandle {
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
                     scheduler_authority_scenarios: Vec::new(),
+                    scheduler_rollout_expectations: Vec::new(),
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(expected_persisted_state)),
                         record: Box::new(committed_state.clone()),
@@ -2113,6 +2114,14 @@ impl RuntimeHandle {
         brief_evidence: Vec<BriefRecord>,
     ) -> Result<bool> {
         let scheduler_protocol_commands = self.canonical_queue_settlement_commands(&record).await?;
+        let scheduler_rollout_expectations = self
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_rollout_expectations(
+                &[scheduler::SETTLEMENT_SCENARIO, scheduler::DELIVERY_SCENARIO],
+                self.scheduler_protocol_production_commands_enabled(),
+            )?;
         let (projection_state, queue_len, agent_state) = {
             let guard = self.inner.agent.lock().await;
             let mut state = committed_agent_state.unwrap_or_else(|| guard.state.clone());
@@ -2169,6 +2178,7 @@ impl RuntimeHandle {
                     scheduler::SETTLEMENT_SCENARIO,
                     scheduler::DELIVERY_SCENARIO,
                 ],
+                scheduler_rollout_expectations,
                 agent_state,
                 message_evidence: Vec::new(),
                 transcript_entries,
@@ -2189,18 +2199,6 @@ impl RuntimeHandle {
         &self,
         record: &QueueEntryRecord,
     ) -> Result<Vec<crate::domain::scheduler_protocol::ProtocolCommand>> {
-        if !self.scheduler_protocol_production_commands_enabled() {
-            return Ok(Vec::new());
-        }
-        if self
-            .inner
-            .runtime_db
-            .transitions()
-            .scheduler_scenario_mode(scheduler::SETTLEMENT_SCENARIO)?
-            != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-        {
-            return Ok(Vec::new());
-        }
         canonical_queue_settlement_commands_from_facts(
             &self.inner.storage,
             &self.inner.runtime_db,
@@ -2614,6 +2612,7 @@ impl RuntimeHandle {
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
                     scheduler_authority_scenarios: Vec::new(),
+                    scheduler_rollout_expectations: Vec::new(),
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
@@ -2643,17 +2642,19 @@ impl RuntimeHandle {
     }
 
     async fn recover_scheduler_bootstrap_claims(&self) -> Result<usize> {
-        if !self.scheduler_protocol_production_commands_enabled()
-            || self
-                .inner
-                .runtime_db
-                .transitions()
-                .scheduler_scenario_mode(scheduler::SETTLEMENT_SCENARIO)?
-                != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-        {
+        let scheduler_rollout_expectations = self
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_rollout_expectations(
+                &[scheduler::SETTLEMENT_SCENARIO],
+                self.scheduler_protocol_production_commands_enabled(),
+            )?;
+        if scheduler_rollout_expectations.iter().any(|expectation| {
+            expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+        }) {
             return Ok(0);
         }
-
         let agent_id = self.inner.agent.lock().await.state.id.clone();
         let Some(snapshot) = self
             .inner
@@ -2736,6 +2737,7 @@ impl RuntimeHandle {
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
                         scheduler_authority_scenarios: Vec::new(),
+                        scheduler_rollout_expectations: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
@@ -2786,6 +2788,7 @@ impl RuntimeHandle {
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: Vec::new(),
                         scheduler_authority_scenarios: Vec::new(),
+                        scheduler_rollout_expectations: Vec::new(),
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
@@ -2888,6 +2891,7 @@ impl RuntimeHandle {
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands,
                     scheduler_authority_scenarios: Vec::new(),
+                    scheduler_rollout_expectations: scheduler_rollout_expectations.clone(),
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),

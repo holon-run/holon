@@ -2638,6 +2638,9 @@ mod tests {
                     .commit_scheduler_rollout_command(&identity, &command, None)?;
                 assert_eq!(committed.result.decision, expected_decision);
             }
+            let authoritative_expectations = db
+                .transitions()
+                .scheduler_rollout_expectations(&[scenario], true)?;
 
             let now = Utc::now();
             let matched_queue_record = QueueEntryRecord {
@@ -2656,6 +2659,7 @@ mod tests {
                 scheduler_protocol_bootstrap: None,
                 scheduler_protocol_commands: Vec::new(),
                 scheduler_authority_scenarios: vec![scenario],
+                scheduler_rollout_expectations: authoritative_expectations,
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
@@ -2696,17 +2700,46 @@ mod tests {
                 scheduler_shadow_comparison: None,
                 ..matched_queue_command.clone()
             };
-            let error = db
-                .transitions()
-                .commit_queue(&missing_queue_command)
-                .unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("requires matched canonical evidence"));
+            let blocked = db.transitions().commit_queue(&missing_queue_command)?;
+            assert!(blocked.applied);
+            assert!(blocked.scheduler_authority_blocked);
             assert_eq!(
                 db.queue_entries().latest_all()?,
                 vec![matched_queue_record.clone()]
             );
+            let after_missing = db
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?;
+            assert_eq!(
+                after_missing.rollout.scenarios[scenario_class].mode,
+                ScenarioMode::Shadow
+            );
+            assert!(after_missing.rollout.hard_blockers.iter().any(|blocker| {
+                blocker.scenario_class == scenario_class
+                    && blocker.blocker_code == "canonical_evidence_missing"
+                    && blocker.config_revision == 4
+                    && blocker.manifest_revision == 1
+                    && blocker.preflight_revision == 1
+            }));
+
+            let reauthorized = db.transitions().commit_scheduler_rollout_command(
+                &format!("{scenario_class}-reauthorize-after-missing"),
+                &RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: scenario_class.into(),
+                    expected_config_revision: 5,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+                None,
+            )?;
+            assert_eq!(
+                reauthorized.result.decision,
+                Decision::ScenarioAuthorityChanged
+            );
+            let authoritative_expectations = db
+                .transitions()
+                .scheduler_rollout_expectations(&[scenario], true)?;
 
             let divergent_queue_record = QueueEntryRecord {
                 message_id: format!("message-divergent-{scenario_class}"),
@@ -2714,6 +2747,7 @@ mod tests {
             };
             let divergent_queue_command = QueueTransitionCommand {
                 mutation: QueueMutation::Upsert(divergent_queue_record.clone()),
+                scheduler_rollout_expectations: authoritative_expectations,
                 scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
                     scenario_class: scenario_class.into(),
                     comparison_identity: format!("comparison-divergent-{scenario_class}"),
@@ -2726,13 +2760,9 @@ mod tests {
                 }),
                 ..matched_queue_command.clone()
             };
-            let error = db
-                .transitions()
-                .commit_queue(&divergent_queue_command)
-                .unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("rejected divergent canonical evidence"));
+            let blocked = db.transitions().commit_queue(&divergent_queue_command)?;
+            assert!(blocked.applied);
+            assert!(blocked.scheduler_authority_blocked);
             assert_eq!(
                 db.queue_entries().latest_all()?,
                 vec![matched_queue_record.clone()]
@@ -2744,24 +2774,34 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(comparison_count, 1);
-
-            let rolled_back = db.transitions().commit_scheduler_rollout_command(
-                &format!("{scenario_class}-hard-blocker"),
-                &RolloutCommand::ReportScenarioHardBlocker {
-                    scenario_class: scenario_class.into(),
-                    blocker_code: "canonical_evidence_diverged".into(),
-                    expected_config_revision: 4,
-                    expected_manifest_revision: 1,
-                    expected_preflight_revision: 1,
-                },
-                None,
-            )?;
-            assert_eq!(rolled_back.result.decision, Decision::RollbackTripped);
-            assert!(
-                db.transitions()
-                    .commit_queue(&divergent_queue_command)?
-                    .applied
+            let after_divergence = db
+                .transitions()
+                .load_scheduler_protocol_snapshot("agent-a")?;
+            assert_eq!(
+                after_divergence.rollout.scenarios[scenario_class].mode,
+                ScenarioMode::Shadow
             );
+            assert!(after_divergence
+                .rollout
+                .hard_blockers
+                .iter()
+                .any(|blocker| {
+                    blocker.scenario_class == scenario_class
+                        && blocker.blocker_code == "phase5h_cutover_mismatch"
+                        && blocker.config_revision == 6
+                        && blocker.manifest_revision == 1
+                        && blocker.preflight_revision == 1
+                }));
+            let fallback_expectations = db
+                .transitions()
+                .scheduler_rollout_expectations(&[scenario], true)?;
+            let fallback_queue_command = QueueTransitionCommand {
+                scheduler_rollout_expectations: fallback_expectations,
+                ..divergent_queue_command
+            };
+            let fallback = db.transitions().commit_queue(&fallback_queue_command)?;
+            assert!(fallback.applied);
+            assert!(!fallback.scheduler_authority_blocked);
             drop(db);
 
             let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -2868,10 +2908,17 @@ mod tests {
                 .commit_scheduler_rollout_command(identity, &command, None)?;
             assert!(committed.applied);
         }
+        let authoritative_expectations = db.transitions().scheduler_rollout_expectations(
+            &[SCENARIO_CLASS
+                .parse::<SchedulerScenarioClass>()
+                .expect("registered scheduler scenario class")],
+            true,
+        )?;
 
         let mut handles = Vec::new();
         for writer_index in 0..WRITERS {
             let writer = db.clone();
+            let authoritative_expectations = authoritative_expectations.clone();
             handles.push(std::thread::spawn(move || -> Result<()> {
                 for commit_index in 0..COMMITS_PER_WRITER {
                     let identity = format!("{writer_index}-{commit_index}");
@@ -2894,6 +2941,7 @@ mod tests {
                         scheduler_authority_scenarios: vec![SCENARIO_CLASS
                             .parse::<SchedulerScenarioClass>()
                             .expect("registered scheduler scenario class")],
+                        scheduler_rollout_expectations: authoritative_expectations.clone(),
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),

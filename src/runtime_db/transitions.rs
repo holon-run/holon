@@ -118,6 +118,7 @@ pub(crate) struct AgentStateMutation {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TransitionCommit {
     pub applied: bool,
+    pub scheduler_authority_blocked: bool,
     pub effects: PostCommitEffects,
 }
 
@@ -174,6 +175,8 @@ pub(crate) struct QueueTransitionCommand {
     pub scheduler_protocol_commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
     pub scheduler_authority_scenarios:
         Vec<crate::domain::scheduler_protocol::SchedulerScenarioClass>,
+    pub scheduler_rollout_expectations:
+        Vec<scheduler_protocol_repository::SchedulerRolloutExpectation>,
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
@@ -365,6 +368,22 @@ impl RuntimeTransitionRepository<'_> {
         self.db.transaction(|tx| {
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
+            if let QueueMutation::Consume(record) = &command.mutation {
+                let include_interrupted = match command.operation {
+                    QueueOperation::Claim => true,
+                    QueueOperation::Interject => false,
+                    QueueOperation::Admit | QueueOperation::Release | QueueOperation::Settle => {
+                        unreachable!("queue operation validation rejects this combination")
+                    }
+                };
+                if !crate::runtime_db::repositories::queue_entry_is_claimable_tx(
+                    tx,
+                    record,
+                    include_interrupted,
+                )? {
+                    return Ok(TransitionCommit::default());
+                }
+            }
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             validate_scheduler_claim_work_item_tx(
                 tx,
@@ -375,6 +394,7 @@ impl RuntimeTransitionRepository<'_> {
             scheduler_protocol_repository::validate_protocol_command_authority_tx(
                 tx,
                 &command.scheduler_protocol_commands,
+                &command.scheduler_rollout_expectations,
             )?;
             let scheduler_protocol = scheduler_protocol_repository::validate_protocol_commands_tx(
                 tx,
@@ -382,14 +402,27 @@ impl RuntimeTransitionRepository<'_> {
                 command.scheduler_protocol_bootstrap.as_ref(),
                 &command.scheduler_protocol_commands,
             )?;
-            scheduler_protocol_repository::validate_required_shadow_comparisons_tx(
-                tx,
-                &command.scheduler_authority_scenarios,
-                [
-                    command.scheduler_shadow_comparison.as_ref(),
-                    command.scheduler_delivery_shadow_comparison.as_ref(),
-                ],
-            )?;
+            if let Some(blocker) =
+                scheduler_protocol_repository::validate_required_shadow_comparisons_tx(
+                    tx,
+                    &command.scheduler_authority_scenarios,
+                    &command.scheduler_rollout_expectations,
+                    [
+                        command.scheduler_shadow_comparison.as_ref(),
+                        command.scheduler_delivery_shadow_comparison.as_ref(),
+                    ],
+                )?
+            {
+                scheduler_protocol_repository::persist_authority_hard_blocker_tx(tx, &blocker)?;
+                return Ok(TransitionCommit {
+                    applied: true,
+                    scheduler_authority_blocked: true,
+                    effects: PostCommitEffects {
+                        notify_scheduler: true,
+                        ..PostCommitEffects::default()
+                    },
+                });
+            }
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let mutation_applied = match &command.mutation {
                 QueueMutation::Consume(record) => match command.operation {
@@ -571,6 +604,7 @@ fn finish_transition_tx(
     effects.fault = fault.filter(|point| point.is_post_commit());
     Ok(TransitionCommit {
         applied: true,
+        scheduler_authority_blocked: false,
         effects,
     })
 }
@@ -977,6 +1011,11 @@ fn inject_fault(
 mod tests {
     use super::*;
     use crate::{
+        domain::scheduler_protocol::{
+            Decision, ObservationalDivergenceAllowance, ProtocolMode, RollbackAction,
+            RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest,
+            ScenarioMode, SchedulerScenarioClass,
+        },
         runtime_db::{RuntimeIndexChange, RuntimeIndexOperation},
         types::{
             Priority, QueueEntryStatus, TaskKind, TaskStatus, WaitConditionKind,
@@ -984,6 +1023,7 @@ mod tests {
         },
     };
     use chrono::Utc;
+    use std::collections::{BTreeMap, BTreeSet};
     use tempfile::TempDir;
 
     fn runtime_db() -> Result<(TempDir, RuntimeDb)> {
@@ -993,6 +1033,134 @@ mod tests {
             dir.path().join("state/runtime.lock"),
         )?;
         Ok((dir, db))
+    }
+
+    fn enable_authoritative_reducer(
+        db: &RuntimeDb,
+    ) -> Result<Vec<scheduler_protocol_repository::SchedulerRolloutExpectation>> {
+        let evidence: BTreeSet<String> = [
+            "restart",
+            "fault_injection",
+            "rollback_drill",
+            "deterministic_replay",
+            "duplicate_command_idempotency",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        let manifest = RolloutManifest {
+            revision: 1,
+            preflight_revision: 1,
+            preflight_for_manifest_revision: 1,
+            preflight_succeeded: true,
+            protocol_build: "holon-transition-test".into(),
+            schema_build: "scheduler-protocol-schema-v1".into(),
+            schema_revision: 1,
+            fixture_corpus_revision: "transition-authority-v1".into(),
+            classes: BTreeMap::from([(
+                SchedulerScenarioClass::ReducerOnlyCandidates
+                    .as_str()
+                    .to_string(),
+                RolloutClassEvidence {
+                    configured_mode: ScenarioMode::Authoritative,
+                    minimum_shadow_samples: 10_000,
+                    minimum_shadow_duration_secs: 72 * 60 * 60,
+                    observed_shadow_samples: 10_000,
+                    observed_shadow_duration_secs: 72 * 60 * 60,
+                    maximum_p99_latency_regression_bps: 500,
+                    observed_p99_latency_regression_bps: 0,
+                    hard_blocker_count: 0,
+                    unresolved_divergence_count: 0,
+                    required_evidence: evidence.clone(),
+                    verified_evidence: evidence,
+                    rollback_policy: RollbackPolicy {
+                        trigger: RollbackTrigger::AnyHardBlocker,
+                        action: RollbackAction::StopAdmissionsAndRevert {
+                            target: ScenarioMode::Shadow,
+                        },
+                    },
+                },
+            )]),
+            safety_divergence_bps: 0,
+            canonical_state_divergence_bps: 0,
+            allowed_observational_divergence: BTreeMap::from([(
+                "diagnostic_order".into(),
+                ObservationalDivergenceAllowance {
+                    maximum_rate_bps: 0,
+                    reviewed_by: "transition-test".into(),
+                },
+            )]),
+            approver: "transition-test".into(),
+            approved_at: "2026-07-23T00:00:00Z".into(),
+        };
+        for (identity, command, expected) in [
+            (
+                "transition-authority-open",
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+                Decision::RolloutPreflightOpened,
+            ),
+            (
+                "transition-authority-complete",
+                RolloutCommand::CompletePreflight {
+                    expected_config_revision: 0,
+                    expected_preflight_revision: 1,
+                    manifest: manifest.clone(),
+                },
+                Decision::RolloutPreflightCompleted,
+            ),
+            (
+                "transition-authority-install",
+                RolloutCommand::InstallManifest {
+                    expected_config_revision: 0,
+                    manifest,
+                },
+                Decision::ManifestInstalled,
+            ),
+            (
+                "transition-authority-protocol",
+                RolloutCommand::ConfigureProtocol {
+                    expected_config_revision: 1,
+                    mode: ProtocolMode::Authoritative,
+                },
+                Decision::ProtocolConfigured,
+            ),
+            (
+                "transition-authority-shadow",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: SchedulerScenarioClass::ReducerOnlyCandidates
+                        .as_str()
+                        .into(),
+                    expected_config_revision: 2,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Shadow,
+                },
+                Decision::ScenarioAuthorityChanged,
+            ),
+            (
+                "transition-authority-authoritative",
+                RolloutCommand::ChangeScenarioAuthority {
+                    scenario_class: SchedulerScenarioClass::ReducerOnlyCandidates
+                        .as_str()
+                        .into(),
+                    expected_config_revision: 3,
+                    expected_manifest_revision: 1,
+                    expected_preflight_revision: 1,
+                    mode: ScenarioMode::Authoritative,
+                },
+                Decision::ScenarioAuthorityChanged,
+            ),
+        ] {
+            let committed = db
+                .transitions()
+                .commit_scheduler_rollout_command(identity, &command, None)?;
+            assert_eq!(committed.result.decision, expected);
+        }
+        db.transitions()
+            .scheduler_rollout_expectations(&[SchedulerScenarioClass::ReducerOnlyCandidates], true)
     }
 
     fn index_change(kind: &str, id: &str) -> RuntimeIndexChange {
@@ -1363,6 +1531,7 @@ mod tests {
                     scheduler_protocol_bootstrap: None,
                     scheduler_protocol_commands: Vec::new(),
                     scheduler_authority_scenarios: Vec::new(),
+                    scheduler_rollout_expectations: Vec::new(),
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(settled_state),
@@ -1421,6 +1590,7 @@ mod tests {
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: Vec::new(),
             scheduler_authority_scenarios: Vec::new(),
+            scheduler_rollout_expectations: Vec::new(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -1477,6 +1647,7 @@ mod tests {
                 scheduler_protocol_bootstrap: None,
                 scheduler_protocol_commands: Vec::new(),
                 scheduler_authority_scenarios: Vec::new(),
+                scheduler_rollout_expectations: Vec::new(),
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
@@ -1570,6 +1741,7 @@ mod tests {
                     scheduler_authority_scenarios: vec![
                         crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
                     ],
+                    scheduler_rollout_expectations: Vec::new(),
                     agent_state: Some(AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
                         record: Box::new(running_state),
@@ -1621,25 +1793,7 @@ mod tests {
     #[test]
     fn authoritative_queue_claim_commits_only_with_matched_canonical_evidence() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        let connection = db.connection()?;
-        connection.execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'authoritative',
-                 config_revision = 1,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )?;
-        connection.execute(
-            "INSERT INTO scheduler_scenario_authorities (
-               scenario_class, mode, rollback_target,
-               manifest_revision, preflight_revision, updated_at
-             ) VALUES (
-               'reducer_only_candidates', 'authoritative', 'shadow',
-               NULL, NULL, CURRENT_TIMESTAMP
-             )",
-            [],
-        )?;
+        let rollout_expectations = enable_authoritative_reducer(&db)?;
 
         let now = Utc::now();
         let queued = QueueEntryRecord {
@@ -1665,6 +1819,7 @@ mod tests {
             scheduler_authority_scenarios: vec![
                 crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
             ],
+            scheduler_rollout_expectations: rollout_expectations,
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -1711,27 +1866,9 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_queue_claim_rejects_divergence_without_partial_writes() -> Result<()> {
+    fn authoritative_queue_claim_rolls_back_on_divergence_without_partial_writes() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        let connection = db.connection()?;
-        connection.execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'authoritative',
-                 config_revision = 1,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )?;
-        connection.execute(
-            "INSERT INTO scheduler_scenario_authorities (
-               scenario_class, mode, rollback_target,
-               manifest_revision, preflight_revision, updated_at
-             ) VALUES (
-               'reducer_only_candidates', 'authoritative', 'shadow',
-               NULL, NULL, CURRENT_TIMESTAMP
-             )",
-            [],
-        )?;
+        let rollout_expectations = enable_authoritative_reducer(&db)?;
 
         let now = Utc::now();
         let queued = QueueEntryRecord {
@@ -1747,54 +1884,51 @@ mod tests {
         claimed.status = QueueEntryStatus::Dequeued;
         claimed.updated_at += chrono::Duration::seconds(1);
 
-        let error = db
-            .transitions()
-            .commit_queue(&QueueTransitionCommand {
-                agent_id: "agent-a".into(),
-                operation: QueueOperation::Claim,
-                mutation: QueueMutation::Consume(claimed),
-                scheduler_claim_work_item: None,
-                scheduler_protocol_bootstrap: None,
-                scheduler_protocol_commands: Vec::new(),
-                scheduler_authority_scenarios: vec![
-                    crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
-                ],
-                agent_state: None,
-                message_evidence: Vec::new(),
-                transcript_entries: Vec::new(),
-                turn_record: None,
-                audit_events: vec![AuditEvent::legacy(
-                    "authoritative_claim",
-                    serde_json::json!({}),
-                )],
-                scheduler_semantic_shadow: None,
-                scheduler_shadow_comparison: Some(
-                    scheduler_protocol_repository::SchedulerShadowComparisonCommand {
-                        scenario_class: "reducer_only_candidates".into(),
-                        comparison_identity: "message_admission:message-authoritative-divergence"
-                            .into(),
-                        boundary: "run_loop".into(),
-                        input_identity: "message:message-authoritative-divergence".into(),
-                        legacy_observation: serde_json::json!({
-                            "legacy_decision": "start_model_turn"
-                        }),
-                        shadow_candidate: serde_json::json!({
-                            "action": "reduce_message_only"
-                        }),
-                        matched: false,
-                        divergence_code: Some("message_admission_outcome_mismatch".into()),
-                    },
-                ),
-                scheduler_delivery_shadow_comparison: None,
-                notify_scheduler: false,
-                fault: None,
-                brief_evidence: Vec::new(),
-            })
-            .unwrap_err();
+        let committed = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(claimed),
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands: Vec::new(),
+            scheduler_authority_scenarios: vec![
+                crate::domain::scheduler_protocol::SchedulerScenarioClass::ReducerOnlyCandidates,
+            ],
+            scheduler_rollout_expectations: rollout_expectations,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: vec![AuditEvent::legacy(
+                "authoritative_claim",
+                serde_json::json!({}),
+            )],
+            scheduler_semantic_shadow: None,
+            scheduler_shadow_comparison: Some(
+                scheduler_protocol_repository::SchedulerShadowComparisonCommand {
+                    scenario_class: "reducer_only_candidates".into(),
+                    comparison_identity: "message_admission:message-authoritative-divergence"
+                        .into(),
+                    boundary: "run_loop".into(),
+                    input_identity: "message:message-authoritative-divergence".into(),
+                    legacy_observation: serde_json::json!({
+                        "legacy_decision": "start_model_turn"
+                    }),
+                    shadow_candidate: serde_json::json!({
+                        "action": "reduce_message_only"
+                    }),
+                    matched: false,
+                    divergence_code: Some("message_admission_outcome_mismatch".into()),
+                },
+            ),
+            scheduler_delivery_shadow_comparison: None,
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
 
-        assert!(error
-            .to_string()
-            .contains("rejected divergent canonical evidence"));
+        assert!(committed.applied);
+        assert!(committed.scheduler_authority_blocked);
         assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
         assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         let comparison_count: i64 = db.connection()?.query_row(
@@ -1803,6 +1937,27 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(comparison_count, 0);
+        let connection = db.connection()?;
+        let scenario_mode: String = connection.query_row(
+            "SELECT mode
+             FROM scheduler_scenario_authorities
+             WHERE scenario_class = ?1",
+            [SchedulerScenarioClass::ReducerOnlyCandidates.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(scenario_mode, "shadow");
+        let blocker_count: i64 = connection.query_row(
+            "SELECT COUNT(*)
+             FROM scheduler_scenario_hard_blockers
+             WHERE scenario_class = ?1
+               AND blocker_code = 'message_admission_outcome_mismatch'
+               AND config_revision = 4
+               AND manifest_revision = 1
+               AND preflight_revision = 1",
+            [SchedulerScenarioClass::ReducerOnlyCandidates.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(blocker_count, 1);
         Ok(())
     }
 
