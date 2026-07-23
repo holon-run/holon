@@ -1008,6 +1008,44 @@ async fn bootstrap_recovery_marks_dequeued_canonical_activation_as_missing_settl
     assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
     finish_claimed_test_run(&runtime).await;
 
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert!(report.candidates[0].eligible);
+    assert_eq!(report.candidates[0].reason, "terminal_turn_missing");
+    assert!(matches!(
+        report.candidates[0].proposed_commands.as_slice(),
+        [crate::domain::scheduler_protocol::ProtocolCommand::RecordMissingSettlement(_)]
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        claimed
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
         1
@@ -1063,6 +1101,796 @@ async fn bootstrap_recovery_marks_dequeued_canonical_activation_as_missing_settl
                 && event.data["message_id"] == message.id
                 && event.data["activation_id"] == activation_id
         }));
+}
+
+#[tokio::test]
+async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "recover terminal canonical claim".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claim completed before restart".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-bootstrap-terminal".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
+    runtime
+        .storage()
+        .append_turn(&terminal.turn_record)
+        .unwrap();
+
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert!(report.candidates[0].eligible);
+    assert_eq!(report.candidates[0].reason, "terminal_turn_settlement");
+    assert_eq!(
+        report.candidates[0].target_queue_status,
+        Some(QueueEntryStatus::Processed)
+    );
+    assert!(matches!(
+        report.candidates[0].proposed_commands.as_slice(),
+        [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(_)]
+    ));
+
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(snapshot.slot, ActivationSlot::Idle);
+    assert_eq!(
+        snapshot
+            .activations
+            .get(&activation_id)
+            .map(|activation| activation.state.clone()),
+        Some(crate::domain::scheduler_protocol::ActivationState::Settled)
+    );
+    assert!(snapshot
+        .settlements
+        .contains_key(&canonical_settlement_id(&message.id)));
+    assert!(!snapshot
+        .missing_settlements
+        .contains_key(&canonical_missing_settlement_id(&message.id)));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_restart_repairs_legacy_queue_after_canonical_settlement() {
+    let mut harness = LifecycleHarness::new();
+    let (message_id, activation_id, settled_snapshot) = {
+        let runtime = harness.runtime();
+        runtime.set_scheduler_protocol_production_commands_enabled(true);
+        enable_production_protocol_authority(runtime);
+        let work_item = runtime
+            .create_work_item(
+                "repair canonical legacy split after restart".into(),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "canonical settlement committed before restart".into(),
+            },
+        );
+        message.work_item_id = Some(work_item.id.clone());
+        message.turn_id = Some("turn-bootstrap-split-restart".into());
+        let message = runtime.enqueue(message).await.unwrap();
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Message(_)
+        ));
+        finish_claimed_test_run(runtime).await;
+        let terminal = terminal_transition(&message, Some(&work_item.id));
+        runtime
+            .storage()
+            .append_turn(&terminal.turn_record)
+            .unwrap();
+        let report =
+            scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+                .unwrap();
+        let command = report.candidates[0].proposed_commands[0].clone();
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test("default", &command, None)
+            .unwrap();
+        let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+        let snapshot = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap();
+        assert_eq!(
+            snapshot.activations[&activation_id].state,
+            crate::domain::scheduler_protocol::ActivationState::Settled
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest_all()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.message_id == message.id)
+                .map(|entry| entry.status),
+            Some(QueueEntryStatus::Dequeued)
+        );
+        (message.id, activation_id, snapshot)
+    };
+
+    harness.restart();
+    let runtime = harness.runtime();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        settled_snapshot
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message_id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(64)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_bootstrap_claim_recovered"
+                && event.data["message_id"] == message_id
+                && event.data["activation_id"] == activation_id
+                && event.data["recovery_outcome"]
+                    == "legacy_queue_reconciled_from_canonical_settlement"
+                && event.data["provenance"] == "bootstrap_reconciliation"
+        }));
+}
+
+#[tokio::test]
+async fn non_authoritative_bootstrap_recovery_is_read_only() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "non authoritative recovery remains read only".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claimed before settlement authority rollback".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    finish_claimed_test_run(&runtime).await;
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE scheduler_scenario_authorities
+             SET mode = 'shadow',
+                 manifest_revision = NULL,
+                 preflight_revision = NULL
+             WHERE scenario_class = 'settlement'",
+            [],
+        )
+        .unwrap();
+    let before = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert!(report.candidates[0].eligible);
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evidence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "recover completed canonical claim".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete before settlement commit".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-bootstrap-completed".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let completed = runtime
+        .promote_work_item_completion_report(
+            work_item.id.clone(),
+            "recovered completion report".into(),
+            Some(1),
+            Some(1),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let result_brief_id = completed
+        .result_brief_id
+        .clone()
+        .expect("completed work item has bound result brief");
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&message, Some(&work_item.id));
+    runtime
+        .storage()
+        .append_turn(&terminal.turn_record)
+        .unwrap();
+
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert!(report.candidates[0].eligible);
+    assert_eq!(report.candidates[0].reason, "terminal_turn_settlement");
+    assert!(matches!(
+        report.candidates[0].proposed_commands.as_slice(),
+        [crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(_)]
+    ));
+
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(snapshot.slot, ActivationSlot::Idle);
+    assert_eq!(
+        snapshot
+            .activations
+            .get(&activation_id)
+            .map(|activation| activation.state.clone()),
+        Some(crate::domain::scheduler_protocol::ActivationState::Settled)
+    );
+    let settlement = snapshot
+        .settlements
+        .get(&canonical_settlement_id(&message.id))
+        .expect("completed activation settlement");
+    assert_eq!(
+        settlement.operator_delivery.as_deref(),
+        Some(result_brief_id.as_str())
+    );
+    assert!(settlement
+        .evidence
+        .iter()
+        .any(|evidence| evidence == &format!("turn:{}", terminal.terminal.turn_id)));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Processed)
+    );
+}
+
+#[tokio::test]
+async fn stale_bootstrap_recovery_command_cannot_settle_successor_generation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "fence stale bootstrap recovery".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut first_message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "first claimed generation".into(),
+        },
+    );
+    first_message.work_item_id = Some(work_item.id.clone());
+    first_message.turn_id = Some("turn-bootstrap-stale-first".into());
+    let first_message = runtime.enqueue(first_message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition(&first_message, Some(&work_item.id));
+    runtime
+        .storage()
+        .append_turn(&terminal.turn_record)
+        .unwrap();
+    let report =
+        scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
+            .unwrap();
+    let mut stale_command = report.candidates[0].proposed_commands[0].clone();
+    let crate::domain::scheduler_protocol::ProtocolCommand::SettleActivation(command) =
+        &mut stale_command
+    else {
+        panic!("terminal recovery should propose settlement");
+    };
+    command.settlement.id = "settlement:stale-bootstrap-proposal".into();
+
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    let mut successor_message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "successor claimed generation".into(),
+        },
+    );
+    successor_message.work_item_id = Some(work_item.id.clone());
+    let successor_message = runtime.enqueue(successor_message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    finish_claimed_test_run(&runtime).await;
+    let before = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(
+        before.work[&work_item.id].scheduling_generation,
+        claimed.work[&work_item.id].scheduling_generation + 1
+    );
+
+    let expected_entry = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest_all()
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.message_id == successor_message.id)
+        .unwrap();
+    let mut processed_entry = expected_entry.clone();
+    processed_entry.status = QueueEntryStatus::Processed;
+    processed_entry.updated_at = runtime.now();
+    let error = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id: "default".into(),
+            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+            mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                expected: expected_entry,
+                record: processed_entry,
+            },
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands: vec![stale_command],
+            scheduler_authority_scenarios: Vec::new(),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: vec![AuditEvent::legacy(
+                "stale_bootstrap_recovery_attempt",
+                serde_json::json!({"message_id": first_message.id}),
+            )],
+            scheduler_shadow_comparison: None,
+            scheduler_delivery_shadow_comparison: None,
+            scheduler_semantic_shadow: None,
+            notify_scheduler: true,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("activation_terminal_settlement_already_recorded"),
+        "unexpected stale recovery error: {error:#}"
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == successor_message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(64)
+        .unwrap()
+        .iter()
+        .all(|event| event.kind != "stale_bootstrap_recovery_attempt"));
+}
+
+#[tokio::test]
+async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
+    for terminal_evidence in [false, true] {
+        for fault in PRE_COMMIT_FAULTS {
+            let dir = tempdir().unwrap();
+            let workspace = tempdir().unwrap();
+            let runtime = RuntimeHandle::new(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(CountingProvider {
+                    calls: Mutex::new(0),
+                    reply: "unused",
+                }),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap();
+            runtime.set_scheduler_protocol_production_commands_enabled(true);
+            enable_production_protocol_authority(&runtime);
+            let work_item = runtime
+                .create_work_item(
+                    format!("atomic bootstrap recovery {terminal_evidence} {fault:?}"),
+                    None,
+                    None,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            let mut message = MessageEnvelope::new(
+                "default",
+                MessageKind::SystemTick,
+                MessageOrigin::System {
+                    subsystem: "work_queue".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "claim before recovery fault".into(),
+                },
+            );
+            message.work_item_id = Some(work_item.id.clone());
+            message.turn_id = terminal_evidence
+                .then(|| format!("turn-bootstrap-fault-{terminal_evidence}-{fault:?}"));
+            let message = runtime.enqueue(message).await.unwrap();
+            let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap();
+            assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+            finish_claimed_test_run(&runtime).await;
+            if terminal_evidence {
+                let terminal = terminal_transition(&message, Some(&work_item.id));
+                runtime
+                    .storage()
+                    .append_turn(&terminal.turn_record)
+                    .unwrap();
+            }
+            let claimed = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_scheduler_protocol_snapshot("default")
+                .unwrap();
+
+            runtime.inject_next_transition_fault(fault);
+            let error = runtime
+                .recover_scheduler_bootstrap_claims()
+                .await
+                .unwrap_err();
+            assert_injected_transition_fault(&error);
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_scheduler_protocol_snapshot("default")
+                    .unwrap(),
+                claimed
+            );
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest_all()
+                    .unwrap()
+                    .into_iter()
+                    .find(|entry| entry.message_id == message.id)
+                    .map(|entry| entry.status),
+                Some(QueueEntryStatus::Dequeued)
+            );
+            assert!(runtime
+                .storage()
+                .read_recent_events(64)
+                .unwrap()
+                .iter()
+                .all(|event| {
+                    event.kind != "scheduler_bootstrap_claim_recovered"
+                        || event.data["message_id"] != message.id
+                }));
+
+            assert_eq!(
+                runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+                1
+            );
+            assert_eq!(
+                runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+                0
+            );
+        }
+    }
 }
 
 #[tokio::test]

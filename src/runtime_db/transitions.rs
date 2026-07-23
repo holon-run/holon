@@ -16,8 +16,8 @@ use crate::{
             insert_brief_evidence_tx, insert_runtime_index_changes_tx, upsert_agent_state_tx,
         },
         repositories::{
-            insert_new_work_item_tx, queue_entry_transition, task_transition,
-            try_claim_queued_message_tx, try_interject_queued_message_tx,
+            compare_and_set_queue_entry_tx, insert_new_work_item_tx, queue_entry_transition,
+            task_transition, try_claim_queued_message_tx, try_interject_queued_message_tx,
             update_expected_work_item_tx, upsert_queue_entry_tx, upsert_task_tx,
             upsert_turn_record_tx, upsert_wait_condition_tx, upsert_work_item_continuation_tx,
             wait_condition_transition,
@@ -83,6 +83,10 @@ impl WorkItemMutation {
 pub(crate) enum QueueMutation {
     Consume(QueueEntryRecord),
     Upsert(QueueEntryRecord),
+    CompareAndSet {
+        expected: QueueEntryRecord,
+        record: QueueEntryRecord,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -396,8 +400,11 @@ impl RuntimeTransitionRepository<'_> {
                     }
                 },
                 QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
+                QueueMutation::CompareAndSet { expected, record } => {
+                    compare_and_set_queue_entry_tx(tx, expected, record)?
+                }
             };
-            if matches!(&command.mutation, QueueMutation::Consume(_)) && !mutation_applied {
+            if !matches!(&command.mutation, QueueMutation::Upsert(_)) && !mutation_applied {
                 return Ok(TransitionCommit::default());
             }
             let shadow_comparison = scheduler_protocol_repository::validate_shadow_comparison_tx(
@@ -419,7 +426,10 @@ impl RuntimeTransitionRepository<'_> {
                 )?;
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            let applied = mutation_applied || agent_state_applied;
+            let protocol_applied = scheduler_protocol
+                .as_ref()
+                .is_some_and(|prepared| prepared.has_writes());
+            let applied = mutation_applied || agent_state_applied || protocol_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
             }
@@ -868,6 +878,7 @@ fn validate_wait_condition_tx(tx: &Transaction<'_>, incoming: &WaitConditionReco
 fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) -> Result<()> {
     let incoming = match mutation {
         QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
+        QueueMutation::CompareAndSet { record, .. } => record,
     };
     let existing = tx
         .query_row(
@@ -878,8 +889,14 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
         .optional()?
         .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
         .transpose()?;
-    if let (QueueMutation::Upsert(_), Some(existing)) = (mutation, existing.as_ref()) {
-        queue_entry_transition(existing, incoming)?;
+    match (mutation, existing.as_ref()) {
+        (QueueMutation::Upsert(_), Some(existing)) => {
+            queue_entry_transition(existing, incoming)?;
+        }
+        (QueueMutation::CompareAndSet { expected, record }, _) => {
+            queue_entry_transition(expected, record)?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -920,6 +937,21 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
                     | QueueEntryStatus::Dropped,
                 ..
             })
+        ) | (
+            QueueOperation::Settle,
+            QueueMutation::CompareAndSet {
+                expected: QueueEntryRecord {
+                    status: QueueEntryStatus::Dequeued,
+                    ..
+                },
+                record: QueueEntryRecord {
+                    status: QueueEntryStatus::Processed
+                        | QueueEntryStatus::Interrupted
+                        | QueueEntryStatus::Aborted
+                        | QueueEntryStatus::Dropped,
+                    ..
+                },
+            }
         )
     );
     if !valid {
@@ -1355,6 +1387,59 @@ mod tests {
             assert!(db.transcript_entries().all(Some("agent-a"))?.is_empty());
             assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_compare_and_set_rejects_changed_claim_without_side_effects() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let now = Utc::now();
+        let expected = QueueEntryRecord {
+            message_id: "message-recovery-cas".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&expected)?;
+        let mut refreshed = expected.clone();
+        refreshed.updated_at += chrono::Duration::seconds(1);
+        db.queue_entries().upsert(&refreshed)?;
+        let mut processed = expected.clone();
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at += chrono::Duration::seconds(2);
+
+        let commit = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Settle,
+            mutation: QueueMutation::CompareAndSet {
+                expected,
+                record: processed,
+            },
+            scheduler_claim_work_item: None,
+            scheduler_protocol_bootstrap: None,
+            scheduler_protocol_commands: Vec::new(),
+            scheduler_authority_scenarios: Vec::new(),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: vec![AuditEvent::legacy(
+                "stale_recovery_claim_settled",
+                serde_json::json!({}),
+            )],
+            scheduler_semantic_shadow: None,
+            scheduler_shadow_comparison: None,
+            scheduler_delivery_shadow_comparison: None,
+            notify_scheduler: true,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+
+        assert!(!commit.applied);
+        assert_eq!(db.queue_entries().latest_all()?, vec![refreshed]);
+        assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         Ok(())
     }
 

@@ -1457,6 +1457,26 @@ mod tests {
     }
 
     #[test]
+    fn debug_scheduler_recovery_command_parses_read_only_options() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-recovery",
+            "--agent",
+            "pm",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command: DebugCommands::SchedulerRecovery { agent, json },
+        } = cli.command
+        else {
+            panic!("expected debug scheduler-recovery command");
+        };
+        assert_eq!(agent.as_deref(), Some("pm"));
+        assert!(json);
+    }
+
+    #[test]
     fn debug_performance_command_parses_json_flag() {
         let cli = Cli::parse_from(["holon", "debug", "performance", "--json"]);
         let Commands::Debug {
@@ -2193,7 +2213,38 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         DebugCommands::SchedulerFixture { agent, output } => {
             export_scheduler_fixture(&config, agent, &output)
         }
+        DebugCommands::SchedulerRecovery { agent, json } => {
+            print_scheduler_recovery_report(&config, agent, json)
+        }
     }
+}
+
+fn print_scheduler_recovery_report(
+    config: &AppConfig,
+    agent: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
+    let host = RuntimeHost::new(config.clone())?;
+    let storage = host.agent_storage(&agent_id)?;
+    let report = holon::runtime::scheduler_recovery_report(&storage, host.runtime_db(), &agent_id)?;
+    if json {
+        return print_json(&serde_json::to_value(report)?);
+    }
+    println!(
+        "Scheduler recovery candidates for {} (partition initialized: {})",
+        report.agent_id, report.partition_initialized
+    );
+    for candidate in report.candidates {
+        println!(
+            "- {}: eligible={} reason={} target={:?}",
+            candidate.message_id,
+            candidate.eligible,
+            candidate.reason,
+            candidate.target_queue_status
+        );
+    }
+    Ok(())
 }
 
 fn handle_runtime_db_debug_command(

@@ -918,6 +918,32 @@ The decision is:
 This keeps replay simple and avoids introducing a premature side-effect
 classification system into the scheduler.
 
+### Bootstrap Recovery Reconciles Durable Claims Atomically
+
+Bootstrap recovery must reconcile a durable canonical activation and its
+legacy `Dequeued` queue entry in one runtime-database transaction. Recovery
+derives a typed settlement or missing-settlement command from persisted
+message, Turn, WorkItem, and scheduler-protocol facts; it must not synthesize
+terminal success when those facts are incomplete.
+
+The transaction is fenced twice:
+
+- the typed scheduler command validates the activation identity and admitted
+  scheduling generation;
+- the queue transition uses compare-and-set against the exact claim record
+  inspected by recovery.
+
+If either fence rejects, canonical protocol state, legacy queue state, and
+recovery audit provenance all remain unchanged. Replaying a successful
+reconciliation is idempotent. Automatic writes are allowed only while the
+settlement scenario is authoritative; other rollout modes may inspect the
+same candidates but remain read-only.
+
+The controlled diagnostic surface reports the original queue and canonical
+facts, the evidence used for classification, and any proposed typed commands.
+It does not provide a handwritten SQL repair path and does not overwrite or
+delete the source facts used to explain recovery.
+
 ### Task-To-WorkItem Association Becomes First-Class
 
 Task records should gain a first-class optional work-item association.

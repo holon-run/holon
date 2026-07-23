@@ -576,6 +576,13 @@ pub enum DebugCommands {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(about = "Inspect scheduler bootstrap recovery candidates without applying repairs")]
+    SchedulerRecovery {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
