@@ -7,6 +7,7 @@ import {
   resizeComposerTextarea,
   restoredScrollTop,
   storedComposerDraftKey,
+  timelineForDisplayLevel,
   timelineLayoutRevision,
   writeStoredComposerDraft,
 } from "./AgentPage";
@@ -145,6 +146,21 @@ describe("timeline virtual layout reconciliation", () => {
 
   it("does not capture an anchor when only overscan rows before the viewport are measured", () => {
     expect(captureScrollAnchor([{ key: "turn:a", index: 0, start: 0, size: 80 }], 120)).toBeNull();
+  });
+});
+
+describe("timeline display levels", () => {
+  it("keeps debug on the semantic timeline instead of replacing it with raw events", () => {
+    const semanticItem = timelineTurn("turn:assistant", "Semantic result").items[0];
+    const debugItem = {
+      ...semanticItem,
+      id: "runtime:debug",
+      minDisplayLevel: "debug" as const,
+      body: "Detailed runtime bookkeeping",
+    };
+
+    expect(timelineForDisplayLevel([semanticItem, debugItem], "debug", 20).map((item) => item.id))
+      .toEqual(["assistant-message", "runtime:debug"]);
   });
 });
 

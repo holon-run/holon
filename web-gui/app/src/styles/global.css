@@ -6322,3 +6322,238 @@ code {
   border-radius: 12px;
   background: var(--surface-soft);
 }
+
+.timeline-events-panel {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.timeline-events-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.timeline-events-summary h2,
+.timeline-events-summary p {
+  margin: 4px 0 0;
+}
+
+.timeline-events-summary p,
+.timeline-events-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline-events-live,
+.timeline-event-disposition {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.timeline-events-live.live,
+.timeline-event-disposition.shown {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.timeline-events-live.paused,
+.timeline-event-disposition.unhandled,
+.timeline-event-disposition.hidden {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.timeline-event-disposition.merged {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.timeline-event-disposition.rejected {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.timeline-events-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.timeline-events-facts div {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.timeline-events-facts dt {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.timeline-events-facts dd {
+  min-width: 0;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.timeline-events-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 8px;
+}
+
+.timeline-events-toolbar input,
+.timeline-events-toolbar select {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+.timeline-events-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-events-raw-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.timeline-events-workspace {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.9fr) minmax(280px, 1.1fr);
+  gap: 10px;
+  min-height: 420px;
+}
+
+.timeline-events-list,
+.timeline-event-detail {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.timeline-events-list {
+  position: relative;
+  max-height: 62vh;
+}
+
+.timeline-events-virtual {
+  position: relative;
+  min-width: 0;
+}
+
+.timeline-event-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.timeline-event-row:hover,
+.timeline-event-row.selected {
+  background: var(--surface-hover);
+}
+
+.timeline-event-row > code {
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.timeline-event-row-main {
+  display: grid;
+  min-width: 0;
+}
+
+.timeline-event-row-main strong,
+.timeline-event-row-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-event-row-main strong {
+  font-size: 11px;
+}
+
+.timeline-event-row-main small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.timeline-event-detail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  max-height: 62vh;
+  padding: 12px;
+}
+
+.timeline-event-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.timeline-event-detail h3 {
+  margin: 3px 0 0;
+}
+
+.timeline-event-detail details pre {
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+@media (max-width: 980px) {
+  .timeline-events-toolbar,
+  .timeline-events-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-events-workspace {
+    min-height: 0;
+  }
+
+  .timeline-events-list,
+  .timeline-event-detail {
+    max-height: 48vh;
+  }
+}

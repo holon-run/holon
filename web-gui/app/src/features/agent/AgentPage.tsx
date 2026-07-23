@@ -14,7 +14,7 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
-import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
+import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { TimelineTurnGroup, WorkingIndicator } from "./AgentTimeline";
 import { collectWorkingActivitiesForCurrentTurn, groupTimelineTurns, itemHasEventSeq, type TimelineTurn } from "./timeline-utils";
 import { useTranslation } from "react-i18next";
@@ -332,19 +332,9 @@ export function AgentPage({
   const scheduledBottomScrollRef = useRef<number | null>(null);
   const activeAgent = detail?.agent ?? agent;
   const sourceTimeline = detail?.timeline ?? [];
-  const sourceEvents = detail?.events ?? [];
   const timeline = useMemo(
-    () => {
-      if (displayLevel === "debug" && sourceEvents.length > 0) {
-        return debugAgentSessionEvents(sourceEvents, {
-          itemLimit: visibleTimelineItemLimit,
-        });
-      }
-      return filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
-        itemLimit: visibleTimelineItemLimit,
-      });
-    },
-    [displayLevel, sourceEvents, sourceTimeline, visibleTimelineItemLimit],
+    () => timelineForDisplayLevel(sourceTimeline, displayLevel, visibleTimelineItemLimit),
+    [displayLevel, sourceTimeline, visibleTimelineItemLimit],
   );
   const isWorking = isAgentWorking(activeAgent, sendingPrompt, t);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
@@ -1019,6 +1009,14 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
   if (displayLevel === "debug") return DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT;
   if (displayLevel === "verbose") return DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT;
   return DEFAULT_INFO_TIMELINE_ITEM_LIMIT;
+}
+
+export function timelineForDisplayLevel(
+  sourceTimeline: AgentTimelineItem[],
+  displayLevel: DisplayLevel,
+  itemLimit: number,
+): AgentTimelineItem[] {
+  return filterTimelineByDisplayLevel(sourceTimeline, displayLevel, { itemLimit });
 }
 
 function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean, t: TFunction): boolean {

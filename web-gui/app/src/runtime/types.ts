@@ -1,3 +1,5 @@
+import type { SessionEventEnvelope } from "./session-events";
+
 export type DisplayLevel = "info" | "verbose" | "debug";
 
 export type RouteKey = "dashboard" | "agent" | "search" | "skills" | "skillDetail" | "templates" | "templateDetail" | "settings";
@@ -727,6 +729,10 @@ export type RightPanelView =
       agentId: string;
     }
   | {
+      kind: "timeline_events";
+      agentId: string;
+    }
+  | {
       kind: "work_item_detail";
       agentId: string;
       workItem: WorkItemSummary;
@@ -795,13 +801,7 @@ export interface AgentDetail {
   source: "http" | "fixture";
   error?: string;
   eventLogEpoch?: string;
-  events?: Array<{
-    id?: string;
-    event_seq?: number;
-    ts?: string;
-    type?: string;
-    payload?: unknown;
-  }>;
+  events?: SessionEventEnvelope[];
   eventCursorSeq?: number;
   newestEventSeq?: number;
   oldestEventSeq?: number;
