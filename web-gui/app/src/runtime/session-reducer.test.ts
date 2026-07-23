@@ -1343,7 +1343,7 @@ describe("reduceAgentSessionTimeline", () => {
         body: "Preview remains visible.",
         briefHydration: {
           briefId: "brief_123",
-          status: "loading",
+          status: "pending",
           attempt: 0,
         },
       }),

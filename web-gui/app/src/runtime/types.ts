@@ -780,7 +780,7 @@ export interface AgentTimelineItem {
   briefHydration?: BriefHydrationViewState;
 }
 
-export type BriefHydrationStatus = "loading" | "resolved" | "not_found" | "failed";
+export type BriefHydrationStatus = "pending" | "loading" | "resolved" | "not_found" | "failed";
 
 export interface BriefHydrationViewState {
   briefId: string;

@@ -2323,6 +2323,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         const detailFresh = freshOf(session.detailValidatedAt ?? session.lastValidatedAt);
         const fresh = eventsFresh && detailFresh;
         if (hasCachedContent && fresh && get().globalStreamStatus === "streaming") {
+          if (session && missingBriefIdsForHydration(session).length > 0) {
+            scheduleBriefHydration(get, set, agentId, displayLevel);
+          }
           startRuntimeSpan(trace, "agent.validate", { reason: "fresh_stream" }).end("skipped");
           return;
         }
