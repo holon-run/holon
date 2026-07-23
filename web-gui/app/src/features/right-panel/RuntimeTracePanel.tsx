@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
+import { SegmentedControl, SegmentedControlButton } from "../../components/ui/SegmentedControl";
 import {
   buildRuntimeTraceDiagnosticBundle,
   clearRuntimeTraceRecords,
@@ -17,6 +18,17 @@ import type { RuntimeConnection } from "../../runtime/types";
 import { triggerBlobDownload } from "./download";
 
 const TRACE_OUTCOMES: RuntimeTraceOutcome[] = ["ok", "error", "cancelled", "deduped", "skipped"];
+export type RuntimeTraceScope = "agent" | "global" | "all";
+
+export function selectRuntimeTraceRecords(
+  records: readonly RuntimeTraceRecord[],
+  agentId: string,
+  scope: RuntimeTraceScope,
+): readonly RuntimeTraceRecord[] {
+  if (scope === "all") return records;
+  if (scope === "global") return records.filter((record) => record.agentId == null);
+  return records.filter((record) => record.agentId === agentId);
+}
 
 export function filterRuntimeTraceRecords(
   records: readonly RuntimeTraceRecord[],
@@ -51,10 +63,23 @@ export function RuntimeTracePanel({ agentId, connection }: RuntimeTracePanelProp
   const revision = useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const enabled = isRuntimeTraceEnabled();
   const [pausedRecords, setPausedRecords] = useState<readonly RuntimeTraceRecord[]>();
+  const [scope, setScope] = useState<RuntimeTraceScope>("agent");
   const [query, setQuery] = useState("");
   const [outcome, setOutcome] = useState<RuntimeTraceOutcome | "all">("all");
-  const liveRecords = useMemo(() => getRuntimeTraceRecords({ agentId }), [agentId, revision]);
-  const records = pausedRecords ?? liveRecords;
+  const liveRecords = useMemo(() => getRuntimeTraceRecords(), [revision]);
+  const allRecords = pausedRecords ?? liveRecords;
+  const records = useMemo(
+    () => selectRuntimeTraceRecords(allRecords, agentId, scope),
+    [agentId, allRecords, scope],
+  );
+  const agentRecordCount = useMemo(
+    () => selectRuntimeTraceRecords(allRecords, agentId, "agent").length,
+    [agentId, allRecords],
+  );
+  const globalRecordCount = useMemo(
+    () => selectRuntimeTraceRecords(allRecords, agentId, "global").length,
+    [allRecords],
+  );
   const filteredRecords = useMemo(
     () => filterRuntimeTraceRecords(records, { query, outcome }),
     [outcome, query, records],
@@ -106,6 +131,26 @@ export function RuntimeTracePanel({ agentId, connection }: RuntimeTracePanelProp
         </div>
       ) : (
         <>
+          <SegmentedControl label={t("runtimeTrace.scope")}>
+            {(["agent", "global", "all"] as const).map((value) => (
+              <SegmentedControlButton
+                active={scope === value}
+                aria-pressed={scope === value}
+                key={value}
+                onClick={() => setScope(value)}
+              >
+                {t(`runtimeTrace.scope_${value}`)}
+              </SegmentedControlButton>
+            ))}
+          </SegmentedControl>
+          <p className="runtime-trace-count">
+            {t("runtimeTrace.scopeRecordCount", {
+              agent: agentRecordCount,
+              global: globalRecordCount,
+              total: allRecords.length,
+            })}
+            {pausedRecords ? ` · ${t("runtimeTrace.paused")}` : ""}
+          </p>
           <div className="runtime-trace-toolbar">
             <input
               aria-label={t("runtimeTrace.filter")}
@@ -134,7 +179,6 @@ export function RuntimeTracePanel({ agentId, connection }: RuntimeTracePanelProp
           </div>
           <p className="runtime-trace-count">
             {t("runtimeTrace.recordCount", { shown: filteredRecords.length, total: records.length })}
-            {pausedRecords ? ` · ${t("runtimeTrace.paused")}` : ""}
           </p>
           <div className="runtime-trace-records">
             {filteredRecords.length === 0 ? (
