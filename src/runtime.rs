@@ -472,6 +472,8 @@ pub fn scheduler_recovery_report(
             candidates: Vec::new(),
         });
     };
+    // This debug-only report intentionally scans retained history so it cannot
+    // omit an old recovery candidate; its cost scales with agent history.
     let turns = runtime_db
         .turn_records()
         .recent_for_agent(agent_id, usize::MAX)?;
@@ -2713,6 +2715,8 @@ impl RuntimeHandle {
                     terminal.kind == crate::types::TurnTerminalKind::Completed
                 })
             });
+            // Canonical terminal states need no new protocol command; these
+            // branches only reconcile the legacy queue claim that remains.
             if activation.state == crate::domain::scheduler_protocol::ActivationState::Settled {
                 entry.status = if terminal_is_completed {
                     QueueEntryStatus::Processed
