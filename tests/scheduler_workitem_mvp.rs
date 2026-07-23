@@ -122,7 +122,7 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
             expected_dispatch_revision,
             cause,
         } => {
-            let (typed_cause, binding, origin) = match cause {
+            let (typed_cause, binding, origin, trust) = match cause {
                 AdmissionCause::Scheduling => (
                     ActivationCause::WorkItemRunnable {
                         work_item_id: work_item_id.clone(),
@@ -132,6 +132,34 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                         work_item_id: work_item_id.clone(),
                     },
                     ActivationOrigin::System,
+                    ActivationTrust::RuntimeInstruction,
+                ),
+                AdmissionCause::TaskRejoin {
+                    task_id,
+                    message_id,
+                    resume,
+                } => (
+                    ActivationCause::TaskRejoin {
+                        task_id: task_id.clone(),
+                        message_id: message_id.clone(),
+                        resume: resume.clone(),
+                    },
+                    ActivationBinding::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    },
+                    ActivationOrigin::Task,
+                    ActivationTrust::RuntimeInstruction,
+                ),
+                AdmissionCause::OperatorInput { message_id, resume } => (
+                    ActivationCause::OperatorInput {
+                        message_id: message_id.clone(),
+                        resume: resume.clone(),
+                    },
+                    ActivationBinding::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    },
+                    ActivationOrigin::Operator,
+                    ActivationTrust::OperatorInstruction,
                 ),
                 AdmissionCause::WaitResume {
                     wait_id,
@@ -150,6 +178,7 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                         owner_work_item_id: work_item_id.clone(),
                     },
                     ActivationOrigin::System,
+                    ActivationTrust::RuntimeInstruction,
                 ),
                 AdmissionCause::SettlementRecovery {
                     missing_activation_id,
@@ -161,6 +190,7 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                         work_item_id: work_item_id.clone(),
                     },
                     ActivationOrigin::RuntimeRecovery,
+                    ActivationTrust::RuntimeInstruction,
                 ),
             };
             let command = AdmitActivationCommand {
@@ -177,7 +207,7 @@ fn apply_event(snapshot: &Snapshot, event: &Event) -> model::Outcome {
                     idempotency_key: format!("activation-{activation_id}"),
                     provenance: ActivationProvenance {
                         origin,
-                        trust: ActivationTrust::RuntimeInstruction,
+                        trust,
                         source_id: "legacy-test-adapter".into(),
                         correlation_id: None,
                         causation_id: None,
@@ -3069,5 +3099,6 @@ fn minimal_snapshot(scheduling_generation: u64) -> Snapshot {
         rollout: Default::default(),
         admitted_generations: Default::default(),
         continuation_admissions: Default::default(),
+        activation_inputs: Default::default(),
     }
 }

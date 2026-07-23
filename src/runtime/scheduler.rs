@@ -9,14 +9,15 @@ use crate::domain::scheduler_semantic::{
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{
-    AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
-    ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
-    Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus, TimerStatus,
-    TurnTerminalKind, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
-    WorkItemRecord, WorkItemSchedulingState, WorkItemState, WorkReactivationMode,
-    WorkReactivationSignal,
+    AdmissionContext, AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
+    ExternalWaitRecoverability, MessageDeliverySurface, MessageEnvelope, MessageKind,
+    MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+    TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
+    WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
+    WorkReactivationMode, WorkReactivationSignal,
 };
 use crate::work_item_scheduling::WorkItemSchedulingProjection;
+use anyhow::bail;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -28,10 +29,54 @@ pub(crate) const EXACT_TASK_REJOIN_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ExactTaskRejoin;
 pub(crate) const EXACT_WAIT_RESUME_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ExactWaitResume;
+pub(crate) const EXPLICITLY_BOUND_OPERATOR_INPUT_SCENARIO: SchedulerScenarioClass =
+    SchedulerScenarioClass::ExplicitlyBoundOperatorInput;
 pub(crate) const SETTLEMENT_SCENARIO: SchedulerScenarioClass = SchedulerScenarioClass::Settlement;
 pub(crate) const DELIVERY_SCENARIO: SchedulerScenarioClass = SchedulerScenarioClass::Delivery;
 pub(crate) const INTERJECTION_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::OperatorInterjection;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CanonicalActivationScenario {
+    WorkItemAutonomousContinuation {
+        work_item_id: String,
+    },
+    ExactTaskRejoin {
+        task_id: String,
+        work_item_id: String,
+        wait_id: Option<String>,
+    },
+    ExactWaitResume {
+        work_item_id: String,
+        wait_id: String,
+    },
+    ExplicitlyBoundOperatorInput {
+        work_item_id: String,
+        wait_id: Option<String>,
+    },
+}
+
+impl CanonicalActivationScenario {
+    pub(crate) fn work_item_id(&self) -> &str {
+        match self {
+            Self::WorkItemAutonomousContinuation { work_item_id }
+            | Self::ExactTaskRejoin { work_item_id, .. }
+            | Self::ExactWaitResume { work_item_id, .. }
+            | Self::ExplicitlyBoundOperatorInput { work_item_id, .. } => work_item_id,
+        }
+    }
+
+    pub(crate) fn scenario_class(&self) -> SchedulerScenarioClass {
+        match self {
+            Self::WorkItemAutonomousContinuation { .. } => {
+                WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO
+            }
+            Self::ExactTaskRejoin { .. } => EXACT_TASK_REJOIN_SCENARIO,
+            Self::ExactWaitResume { .. } => EXACT_WAIT_RESUME_SCENARIO,
+            Self::ExplicitlyBoundOperatorInput { .. } => EXPLICITLY_BOUND_OPERATOR_INPUT_SCENARIO,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
@@ -1187,6 +1232,147 @@ pub(crate) fn authority_scenarios_for_message_claim(
     scenarios
 }
 
+pub(crate) fn canonical_activation_scenario(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+    continuation_resolution: Option<&ContinuationResolution>,
+    task: Option<&TaskRecord>,
+) -> Result<Option<CanonicalActivationScenario>> {
+    if matches!(
+        (&message.kind, &message.origin),
+        (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+            if subsystem == "work_queue"
+    ) {
+        return Ok(message.work_item_id.clone().map(|work_item_id| {
+            CanonicalActivationScenario::WorkItemAutonomousContinuation { work_item_id }
+        }));
+    }
+    if !continuation_resolution.is_some_and(|resolution| resolution.model_reentry) {
+        return Ok(None);
+    }
+
+    let matching_waits = matching_wait_conditions(projection, message);
+    if matching_waits.len() > 1 {
+        bail!(
+            "canonical activation message {} matches multiple active waits",
+            message.id
+        );
+    }
+    let matching_wait = matching_waits.first().copied();
+
+    if message.kind == MessageKind::TaskResult {
+        let MessageOrigin::Task { task_id } = &message.origin else {
+            bail!("canonical task rejoin requires task message origin");
+        };
+        if message.task_id.as_deref() != Some(task_id.as_str()) {
+            bail!("canonical task rejoin has inconsistent task identity");
+        }
+        let task = task.ok_or_else(|| anyhow!("canonical task rejoin is missing task record"))?;
+        if task.id != *task_id
+            || task.agent_id != message.agent_id
+            || !matches!(
+                task.status,
+                TaskStatus::Completed
+                    | TaskStatus::Failed
+                    | TaskStatus::Cancelled
+                    | TaskStatus::Interrupted
+            )
+        {
+            bail!("canonical task rejoin requires a terminal same-agent task");
+        }
+        let work_item_id = task
+            .effective_work_item_id()
+            .ok_or_else(|| anyhow!("canonical task rejoin requires a WorkItem binding"))?;
+        if message.work_item_id.as_deref() != Some(work_item_id) {
+            bail!("canonical task rejoin has inconsistent WorkItem binding");
+        }
+        if matching_wait.is_some_and(|wait| wait.work_item_id.as_deref() != Some(work_item_id)) {
+            bail!("canonical task rejoin wait owner does not match task WorkItem");
+        }
+        return Ok(Some(CanonicalActivationScenario::ExactTaskRejoin {
+            task_id: task_id.clone(),
+            work_item_id: work_item_id.to_string(),
+            wait_id: matching_wait.map(|wait| wait.id.clone()),
+        }));
+    }
+
+    if message.kind == MessageKind::OperatorPrompt {
+        if !trusted_explicit_operator_binding(message) {
+            return Ok(None);
+        }
+        let work_item_id = message
+            .work_item_id
+            .clone()
+            .ok_or_else(|| anyhow!("explicit operator input requires a WorkItem binding"))?;
+        if matching_wait
+            .is_some_and(|wait| wait.work_item_id.as_deref() != Some(work_item_id.as_str()))
+        {
+            bail!("explicit operator input wait owner does not match WorkItem binding");
+        }
+        return Ok(Some(
+            CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
+                work_item_id,
+                wait_id: matching_wait.map(|wait| wait.id.clone()),
+            },
+        ));
+    }
+
+    let Some(wait) = matching_wait else {
+        return Ok(None);
+    };
+    let work_item_id = wait
+        .work_item_id
+        .clone()
+        .ok_or_else(|| anyhow!("canonical wait resume requires a WorkItem-owned wait"))?;
+    if message
+        .work_item_id
+        .as_ref()
+        .is_some_and(|binding| binding != &work_item_id)
+    {
+        bail!("canonical wait resume has inconsistent WorkItem binding");
+    }
+    Ok(Some(CanonicalActivationScenario::ExactWaitResume {
+        work_item_id,
+        wait_id: wait.id.clone(),
+    }))
+}
+
+fn matching_wait_conditions<'a>(
+    projection: &'a SchedulerProjection,
+    message: &MessageEnvelope,
+) -> Vec<&'a WaitConditionRecord> {
+    projection
+        .semantic_waits
+        .iter()
+        .filter(|condition| {
+            condition.status == WaitConditionStatus::Active
+                && message_matches_wait_condition(message, condition)
+        })
+        .collect()
+}
+
+fn trusted_explicit_operator_binding(message: &MessageEnvelope) -> bool {
+    message
+        .message_seq
+        .is_some_and(|message_seq| message_seq > 0)
+        && message.work_item_id.is_some()
+        && message.authority_class == AuthorityClass::OperatorInstruction
+        && matches!(message.origin, MessageOrigin::Operator { .. })
+        && matches!(
+            (message.delivery_surface, message.admission_context),
+            (
+                Some(MessageDeliverySurface::CliPrompt | MessageDeliverySurface::RunOnce),
+                Some(AdmissionContext::LocalProcess)
+            ) | (
+                Some(MessageDeliverySurface::HttpControlPrompt),
+                Some(AdmissionContext::ControlAuthenticated)
+            ) | (
+                Some(MessageDeliverySurface::RemoteOperatorTransport),
+                Some(AdmissionContext::OperatorTransportAuthenticated)
+            )
+        )
+}
+
 fn message_admission_scenario_applies(
     message: &MessageEnvelope,
     continuation_resolution: Option<&ContinuationResolution>,
@@ -1313,6 +1499,32 @@ fn message_matches_wait_condition(
             condition.wake_sources.iter().any(
                 |source| matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id),
             )
+        }
+        (MessageKind::OperatorPrompt, MessageOrigin::Operator { .. }) => condition
+            .wake_sources
+            .iter()
+            .any(|source| matches!(source, WakeSource::OperatorInput)),
+        (MessageKind::CallbackEvent | MessageKind::WebhookEvent | MessageKind::ChannelEvent, _) => {
+            let external_trigger_id = message.source_refs.get("external_trigger_id");
+            condition.wake_sources.iter().any(|source| {
+                matches!(
+                    source,
+                    WakeSource::ExternalIngress {
+                        external_trigger_id: expected,
+                    } if expected.as_ref().is_none_or(|expected| {
+                        external_trigger_id.is_some_and(|actual| actual == expected)
+                    })
+                )
+            })
+        }
+        (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => {
+            condition.wake_sources.iter().any(|source| {
+                matches!(source, WakeSource::Timer { .. })
+                    && message
+                        .source_refs
+                        .get("timer_id")
+                        .is_none_or(|source_timer_id| source_timer_id == timer_id)
+            })
         }
         (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
             if subsystem == "work_queue" {

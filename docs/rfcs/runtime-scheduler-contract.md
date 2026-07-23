@@ -45,6 +45,15 @@ In that target:
 The Message/Turn/`SystemTick` descriptions below remain migration and current
 implementation context until the activation protocol becomes authoritative.
 
+The current migration path now constructs a unified
+`canonical_activation_plan` for WorkItem autonomous continuation, exact task
+rejoin, exact wait resume, and explicitly bound operator input. The canonical
+authority/admission commands and the legacy queue claim enter one transaction.
+Operator interjection instead attaches typed input to the existing running
+activation in the same transaction as the legacy `Interjected` state,
+transcript, and audit evidence. Queue, Turn, and `AgentState` records remain
+compatibility bindings while scenario rollout policy is handled separately.
+
 ## Problem
 
 Holon is headless, event-driven, and long-lived. Scheduler bugs therefore have

@@ -78,15 +78,16 @@ mod tests {
     use crate::{
         domain::scheduler_protocol::{
             self, ActivationBinding, ActivationCause, ActivationDisposition,
-            ActivationLifecycleState, ActivationOrigin, ActivationPriority, ActivationProvenance,
-            ActivationSettlement, ActivationSlot, ActivationTrust, AdmitActivationCommand,
-            AgentActivation, AgentDispatchDisposition, AgentDispatchState, Continuation, Decision,
+            ActivationInputAttachment, ActivationLifecycleState, ActivationOrigin,
+            ActivationPriority, ActivationProvenance, ActivationSettlement, ActivationSlot,
+            ActivationTrust, AdmitActivationCommand, AgentActivation, AgentDispatchDisposition,
+            AgentDispatchState, AttachActivationInputCommand, Continuation, Decision,
             IssueActivationAuthorityCommand, ObservationalDivergenceAllowance, PreemptionPolicy,
             ProtocolCommand, ProtocolMode, RollbackAction, RollbackPolicy, RollbackTrigger,
             RolloutClassEvidence, RolloutCommand, RolloutManifest, RolloutPreflightState,
             ScenarioMode, SchedulerScenarioClass, SettleActivationCommand, Snapshot,
-            WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WaitTrigger, WorkDemand,
-            WorkStatus,
+            TriggerWaitCommand, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitResumeClaim,
+            WaitState, WaitTrigger, WorkDemand, WorkStatus,
         },
         runtime_db::repositories::{enum_string, slim_task_record_for_payload},
         runtime_db::transitions::{
@@ -339,6 +340,7 @@ mod tests {
             rollout: Default::default(),
             admitted_generations: BTreeSet::new(),
             continuation_admissions: BTreeMap::new(),
+            activation_inputs: BTreeMap::new(),
         }
     }
 
@@ -510,7 +512,7 @@ mod tests {
                         "rearm",
                     ],
                 ),
-                "operator_interjection" => (
+                "explicitly_bound_operator_input" | "operator_interjection" => (
                     1_000,
                     7 * 24 * 60 * 60,
                     vec![
@@ -810,6 +812,8 @@ mod tests {
             "scheduler_activation_settlements",
             "scheduler_missing_settlements",
             "scheduler_continuation_admissions",
+            "scheduler_activation_sources",
+            "scheduler_activation_inputs",
             "scheduler_protocol_command_results",
             "scheduler_protocol_command_conflict_attempts",
             "scheduler_protocol_migrations",
@@ -1619,6 +1623,302 @@ mod tests {
                 .consuming_activation_id
                 .as_deref(),
             Some("activation-wait-resume")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_task_rejoin_persists_source_fence_and_wait_consumption() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let wait_id = "wait-task";
+        let wait_generation = 2;
+        let trigger_id = "task:task-a";
+        let trigger_generation = 7;
+        let scheduling_generation = 2;
+        let dispatch_revision = 1;
+        let resume = WaitResumeClaim {
+            wait_id: wait_id.into(),
+            wait_generation,
+            trigger_id: trigger_id.into(),
+            trigger_generation,
+        };
+        let activation = AgentActivation {
+            id: "activation-task-rejoin".into(),
+            agent_id: agent_id.into(),
+            state: ActivationLifecycleState::Admitted,
+            cause: ActivationCause::TaskRejoin {
+                task_id: "task-a".into(),
+                message_id: "message-task-result".into(),
+                resume: Some(resume.clone()),
+            },
+            binding: ActivationBinding::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            priority: ActivationPriority::Normal,
+            preemption: PreemptionPolicy::AllowOperatorInterjection,
+            source_revision: Some(7),
+            idempotency_key: "task-rejoin:task-a".into(),
+            provenance: ActivationProvenance {
+                origin: ActivationOrigin::Task,
+                trust: ActivationTrust::RuntimeInstruction,
+                source_id: "message-task-result".into(),
+                correlation_id: Some("task-a".into()),
+                causation_id: Some("parent-message".into()),
+            },
+        };
+        let authority_id = "authority-task-rejoin";
+        let authority =
+            ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
+                authority_id: authority_id.into(),
+                activation: activation.clone(),
+                expected_scheduling_generation: scheduling_generation,
+                expected_dispatch_revision: dispatch_revision,
+            });
+        let trigger = ProtocolCommand::TriggerWait(TriggerWaitCommand {
+            wait_id: wait_id.into(),
+            wait_generation,
+            trigger_id: trigger_id.into(),
+            trigger_generation,
+        });
+        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id: authority_id.into(),
+            activation,
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision: dispatch_revision,
+        });
+        let mut initial = scheduler_protocol_snapshot(scheduling_generation);
+        initial.work.get_mut("work-a").expect("work").status = WorkStatus::Waiting {
+            wait_id: wait_id.into(),
+        };
+        initial.dispatch = AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: wait_id.into(),
+                generation: wait_generation,
+            },
+        };
+        initial.dispatch_revision = dispatch_revision;
+        initial.waits.insert(
+            wait_id.into(),
+            WaitRecord {
+                current_generation: wait_generation,
+                generations: BTreeMap::from([(
+                    wait_generation,
+                    WaitGenerationRecord {
+                        owner_work_item_id: "work-a".into(),
+                        state: WaitState::Active,
+                        trigger: None,
+                        consuming_activation_id: None,
+                    },
+                )]),
+            },
+        );
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &authority, None)?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &trigger, None)?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let snapshot = reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        assert_eq!(
+            snapshot.waits[wait_id].generations[&wait_generation].state,
+            WaitState::Consumed
+        );
+        assert_eq!(
+            snapshot.admitted_generations,
+            BTreeSet::from(["task:task-a".into()])
+        );
+        let source: (String, String) = reopened.connection()?.query_row(
+            "SELECT source_kind, source_identity
+             FROM scheduler_activation_sources
+             WHERE agent_id = ?1 AND activation_id = 'activation-task-rejoin'",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(source, ("task_rejoin".into(), "task-a".into()));
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_operator_input_uses_message_source_fence() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let scheduling_generation = 1;
+        let activation = AgentActivation {
+            id: "activation-operator-input".into(),
+            agent_id: agent_id.into(),
+            state: ActivationLifecycleState::Admitted,
+            cause: ActivationCause::OperatorInput {
+                message_id: "message-operator".into(),
+                resume: None,
+            },
+            binding: ActivationBinding::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            priority: ActivationPriority::Normal,
+            preemption: PreemptionPolicy::AllowOperatorInterjection,
+            source_revision: Some(9),
+            idempotency_key: "operator-message:message-operator".into(),
+            provenance: ActivationProvenance {
+                origin: ActivationOrigin::Operator,
+                trust: ActivationTrust::OperatorInstruction,
+                source_id: "message-operator".into(),
+                correlation_id: None,
+                causation_id: None,
+            },
+        };
+        let authority_id = "authority-operator-input";
+        let authority =
+            ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
+                authority_id: authority_id.into(),
+                activation: activation.clone(),
+                expected_scheduling_generation: scheduling_generation,
+                expected_dispatch_revision: 0,
+            });
+        let admission = ProtocolCommand::AdmitActivation(AdmitActivationCommand {
+            authority_id: authority_id.into(),
+            activation,
+            expected_scheduling_generation: scheduling_generation,
+            expected_dispatch_revision: 0,
+        });
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions().initialize_scheduler_protocol_partition(
+            agent_id,
+            &scheduler_protocol_snapshot(scheduling_generation),
+        )?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &authority, None)?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let snapshot = reopened
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        assert_eq!(
+            snapshot.admitted_generations,
+            BTreeSet::from(["operator_message:message-operator".into()])
+        );
+        let source: (String, String) = reopened.connection()?.query_row(
+            "SELECT source_kind, source_identity
+             FROM scheduler_activation_sources
+             WHERE agent_id = ?1 AND activation_id = 'activation-operator-input'",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(source, ("operator_input".into(), "message-operator".into()));
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_activation_input_attachment_is_restart_safe_and_message_unique() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let agent_id = "agent-a";
+        let initial = scheduler_protocol_snapshot(1);
+        let authority = scheduler_protocol_authority_command(agent_id, 1);
+        let ProtocolCommand::IssueActivationAuthority(authority_payload) = &authority else {
+            unreachable!()
+        };
+        let mut admission_payload = AdmitActivationCommand {
+            authority_id: authority_payload.authority_id.clone(),
+            activation: authority_payload.activation.clone(),
+            expected_scheduling_generation: 1,
+            expected_dispatch_revision: 0,
+        };
+        admission_payload.activation.preemption = PreemptionPolicy::AllowOperatorInterjection;
+        let authority =
+            ProtocolCommand::IssueActivationAuthority(IssueActivationAuthorityCommand {
+                authority_id: admission_payload.authority_id.clone(),
+                activation: admission_payload.activation.clone(),
+                expected_scheduling_generation: 1,
+                expected_dispatch_revision: 0,
+            });
+        let admission = ProtocolCommand::AdmitActivation(admission_payload);
+        let attachment = ActivationInputAttachment {
+            id: "attachment-a".into(),
+            activation_id: "activation-a".into(),
+            work_item_id: "work-a".into(),
+            expected_scheduling_generation: 1,
+            expected_dispatch_revision: 0,
+            message_id: "interjection-message".into(),
+            turn_id: "turn-a".into(),
+            boundary: "after_provider_round".into(),
+            round: 1,
+            provenance: ActivationProvenance {
+                origin: ActivationOrigin::Operator,
+                trust: ActivationTrust::OperatorInstruction,
+                source_id: "interjection-message".into(),
+                correlation_id: Some("activation-a".into()),
+                causation_id: None,
+            },
+            created_at: "2026-07-23T00:00:00Z".into(),
+        };
+        let command = ProtocolCommand::AttachActivationInput(AttachActivationInputCommand {
+            attachment: attachment.clone(),
+        });
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &authority, None)?;
+        db.transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
+        let committed = db
+            .transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
+        assert_eq!(committed.result.decision, Decision::ActivationInputAttached);
+        let replayed = db
+            .transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
+        assert!(replayed.replayed);
+
+        let conflicting = ProtocolCommand::AttachActivationInput(AttachActivationInputCommand {
+            attachment: ActivationInputAttachment {
+                id: "attachment-b".into(),
+                boundary: "before_tool_execution".into(),
+                ..attachment.clone()
+            },
+        });
+        let before_conflict = db
+            .transitions()
+            .load_scheduler_protocol_snapshot(agent_id)?;
+        let conflict = db
+            .transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &conflicting, None)?;
+        assert_eq!(conflict.result.decision, Decision::Rejected);
+        assert!(conflict.result.fact_references.is_empty());
+        assert_eq!(
+            conflict
+                .result
+                .conflict
+                .as_ref()
+                .map(|conflict| conflict.code.as_str()),
+            Some("activation_input_message_conflict")
+        );
+        assert_eq!(
+            db.transitions()
+                .load_scheduler_protocol_snapshot(agent_id)?,
+            before_conflict
+        );
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert_eq!(
+            reopened
+                .transitions()
+                .load_scheduler_protocol_snapshot(agent_id)?
+                .activation_inputs,
+            BTreeMap::from([("attachment-a".into(), attachment)])
         );
         Ok(())
     }

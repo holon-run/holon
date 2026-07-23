@@ -360,6 +360,89 @@ impl RuntimeHandle {
                     break;
                 };
                 let expected_state = guard.state.clone();
+                let protocol_commands = if self.scheduler_protocol_production_commands_enabled()
+                    && self
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .scheduler_scenario_mode(scheduler::INTERJECTION_SCENARIO)?
+                        == crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+                {
+                    let execution_binding = expected_state
+                        .current_execution_binding
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "operator interjection requires a current execution binding"
+                            )
+                        })?;
+                    let activation_id =
+                        execution_binding.activation_id.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "operator interjection requires a canonical running activation"
+                            )
+                        })?;
+                    let work_item_id =
+                        execution_binding.work_item_id.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "operator interjection requires a WorkItem execution binding"
+                            )
+                        })?;
+                    let snapshot = self
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "operator interjection requires an initialized protocol partition"
+                            )
+                        })?;
+                    let activation = snapshot.activations.get(activation_id).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "operator interjection references an unknown canonical activation"
+                        )
+                    })?;
+                    if activation.work_item_id != work_item_id {
+                        return Err(anyhow::anyhow!(
+                            "operator interjection WorkItem binding disagrees with activation"
+                        ));
+                    }
+                    vec![
+                        crate::domain::scheduler_protocol::ProtocolCommand::AttachActivationInput(
+                            crate::domain::scheduler_protocol::AttachActivationInputCommand {
+                                attachment:
+                                    crate::domain::scheduler_protocol::ActivationInputAttachment {
+                                        id: format!("activation-input:{}", message.id),
+                                        activation_id: activation_id.to_string(),
+                                        work_item_id: work_item_id.to_string(),
+                                        expected_scheduling_generation:
+                                            activation.admitted_generation,
+                                        expected_dispatch_revision: snapshot.dispatch_revision,
+                                        message_id: message.id.clone(),
+                                        turn_id: execution_binding.turn_id.clone(),
+                                        boundary: boundary_str.to_string(),
+                                        round: u64::try_from(round).map_err(|_| {
+                                            anyhow::anyhow!(
+                                                "operator interjection round exceeds u64"
+                                            )
+                                        })?,
+                                        provenance:
+                                            crate::domain::scheduler_protocol::ActivationProvenance {
+                                                origin: crate::domain::scheduler_protocol::ActivationOrigin::Operator,
+                                                trust: crate::domain::scheduler_protocol::ActivationTrust::OperatorInstruction,
+                                                source_id: message.id.clone(),
+                                                correlation_id: message.correlation_id.clone(),
+                                                causation_id: message.causation_id.clone(),
+                                            },
+                                        created_at: message.created_at.to_rfc3339(),
+                                    },
+                            },
+                        ),
+                    ]
+                } else {
+                    Vec::new()
+                };
                 let mut committed_state = expected_state.clone();
                 committed_state.pending = guard.queue.len().saturating_sub(1);
                 let text = render_operator_interjection_text(&message);
@@ -432,7 +515,7 @@ impl RuntimeHandle {
                         ),
                         scheduler_claim_work_item: None,
                         scheduler_protocol_bootstrap: None,
-                        scheduler_protocol_commands: Vec::new(),
+                        scheduler_protocol_commands: protocol_commands,
                         scheduler_authority_scenarios: vec![scheduler::INTERJECTION_SCENARIO],
                         agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                             expected: Some(Box::new(expected_state)),
@@ -446,7 +529,7 @@ impl RuntimeHandle {
                         scheduler_delivery_shadow_comparison: None,
                         scheduler_semantic_shadow: None,
                         notify_scheduler: false,
-                        fault: None,
+                        fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
                     },
                 )?;

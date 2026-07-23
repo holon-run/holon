@@ -75,7 +75,7 @@ pub(super) struct ScheduledMessage {
 }
 
 struct CanonicalClaimPlan {
-    work_item: crate::types::WorkItemRecord,
+    scheduler_claim_work_item: Option<crate::types::WorkItemRecord>,
     bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
     commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
 }
@@ -393,7 +393,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )?
         .map(scheduler_semantic_shadow_command);
         let canonical_claim =
-            self.canonical_work_queue_claim_plan(&projection, &candidate.message)?;
+            self.canonical_activation_plan(&projection, &persisted_message, &dispatch_plan)?;
         scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -439,7 +439,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     ),
                     scheduler_claim_work_item: canonical_claim
                         .as_ref()
-                        .map(|plan| plan.work_item.clone()),
+                        .and_then(|plan| plan.scheduler_claim_work_item.clone()),
                     scheduler_protocol_bootstrap: canonical_claim
                         .as_ref()
                         .and_then(|plan| plan.bootstrap.clone()),
@@ -508,10 +508,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
-    fn canonical_work_queue_claim_plan(
+    fn canonical_activation_plan(
         &self,
-        _projection: &scheduler::SchedulerProjection,
+        projection: &scheduler::SchedulerProjection,
         message: &MessageEnvelope,
+        dispatch_plan: &MessageDispatchPlan,
     ) -> Result<Option<CanonicalClaimPlan>> {
         if !self
             .runtime
@@ -519,12 +520,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(None);
         }
+        let task = dispatch_plan.task.as_ref().ok().and_then(Option::as_ref);
+        let Some(scenario) = scheduler::canonical_activation_scenario(
+            projection,
+            message,
+            dispatch_plan.continuation_resolution.as_ref(),
+            task,
+        )?
+        else {
+            return Ok(None);
+        };
         if self
             .runtime
             .inner
             .runtime_db
             .transitions()
-            .scheduler_scenario_mode(scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO)?
+            .scheduler_scenario_mode(scenario.scenario_class())?
             != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
             || self
                 .runtime
@@ -536,34 +547,34 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(None);
         }
-        if !matches!(
-            (&message.kind, &message.origin),
-            (MessageKind::SystemTick, MessageOrigin::System { subsystem })
-                if subsystem == "work_queue"
-        ) {
-            return Ok(None);
-        }
 
-        let work_item_id = message
-            .work_item_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("canonical work queue claim requires a WorkItem binding"))?;
+        let work_item_id = scenario.work_item_id();
         let work_item = self
             .runtime
             .inner
             .storage
             .latest_work_item(work_item_id)?
-            .ok_or_else(|| anyhow!("canonical work queue claim references unknown WorkItem"))?;
+            .ok_or_else(|| anyhow!("canonical activation references unknown WorkItem"))?;
         let work_queue = self.runtime.inner.storage.work_queue_prompt_projection()?;
+        let work_projection = work_queue
+            .items
+            .iter()
+            .find(|candidate| candidate.id == work_item.id)
+            .ok_or_else(|| anyhow!("canonical activation has no WorkItem scheduling projection"))?;
         if work_item.agent_id != message.agent_id
             || work_item.state != crate::types::WorkItemState::Open
-            || !work_queue.items.iter().any(|candidate| {
-                candidate.id == work_item.id
-                    && candidate.scheduling_state == crate::types::WorkItemSchedulingState::Runnable
-            })
         {
             return Err(anyhow!(
-                "canonical work queue claim requires a runnable same-agent WorkItem"
+                "canonical activation requires an open same-agent WorkItem"
+            ));
+        }
+        if matches!(
+            scenario,
+            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+        ) && work_projection.scheduling_state != crate::types::WorkItemSchedulingState::Runnable
+        {
+            return Err(anyhow!(
+                "canonical autonomous activation requires a runnable WorkItem"
             ));
         }
         let activation_id = canonical_activation_id(&message.id);
@@ -573,7 +584,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             ActivationPriority, ActivationProvenance, ActivationSlot, ActivationTrust,
             AdmitActivationCommand, AgentActivation, AgentDispatchState,
             IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand,
-            RegisterWorkDemandCommand, RolloutState, Snapshot, WorkDemand, WorkStatus,
+            RegisterWorkDemandCommand, RolloutState, Snapshot, TriggerWaitCommand, WaitResumeClaim,
+            WorkDemand, WorkStatus,
         };
 
         let existing = self
@@ -596,9 +608,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 if activation.state == crate::domain::scheduler_protocol::ActivationState::Running
                     && activation.work_item_id == work_item_id
                     && slot_matches
+                    && snapshot
+                        .activation_admissions
+                        .get(&activation_id)
+                        .is_some_and(|admission| {
+                            canonical_admission_matches_scenario(admission, message, &scenario)
+                        })
                 {
                     return Ok(Some(CanonicalClaimPlan {
-                        work_item,
+                        scheduler_claim_work_item: matches!(
+                            scenario,
+                            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
+                                ..
+                            }
+                        )
+                        .then_some(work_item),
                         bootstrap: None,
                         commands: Vec::new(),
                     }));
@@ -617,12 +641,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             locality: "runtime".into(),
             cost_class: "default".into(),
         };
+        let wait_id = match &scenario {
+            scheduler::CanonicalActivationScenario::ExactTaskRejoin { wait_id, .. }
+            | scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
+                wait_id,
+                ..
+            } => wait_id.as_deref(),
+            scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
+                Some(wait_id.as_str())
+            }
+            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => None,
+        };
         let (bootstrap, expected_dispatch_revision, scheduling_generation, register) =
             if let Some(snapshot) = existing.as_ref() {
                 if let Some(demand) = snapshot.work.get(work_item_id) {
-                    if demand.status != WorkStatus::Runnable {
+                    if wait_id.is_none() && demand.status != WorkStatus::Runnable {
                         return Err(anyhow!(
-                            "canonical WorkItem demand is not runnable for claim"
+                            "canonical WorkItem demand is not runnable for activation"
                         ));
                     }
                     (
@@ -632,6 +667,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         None,
                     )
                 } else {
+                    if wait_id.is_some() {
+                        return Err(anyhow!(
+                            "canonical wait resume requires an existing WorkItem demand"
+                        ));
+                    }
                     let demand = new_demand();
                     (
                         None,
@@ -646,6 +686,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     )
                 }
             } else {
+                if wait_id.is_some() {
+                    return Err(anyhow!(
+                        "canonical wait resume requires an initialized protocol partition"
+                    ));
+                }
                 let demand = new_demand();
                 (
                     Some(Snapshot {
@@ -663,6 +708,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         rollout: RolloutState::default(),
                         admitted_generations: Default::default(),
                         continuation_admissions: Default::default(),
+                        activation_inputs: Default::default(),
                     }),
                     0,
                     demand.scheduling_generation,
@@ -675,29 +721,113 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 )
             };
 
+        let resume = wait_id
+            .map(|wait_id| -> Result<WaitResumeClaim> {
+                let snapshot = existing.as_ref().ok_or_else(|| {
+                    anyhow!("canonical wait resume requires an initialized snapshot")
+                })?;
+                let wait = snapshot
+                    .waits
+                    .get(wait_id)
+                    .ok_or_else(|| anyhow!("canonical activation references unknown wait"))?;
+                let generation = wait
+                    .generations
+                    .get(&wait.current_generation)
+                    .ok_or_else(|| anyhow!("canonical wait has no current generation"))?;
+                if generation.owner_work_item_id != work_item_id {
+                    return Err(anyhow!(
+                        "canonical wait owner does not match WorkItem binding"
+                    ));
+                }
+                let trigger_generation = message.message_seq.ok_or_else(|| {
+                    anyhow!("canonical activation requires persisted message sequence")
+                })?;
+                Ok(WaitResumeClaim {
+                    wait_id: wait_id.to_string(),
+                    wait_generation: wait.current_generation,
+                    trigger_id: canonical_wait_trigger_id(message),
+                    trigger_generation,
+                })
+            })
+            .transpose()?;
+        let (cause, binding, provenance_origin, provenance_trust, idempotency_key) = match &scenario
+        {
+            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => (
+                ActivationCause::WorkItemRunnable {
+                    work_item_id: work_item.id.clone(),
+                    scheduling_generation,
+                },
+                ActivationBinding::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                },
+                ActivationOrigin::System,
+                ActivationTrust::RuntimeInstruction,
+                format!("work-queue-message:{}", message.id),
+            ),
+            scheduler::CanonicalActivationScenario::ExactTaskRejoin { task_id, .. } => (
+                ActivationCause::TaskRejoin {
+                    task_id: task_id.clone(),
+                    message_id: message.id.clone(),
+                    resume: resume.clone(),
+                },
+                ActivationBinding::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                },
+                ActivationOrigin::Task,
+                ActivationTrust::RuntimeInstruction,
+                format!("task-rejoin:{task_id}"),
+            ),
+            scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
+                let resume = resume
+                    .as_ref()
+                    .expect("exact wait resume has a canonical wait claim");
+                (
+                    ActivationCause::WaitResume {
+                        wait_id: wait_id.clone(),
+                        wait_generation: resume.wait_generation,
+                        trigger_id: resume.trigger_id.clone(),
+                        trigger_generation: resume.trigger_generation,
+                    },
+                    ActivationBinding::WaitOwner {
+                        wait_id: wait_id.clone(),
+                        owner_work_item_id: work_item.id.clone(),
+                    },
+                    canonical_activation_origin(message),
+                    canonical_activation_trust(message),
+                    format!("wait-resume:{}:{}", wait_id, resume.wait_generation),
+                )
+            }
+            scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => (
+                ActivationCause::OperatorInput {
+                    message_id: message.id.clone(),
+                    resume: resume.clone(),
+                },
+                ActivationBinding::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                },
+                ActivationOrigin::Operator,
+                ActivationTrust::OperatorInstruction,
+                format!("operator-message:{}", message.id),
+            ),
+        };
         let activation = AgentActivation {
             id: activation_id.clone(),
             agent_id: message.agent_id.clone(),
             state: ActivationLifecycleState::Admitted,
-            cause: ActivationCause::WorkItemRunnable {
-                work_item_id: work_item.id.clone(),
-                scheduling_generation,
-            },
-            binding: ActivationBinding::WorkItem {
-                work_item_id: work_item.id.clone(),
-            },
+            cause,
+            binding,
             priority: match message.priority {
                 Priority::Interject => ActivationPriority::Interject,
                 Priority::Next => ActivationPriority::Next,
                 Priority::Normal => ActivationPriority::Normal,
                 Priority::Background => ActivationPriority::Background,
             },
-            preemption: PreemptionPolicy::NonPreemptive,
+            preemption: PreemptionPolicy::AllowOperatorInterjection,
             source_revision: Some(work_item.revision),
-            idempotency_key: format!("work-queue-message:{}", message.id),
+            idempotency_key,
             provenance: ActivationProvenance {
-                origin: ActivationOrigin::System,
-                trust: ActivationTrust::RuntimeInstruction,
+                origin: provenance_origin,
+                trust: provenance_trust,
                 source_id: message.id.clone(),
                 correlation_id: message.correlation_id.clone(),
                 causation_id: message.causation_id.clone(),
@@ -716,13 +846,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             expected_scheduling_generation: scheduling_generation,
             expected_dispatch_revision,
         };
-        let mut commands = Vec::with_capacity(3);
+        let mut commands = Vec::with_capacity(4);
         commands.extend(register);
+        if let Some(resume) = resume {
+            commands.push(ProtocolCommand::TriggerWait(TriggerWaitCommand {
+                wait_id: resume.wait_id,
+                wait_generation: resume.wait_generation,
+                trigger_id: resume.trigger_id,
+                trigger_generation: resume.trigger_generation,
+            }));
+        }
         commands.push(ProtocolCommand::IssueActivationAuthority(authority));
         commands.push(ProtocolCommand::AdmitActivation(admission));
 
         Ok(Some(CanonicalClaimPlan {
-            work_item,
+            scheduler_claim_work_item: matches!(
+                scenario,
+                scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+            )
+            .then_some(work_item),
             bootstrap,
             commands,
         }))
@@ -751,6 +893,127 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
 pub(super) fn canonical_activation_id(message_id: &str) -> String {
     format!("activation:message:{message_id}")
+}
+
+fn canonical_wait_trigger_id(message: &MessageEnvelope) -> String {
+    for key in [
+        "task_result_id",
+        "callback_delivery_id",
+        "external_trigger_id",
+        "timer_id",
+    ] {
+        if let Some(value) = message.source_refs.get(key) {
+            return format!("{key}:{value}");
+        }
+    }
+    match &message.origin {
+        MessageOrigin::Task { task_id } => format!("task:{task_id}"),
+        MessageOrigin::Callback { descriptor_id, .. } => {
+            format!("callback:{descriptor_id}")
+        }
+        MessageOrigin::Timer { timer_id } => format!("timer:{timer_id}"),
+        _ => format!("message:{}", message.id),
+    }
+}
+
+fn canonical_activation_origin(
+    message: &MessageEnvelope,
+) -> crate::domain::scheduler_protocol::ActivationOrigin {
+    use crate::domain::scheduler_protocol::ActivationOrigin;
+    match message.origin {
+        MessageOrigin::Operator { .. } => ActivationOrigin::Operator,
+        MessageOrigin::Channel { .. } => ActivationOrigin::Channel,
+        MessageOrigin::Webhook { .. } => ActivationOrigin::Webhook,
+        MessageOrigin::Callback { .. } => ActivationOrigin::Callback,
+        MessageOrigin::Timer { .. } => ActivationOrigin::Timer,
+        MessageOrigin::System { .. } => ActivationOrigin::System,
+        MessageOrigin::Task { .. } => ActivationOrigin::Task,
+    }
+}
+
+fn canonical_activation_trust(
+    message: &MessageEnvelope,
+) -> crate::domain::scheduler_protocol::ActivationTrust {
+    use crate::domain::scheduler_protocol::ActivationTrust;
+    match message.authority_class {
+        crate::types::AuthorityClass::OperatorInstruction => ActivationTrust::OperatorInstruction,
+        crate::types::AuthorityClass::RuntimeInstruction => ActivationTrust::RuntimeInstruction,
+        crate::types::AuthorityClass::IntegrationSignal => ActivationTrust::IntegrationSignal,
+        crate::types::AuthorityClass::ExternalEvidence => ActivationTrust::ExternalEvidence,
+    }
+}
+
+fn canonical_admission_matches_scenario(
+    admission: &crate::domain::scheduler_protocol::AdmitActivationCommand,
+    message: &MessageEnvelope,
+    scenario: &scheduler::CanonicalActivationScenario,
+) -> bool {
+    use crate::domain::scheduler_protocol::{ActivationBinding, ActivationCause};
+    let activation = &admission.activation;
+    if activation.agent_id != message.agent_id
+        || activation.provenance.source_id != message.id
+        || activation.provenance.origin != canonical_activation_origin(message)
+        || activation.provenance.trust != canonical_activation_trust(message)
+    {
+        return false;
+    }
+    match (&activation.cause, &activation.binding, scenario) {
+        (
+            ActivationCause::WorkItemRunnable { work_item_id, .. },
+            ActivationBinding::WorkItem {
+                work_item_id: bound_work_item_id,
+            },
+            scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
+                work_item_id: expected,
+            },
+        ) => work_item_id == expected && bound_work_item_id == expected,
+        (
+            ActivationCause::TaskRejoin {
+                task_id,
+                message_id,
+                resume,
+            },
+            ActivationBinding::WorkItem { work_item_id },
+            scheduler::CanonicalActivationScenario::ExactTaskRejoin {
+                task_id: expected_task,
+                work_item_id: expected_work_item,
+                wait_id,
+            },
+        ) => {
+            task_id == expected_task
+                && message_id == &message.id
+                && work_item_id == expected_work_item
+                && resume.as_ref().map(|claim| claim.wait_id.as_str()) == wait_id.as_deref()
+        }
+        (
+            ActivationCause::WaitResume { wait_id, .. },
+            ActivationBinding::WaitOwner {
+                wait_id: bound_wait_id,
+                owner_work_item_id,
+            },
+            scheduler::CanonicalActivationScenario::ExactWaitResume {
+                work_item_id,
+                wait_id: expected_wait,
+            },
+        ) => {
+            wait_id == expected_wait
+                && bound_wait_id == expected_wait
+                && owner_work_item_id == work_item_id
+        }
+        (
+            ActivationCause::OperatorInput { message_id, resume },
+            ActivationBinding::WorkItem { work_item_id },
+            scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
+                work_item_id: expected_work_item,
+                wait_id,
+            },
+        ) => {
+            message_id == &message.id
+                && work_item_id == expected_work_item
+                && resume.as_ref().map(|claim| claim.wait_id.as_str()) == wait_id.as_deref()
+        }
+        _ => false,
+    }
 }
 
 fn scheduler_semantic_shadow_command(

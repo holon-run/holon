@@ -452,6 +452,34 @@ Starting the activation changes `Admitted` to `Running` and claims the
 corresponding queue entry, Turn binding, or compatibility Run record in the
 same invariant-preserving transition.
 
+During migration, the runtime derives one `canonical_activation_plan` from the
+persisted message, scheduler projection, and continuation resolution. The
+implemented structural classes are:
+
+- WorkItem autonomous continuation;
+- exact task rejoin;
+- exact wait resume; and
+- explicitly bound operator input.
+
+Each plan preserves the source-specific cause and binding, message provenance
+and trust, correlation and causation, expected WorkItem scheduling generation,
+expected dispatch revision, exact task or wait generation where applicable,
+and the legacy queue/Turn compatibility identity. Demand registration, wait
+trigger, authority issuance, `AdmitActivation`, queue claim, and running
+projection either commit together or all roll back. Duplicate command identity
+returns the first canonical result; stale generations, wrong-agent bindings,
+ambiguous waits, and out-of-order source identities reject before execution
+ownership changes.
+
+Operator interjection follows a different path because a running activation
+already owns execution. A safe point attaches one typed
+`ActivationInputAttachment` to that activation and atomically commits the
+legacy `Interjected` queue state, incoming transcript evidence, and audit
+evidence. The attachment is unique per message and fenced by activation,
+WorkItem scheduling generation, dispatch revision, Turn, boundary, and round.
+It neither creates another activation nor changes slot, dispatch, or WorkItem
+generation.
+
 ## Activation Settlement
 
 Every normally terminal activation commits one settlement:
