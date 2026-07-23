@@ -580,5 +580,6 @@ fn semantic_authority_snapshot() -> Snapshot {
         rollout: Default::default(),
         admitted_generations: Default::default(),
         continuation_admissions: BTreeMap::new(),
+        activation_inputs: BTreeMap::new(),
     }
 }

@@ -1709,6 +1709,61 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_semantic_shadow_decisions_created
   ON scheduler_semantic_shadow_decisions(agent_id, created_at);
 "#,
     },
+    Migration {
+        version: 34,
+        name: "scheduler_activation_source_fences_and_inputs",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS scheduler_activation_sources (
+  agent_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK (
+    source_kind IN ('task_rejoin', 'operator_input')
+  ),
+  source_identity TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, activation_id),
+  UNIQUE (agent_id, source_kind, source_identity),
+  FOREIGN KEY (agent_id, activation_id)
+    REFERENCES scheduler_activations(agent_id, activation_id)
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_activation_inputs (
+  agent_id TEXT NOT NULL,
+  attachment_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  expected_scheduling_generation INTEGER NOT NULL CHECK (
+    expected_scheduling_generation > 0
+  ),
+  expected_dispatch_revision INTEGER NOT NULL CHECK (
+    expected_dispatch_revision >= 0
+  ),
+  message_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  boundary TEXT NOT NULL,
+  round INTEGER NOT NULL CHECK (round >= 0),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, attachment_id),
+  UNIQUE (agent_id, message_id),
+  FOREIGN KEY (
+    agent_id,
+    activation_id,
+    work_item_id,
+    expected_scheduling_generation
+  ) REFERENCES scheduler_activations(
+    agent_id,
+    activation_id,
+    work_item_id,
+    admitted_generation
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_activation_inputs_activation
+  ON scheduler_activation_inputs(agent_id, activation_id, round);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

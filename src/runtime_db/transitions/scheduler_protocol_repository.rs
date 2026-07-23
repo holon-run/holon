@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::domain::scheduler_protocol::{
-    self, ActivationAdmissionAuthority, ActivationCause, ActivationRecord, ActivationSlot,
-    ActivationState, AdmitActivationCommand, AgentDispatchState, ContinuationAdmissionRecord,
-    Decision, MissingSettlementRecord, ProtocolCommand, ProtocolConflict, ProtocolConflictKind,
-    ProtocolMode, RollbackAction, RollbackTrigger, RolloutCommand, RolloutManifest,
-    RolloutPreflightRecord, RolloutPreflightState, RolloutState, ScenarioAuthority,
-    ScenarioHardBlockerRecord, ScenarioMode, SchedulerScenarioClass, Snapshot,
+    self, ActivationAdmissionAuthority, ActivationCause, ActivationInputAttachment,
+    ActivationRecord, ActivationSlot, ActivationState, AdmitActivationCommand, AgentDispatchState,
+    ContinuationAdmissionRecord, Decision, MissingSettlementRecord, ProtocolCommand,
+    ProtocolConflict, ProtocolConflictKind, ProtocolMode, RollbackAction, RollbackTrigger,
+    RolloutCommand, RolloutManifest, RolloutPreflightRecord, RolloutPreflightState, RolloutState,
+    ScenarioAuthority, ScenarioHardBlockerRecord, ScenarioMode, SchedulerScenarioClass, Snapshot,
     WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState, WorkDemand, WorkStatus,
 };
 use crate::domain::scheduler_semantic::{
@@ -214,6 +214,9 @@ pub(super) fn validate_protocol_command_authority_tx(
             }
             ProtocolCommand::TriggerWait(_) => {
                 required_scenarios.insert(SchedulerScenarioClass::ExactWaitResume);
+            }
+            ProtocolCommand::AttachActivationInput(_) => {
+                required_scenarios.insert(SchedulerScenarioClass::OperatorInterjection);
             }
             ProtocolCommand::SettleActivation(_) | ProtocolCommand::RecordMissingSettlement(_) => {
                 // Terminal commands drain authority granted when the activation was admitted.
@@ -928,6 +931,7 @@ fn rollout_snapshot(rollout: RolloutState) -> Snapshot {
         rollout,
         admitted_generations: BTreeSet::new(),
         continuation_admissions: BTreeMap::new(),
+        activation_inputs: BTreeMap::new(),
     }
 }
 
@@ -1030,6 +1034,9 @@ fn command_identity(command: &ProtocolCommand) -> Result<(&'static str, String)>
             "trigger_wait",
             serde_json::to_string(&(command.wait_id.as_str(), command.wait_generation))?,
         ),
+        ProtocolCommand::AttachActivationInput(command) => {
+            ("attach_activation_input", command.attachment.id.clone())
+        }
     })
 }
 
@@ -1066,6 +1073,10 @@ fn command_fact_references(command: &ProtocolCommand) -> Vec<String> {
             "wait:{}:generation:{}",
             command.wait_id, command.wait_generation
         )],
+        ProtocolCommand::AttachActivationInput(command) => vec![
+            format!("activation:{}", command.attachment.activation_id),
+            format!("activation_input:{}", command.attachment.id),
+        ],
     }
 }
 
@@ -1076,7 +1087,8 @@ fn validate_command_agent(agent_id: &str, command: &ProtocolCommand) -> Result<(
         ProtocolCommand::AdmitActivation(command) => Some(&command.activation.agent_id),
         ProtocolCommand::SettleActivation(_)
         | ProtocolCommand::RecordMissingSettlement(_)
-        | ProtocolCommand::TriggerWait(_) => None,
+        | ProtocolCommand::TriggerWait(_)
+        | ProtocolCommand::AttachActivationInput(_) => None,
     };
     if command_agent_id.is_some_and(|command_agent_id| command_agent_id != agent_id) {
         bail!("scheduler protocol command crosses agent partition {agent_id}");
@@ -1675,6 +1687,30 @@ fn persist_agent_snapshot_tx(
                 &now,
             ],
         )?;
+        if let Some((source_kind, source_identity)) = activation_source_columns(admission) {
+            tx.execute(
+                "INSERT INTO scheduler_activation_sources (
+                   agent_id,
+                   activation_id,
+                   source_kind,
+                   source_identity,
+                   payload_json,
+                   created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(agent_id, activation_id) DO UPDATE SET
+                   source_kind = excluded.source_kind,
+                   source_identity = excluded.source_identity,
+                   payload_json = excluded.payload_json",
+                params![
+                    agent_id,
+                    activation_id,
+                    source_kind,
+                    source_identity,
+                    serde_json::to_string(&admission.activation.cause)?,
+                    &now,
+                ],
+            )?;
+        }
     }
 
     for (authority_id, authority) in &snapshot.activation_authorities {
@@ -1819,6 +1855,54 @@ fn persist_agent_snapshot_tx(
                 )?,
                 serde_json::to_string(admission)?,
                 &now,
+            ],
+        )?;
+    }
+    for (attachment_id, attachment) in &snapshot.activation_inputs {
+        tx.execute(
+            "INSERT INTO scheduler_activation_inputs (
+               agent_id,
+               attachment_id,
+               activation_id,
+               work_item_id,
+               expected_scheduling_generation,
+               expected_dispatch_revision,
+               message_id,
+               turn_id,
+               boundary,
+               round,
+               payload_json,
+               created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(agent_id, attachment_id) DO UPDATE SET
+               activation_id = excluded.activation_id,
+               work_item_id = excluded.work_item_id,
+               expected_scheduling_generation = excluded.expected_scheduling_generation,
+               expected_dispatch_revision = excluded.expected_dispatch_revision,
+               message_id = excluded.message_id,
+               turn_id = excluded.turn_id,
+               boundary = excluded.boundary,
+               round = excluded.round,
+               payload_json = excluded.payload_json",
+            params![
+                agent_id,
+                attachment_id,
+                &attachment.activation_id,
+                &attachment.work_item_id,
+                to_i64(
+                    attachment.expected_scheduling_generation,
+                    "activation input scheduling generation",
+                )?,
+                to_i64(
+                    attachment.expected_dispatch_revision,
+                    "activation input dispatch revision",
+                )?,
+                &attachment.message_id,
+                &attachment.turn_id,
+                &attachment.boundary,
+                to_i64(attachment.round, "activation input round")?,
+                serde_json::to_string(attachment)?,
+                &attachment.created_at,
             ],
         )?;
     }
@@ -2102,6 +2186,11 @@ fn load_snapshot_connection_with_hook(
         "SELECT admission_id, payload_json FROM scheduler_continuation_admissions WHERE agent_id = ?1",
         agent_id,
     )?;
+    let activation_inputs = load_payload_map::<ActivationInputAttachment>(
+        connection,
+        "SELECT attachment_id, payload_json FROM scheduler_activation_inputs WHERE agent_id = ?1",
+        agent_id,
+    )?;
     let rollout = load_rollout(connection)?;
     let admitted_generations = activation_admissions
         .values()
@@ -2122,6 +2211,7 @@ fn load_snapshot_connection_with_hook(
         rollout,
         admitted_generations,
         continuation_admissions,
+        activation_inputs,
     };
     validate_agent_partition(agent_id, &snapshot)?;
     scheduler_protocol::assert_invariants(&snapshot)
@@ -2351,6 +2441,19 @@ fn activation_admission_columns(
 ) -> Result<(&'static str, Option<&str>, Option<&str>, Option<i64>)> {
     match &admission.activation.cause {
         ActivationCause::WorkItemRunnable { .. } => Ok(("scheduling", None, None, None)),
+        ActivationCause::TaskRejoin { resume, .. }
+        | ActivationCause::OperatorInput { resume, .. } => match resume {
+            Some(resume) => Ok((
+                "wait_resume",
+                None,
+                Some(&resume.wait_id),
+                Some(to_i64(
+                    resume.wait_generation,
+                    "embedded wait resume generation",
+                )?),
+            )),
+            None => Ok(("scheduling", None, None, None)),
+        },
         ActivationCause::WaitResume {
             wait_id,
             wait_generation,
@@ -2381,6 +2484,14 @@ fn persisted_admission_fence(admission: &AdmitActivationCommand) -> Result<Strin
             },
         ) if work_item_id == bound_work_item_id => work_item_id,
         (
+            ActivationCause::TaskRejoin { task_id, .. },
+            scheduler_protocol::ActivationBinding::WorkItem { .. },
+        ) => return Ok(format!("task:{task_id}")),
+        (
+            ActivationCause::OperatorInput { message_id, .. },
+            scheduler_protocol::ActivationBinding::WorkItem { .. },
+        ) => return Ok(format!("operator_message:{message_id}")),
+        (
             ActivationCause::WaitResume { wait_id, .. },
             scheduler_protocol::ActivationBinding::WaitOwner {
                 wait_id: bound_wait_id,
@@ -2405,6 +2516,14 @@ fn persisted_admission_fence(admission: &AdmitActivationCommand) -> Result<Strin
         "{work_item_id}:{}",
         admission.expected_scheduling_generation
     ))
+}
+
+fn activation_source_columns(admission: &AdmitActivationCommand) -> Option<(&'static str, &str)> {
+    match &admission.activation.cause {
+        ActivationCause::TaskRejoin { task_id, .. } => Some(("task_rejoin", task_id)),
+        ActivationCause::OperatorInput { message_id, .. } => Some(("operator_input", message_id)),
+        _ => None,
+    }
 }
 
 fn activation_state_token(state: &ActivationState) -> &'static str {

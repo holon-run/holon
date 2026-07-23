@@ -1714,21 +1714,18 @@ impl RuntimeHandle {
                             .flatten()
                     })
                     .map(|work_item| work_item.revision);
-                let activation_id = matches!(
-                    (&message.kind, &message.origin),
-                    (MessageKind::SystemTick, MessageOrigin::System { subsystem })
-                        if subsystem == "work_queue"
-                )
-                .then(|| scheduler_executor::canonical_activation_id(&message.id))
-                .filter(|activation_id| {
-                    self.inner
-                        .runtime_db
-                        .transitions()
-                        .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|snapshot| snapshot.activations.contains_key(activation_id))
-                });
+                let activation_id = Some(scheduler_executor::canonical_activation_id(&message.id))
+                    .filter(|activation_id| {
+                        self.inner
+                            .runtime_db
+                            .transitions()
+                            .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|snapshot| {
+                                snapshot.activations.contains_key(activation_id)
+                            })
+                    });
                 WorkItemExecutionBinding {
                     activation_id,
                     source_message_id: message.id.clone(),

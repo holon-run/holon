@@ -26,6 +26,8 @@ pub struct Snapshot {
     pub rollout: RolloutState,
     pub admitted_generations: BTreeSet<String>,
     pub continuation_admissions: BTreeMap<String, ContinuationAdmissionRecord>,
+    #[serde(default)]
+    pub activation_inputs: BTreeMap<String, ActivationInputAttachment>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +47,8 @@ struct SnapshotWire {
     rollout: Option<RolloutState>,
     admitted_generations: Option<BTreeSet<String>>,
     continuation_admissions: Option<BTreeMap<String, ContinuationAdmissionRecord>>,
+    #[serde(default)]
+    activation_inputs: Option<BTreeMap<String, ActivationInputAttachment>>,
 }
 
 impl TryFrom<SnapshotWire> for Snapshot {
@@ -100,6 +104,7 @@ impl TryFrom<SnapshotWire> for Snapshot {
             rollout,
             admitted_generations,
             continuation_admissions,
+            activation_inputs: wire.activation_inputs.unwrap_or_default(),
         };
         assert_invariants(&snapshot)?;
         Ok(snapshot)
@@ -341,11 +346,12 @@ pub enum SchedulerScenarioClass {
 }
 
 impl SchedulerScenarioClass {
-    pub const PRODUCTION_AUTHORITY: [Self; 7] = [
+    pub const PRODUCTION_AUTHORITY: [Self; 8] = [
         Self::ReducerOnlyCandidates,
         Self::WorkItemAutonomousContinuation,
         Self::ExactTaskRejoin,
         Self::ExactWaitResume,
+        Self::ExplicitlyBoundOperatorInput,
         Self::OperatorInterjection,
         Self::Settlement,
         Self::Delivery,
@@ -561,6 +567,8 @@ pub fn activation_provenance_has_valid_authority(provenance: &ActivationProvenan
 pub enum ActivationCause {
     OperatorInput {
         message_id: String,
+        #[serde(default)]
+        resume: Option<WaitResumeClaim>,
     },
     OperatorInterjection {
         message_id: String,
@@ -571,6 +579,8 @@ pub enum ActivationCause {
     TaskRejoin {
         task_id: String,
         message_id: String,
+        #[serde(default)]
+        resume: Option<WaitResumeClaim>,
     },
     WaitResume {
         wait_id: String,
@@ -595,6 +605,14 @@ pub enum ActivationCause {
     SettlementRecovery {
         activation_id: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitResumeClaim {
+    pub wait_id: String,
+    pub wait_generation: u64,
+    pub trigger_id: String,
+    pub trigger_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -791,6 +809,26 @@ pub struct TriggerWaitCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationInputAttachment {
+    pub id: String,
+    pub activation_id: String,
+    pub work_item_id: String,
+    pub expected_scheduling_generation: u64,
+    pub expected_dispatch_revision: u64,
+    pub message_id: String,
+    pub turn_id: String,
+    pub boundary: String,
+    pub round: u64,
+    pub provenance: ActivationProvenance,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachActivationInputCommand {
+    pub attachment: ActivationInputAttachment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProtocolCommand {
     RegisterWorkDemand(RegisterWorkDemandCommand),
@@ -799,6 +837,7 @@ pub enum ProtocolCommand {
     SettleActivation(SettleActivationCommand),
     RecordMissingSettlement(MissingSettlementRecord),
     TriggerWait(TriggerWaitCommand),
+    AttachActivationInput(AttachActivationInputCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -921,6 +960,9 @@ pub enum Event {
     OperatorIntervention {
         input_id: String,
     },
+    AttachActivationInput {
+        attachment: ActivationInputAttachment,
+    },
     Settle {
         activation_id: String,
         settlement: Settlement,
@@ -931,6 +973,17 @@ pub enum Event {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AdmissionCause {
     Scheduling,
+    TaskRejoin {
+        task_id: String,
+        message_id: String,
+        #[serde(default)]
+        resume: Option<WaitResumeClaim>,
+    },
+    OperatorInput {
+        message_id: String,
+        #[serde(default)]
+        resume: Option<WaitResumeClaim>,
+    },
     WaitResume {
         wait_id: String,
         wait_generation: u64,
@@ -1103,6 +1156,7 @@ pub enum Decision {
     RollbackTripped,
     DuplicateIgnored,
     OperatorIntervention,
+    ActivationInputAttached,
     SettlementMissing,
     SettlementHeld,
     Rejected,
@@ -1224,6 +1278,29 @@ pub fn migrate_legacy_event(
                     ActivationCause::WorkItemRunnable {
                         work_item_id: work_item_id.clone(),
                         scheduling_generation: *expected_generation,
+                    },
+                    ActivationBinding::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    },
+                ),
+                AdmissionCause::TaskRejoin {
+                    task_id,
+                    message_id,
+                    resume,
+                } => (
+                    ActivationCause::TaskRejoin {
+                        task_id: task_id.clone(),
+                        message_id: message_id.clone(),
+                        resume: resume.clone(),
+                    },
+                    ActivationBinding::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    },
+                ),
+                AdmissionCause::OperatorInput { message_id, resume } => (
+                    ActivationCause::OperatorInput {
+                        message_id: message_id.clone(),
+                        resume: resume.clone(),
                     },
                     ActivationBinding::WorkItem {
                         work_item_id: work_item_id.clone(),
@@ -1500,6 +1577,9 @@ fn reduce_event(snapshot: &Snapshot, event: &Event) -> Outcome {
             diagnostics: vec![format!("operator_intervention:{input_id}")],
             snapshot: snapshot.clone(),
         },
+        Event::AttachActivationInput { attachment } => {
+            attach_activation_input(snapshot, attachment)
+        }
         Event::Settle {
             activation_id,
             settlement,
@@ -1572,6 +1652,12 @@ pub fn reduce_command(snapshot: &Snapshot, command: &ProtocolCommand) -> Protoco
                 .snapshot
                 .missing_settlements
                 .insert(record.id.clone(), record.clone());
+        }
+        (ProtocolCommand::AttachActivationInput(command), Decision::ActivationInputAttached) => {
+            outcome
+                .snapshot
+                .activation_inputs
+                .insert(command.attachment.id.clone(), command.attachment.clone());
         }
         _ => {}
     }
@@ -1705,6 +1791,34 @@ fn replay_or_conflict(
             }
         }
         ProtocolCommand::TriggerWait(_) => {}
+        ProtocolCommand::AttachActivationInput(command) => {
+            if let Some(existing) = snapshot.activation_inputs.get(&command.attachment.id) {
+                return Some(if existing == &command.attachment {
+                    duplicate_command(snapshot, "activation_input_already_attached")
+                } else {
+                    rejected_command(
+                        snapshot,
+                        command_conflict(
+                            ProtocolConflictKind::IdentityConflict,
+                            "activation_input_id_command_conflict",
+                        ),
+                    )
+                });
+            }
+            if snapshot
+                .activation_inputs
+                .values()
+                .any(|existing| existing.message_id == command.attachment.message_id)
+            {
+                return Some(rejected_command(
+                    snapshot,
+                    command_conflict(
+                        ProtocolConflictKind::IdempotencyConflict,
+                        "activation_input_message_conflict",
+                    ),
+                ));
+            }
+        }
     }
     None
 }
@@ -1802,6 +1916,29 @@ fn lower_command(
                 wait_generation: command.wait_generation,
                 trigger_id: command.trigger_id.clone(),
                 trigger_generation: command.trigger_generation,
+            })
+        }
+        ProtocolCommand::AttachActivationInput(command) => {
+            let attachment = &command.attachment;
+            if attachment.id.is_empty()
+                || attachment.activation_id.is_empty()
+                || attachment.work_item_id.is_empty()
+                || attachment.expected_scheduling_generation == 0
+                || attachment.message_id.is_empty()
+                || attachment.turn_id.is_empty()
+                || attachment.boundary.is_empty()
+                || attachment.created_at.is_empty()
+                || attachment.provenance.source_id != attachment.message_id
+                || attachment.provenance.origin != ActivationOrigin::Operator
+                || attachment.provenance.trust != ActivationTrust::OperatorInstruction
+            {
+                return Err(command_conflict(
+                    ProtocolConflictKind::InvalidCommand,
+                    "activation_input_identity_or_provenance_required",
+                ));
+            }
+            Ok(Event::AttachActivationInput {
+                attachment: attachment.clone(),
             })
         }
     }
@@ -1999,6 +2136,31 @@ fn lower_admit_activation(
             (work_item_id.clone(), AdmissionCause::Scheduling)
         }
         (
+            ActivationCause::TaskRejoin {
+                task_id,
+                message_id,
+                resume,
+            },
+            ActivationBinding::WorkItem { work_item_id },
+        ) => (
+            work_item_id.clone(),
+            AdmissionCause::TaskRejoin {
+                task_id: task_id.clone(),
+                message_id: message_id.clone(),
+                resume: resume.clone(),
+            },
+        ),
+        (
+            ActivationCause::OperatorInput { message_id, resume },
+            ActivationBinding::WorkItem { work_item_id },
+        ) => (
+            work_item_id.clone(),
+            AdmissionCause::OperatorInput {
+                message_id: message_id.clone(),
+                resume: resume.clone(),
+            },
+        ),
+        (
             ActivationCause::WaitResume {
                 wait_id,
                 wait_generation,
@@ -2029,6 +2191,8 @@ fn lower_admit_activation(
         ),
         (
             ActivationCause::WorkItemRunnable { .. }
+            | ActivationCause::TaskRejoin { .. }
+            | ActivationCause::OperatorInput { .. }
             | ActivationCause::WaitResume { .. }
             | ActivationCause::SettlementRecovery { .. },
             _,
@@ -2053,6 +2217,53 @@ fn lower_admit_activation(
         expected_dispatch_revision: command.expected_dispatch_revision,
         cause,
     })
+}
+
+fn attach_activation_input(snapshot: &Snapshot, attachment: &ActivationInputAttachment) -> Outcome {
+    let ActivationSlot::Running {
+        activation_id,
+        work_item_id,
+        admitted_generation,
+        ..
+    } = &snapshot.slot
+    else {
+        return rejected(snapshot, "activation_input_requires_running_slot");
+    };
+    if activation_id != &attachment.activation_id {
+        return rejected(snapshot, "activation_input_owner_mismatch");
+    }
+    if work_item_id != &attachment.work_item_id
+        || admitted_generation != &attachment.expected_scheduling_generation
+    {
+        return rejected(snapshot, "activation_input_work_item_binding_mismatch");
+    }
+    if snapshot.dispatch_revision != attachment.expected_dispatch_revision {
+        return rejected(snapshot, "stale_dispatch_revision");
+    }
+    let Some(activation) = snapshot.activations.get(activation_id) else {
+        return rejected(snapshot, "running_activation_record_missing");
+    };
+    if activation.state != ActivationState::Running {
+        return rejected(snapshot, "activation_input_owner_not_running");
+    }
+    let Some(admission) = snapshot.activation_admissions.get(activation_id) else {
+        return rejected(snapshot, "activation_has_no_canonical_admission");
+    };
+    if admission.activation.preemption != PreemptionPolicy::AllowOperatorInterjection {
+        return rejected(snapshot, "activation_disallows_operator_interjection");
+    }
+    let mut next = snapshot.clone();
+    next.activation_inputs
+        .insert(attachment.id.clone(), attachment.clone());
+    Outcome {
+        decision: Decision::ActivationInputAttached,
+        transitions: vec![format!(
+            "activation:{}:input_attached:{}:{}",
+            attachment.activation_id, attachment.message_id, attachment.boundary
+        )],
+        diagnostics: Vec::new(),
+        snapshot: next,
+    }
 }
 
 fn lower_activation_settlement(
@@ -2283,13 +2494,14 @@ fn reducer_conflict(code: &str) -> ProtocolConflict {
 
 fn activation_cause_has_identity(cause: &ActivationCause) -> bool {
     match cause {
-        ActivationCause::OperatorInput { message_id }
+        ActivationCause::OperatorInput { message_id, .. }
         | ActivationCause::OperatorInterjection { message_id }
         | ActivationCause::MessageIngress { message_id }
         | ActivationCause::InternalFollowup { message_id } => !message_id.is_empty(),
         ActivationCause::TaskRejoin {
             task_id,
             message_id,
+            ..
         } => !task_id.is_empty() && !message_id.is_empty(),
         ActivationCause::WaitResume {
             wait_id,
@@ -2341,11 +2553,12 @@ fn activation_provenance_matches_cause(
         ActivationCause::WaitResume { .. } => {
             matches!(
                 provenance.origin,
-                ActivationOrigin::Callback | ActivationOrigin::Timer | ActivationOrigin::System
-            ) && matches!(
-                provenance.trust,
-                ActivationTrust::RuntimeInstruction | ActivationTrust::IntegrationSignal
-            )
+                ActivationOrigin::Channel
+                    | ActivationOrigin::Webhook
+                    | ActivationOrigin::Callback
+                    | ActivationOrigin::Timer
+                    | ActivationOrigin::System
+            ) && activation_provenance_has_valid_authority(provenance)
         }
         ActivationCause::WorkItemRunnable { .. }
         | ActivationCause::WorkItemRecheck { .. }
@@ -2374,10 +2587,88 @@ fn admission_fence(work_item_id: &str, expected_generation: u64, cause: &Admissi
         AdmissionCause::SettlementRecovery {
             missing_activation_id,
         } => format!("{work_item_id}:{expected_generation}:recovery:{missing_activation_id}"),
+        AdmissionCause::TaskRejoin { task_id, .. } => format!("task:{task_id}"),
+        AdmissionCause::OperatorInput { message_id, .. } => {
+            format!("operator_message:{message_id}")
+        }
         AdmissionCause::Scheduling | AdmissionCause::WaitResume { .. } => {
             format!("{work_item_id}:{expected_generation}")
         }
     }
+}
+
+fn consume_wait_resume_claim(
+    snapshot: &Snapshot,
+    next: &mut Snapshot,
+    activation_id: &str,
+    work_item_id: &str,
+    claim: &WaitResumeClaim,
+    transitions: &mut Vec<String>,
+) -> Result<(), &'static str> {
+    let Some(wait) = snapshot.waits.get(&claim.wait_id) else {
+        return Err("unknown_wait");
+    };
+    if wait.current_generation != claim.wait_generation {
+        return Err("stale_wait_generation");
+    }
+    let generation = wait
+        .generations
+        .get(&claim.wait_generation)
+        .expect("current wait generation exists");
+    if generation.owner_work_item_id != work_item_id {
+        return Err("wait_owner_mismatch");
+    }
+    if generation.state != WaitState::Triggered {
+        return Err("wait_not_triggered");
+    }
+    if generation.trigger
+        != Some(WaitTrigger {
+            trigger_id: claim.trigger_id.clone(),
+            trigger_generation: claim.trigger_generation,
+        })
+    {
+        return Err("wait_trigger_identity_mismatch");
+    }
+    if snapshot.work[work_item_id]
+        != (WorkDemand {
+            status: WorkStatus::Waiting {
+                wait_id: claim.wait_id.clone(),
+            },
+            ..snapshot.work[work_item_id].clone()
+        })
+    {
+        return Err("work_item_not_waiting_for_wait");
+    }
+    if let AgentDispatchState::Awaiting {
+        wait: reserved_wait,
+    } = &snapshot.dispatch
+    {
+        if reserved_wait.id != claim.wait_id || reserved_wait.generation != claim.wait_generation {
+            return Err("agent_lane_reserved_for_other_wait");
+        }
+    }
+    let consumed = next
+        .waits
+        .get_mut(&claim.wait_id)
+        .expect("wait exists")
+        .generations
+        .get_mut(&claim.wait_generation)
+        .expect("current wait generation exists");
+    consumed.state = WaitState::Consumed;
+    consumed.consuming_activation_id = Some(activation_id.to_string());
+    transitions.push(format!(
+        "wait:{}:generation:{}:triggered->consumed:{}",
+        claim.wait_id, claim.wait_generation, activation_id
+    ));
+    if matches!(
+        snapshot.dispatch,
+        AgentDispatchState::Awaiting { wait: ref reserved_wait }
+            if reserved_wait.id == claim.wait_id
+                && reserved_wait.generation == claim.wait_generation
+    ) {
+        set_dispatch_state(next, AgentDispatchState::Open);
+    }
+    Ok(())
 }
 
 fn admit(
@@ -2430,71 +2721,79 @@ fn admit(
                 return rejected(snapshot, "agent_lane_reserved");
             }
         }
+        AdmissionCause::TaskRejoin {
+            task_id,
+            message_id,
+            resume,
+        } => {
+            if task_id.is_empty() || message_id.is_empty() {
+                return rejected(snapshot, "task_rejoin_identity_required");
+            }
+            if let Some(claim) = resume {
+                if let Err(code) = consume_wait_resume_claim(
+                    snapshot,
+                    &mut next,
+                    activation_id,
+                    work_item_id,
+                    claim,
+                    &mut transitions,
+                ) {
+                    return rejected(snapshot, code);
+                }
+            } else {
+                if work.status != WorkStatus::Runnable {
+                    return rejected(snapshot, "work_item_not_runnable");
+                }
+                if !matches!(snapshot.dispatch, AgentDispatchState::Open) {
+                    return rejected(snapshot, "agent_lane_reserved");
+                }
+            }
+        }
+        AdmissionCause::OperatorInput { message_id, resume } => {
+            if message_id.is_empty() {
+                return rejected(snapshot, "operator_input_identity_required");
+            }
+            if let Some(claim) = resume {
+                if let Err(code) = consume_wait_resume_claim(
+                    snapshot,
+                    &mut next,
+                    activation_id,
+                    work_item_id,
+                    claim,
+                    &mut transitions,
+                ) {
+                    return rejected(snapshot, code);
+                }
+            } else {
+                if work.status != WorkStatus::Runnable {
+                    return rejected(snapshot, "work_item_not_runnable");
+                }
+                if !matches!(snapshot.dispatch, AgentDispatchState::Open) {
+                    return rejected(snapshot, "agent_lane_reserved");
+                }
+            }
+        }
         AdmissionCause::WaitResume {
             wait_id,
             wait_generation,
             trigger_id,
             trigger_generation,
         } => {
-            let Some(wait) = snapshot.waits.get(wait_id) else {
-                return rejected(snapshot, "unknown_wait");
+            let claim = WaitResumeClaim {
+                wait_id: wait_id.clone(),
+                wait_generation: *wait_generation,
+                trigger_id: trigger_id.clone(),
+                trigger_generation: *trigger_generation,
             };
-            if wait.current_generation != *wait_generation {
-                return rejected(snapshot, "stale_wait_generation");
-            }
-            let wait_generation_record = wait
-                .generations
-                .get(wait_generation)
-                .expect("current wait generation exists");
-            if wait_generation_record.owner_work_item_id != work_item_id {
-                return rejected(snapshot, "wait_owner_mismatch");
-            }
-            if wait_generation_record.state != WaitState::Triggered {
-                return rejected(snapshot, "wait_not_triggered");
-            }
-            if wait_generation_record.trigger
-                != Some(WaitTrigger {
-                    trigger_id: trigger_id.clone(),
-                    trigger_generation: *trigger_generation,
-                })
-            {
-                return rejected(snapshot, "wait_trigger_identity_mismatch");
-            }
-            if work.status
-                != (WorkStatus::Waiting {
-                    wait_id: wait_id.clone(),
-                })
-            {
-                return rejected(snapshot, "work_item_not_waiting_for_wait");
-            }
-            if let AgentDispatchState::Awaiting {
-                wait: reserved_wait,
-            } = &snapshot.dispatch
-            {
-                if reserved_wait.id != *wait_id || reserved_wait.generation != *wait_generation {
-                    return rejected(snapshot, "agent_lane_reserved_for_other_wait");
-                }
-            }
-
-            let consumed = next
-                .waits
-                .get_mut(wait_id)
-                .expect("wait exists")
-                .generations
-                .get_mut(wait_generation)
-                .expect("current wait generation exists");
-            consumed.state = WaitState::Consumed;
-            consumed.consuming_activation_id = Some(activation_id.to_string());
-            transitions.push(format!(
-                "wait:{wait_id}:generation:{wait_generation}:triggered->consumed:{activation_id}"
-            ));
-            if matches!(
-                snapshot.dispatch,
-                AgentDispatchState::Awaiting { wait: ref reserved_wait }
-                    if reserved_wait.id == *wait_id
-                        && reserved_wait.generation == *wait_generation
+            if let Err(code) = consume_wait_resume_claim(
+                snapshot,
+                &mut next,
+                activation_id,
+                work_item_id,
+                &claim,
+                &mut transitions,
             ) {
-                set_dispatch_state(&mut next, AgentDispatchState::Open);
+                return rejected(snapshot, code);
             }
         }
         AdmissionCause::SettlementRecovery {
@@ -3562,7 +3861,10 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                 }
                 Some(missing_activation_id.clone())
             }
-            AdmissionCause::Scheduling | AdmissionCause::WaitResume { .. } => None,
+            AdmissionCause::Scheduling
+            | AdmissionCause::TaskRejoin { .. }
+            | AdmissionCause::OperatorInput { .. }
+            | AdmissionCause::WaitResume { .. } => None,
         };
         if !canonical_admission_fences.insert(admission_fence(
             &work_item_id,
@@ -3615,6 +3917,32 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
             {
                 return Err("consumed activation authority disagrees with admission".into());
             }
+        }
+    }
+    let mut activation_input_message_ids = BTreeSet::new();
+    for (attachment_id, attachment) in &snapshot.activation_inputs {
+        let Some(activation) = snapshot.activations.get(&attachment.activation_id) else {
+            return Err("activation input references unknown activation".into());
+        };
+        if attachment_id != &attachment.id
+            || activation.work_item_id != attachment.work_item_id
+            || activation.admitted_generation != attachment.expected_scheduling_generation
+            || attachment.expected_dispatch_revision > snapshot.dispatch_revision
+            || !activation_input_message_ids.insert(attachment.message_id.as_str())
+            || attachment.provenance.source_id != attachment.message_id
+            || attachment.provenance.origin != ActivationOrigin::Operator
+            || attachment.provenance.trust != ActivationTrust::OperatorInstruction
+        {
+            return Err("canonical activation input attachment is invalid".into());
+        }
+        let Some(admission) = snapshot
+            .activation_admissions
+            .get(&attachment.activation_id)
+        else {
+            return Err("activation input owner has no canonical admission".into());
+        };
+        if admission.activation.preemption != PreemptionPolicy::AllowOperatorInterjection {
+            return Err("activation input owner disallows operator interjection".into());
         }
     }
     let mut settled_activations = BTreeSet::new();

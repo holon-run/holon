@@ -1,9 +1,11 @@
 use super::super::*;
 use super::support::*;
 use crate::domain::scheduler_protocol::{
-    ActivationSlot, Decision, ObservationalDivergenceAllowance, ProtocolMode, RollbackAction,
-    RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest,
-    ScenarioMode, SchedulerScenarioClass, WorkStatus,
+    ActivationCause, ActivationSlot, AgentDispatchState, Decision,
+    ObservationalDivergenceAllowance, ProtocolMode, RollbackAction, RollbackPolicy,
+    RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest, ScenarioMode,
+    SchedulerScenarioClass, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord, WaitState,
+    WorkDemand, WorkStatus,
 };
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,
@@ -55,6 +57,13 @@ fn terminal_transition(
 }
 
 fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
+    enable_production_protocol_authority_for(runtime, &[]);
+}
+
+fn enable_production_protocol_authority_for(
+    runtime: &RuntimeHandle,
+    additional_scenarios: &[SchedulerScenarioClass],
+) {
     let evidence = |items: &[&str]| {
         ["restart", "fault_injection", "rollback_drill"]
             .into_iter()
@@ -62,9 +71,8 @@ fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
             .map(ToString::to_string)
             .collect::<std::collections::BTreeSet<_>>()
     };
-    let classes = [
-        (
-            SchedulerScenarioClass::WorkItemAutonomousContinuation,
+    let class_evidence = |scenario| match scenario {
+        SchedulerScenarioClass::WorkItemAutonomousContinuation => (
             2_000,
             14 * 24 * 60 * 60,
             evidence(&[
@@ -74,8 +82,36 @@ fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
                 "work_item_rollback",
             ]),
         ),
-        (
-            SchedulerScenarioClass::Settlement,
+        SchedulerScenarioClass::ExactTaskRejoin => (
+            1_000,
+            7 * 24 * 60 * 60,
+            evidence(&[
+                "duplicate_task_result",
+                "out_of_order_task_result",
+                "restart_before_rejoin_settlement",
+            ]),
+        ),
+        SchedulerScenarioClass::ExactWaitResume => (
+            1_000,
+            7 * 24 * 60 * 60,
+            evidence(&[
+                "duplicate_trigger",
+                "stale_generation",
+                "restart_after_consume",
+                "rearm",
+            ]),
+        ),
+        SchedulerScenarioClass::ExplicitlyBoundOperatorInput
+        | SchedulerScenarioClass::OperatorInterjection => (
+            1_000,
+            7 * 24 * 60 * 60,
+            evidence(&[
+                "duplicate_ingress",
+                "stale_binding_revision",
+                "wrong_agent_target",
+            ]),
+        ),
+        SchedulerScenarioClass::Settlement => (
             1_000,
             7 * 24 * 60 * 60,
             evidence(&[
@@ -84,35 +120,55 @@ fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
                 "restart_before_settlement_commit",
             ]),
         ),
+        scenario => panic!("unsupported runtime production authority scenario {scenario:?}"),
+    };
+    let scenarios = [
+        SchedulerScenarioClass::WorkItemAutonomousContinuation,
+        SchedulerScenarioClass::Settlement,
     ]
     .into_iter()
-    .map(
-        |(scenario, minimum_shadow_samples, minimum_shadow_duration_secs, evidence)| {
+    .chain(additional_scenarios.iter().copied())
+    .collect::<std::collections::BTreeSet<_>>();
+    let classes = scenarios
+        .iter()
+        .copied()
+        .map(|scenario| {
+            let (minimum_shadow_samples, minimum_shadow_duration_secs, evidence) =
+                class_evidence(scenario);
             (
-                scenario.as_str().to_string(),
-                RolloutClassEvidence {
-                    configured_mode: ScenarioMode::Authoritative,
-                    minimum_shadow_samples,
-                    minimum_shadow_duration_secs,
-                    observed_shadow_samples: minimum_shadow_samples,
-                    observed_shadow_duration_secs: minimum_shadow_duration_secs,
-                    maximum_p99_latency_regression_bps: 500,
-                    observed_p99_latency_regression_bps: 0,
-                    hard_blocker_count: 0,
-                    unresolved_divergence_count: 0,
-                    required_evidence: evidence.clone(),
-                    verified_evidence: evidence,
-                    rollback_policy: RollbackPolicy {
-                        trigger: RollbackTrigger::AnyHardBlocker,
-                        action: RollbackAction::StopAdmissionsAndRevert {
-                            target: ScenarioMode::Shadow,
+                scenario,
+                minimum_shadow_samples,
+                minimum_shadow_duration_secs,
+                evidence,
+            )
+        })
+        .map(
+            |(scenario, minimum_shadow_samples, minimum_shadow_duration_secs, evidence)| {
+                (
+                    scenario.as_str().to_string(),
+                    RolloutClassEvidence {
+                        configured_mode: ScenarioMode::Authoritative,
+                        minimum_shadow_samples,
+                        minimum_shadow_duration_secs,
+                        observed_shadow_samples: minimum_shadow_samples,
+                        observed_shadow_duration_secs: minimum_shadow_duration_secs,
+                        maximum_p99_latency_regression_bps: 500,
+                        observed_p99_latency_regression_bps: 0,
+                        hard_blocker_count: 0,
+                        unresolved_divergence_count: 0,
+                        required_evidence: evidence.clone(),
+                        verified_evidence: evidence,
+                        rollback_policy: RollbackPolicy {
+                            trigger: RollbackTrigger::AnyHardBlocker,
+                            action: RollbackAction::StopAdmissionsAndRevert {
+                                target: ScenarioMode::Shadow,
+                            },
                         },
                     },
-                },
-            )
-        },
-    )
-    .collect();
+                )
+            },
+        )
+        .collect();
     let manifest = RolloutManifest {
         revision: 1,
         preflight_revision: 1,
@@ -135,9 +191,9 @@ fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
         approver: "runtime-test".into(),
         approved_at: "2026-07-23T00:00:00Z".into(),
     };
-    let commands = [
+    let bootstrap_commands = [
         (
-            "open",
+            "open".to_string(),
             RolloutCommand::OpenPreflight {
                 expected_config_revision: 0,
                 manifest_revision: 1,
@@ -145,7 +201,7 @@ fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
             Decision::RolloutPreflightOpened,
         ),
         (
-            "complete",
+            "complete".to_string(),
             RolloutCommand::CompletePreflight {
                 expected_config_revision: 0,
                 expected_preflight_revision: 1,
@@ -154,7 +210,7 @@ fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
             Decision::RolloutPreflightCompleted,
         ),
         (
-            "install",
+            "install".to_string(),
             RolloutCommand::InstallManifest {
                 expected_config_revision: 0,
                 manifest,
@@ -162,70 +218,49 @@ fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
             Decision::ManifestInstalled,
         ),
         (
-            "protocol",
+            "protocol".to_string(),
             RolloutCommand::ConfigureProtocol {
                 expected_config_revision: 1,
                 mode: ProtocolMode::Authoritative,
             },
             Decision::ProtocolConfigured,
         ),
-        (
-            "continuation-shadow",
-            RolloutCommand::ChangeScenarioAuthority {
-                scenario_class: SchedulerScenarioClass::WorkItemAutonomousContinuation
-                    .as_str()
-                    .into(),
-                expected_config_revision: 2,
-                expected_manifest_revision: 1,
-                expected_preflight_revision: 1,
-                mode: ScenarioMode::Shadow,
-            },
-            Decision::ScenarioAuthorityChanged,
-        ),
-        (
-            "continuation-authoritative",
-            RolloutCommand::ChangeScenarioAuthority {
-                scenario_class: SchedulerScenarioClass::WorkItemAutonomousContinuation
-                    .as_str()
-                    .into(),
-                expected_config_revision: 3,
-                expected_manifest_revision: 1,
-                expected_preflight_revision: 1,
-                mode: ScenarioMode::Authoritative,
-            },
-            Decision::ScenarioAuthorityChanged,
-        ),
-        (
-            "settlement-shadow",
-            RolloutCommand::ChangeScenarioAuthority {
-                scenario_class: SchedulerScenarioClass::Settlement.as_str().into(),
-                expected_config_revision: 4,
-                expected_manifest_revision: 1,
-                expected_preflight_revision: 1,
-                mode: ScenarioMode::Shadow,
-            },
-            Decision::ScenarioAuthorityChanged,
-        ),
-        (
-            "settlement-authoritative",
-            RolloutCommand::ChangeScenarioAuthority {
-                scenario_class: SchedulerScenarioClass::Settlement.as_str().into(),
-                expected_config_revision: 5,
-                expected_manifest_revision: 1,
-                expected_preflight_revision: 1,
-                mode: ScenarioMode::Authoritative,
-            },
-            Decision::ScenarioAuthorityChanged,
-        ),
     ];
-    for (identity, command, expected) in commands {
+    for (identity, command, expected) in bootstrap_commands {
         let committed = runtime
             .inner
             .runtime_db
             .transitions()
-            .commit_scheduler_rollout_command(identity, &command, None)
+            .commit_scheduler_rollout_command(&identity, &command, None)
             .unwrap();
         assert_eq!(committed.result.decision, expected);
+    }
+    let mut config_revision = 2;
+    for scenario in scenarios {
+        for mode in [ScenarioMode::Shadow, ScenarioMode::Authoritative] {
+            let identity = format!("{}-{mode:?}", scenario.as_str());
+            let committed = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .commit_scheduler_rollout_command(
+                    &identity,
+                    &RolloutCommand::ChangeScenarioAuthority {
+                        scenario_class: scenario.as_str().into(),
+                        expected_config_revision: config_revision,
+                        expected_manifest_revision: 1,
+                        expected_preflight_revision: 1,
+                        mode,
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                committed.result.decision,
+                Decision::ScenarioAuthorityChanged
+            );
+            config_revision += 1;
+        }
     }
 }
 
@@ -273,6 +308,62 @@ fn task_result_message(task_id: &str) -> MessageEnvelope {
             text: "task completed".into(),
         },
     )
+}
+
+fn canonical_waiting_snapshot(
+    work_item: &WorkItemRecord,
+    wait_id: &str,
+    wait_generation: u64,
+) -> Snapshot {
+    Snapshot {
+        slot: ActivationSlot::Idle,
+        dispatch: AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: wait_id.into(),
+                generation: wait_generation,
+            },
+        },
+        dispatch_revision: 1,
+        focus: Some(work_item.id.clone()),
+        work: std::collections::BTreeMap::from([(
+            work_item.id.clone(),
+            WorkDemand {
+                metadata_revision: work_item.revision,
+                scheduling_generation: work_item.revision,
+                status: WorkStatus::Waiting {
+                    wait_id: wait_id.into(),
+                },
+                capabilities: Default::default(),
+                locks: Default::default(),
+                locality: "runtime".into(),
+                cost_class: "default".into(),
+            },
+        )]),
+        waits: std::collections::BTreeMap::from([(
+            wait_id.into(),
+            WaitRecord {
+                current_generation: wait_generation,
+                generations: std::collections::BTreeMap::from([(
+                    wait_generation,
+                    WaitGenerationRecord {
+                        owner_work_item_id: work_item.id.clone(),
+                        state: WaitState::Active,
+                        trigger: None,
+                        consuming_activation_id: None,
+                    },
+                )]),
+            },
+        )]),
+        activations: Default::default(),
+        activation_authorities: Default::default(),
+        activation_admissions: Default::default(),
+        settlements: Default::default(),
+        missing_settlements: Default::default(),
+        rollout: Default::default(),
+        admitted_generations: Default::default(),
+        continuation_admissions: Default::default(),
+        activation_inputs: Default::default(),
+    }
 }
 
 #[test]
@@ -2015,6 +2106,199 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Processed)
     );
+}
+
+#[tokio::test]
+async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[
+            SchedulerScenarioClass::ExactTaskRejoin,
+            SchedulerScenarioClass::ExactWaitResume,
+        ],
+    );
+    let work_item = runtime
+        .create_work_item("canonical task rejoin".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-rejoin".into()),
+            "waiting for task-rejoin".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let wait_generation = work_item.revision;
+    let initial_seed =
+        canonical_waiting_snapshot(&work_item, &registration.condition.id, wait_generation);
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition("default", &initial_seed)
+        .unwrap();
+    let initial = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+
+    let mut message = task_result_message("task-rejoin").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-rejoin",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-rejoin",
+        "work_item_id": work_item.id,
+    }));
+    let message = runtime.enqueue(message).await.unwrap();
+    let state_before_claim = runtime.agent_state().await.unwrap();
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+    );
+
+    let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+    {
+        Ok(_) => panic!("expected task rejoin claim fault"),
+        Err(error) => error,
+    };
+    assert_injected_transition_fault(&error);
+    assert_eq!(runtime.agent_state().await.unwrap(), state_before_claim);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        initial
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("task rejoin should be claimed after fault retry");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(
+        claimed.slot,
+        ActivationSlot::Running {
+            activation_id: activation_id.clone(),
+            work_item_id: work_item.id.clone(),
+            admitted_generation: work_item.revision,
+            recovery_for: None,
+        }
+    );
+    assert_eq!(
+        claimed.waits[&registration.condition.id].generations[&wait_generation].state,
+        WaitState::Consumed
+    );
+    assert_eq!(
+        claimed.waits[&registration.condition.id].generations[&wait_generation]
+            .consuming_activation_id
+            .as_deref(),
+        Some(activation_id.as_str())
+    );
+    let admission = &claimed.activation_admissions[&activation_id].activation;
+    assert!(matches!(
+        &admission.cause,
+        ActivationCause::TaskRejoin {
+            task_id,
+            message_id,
+            resume: Some(resume),
+        } if task_id == "task-rejoin"
+            && message_id == &message.id
+            && resume.wait_id == registration.condition.id
+            && resume.wait_generation == wait_generation
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+
+    drop(runtime);
+    let reopened = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let restarted = reopened
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(restarted, claimed);
 }
 
 #[tokio::test]
@@ -5554,6 +5838,194 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
     }));
 
     runner.abort();
+}
+
+#[tokio::test]
+async fn operator_interjection_attachment_rolls_back_with_legacy_facts() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::OperatorInterjection],
+    );
+    let work_item = runtime
+        .create_work_item("canonical interjection".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "start canonical turn".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("canonical work item should be claimed");
+    };
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+
+    let interjection = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("control".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: "use the smaller fix".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    let snapshot_before = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let transcript_before = runtime.storage().read_all_transcript().unwrap();
+    let events_before = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
+    );
+
+    let error = runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .unwrap_err();
+    assert_injected_transition_fault(&error);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        snapshot_before
+    );
+    assert_eq!(
+        runtime.storage().read_all_transcript().unwrap(),
+        transcript_before
+    );
+    assert_eq!(
+        runtime.storage().read_recent_events(usize::MAX).unwrap(),
+        events_before
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+
+    let follow_ups = runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .unwrap();
+    assert_eq!(follow_ups.len(), 1);
+    let attached = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(attached.slot, snapshot_before.slot);
+    assert_eq!(attached.dispatch, snapshot_before.dispatch);
+    assert_eq!(
+        attached.dispatch_revision,
+        snapshot_before.dispatch_revision
+    );
+    assert_eq!(attached.work, snapshot_before.work);
+    assert_eq!(attached.activations, snapshot_before.activations);
+    assert_eq!(
+        attached.activation_admissions,
+        snapshot_before.activation_admissions
+    );
+    let attachment = attached
+        .activation_inputs
+        .values()
+        .find(|attachment| attachment.message_id == interjection.id)
+        .expect("canonical activation input attachment");
+    assert_eq!(
+        attachment.activation_id,
+        scheduler_executor::canonical_activation_id(&message.id)
+    );
+    assert_eq!(attachment.work_item_id, work_item.id);
+    assert_eq!(attachment.boundary, "before_tool_execution");
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Interjected)
+    );
+    assert!(runtime
+        .storage()
+        .read_all_transcript()
+        .unwrap()
+        .iter()
+        .any(|entry| {
+            entry.kind == TranscriptEntryKind::IncomingMessage
+                && entry.related_message_id.as_deref() == Some(interjection.id.as_str())
+        }));
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "operator_interjection_admitted"
+                && event.data["message_id"] == interjection.id
+        }));
 }
 
 #[tokio::test]

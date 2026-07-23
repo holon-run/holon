@@ -14,6 +14,22 @@ boundaries (`AfterProviderRound`, `BeforeToolExecution`, `AfterToolResults`,
 `BeforeProviderContinuation`). A public `SchedulerDiagnosticAuditEvent`
 stream is emitted alongside the legacy audit for every decision.
 
+Model-reentry admission now derives one `canonical_activation_plan` for
+WorkItem autonomous continuation, exact task rejoin, exact wait resume, and
+explicitly bound operator input. The plan carries the typed cause, binding,
+provenance, expected WorkItem scheduling generation, expected agent dispatch
+revision, exact wait/task identity when applicable, and the legacy queue/Turn
+compatibility binding. Its optional demand registration and wait trigger,
+authority issuance, activation admission, legacy queue claim, and running
+projection commit in the same `QueueTransitionCommand`.
+
+Operator interjection is deliberately not a second admission. At a safe point
+the runtime commits a typed `ActivationInputAttachment`, the legacy
+`Queued -> Interjected` transition, transcript evidence, and audit evidence in
+one transaction. The attachment is fenced by the running activation, WorkItem
+scheduling generation, dispatch revision, message, Turn, boundary, and round;
+it does not reserve another slot or advance WorkItem scheduling state.
+
 The semantic decision plane returns `Ok(None)` when trusted ingress
 conditions are not met, rather than propagating the error. This prevents
 observation and audit mechanisms from blocking the run loop or causing test
@@ -56,3 +72,10 @@ validator retain all state-transition control. In `Authoritative` mode, legacy
 observation remains compatibility evidence, but Runtime-owned validation and
 transaction commit decide whether the transition is admitted. Semantic
 proposals cannot satisfy, bypass, or weaken the matched-evidence requirement.
+
+The generalized plan only covers structurally exact scenario classes. Ordinary
+unbound operator input and ambiguous reentry remain outside canonical
+admission. Legacy queue, AgentState, and Turn facts remain compatibility
+participants in the transaction rather than independent admission authority.
+This decision does not choose which scenario classes are promoted to
+`Authoritative`; rollout policy and promotion gates remain separate.
