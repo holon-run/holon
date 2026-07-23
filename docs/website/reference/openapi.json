@@ -3023,6 +3023,76 @@
                   "null"
                 ]
               },
+              "completion_intent": {
+                "properties": {
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "expected_work_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "report_requirement": {
+                    "enum": [
+                      "required"
+                    ],
+                    "type": "string"
+                  },
+                  "report_state": {
+                    "enum": [
+                      "pending",
+                      "bound",
+                      "missing"
+                    ],
+                    "type": "string"
+                  },
+                  "result_brief_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_activation_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_message_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "work_item_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "work_item_id",
+                  "expected_work_revision",
+                  "report_requirement",
+                  "report_state",
+                  "created_at",
+                  "updated_at"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "created_at": {
                 "format": "date-time",
                 "type": "string"
@@ -3260,6 +3330,76 @@
               "blocked_by": {
                 "type": [
                   "string",
+                  "null"
+                ]
+              },
+              "completion_intent": {
+                "properties": {
+                  "created_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "expected_work_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "report_requirement": {
+                    "enum": [
+                      "required"
+                    ],
+                    "type": "string"
+                  },
+                  "report_state": {
+                    "enum": [
+                      "pending",
+                      "bound",
+                      "missing"
+                    ],
+                    "type": "string"
+                  },
+                  "result_brief_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_activation_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_message_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "work_item_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "work_item_id",
+                  "expected_work_revision",
+                  "report_requirement",
+                  "report_state",
+                  "created_at",
+                  "updated_at"
+                ],
+                "type": [
+                  "object",
                   "null"
                 ]
               },
@@ -7390,6 +7530,76 @@
           "blocked_by": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "completion_intent": {
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "expected_work_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "report_requirement": {
+                "enum": [
+                  "required"
+                ],
+                "type": "string"
+              },
+              "report_state": {
+                "enum": [
+                  "pending",
+                  "bound",
+                  "missing"
+                ],
+                "type": "string"
+              },
+              "result_brief_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_activation_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "work_item_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "work_item_id",
+              "expected_work_revision",
+              "report_requirement",
+              "report_state",
+              "created_at",
+              "updated_at"
+            ],
+            "type": [
+              "object",
               "null"
             ]
           },

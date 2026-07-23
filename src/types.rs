@@ -1884,6 +1884,18 @@ pub struct WorkingMemoryState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkItemExecutionBinding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_id: Option<String>,
+    pub source_message_id: String,
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_work_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentState {
     pub id: String,
     pub status: AgentStatus,
@@ -1921,6 +1933,8 @@ pub struct AgentState {
     pub current_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_turn_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_execution_binding: Option<WorkItemExecutionBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2072,6 +2086,7 @@ impl AgentState {
             turn_index: 0,
             current_turn_id: None,
             current_turn_work_item_id: None,
+            current_execution_binding: None,
             current_work_item_id: None,
             current_turn_operator_binding_id: None,
             current_turn_operator_reply_route_id: None,

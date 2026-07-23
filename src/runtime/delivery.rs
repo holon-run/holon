@@ -3,8 +3,8 @@ use super::*;
 use std::collections::BTreeMap;
 
 use crate::types::{
-    BriefAttachment, GenerateImageResult, OperatorMessageRecord, OperatorMessageStatus,
-    ToolExecutionStatus,
+    BriefAttachment, BriefKind, CompletionReportState, GenerateImageResult, OperatorMessageRecord,
+    OperatorMessageStatus, ToolExecutionStatus, WorkItemRecord,
 };
 
 const OPERATOR_MESSAGE_SCAN_MIN: usize = 256;
@@ -80,7 +80,7 @@ impl RuntimeHandle {
 
     pub(super) async fn persist_brief(&self, brief: &BriefRecord) -> Result<()> {
         let mut bound_brief = brief.clone();
-        {
+        let default_turn_work_item_id = {
             let guard = self.inner.agent.lock().await;
             bound_brief.workspace_id = guard
                 .state
@@ -88,12 +88,21 @@ impl RuntimeHandle {
                 .as_ref()
                 .map(|entry| entry.workspace_id.clone())
                 .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-            if bound_brief.work_item_id.is_none() {
-                bound_brief.work_item_id = guard.state.current_turn_work_item_id.clone();
-            }
             if bound_brief.turn_id.is_none() {
                 bound_brief.turn_id = guard.state.current_turn_id.clone();
             }
+            guard.state.current_turn_work_item_id.clone()
+        };
+        if bound_brief.work_item_id.is_none() && bound_brief.kind == BriefKind::Result {
+            if let Some(work_item) = self.pending_completion_intent_for_brief(&bound_brief)? {
+                bound_brief.work_item_id = Some(work_item.id.clone());
+                self.persist_completion_brief_binding(work_item, &bound_brief)
+                    .await?;
+                return Ok(());
+            }
+        }
+        if bound_brief.work_item_id.is_none() {
+            bound_brief.work_item_id = default_turn_work_item_id;
         }
         self.attach_generated_image_brief_attachments(&mut bound_brief)?;
         let event_payload = BriefCreatedAuditEvent::from_brief(&bound_brief);
@@ -105,6 +114,86 @@ impl RuntimeHandle {
         )?)?;
         let mut guard = self.inner.agent.lock().await;
         guard.state.last_brief_at = Some(bound_brief.created_at);
+        guard.persist_state(&self.inner.storage)?;
+        Ok(())
+    }
+
+    fn pending_completion_intent_for_brief(
+        &self,
+        brief: &BriefRecord,
+    ) -> Result<Option<WorkItemRecord>> {
+        let Some(turn_id) = brief.turn_id.as_deref() else {
+            return Ok(None);
+        };
+        let candidates = self
+            .inner
+            .runtime_db
+            .work_items()
+            .latest_for_agent(&brief.agent_id, usize::MAX)?
+            .into_iter()
+            .filter(|work_item| {
+                work_item.result_brief_id.is_none()
+                    && work_item.completion_intent.as_ref().is_some_and(|intent| {
+                        intent.report_state == CompletionReportState::Pending
+                            && intent.source_turn_id.as_deref() == Some(turn_id)
+                            && intent.source_message_id.as_deref()
+                                == brief.related_message_id.as_deref()
+                    })
+            })
+            .collect::<Vec<_>>();
+        Ok((candidates.len() == 1).then(|| candidates[0].clone()))
+    }
+
+    async fn persist_completion_brief_binding(
+        &self,
+        existing: WorkItemRecord,
+        brief: &BriefRecord,
+    ) -> Result<()> {
+        let mut completion_intent = existing
+            .completion_intent
+            .clone()
+            .ok_or_else(|| anyhow!("completion brief binding requires a completion intent"))?;
+        completion_intent.report_state = CompletionReportState::Bound;
+        completion_intent.result_brief_id = Some(brief.id.clone());
+        completion_intent.updated_at = Utc::now();
+        let record = WorkItemRecord {
+            revision: existing.revision + 1,
+            result_brief_id: Some(brief.id.clone()),
+            completion_intent: Some(completion_intent),
+            updated_at: Utc::now(),
+            ..existing
+        };
+        let event_payload = BriefCreatedAuditEvent::from_brief(brief);
+        let commit = self.inner.runtime_db.transitions().commit_work_item(
+            &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id: record.agent_id.clone(),
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision: record.revision - 1,
+                },
+                agent_state: None,
+                brief_evidence: vec![brief.clone()],
+                audit_events: vec![
+                    AuditEvent::typed(RuntimeEventKind::BriefCreated, &event_payload)?,
+                    AuditEvent::legacy(
+                        "work_item_completion_report_bound_from_final",
+                        serde_json::json!({
+                            "agent_id": record.agent_id,
+                            "work_item_id": record.id,
+                            "brief_id": brief.id,
+                            "turn_id": brief.turn_id,
+                            "source_message_id": brief.related_message_id,
+                        }),
+                    ),
+                ],
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: false,
+                fault: self.take_transition_fault(),
+            },
+        )?;
+        self.apply_transition_commit(commit).await;
+        let mut guard = self.inner.agent.lock().await;
+        guard.state.last_brief_at = Some(brief.created_at);
         guard.persist_state(&self.inner.storage)?;
         Ok(())
     }

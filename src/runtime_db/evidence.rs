@@ -582,6 +582,22 @@ pub(crate) fn insert_tool_evidence_tx(
 }
 
 pub(crate) fn insert_brief_evidence_tx(tx: &Transaction<'_>, brief: &BriefRecord) -> Result<()> {
+    if let Some(payload_json) = tx
+        .query_row(
+            "SELECT payload_json FROM briefs WHERE evidence_id = ?1",
+            [&brief.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        let existing: BriefRecord = serde_json::from_str(&payload_json)?;
+        anyhow::ensure!(
+            existing == *brief,
+            "conflicting brief content for evidence_id {}",
+            brief.id
+        );
+        return Ok(());
+    }
     insert_evidence_tx(
         tx,
         EvidenceInsert {

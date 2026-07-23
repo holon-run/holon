@@ -10,10 +10,11 @@ use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
     AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
-    FailureArtifact, FailureArtifactCategory, SpawnAgentModelRequest, SpawnAgentModelResolution,
-    SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind,
-    TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
-    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WaitConditionStatus, WorkItemContinuationFrame,
+    CompletionReportRequirement, CompletionReportState, FailureArtifact, FailureArtifactCategory,
+    SpawnAgentModelRequest, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
+    SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
+    TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
+    WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
     WorkItemContinuationReturnPolicy, WorkItemDelegationRecord, WorkItemDelegationState,
     WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
 };
@@ -2253,6 +2254,7 @@ impl RuntimeHandle {
                     record: record.clone(),
                 },
                 agent_state: None,
+                brief_evidence: Vec::new(),
                 audit_events: vec![self.work_item_written_event("created", &record, Value::Null)],
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: true,
@@ -2667,6 +2669,7 @@ impl RuntimeHandle {
                         expected_revision: existing.revision,
                     },
                     agent_state,
+                    brief_evidence: Vec::new(),
                     audit_events,
                     index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                     notify_scheduler: true,
@@ -2734,6 +2737,7 @@ impl RuntimeHandle {
                     expected_revision: existing.revision,
                 },
                 agent_state: None,
+                brief_evidence: Vec::new(),
                 audit_events,
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: true,
@@ -2768,6 +2772,33 @@ impl RuntimeHandle {
                 continuation_resumed: None,
             });
         }
+        let mut state = self.agent_state().await?;
+        let expected_state = state.clone();
+        let now = Utc::now();
+        let execution_binding = state.current_execution_binding.clone();
+        let matching_execution_binding = execution_binding
+            .as_ref()
+            .filter(|binding| binding.work_item_id.as_deref() == Some(existing.id.as_str()));
+        let completion_intent = WorkItemCompletionIntent {
+            work_item_id: existing.id.clone(),
+            source_activation_id: matching_execution_binding
+                .and_then(|binding| binding.activation_id.clone()),
+            source_message_id: matching_execution_binding
+                .map(|binding| binding.source_message_id.clone()),
+            source_turn_id: matching_execution_binding.map(|binding| binding.turn_id.clone()),
+            expected_work_revision: matching_execution_binding
+                .and_then(|binding| binding.claimed_work_revision)
+                .unwrap_or(existing.revision),
+            report_requirement: CompletionReportRequirement::Required,
+            report_state: if existing.result_brief_id.is_some() {
+                CompletionReportState::Bound
+            } else {
+                CompletionReportState::Pending
+            },
+            result_brief_id: existing.result_brief_id.clone(),
+            created_at: now,
+            updated_at: now,
+        };
         let mut record = WorkItemRecord {
             revision: existing.revision + 1,
             state: WorkItemState::Completed,
@@ -2776,14 +2807,14 @@ impl RuntimeHandle {
             recheck_consumed_at: None,
             result_brief_id: existing.result_brief_id.clone(),
             result_summary: existing.result_summary.clone(),
-            updated_at: Utc::now(),
+            completion_intent: Some(completion_intent),
+            updated_at: now,
             ..existing
         };
         let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
             self.agent_home().as_path(),
             &mut record,
         )?;
-        let now = Utc::now();
         let active_waits = self
             .inner
             .storage
@@ -2807,8 +2838,6 @@ impl RuntimeHandle {
                 audit_events.push(event);
             }
         }
-        let mut state = self.agent_state().await?;
-        let expected_state = state.clone();
         let release_current = state.current_work_item_id.as_deref() == Some(record.id.as_str());
         let release_turn = state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
         let mut continuation_records = Vec::new();
@@ -2909,6 +2938,7 @@ impl RuntimeHandle {
             serde_json::json!({
                 "warning_count": warnings.len(),
                 "continuation_resumed": continuation_resumed,
+                "completion_intent": record.completion_intent,
             }),
         ));
         let commit = self.inner.runtime_db.transitions().commit_work_item_focus(
@@ -2979,30 +3009,54 @@ impl RuntimeHandle {
                 existing,
             ));
         }
-        if let Some(result_brief_id) = existing.result_brief_id.as_deref() {
-            if let Some(brief) = self.inner.storage.read_brief_by_id(result_brief_id)? {
-                if brief.text.trim() == report_text {
-                    return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
-                        existing,
-                    ));
-                }
-            }
+        if existing.result_brief_id.is_some()
+            || existing
+                .completion_intent
+                .as_ref()
+                .is_some_and(|intent| intent.report_state == CompletionReportState::Bound)
+        {
+            return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
+                existing,
+            ));
         }
-        let current_turn_id = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.current_turn_id.clone()
-        };
         let mut brief =
             BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
         brief.work_item_id = Some(existing.id.clone());
         brief.workspace_id = existing.workspace_id.clone();
         brief.turn_index = source_turn_index;
-        brief.turn_id = current_turn_id;
-        self.persist_brief(&brief).await?;
+        brief.turn_id = existing
+            .completion_intent
+            .as_ref()
+            .and_then(|intent| intent.source_turn_id.clone());
+        brief.related_message_id = existing
+            .completion_intent
+            .as_ref()
+            .and_then(|intent| intent.source_message_id.clone());
+        let now = Utc::now();
+        let mut completion_intent =
+            existing
+                .completion_intent
+                .clone()
+                .unwrap_or(WorkItemCompletionIntent {
+                    work_item_id: existing.id.clone(),
+                    source_activation_id: None,
+                    source_message_id: brief.related_message_id.clone(),
+                    source_turn_id: brief.turn_id.clone(),
+                    expected_work_revision: existing.revision.saturating_sub(1),
+                    report_requirement: CompletionReportRequirement::Required,
+                    report_state: CompletionReportState::Pending,
+                    result_brief_id: None,
+                    created_at: now,
+                    updated_at: now,
+                });
+        completion_intent.report_state = CompletionReportState::Bound;
+        completion_intent.result_brief_id = Some(brief.id.clone());
+        completion_intent.updated_at = now;
         let record = WorkItemRecord {
             revision: existing.revision + 1,
             result_brief_id: Some(brief.id.clone()),
-            updated_at: Utc::now(),
+            completion_intent: Some(completion_intent),
+            updated_at: now,
             ..existing
         };
         let commit = self.inner.runtime_db.transitions().commit_work_item(
@@ -3013,26 +3067,38 @@ impl RuntimeHandle {
                     expected_revision: record.revision - 1,
                 },
                 agent_state: None,
-                audit_events: vec![AuditEvent::legacy(
-                    "work_item_completion_report_promoted",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "work_item_id": record.id.clone(),
-                        "revision": record.revision,
-                        "source_turn_index": source_turn_index,
-                        "source_round": source_round,
-                        "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
-                        "warnings": warnings.clone(),
-                        "warning_count": warnings.len(),
-                        "brief_id": brief.id.clone(),
-                    }),
-                )],
+                brief_evidence: vec![brief.clone()],
+                audit_events: vec![
+                    AuditEvent::typed(
+                        RuntimeEventKind::BriefCreated,
+                        &BriefCreatedAuditEvent::from_brief(&brief),
+                    )?,
+                    AuditEvent::legacy(
+                        "work_item_completion_report_promoted",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "work_item_id": record.id.clone(),
+                            "revision": record.revision,
+                            "source_turn_index": source_turn_index,
+                            "source_round": source_round,
+                            "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
+                            "warnings": warnings.clone(),
+                            "warning_count": warnings.len(),
+                            "brief_id": brief.id.clone(),
+                        }),
+                    ),
+                ],
                 index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                 notify_scheduler: false,
                 fault: self.take_transition_fault(),
             },
         )?;
         self.apply_transition_commit(commit).await;
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.last_brief_at = Some(brief.created_at);
+            guard.persist_state(&self.inner.storage)?;
+        }
         Ok(WorkItemCompletionReportPromotionOutcome::Promoted(
             WorkItemCompletionReportPromotion {
                 record,

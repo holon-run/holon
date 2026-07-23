@@ -261,6 +261,7 @@ impl RuntimeHandle {
                     expected_revision: record.revision - 1,
                 },
                 agent_state: None,
+                brief_evidence: Vec::new(),
                 audit_events: vec![AuditEvent::legacy(
                     "work_item_refs_updated",
                     serde_json::json!({

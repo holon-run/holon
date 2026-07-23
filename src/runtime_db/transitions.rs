@@ -127,6 +127,7 @@ pub(crate) struct WorkItemTransitionCommand {
     pub agent_id: String,
     pub mutation: WorkItemMutation,
     pub agent_state: Option<AgentStateMutation>,
+    pub brief_evidence: Vec<BriefRecord>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
@@ -280,6 +281,9 @@ impl RuntimeTransitionRepository<'_> {
             applied |= agent_state_applied;
             if !applied {
                 return Ok(TransitionCommit::default());
+            }
+            for brief in &command.brief_evidence {
+                insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             finish_transition_tx(
@@ -1031,6 +1035,7 @@ mod tests {
                         record: record.clone(),
                     },
                     agent_state: None,
+                    brief_evidence: Vec::new(),
                     audit_events: vec![AuditEvent::legacy("work_item_test", serde_json::json!({}))],
                     index_changes: vec![index_change("work_item", &record.id)],
                     notify_scheduler: true,
@@ -1061,6 +1066,7 @@ mod tests {
                 record: record.clone(),
             },
             agent_state: None,
+            brief_evidence: Vec::new(),
             audit_events: vec![AuditEvent::legacy("work_item_test", serde_json::json!({}))],
             index_changes: vec![index_change("work_item", &record.id)],
             notify_scheduler: true,
