@@ -1741,6 +1741,22 @@ fn settlement_shadow_comparison_matches_aborted_with_stopped_agent() {
     assert_eq!(candidate["settlement_disposition"], "failed");
 }
 
+#[test]
+fn settlement_shadow_comparison_matches_aborted_with_idle_agent() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Aborted);
+    let comparison = scheduler::shadow_comparison_for_settlement(&projection, &record)
+        .expect("aborted settlement should produce comparison");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["settlement_disposition"], "failed");
+}
+
 // --- delivery shadow comparison ---
 
 #[test]
@@ -1862,6 +1878,34 @@ fn delivery_shadow_comparison_matches_interrupted_settlement() {
     assert!(!comparison.matched);
     let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
     assert_eq!(observation["turn_terminal"], "none");
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(candidate["delivery_disposition"], "interrupted");
+}
+
+#[test]
+fn delivery_shadow_comparison_matches_interrupted_with_aborted_terminal() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.last_turn_terminal = Some(TurnTerminalRecord {
+        turn_id: "turn-1".into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::Aborted,
+        reason: Some("operator_abort".into()),
+        last_assistant_message: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 100,
+    });
+    storage.write_agent(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let record = make_settlement_record("msg-1", QueueEntryStatus::Interrupted);
+    let comparison = scheduler::shadow_comparison_for_delivery(&projection, &record)
+        .expect("interrupted delivery should produce comparison");
+    assert!(comparison.matched);
+    assert_eq!(comparison.divergence_code, None);
+    let observation = serde_json::to_value(&comparison.legacy_observation).unwrap();
+    assert_eq!(observation["turn_terminal"], "aborted");
     let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
     assert_eq!(candidate["delivery_disposition"], "interrupted");
 }

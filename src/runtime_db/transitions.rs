@@ -19,14 +19,15 @@ use crate::{
             insert_new_work_item_tx, queue_entry_transition, task_transition,
             try_claim_queued_message_tx, try_interject_queued_message_tx,
             update_expected_work_item_tx, upsert_queue_entry_tx, upsert_task_tx,
-            upsert_wait_condition_tx, upsert_work_item_continuation_tx, wait_condition_transition,
+            upsert_turn_record_tx, upsert_wait_condition_tx, upsert_work_item_continuation_tx,
+            wait_condition_transition,
         },
         RuntimeDb, RuntimeIndexChange, RuntimeStateTransitionConflict,
     },
     runtime_error::RuntimeError,
     types::{
         AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
-        TaskRecord, TranscriptEntry, WaitConditionRecord, WorkItemContinuationFrame,
+        TaskRecord, TranscriptEntry, TurnRecord, WaitConditionRecord, WorkItemContinuationFrame,
         WorkItemRecord, WorkItemSchedulingState, WorkItemState,
     },
 };
@@ -172,6 +173,7 @@ pub(crate) struct QueueTransitionCommand {
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
+    pub turn_record: Option<TurnRecord>,
     pub audit_events: Vec<AuditEvent>,
     pub scheduler_shadow_comparison:
         Option<scheduler_protocol_repository::SchedulerShadowComparisonCommand>,
@@ -446,6 +448,9 @@ impl RuntimeTransitionRepository<'_> {
             }
             for entry in &command.transcript_entries {
                 append_transcript_entry_tx(tx, entry)?;
+            }
+            if let Some(turn_record) = command.turn_record.as_ref() {
+                upsert_turn_record_tx(tx, turn_record)?;
             }
             for brief in &command.brief_evidence {
                 insert_brief_evidence_tx(tx, brief)?;
@@ -1332,6 +1337,7 @@ mod tests {
                     }),
                     message_evidence: Vec::new(),
                     transcript_entries: vec![transcript],
+                    turn_record: None,
                     audit_events: vec![AuditEvent::legacy("queue_settled", serde_json::json!({}))],
                     scheduler_semantic_shadow: None,
                     scheduler_shadow_comparison: None,
@@ -1389,6 +1395,7 @@ mod tests {
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
+                turn_record: None,
                 audit_events: vec![AuditEvent::legacy(
                     "queue_entry_claimed",
                     serde_json::json!({}),
@@ -1484,6 +1491,7 @@ mod tests {
                     }),
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
+                    turn_record: None,
                     audit_events: vec![AuditEvent::legacy(
                         "queue_entry_claimed",
                         serde_json::json!({}),
@@ -1575,6 +1583,7 @@ mod tests {
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
+            turn_record: None,
             audit_events: vec![AuditEvent::legacy(
                 "authoritative_claim",
                 serde_json::json!({}),
@@ -1668,6 +1677,7 @@ mod tests {
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
+                turn_record: None,
                 audit_events: vec![AuditEvent::legacy(
                     "authoritative_claim",
                     serde_json::json!({}),

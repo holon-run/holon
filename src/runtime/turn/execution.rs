@@ -66,6 +66,7 @@ impl RuntimeHandle {
         round: usize,
         error: &anyhow::Error,
         duration_ms: u64,
+        persist_terminal: bool,
     ) -> Result<Option<AgentLoopOutcome>> {
         if !provider_error_is_context_length_exceeded(error) {
             return Ok(None);
@@ -89,6 +90,7 @@ impl RuntimeHandle {
                 Some(final_text.clone()),
                 duration_ms,
                 None,
+                persist_terminal,
             )
             .await?;
         Ok(Some(AgentLoopOutcome {
@@ -109,6 +111,7 @@ impl RuntimeHandle {
         last_assistant_message: Option<String>,
         duration_ms: u64,
         checkpoint_state: Option<&TurnLocalCheckpointState>,
+        persist: bool,
     ) -> Result<TurnTerminalRecord> {
         let record = {
             let mut guard = self.inner.agent.lock().await;
@@ -135,14 +138,18 @@ impl RuntimeHandle {
                 completed_at: chrono::Utc::now(),
                 duration_ms,
             };
-            guard.state.last_turn_terminal = Some(record.clone());
-            guard.persist_state(&self.inner.storage)?;
+            if persist {
+                guard.state.last_turn_terminal = Some(record.clone());
+                guard.persist_state(&self.inner.storage)?;
+            }
             record
         };
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "turn_terminal",
-            serde_json::to_value(&record)?,
-        ))?;
+        if persist {
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "turn_terminal",
+                serde_json::to_value(&record)?,
+            ))?;
+        }
         Ok(record)
     }
     pub(super) async fn maybe_defer_provider_lineage_failure(
@@ -153,6 +160,7 @@ impl RuntimeHandle {
         last_assistant_message: Option<String>,
         duration_ms: u64,
         side_effect_boundary_crossed: bool,
+        persist_terminal: bool,
     ) -> Result<Option<AgentLoopOutcome>> {
         let Some(timeline) = provider_attempt_timeline(error).cloned() else {
             return Ok(None);
@@ -203,6 +211,7 @@ impl RuntimeHandle {
                     .or_else(|| Some(final_text.clone())),
                 duration_ms,
                 None,
+                persist_terminal,
             )
             .await?;
         let event_kind = if side_effect_boundary_crossed {
@@ -431,6 +440,7 @@ impl RuntimeHandle {
                         }),
                         message_evidence: Vec::new(),
                         transcript_entries: vec![transcript],
+                        turn_record: None,
                         audit_events: vec![audit_event],
                         scheduler_shadow_comparison: shadow_comparison,
                         scheduler_delivery_shadow_comparison: None,
@@ -477,6 +487,7 @@ impl RuntimeHandle {
         Ok(admitted)
     }
 
+    #[cfg(test)]
     pub(crate) async fn run_agent_loop(
         &self,
         agent_id: &str,
@@ -490,6 +501,26 @@ impl RuntimeHandle {
             authority_class,
             effective_prompt,
             loop_control,
+            persist_terminal: true,
+        }
+        .run()
+        .await
+    }
+
+    pub(crate) async fn run_agent_loop_deferred(
+        &self,
+        agent_id: &str,
+        authority_class: AuthorityClass,
+        effective_prompt: EffectivePrompt,
+        loop_control: LoopControlOptions,
+    ) -> Result<AgentLoopOutcome> {
+        TurnExecution {
+            runtime: self,
+            agent_id,
+            authority_class,
+            effective_prompt,
+            loop_control,
+            persist_terminal: false,
         }
         .run()
         .await
@@ -615,6 +646,7 @@ pub(super) struct TurnExecution<'a> {
     pub(super) authority_class: AuthorityClass,
     pub(super) effective_prompt: EffectivePrompt,
     pub(super) loop_control: LoopControlOptions,
+    pub(super) persist_terminal: bool,
 }
 
 impl TurnExecution<'_> {
@@ -625,6 +657,7 @@ impl TurnExecution<'_> {
             authority_class,
             mut effective_prompt,
             loop_control,
+            persist_terminal,
         } = self;
         let mut completed_rounds = Vec::<TurnRoundRecord>::new();
         let turn_started_at = Instant::now();
@@ -691,6 +724,7 @@ impl TurnExecution<'_> {
                             &aborted.reason,
                             last_assistant_message.clone(),
                             turn_started_at.elapsed().as_millis() as u64,
+                            persist_terminal,
                         )
                         .await?;
                 }
@@ -708,6 +742,7 @@ impl TurnExecution<'_> {
                             Some(final_text.clone()),
                             turn_started_at.elapsed().as_millis() as u64,
                             None,
+                            persist_terminal,
                         )
                         .await?;
                     return Ok(AgentLoopOutcome {
@@ -777,6 +812,7 @@ impl TurnExecution<'_> {
                                     &aborted.reason,
                                     last_assistant_message.clone(),
                                     turn_started_at.elapsed().as_millis() as u64,
+                                    persist_terminal,
                                 )
                                 .await?;
                             return Err(err);
@@ -787,6 +823,7 @@ impl TurnExecution<'_> {
                                 round,
                                 &err,
                                 turn_started_at.elapsed().as_millis() as u64,
+                                persist_terminal,
                             )
                             .await?
                         {
@@ -800,6 +837,7 @@ impl TurnExecution<'_> {
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 !completed_rounds.is_empty() || last_assistant_message.is_some(),
+                                persist_terminal,
                             )
                             .await?
                         {
@@ -818,6 +856,7 @@ impl TurnExecution<'_> {
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 None,
+                                persist_terminal,
                             )
                             .await?;
                         return Err(err);
@@ -1028,6 +1067,7 @@ impl TurnExecution<'_> {
                                     Some(final_text.clone()),
                                     turn_started_at.elapsed().as_millis() as u64,
                                     None,
+                                    persist_terminal,
                                 )
                                 .await?;
                             return Ok(AgentLoopOutcome {
@@ -1121,6 +1161,7 @@ impl TurnExecution<'_> {
                                     &aborted.reason,
                                     last_assistant_message.clone(),
                                     turn_started_at.elapsed().as_millis() as u64,
+                                    persist_terminal,
                                 )
                                 .await?;
                             return Err(err);
@@ -1131,6 +1172,7 @@ impl TurnExecution<'_> {
                                 round,
                                 &err,
                                 turn_started_at.elapsed().as_millis() as u64,
+                                persist_terminal,
                             )
                             .await?
                         {
@@ -1144,6 +1186,7 @@ impl TurnExecution<'_> {
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 !completed_rounds.is_empty() || last_assistant_message.is_some(),
+                                persist_terminal,
                             )
                             .await?
                         {
@@ -1162,6 +1205,7 @@ impl TurnExecution<'_> {
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 None,
+                                persist_terminal,
                             )
                             .await?;
                         return Err(err);
@@ -1650,6 +1694,7 @@ impl TurnExecution<'_> {
                         last_assistant_message.clone(),
                         turn_started_at.elapsed().as_millis() as u64,
                         Some(&checkpoint_state),
+                        persist_terminal,
                     )
                     .await?;
                 return Ok(AgentLoopOutcome {
@@ -1678,6 +1723,7 @@ impl TurnExecution<'_> {
                                 &aborted.reason,
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
+                                persist_terminal,
                             )
                             .await?;
                     }
@@ -1958,6 +2004,7 @@ impl TurnExecution<'_> {
                                     &aborted.reason,
                                     last_assistant_message.clone(),
                                     turn_started_at.elapsed().as_millis() as u64,
+                                    persist_terminal,
                                 )
                                 .await?;
                             return Err(err);
@@ -2145,6 +2192,7 @@ impl TurnExecution<'_> {
                         last_assistant_message.clone(),
                         turn_started_at.elapsed().as_millis() as u64,
                         Some(&checkpoint_state),
+                        persist_terminal,
                     )
                     .await?;
                 return Ok(AgentLoopOutcome {

@@ -1,9 +1,19 @@
 use super::*;
 use crate::provider::ProviderAttemptTimeline;
 use crate::runtime_error::{describe_runtime_error, RuntimeErrorContext, RuntimeErrorDescriptor};
-use crate::types::{FailureArtifact, FailureArtifactCategory, TurnTerminalRecord};
+use crate::types::{
+    BriefRecord, FailureArtifact, FailureArtifactCategory, RuntimeFailureSummary, TranscriptEntry,
+    TurnTerminalRecord,
+};
+
+pub(super) struct RuntimeFailureArtifacts {
+    pub(super) brief: BriefRecord,
+    pub(super) transcript: TranscriptEntry,
+    pub(super) failure_summary: RuntimeFailureSummary,
+}
 
 impl RuntimeHandle {
+    #[cfg(test)]
     pub(super) async fn ensure_runtime_failure_terminal(
         &self,
         last_assistant_message: Option<String>,
@@ -20,8 +30,14 @@ impl RuntimeHandle {
         if let Some(terminal) = existing {
             return Ok(terminal);
         }
-        self.persist_turn_aborted_record("", "runtime_error", last_assistant_message, duration_ms)
-            .await
+        self.persist_turn_aborted_record(
+            "",
+            "runtime_error",
+            last_assistant_message,
+            duration_ms,
+            true,
+        )
+        .await
     }
 
     fn sanitize_failure_artifact_url(raw: &str) -> String {
@@ -317,14 +333,35 @@ impl RuntimeHandle {
         )
     }
 
+    #[cfg(test)]
     pub(super) async fn persist_runtime_failure_artifacts(
         &self,
         message: &MessageEnvelope,
         error: &anyhow::Error,
     ) -> Result<()> {
+        let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
+        let artifacts = self
+            .build_runtime_failure_artifacts(message, error, &terminal)
+            .await?;
+        self.persist_brief(&artifacts.brief).await?;
+        self.persist_turn_record(&terminal).await?;
+        self.persist_transcript_evidence(&artifacts.transcript)?;
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.last_runtime_failure = Some(artifacts.failure_summary);
+            guard.persist_state(&self.inner.storage)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn build_runtime_failure_artifacts(
+        &self,
+        message: &MessageEnvelope,
+        error: &anyhow::Error,
+        terminal: &TurnTerminalRecord,
+    ) -> Result<RuntimeFailureArtifacts> {
         let failure_text = Self::concise_runtime_failure_text(message, error);
         let attempt_timeline = provider_attempt_timeline(error);
-        let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
         let (run_id, current_work_item_id) = {
             let guard = self.inner.agent.lock().await;
             (
@@ -355,9 +392,7 @@ impl RuntimeHandle {
         let mut brief = brief::make_failure(&message.agent_id, message, failure_text.clone());
         brief.turn_id = Some(terminal.turn_id.clone());
         brief.turn_index = Some(terminal.turn_index);
-        self.persist_brief(&brief).await?;
-        self.persist_turn_record(&terminal).await?;
-        self.persist_transcript_evidence(&TranscriptEntry::new(
+        let transcript = TranscriptEntry::new(
             message.agent_id.clone(),
             TranscriptEntryKind::RuntimeFailure,
             None,
@@ -375,18 +410,17 @@ impl RuntimeHandle {
                 "token_usage": token_usage,
                 "provider_attempt_timeline": attempt_timeline,
             }),
-        ))?;
-        {
-            let mut guard = self.inner.agent.lock().await;
-            guard.state.last_runtime_failure = Some(RuntimeFailureSummary {
+        );
+        Ok(RuntimeFailureArtifacts {
+            brief,
+            transcript,
+            failure_summary: RuntimeFailureSummary {
                 occurred_at: Utc::now(),
                 summary: failure_text,
                 phase: RuntimeFailurePhase::RuntimeTurn,
                 detail_hint: Some("run `holon daemon logs` for details".into()),
                 failure_artifact: Some(failure_artifact),
-            });
-            guard.persist_state(&self.inner.storage)?;
-        }
-        Ok(())
+            },
+        })
     }
 }

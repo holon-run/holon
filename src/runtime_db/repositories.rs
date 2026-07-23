@@ -3537,7 +3537,7 @@ fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
     Ok(())
 }
 
-fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
+pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
     let payload_json = serde_json::to_string(record)?;
     let terminal_kind = record
         .terminal

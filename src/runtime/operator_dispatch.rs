@@ -1,13 +1,29 @@
 use super::*;
+use crate::runtime::turn::TurnTerminalTransition;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
 
 impl RuntimeHandle {
+    #[cfg(test)]
     pub(super) async fn process_interactive_message(
         &self,
         message: &MessageEnvelope,
         continuation_resolution: Option<&ContinuationResolution>,
         loop_control: LoopControlOptions,
     ) -> Result<()> {
+        let terminal_transition = self
+            .process_interactive_message_deferred(message, continuation_resolution, loop_control)
+            .await?;
+        self.persist_terminal_transition(&terminal_transition)
+            .await?;
+        Ok(())
+    }
+
+    pub(super) async fn process_interactive_message_deferred(
+        &self,
+        message: &MessageEnvelope,
+        continuation_resolution: Option<&ContinuationResolution>,
+        loop_control: LoopControlOptions,
+    ) -> Result<TurnTerminalTransition> {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
         self.begin_interactive_turn(
@@ -91,7 +107,7 @@ impl RuntimeHandle {
             }),
         ))?;
         let outcome = self
-            .run_agent_loop(
+            .run_agent_loop_deferred(
                 &message.agent_id,
                 message.authority_class.clone(),
                 built,
@@ -126,7 +142,7 @@ impl RuntimeHandle {
             );
             self.persist_brief(&brief).await?;
         }
-        self.persist_turn_record(&outcome.terminal).await?;
+        let turn_record = self.build_turn_record(&outcome.terminal).await?;
         self.promote_turn_active_skills().await?;
 
         if outcome.should_sleep {
@@ -139,7 +155,10 @@ impl RuntimeHandle {
         }
 
         crate::diagnostics::record_turn_cleanup(cleanup_started.elapsed());
-        Ok(())
+        Ok(TurnTerminalTransition {
+            terminal: outcome.terminal,
+            turn_record,
+        })
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

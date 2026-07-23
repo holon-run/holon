@@ -79,10 +79,25 @@ impl RuntimeHandle {
 
     pub(super) async fn process_message_with_plan(
         &self,
-        mut message: MessageEnvelope,
+        message: MessageEnvelope,
         plan: MessageDispatchPlan,
         scheduler_decision: &scheduler::SchedulerDecision,
     ) -> Result<()> {
+        if let Some(transition) = self
+            .process_message_with_plan_deferred(message, plan, scheduler_decision)
+            .await?
+        {
+            self.persist_terminal_transition(&transition).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn process_message_with_plan_deferred(
+        &self,
+        mut message: MessageEnvelope,
+        plan: MessageDispatchPlan,
+        scheduler_decision: &scheduler::SchedulerDecision,
+    ) -> Result<Option<turn::TurnTerminalTransition>> {
         message.normalize_admission_fields();
         self.inner.storage.append_event(&AuditEvent::typed(
             RuntimeEventKind::MessageProcessingStarted,
@@ -97,6 +112,7 @@ impl RuntimeHandle {
         } = plan;
         let model_reentry = scheduler_decision.model_reentry;
         let task = task?;
+        let mut terminal_transition = None;
         if let Some(trigger) = continuation_trigger.as_ref() {
             self.record_continuation_trigger_received(&message, trigger, &prior_closure)
                 .await?;
@@ -116,14 +132,16 @@ impl RuntimeHandle {
                         guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
                         guard.persist_state(&self.inner.storage)?;
                     }
-                    self.process_interactive_message(
-                        &message,
-                        continuation_resolution.as_ref(),
-                        LoopControlOptions {
-                            max_tool_rounds: None,
-                        },
-                    )
-                    .await?;
+                    terminal_transition = Some(
+                        self.process_interactive_message_deferred(
+                            &message,
+                            continuation_resolution.as_ref(),
+                            LoopControlOptions {
+                                max_tool_rounds: None,
+                            },
+                        )
+                        .await?,
+                    );
                 }
             }
             MessageKind::TaskStatus => {
@@ -132,13 +150,14 @@ impl RuntimeHandle {
             }
             MessageKind::TaskResult => {
                 let task = task.ok_or_else(|| anyhow!("task result message should parse task"))?;
-                self.reduce_task_result_message(
-                    &message,
-                    task,
-                    model_reentry,
-                    continuation_resolution.as_ref(),
-                )
-                .await?;
+                terminal_transition = self
+                    .reduce_task_result_message_deferred(
+                        &message,
+                        task,
+                        model_reentry,
+                        continuation_resolution.as_ref(),
+                    )
+                    .await?;
             }
             MessageKind::Control => {
                 let action = match &message.body {
@@ -211,7 +230,7 @@ impl RuntimeHandle {
         ))?;
 
         info!("processed message {}", message.id);
-        Ok(())
+        Ok(terminal_transition)
     }
 
     async fn refresh_current_work_item_refs(
