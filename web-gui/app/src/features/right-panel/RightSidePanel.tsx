@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { AgentSummary, RightPanelView, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { TaskSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import { FileBrowserPanel } from "./FileBrowserPanel";
+import { RuntimeTracePanel } from "./RuntimeTracePanel";
 import { useTranslation } from "react-i18next";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
+  connection: RuntimeConnection;
   skillCatalog?: SkillCatalogState;
   availableSkillCatalog?: SkillCatalogState;
   skillCatalogLoading?: boolean;
@@ -37,6 +39,7 @@ interface RightSidePanelProps {
 
 export function RightSidePanel({
   agent,
+  connection,
   skillCatalog,
   availableSkillCatalog,
   skillCatalogLoading,
@@ -107,10 +110,14 @@ export function RightSidePanel({
   );
 
   const [showSkillManager, setShowSkillManager] = useState(false);
+  const [showRuntimeTrace, setShowRuntimeTrace] = useState(false);
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
+  const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace;
   const title =
-    skillManagerActive
+    runtimeTraceActive
+      ? t("runtimeTrace.title")
+      : skillManagerActive
       ? t("rightPanel.manageSkills")
       : activeView.kind === "activity_inspector"
       ? activityInspectorTitle(activeView.activity)
@@ -136,6 +143,7 @@ export function RightSidePanel({
 
   useEffect(() => {
     setShowSkillManager(false);
+    setShowRuntimeTrace(false);
   }, [agent.id, activeView.kind]);
 
   const openSkillManager = () => {
@@ -162,10 +170,23 @@ export function RightSidePanel({
               aria-label={t("rightPanel.showOverview")}
               onClick={() => {
                 setShowSkillManager(false);
+                setShowRuntimeTrace(false);
                 onShowAgentOverview();
               }}
             >
               {t("rightPanel.agentOverview")}
+            </button>
+          ) : null}
+          {activeView.kind === "agent_overview" ? (
+            <button
+              type="button"
+              aria-label={t("runtimeTrace.open")}
+              onClick={() => {
+                setShowSkillManager(false);
+                setShowRuntimeTrace((current) => !current);
+              }}
+            >
+              {runtimeTraceActive ? t("rightPanel.agentOverview") : t("runtimeTrace.shortTitle")}
             </button>
           ) : null}
           <button type="button" aria-label={t("panel.closePanel")} onClick={onClose}>
@@ -174,7 +195,9 @@ export function RightSidePanel({
         </div>
       </div>
       <div className="panel-body">
-        {skillManagerActive ? (
+        {runtimeTraceActive ? (
+          <RuntimeTracePanel agentId={agent.id} connection={connection} />
+        ) : skillManagerActive ? (
           <AgentSkillManagerPanel
             skillCatalog={skillCatalog}
             availableSkillCatalog={availableSkillCatalog}
