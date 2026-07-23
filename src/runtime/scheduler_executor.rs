@@ -518,6 +518,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(None);
         }
+        if self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_scenario_mode(scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO)?
+            != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+            || self
+                .runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .scheduler_scenario_mode(scheduler::SETTLEMENT_SCENARIO)?
+                != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+        {
+            return Ok(None);
+        }
         if !matches!(
             (&message.kind, &message.origin),
             (MessageKind::SystemTick, MessageOrigin::System { subsystem })
@@ -548,6 +565,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 "canonical work queue claim requires a runnable same-agent WorkItem"
             ));
         }
+        let activation_id = canonical_activation_id(&message.id);
 
         use crate::domain::scheduler_protocol::{
             ActivationBinding, ActivationCause, ActivationLifecycleState, ActivationOrigin,
@@ -563,6 +581,32 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .transitions()
             .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?;
+        if let Some(snapshot) = existing.as_ref() {
+            if let Some(activation) = snapshot.activations.get(&activation_id) {
+                let slot_matches = matches!(
+                    &snapshot.slot,
+                    ActivationSlot::Running {
+                        activation_id: running_activation_id,
+                        work_item_id: running_work_item_id,
+                        ..
+                    } if running_activation_id == &activation_id
+                        && running_work_item_id == work_item_id
+                );
+                if activation.state == crate::domain::scheduler_protocol::ActivationState::Running
+                    && activation.work_item_id == work_item_id
+                    && slot_matches
+                {
+                    return Ok(Some(CanonicalClaimPlan {
+                        work_item,
+                        bootstrap: None,
+                        commands: Vec::new(),
+                    }));
+                }
+                return Err(anyhow!(
+                    "canonical work queue replay references a non-running activation"
+                ));
+            }
+        }
         let new_demand = || WorkDemand {
             metadata_revision: work_item.revision.max(1),
             scheduling_generation: work_item.revision.max(1),
@@ -630,7 +674,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 )
             };
 
-        let activation_id = canonical_activation_id(&message.id);
         let activation = AgentActivation {
             id: activation_id.clone(),
             agent_id: message.agent_id.clone(),

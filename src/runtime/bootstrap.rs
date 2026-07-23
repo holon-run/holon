@@ -366,6 +366,8 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 omit_next_scheduler_claim_shadow_comparison: AtomicBool::new(false),
                 #[cfg(test)]
+                fail_after_next_runtime_claim: AtomicBool::new(false),
+                #[cfg(test)]
                 transition_warnings: StdMutex::new(Vec::new()),
             }),
         };

@@ -274,6 +274,8 @@ struct RuntimeInner {
     #[cfg(test)]
     omit_next_scheduler_claim_shadow_comparison: AtomicBool,
     #[cfg(test)]
+    fail_after_next_runtime_claim: AtomicBool,
+    #[cfg(test)]
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
@@ -696,6 +698,14 @@ impl RuntimeHandle {
                 .swap(true, Ordering::SeqCst),
             "scheduler claim shadow comparison omission is already armed"
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_runtime_loop_failure_after_next_claim(&self) {
+        self.inner
+            .fail_after_next_runtime_claim
+            .store(true, Ordering::SeqCst);
+        self.inner.notify.notify_one();
     }
 
     #[cfg(test)]
@@ -1750,9 +1760,7 @@ impl RuntimeHandle {
             return Ok(Vec::new());
         }
         let Some(message) = self.inner.storage.read_message_by_id(&record.message_id)? else {
-            return Err(anyhow!(
-                "canonical queue settlement requires persisted message evidence"
-            ));
+            return Ok(Vec::new());
         };
         if !matches!(
             (&message.kind, &message.origin),
@@ -1885,6 +1893,8 @@ impl RuntimeHandle {
         scheduler_executor::SchedulerDecisionExecutor::new(&self)
             .bootstrap_recovered()
             .await?;
+        self.recover_scheduler_bootstrap_claims().await?;
+        self.record_scheduler_bootstrap_diagnostics().await?;
 
         loop {
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
@@ -1965,6 +1975,16 @@ impl RuntimeHandle {
             };
 
             let message = scheduled.message.clone();
+            #[cfg(test)]
+            if self
+                .inner
+                .fail_after_next_runtime_claim
+                .swap(false, Ordering::SeqCst)
+            {
+                return Err(anyhow!(
+                    "injected agent runtime loop failure after queue claim"
+                ));
+            }
             self.append_state_changed_events(&scheduled.running_state)?;
 
             if let Err(err) = self
@@ -2106,6 +2126,367 @@ impl RuntimeHandle {
                 .await?;
             }
         }
+    }
+
+    pub(crate) async fn record_runtime_loop_failure(&self, error: &anyhow::Error) {
+        let descriptor = describe_runtime_error(error);
+        let summary =
+            Self::summarize_runtime_failure_error(&anyhow!(descriptor.operator_message.clone()));
+        let occurred_at = Utc::now();
+        let agent_id = self.inner.agent.lock().await.state.id.clone();
+        let released_claims = match self.release_claimed_messages_for_runtime_restart().await {
+            Ok(released) => released,
+            Err(release_error) => {
+                tracing::error!(
+                    agent_id = %agent_id,
+                    error = %release_error,
+                    "failed to release claimed messages after runtime loop failure"
+                );
+                0
+            }
+        };
+        tracing::error!(
+            agent_id = %agent_id,
+            domain = ?descriptor.domain,
+            code = %descriptor.code,
+            retryable = descriptor.retryable,
+            error = %error,
+            "agent runtime loop failed"
+        );
+        if let Err(persist_error) = self.inner.storage.append_event(&AuditEvent::legacy(
+            "agent_runtime_loop_failed",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "error": summary,
+                "domain": descriptor.domain,
+                "code": descriptor.code,
+                "retryable": descriptor.retryable,
+                "recovery_hint": descriptor.recovery_hint,
+                "safe_context": descriptor.safe_context,
+                "source_chain": descriptor.source_chain,
+                "recovery": "bounded_restart",
+                "released_claims": released_claims,
+            }),
+        )) {
+            tracing::error!(
+                agent_id = %agent_id,
+                error = %persist_error,
+                "failed to persist agent runtime loop failure audit event"
+            );
+        }
+        let mut guard = self.inner.agent.lock().await;
+        guard.state.current_run_id = None;
+        guard.current_run_abort = None;
+        guard.state.last_runtime_failure = Some(RuntimeFailureSummary {
+            occurred_at,
+            summary,
+            phase: RuntimeFailurePhase::RuntimeTurn,
+            detail_hint: Some("the next host access will rebuild the runtime loop".into()),
+            failure_artifact: None,
+        });
+        if let Err(persist_error) = guard.persist_state(&self.inner.storage) {
+            tracing::error!(
+                agent_id = %agent_id,
+                error = %persist_error,
+                "failed to persist agent runtime loop failure state"
+            );
+        }
+    }
+
+    async fn release_claimed_messages_for_runtime_restart(&self) -> Result<usize> {
+        let agent_id = self.inner.agent.lock().await.state.id.clone();
+        let claimed = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .recent(Some(&agent_id), usize::MAX)?
+            .into_iter()
+            .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
+            .collect::<Vec<_>>();
+        let mut released = 0;
+        for mut entry in claimed {
+            entry.status = QueueEntryStatus::Interrupted;
+            entry.updated_at = Utc::now();
+            let message_id = entry.message_id.clone();
+            let commit = self.inner.runtime_db.transitions().commit_queue(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Release,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(entry),
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
+                    scheduler_authority_scenarios: Vec::new(),
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    audit_events: vec![AuditEvent::legacy(
+                        "queue_claim_released_for_runtime_restart",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": message_id,
+                            "status": QueueEntryStatus::Interrupted,
+                        }),
+                    )],
+                    scheduler_shadow_comparison: None,
+                    scheduler_delivery_shadow_comparison: None,
+                    scheduler_semantic_shadow: None,
+                    notify_scheduler: true,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+            )?;
+            if commit.applied {
+                released += 1;
+            }
+            self.apply_transition_commit(commit).await;
+        }
+        Ok(released)
+    }
+
+    async fn recover_scheduler_bootstrap_claims(&self) -> Result<usize> {
+        if !self.scheduler_protocol_production_commands_enabled()
+            || self
+                .inner
+                .runtime_db
+                .transitions()
+                .scheduler_scenario_mode(scheduler::SETTLEMENT_SCENARIO)?
+                != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+        {
+            return Ok(0);
+        }
+
+        let agent_id = self.inner.agent.lock().await.state.id.clone();
+        let Some(snapshot) = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&agent_id)?
+        else {
+            return Ok(0);
+        };
+        let claimed = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .recent(Some(&agent_id), usize::MAX)?
+            .into_iter()
+            .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
+            .collect::<Vec<_>>();
+        let mut recovered = 0;
+
+        for mut entry in claimed {
+            let activation_id = scheduler_executor::canonical_activation_id(&entry.message_id);
+            let Some(activation) = snapshot.activations.get(&activation_id) else {
+                continue;
+            };
+            if activation.state != crate::domain::scheduler_protocol::ActivationState::Running {
+                continue;
+            }
+            let Some(message) = self.inner.storage.read_message_by_id(&entry.message_id)? else {
+                continue;
+            };
+            if !matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                    if subsystem == "work_queue"
+            ) || message.work_item_id.as_deref() != Some(activation.work_item_id.as_str())
+            {
+                continue;
+            }
+
+            let missing =
+                crate::domain::scheduler_protocol::ProtocolCommand::RecordMissingSettlement(
+                    crate::domain::scheduler_protocol::MissingSettlementRecord {
+                        id: canonical_missing_settlement_id(&entry.message_id),
+                        activation_id: activation_id.clone(),
+                        created_at: self.now().to_rfc3339(),
+                    },
+                );
+            let protocol_commit = self
+                .inner
+                .runtime_db
+                .transitions()
+                .commit_scheduler_protocol_command(&agent_id, &missing, None)?;
+            if !matches!(
+                protocol_commit.result.decision,
+                crate::domain::scheduler_protocol::Decision::SettlementMissing
+                    | crate::domain::scheduler_protocol::Decision::DuplicateIgnored
+            ) {
+                return Err(anyhow!(
+                    "scheduler bootstrap claim recovery was rejected: {}",
+                    protocol_commit.result.diagnostics.join(", ")
+                ));
+            }
+
+            entry.status = QueueEntryStatus::Aborted;
+            entry.updated_at = self.now();
+            let message_id = entry.message_id.clone();
+            let work_item_id = activation.work_item_id.clone();
+            let commit = self.inner.runtime_db.transitions().commit_queue(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(entry),
+                    scheduler_claim_work_item: None,
+                    scheduler_protocol_bootstrap: None,
+                    scheduler_protocol_commands: Vec::new(),
+                    scheduler_authority_scenarios: Vec::new(),
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    audit_events: vec![AuditEvent::legacy(
+                        "scheduler_bootstrap_claim_recovered",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": message_id,
+                            "activation_id": activation_id,
+                            "work_item_id": work_item_id,
+                            "queue_status": QueueEntryStatus::Aborted,
+                            "activation_status": "settlement_missing",
+                        }),
+                    )],
+                    scheduler_shadow_comparison: None,
+                    scheduler_delivery_shadow_comparison: None,
+                    scheduler_semantic_shadow: None,
+                    notify_scheduler: true,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+            )?;
+            if commit.applied {
+                recovered += 1;
+            }
+            self.apply_transition_commit(commit).await;
+        }
+        Ok(recovered)
+    }
+
+    async fn record_scheduler_bootstrap_diagnostics(&self) -> Result<()> {
+        const STUCK_ACTIVATION_AGE: chrono::Duration = chrono::Duration::minutes(5);
+
+        let (agent_id, active_run_id) = {
+            let guard = self.inner.agent.lock().await;
+            (guard.state.id.clone(), guard.state.current_run_id.clone())
+        };
+        let Some(snapshot) = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&agent_id)?
+        else {
+            return Ok(());
+        };
+        let queue_entries = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .recent(Some(&agent_id), usize::MAX)?;
+        let turns = self
+            .inner
+            .runtime_db
+            .turn_records()
+            .recent_for_agent(&agent_id, usize::MAX)?;
+        let work_items = self
+            .inner
+            .runtime_db
+            .work_items()
+            .latest_for_agent(&agent_id, usize::MAX)?;
+        let mut events = Vec::new();
+
+        for (activation_id, activation) in snapshot.activations.iter().filter(|(_, activation)| {
+            activation.state == crate::domain::scheduler_protocol::ActivationState::Running
+        }) {
+            let message_id = activation_id
+                .strip_prefix("activation:message:")
+                .map(ToString::to_string);
+            let queue_entry = message_id.as_deref().and_then(|message_id| {
+                queue_entries
+                    .iter()
+                    .find(|entry| entry.message_id == message_id)
+            });
+            let terminal_turn = message_id.as_deref().and_then(|message_id| {
+                turns.iter().find(|turn| {
+                    turn.terminal.is_some()
+                        && turn
+                            .trigger
+                            .as_ref()
+                            .and_then(|trigger| trigger.message_id.as_deref())
+                            == Some(message_id)
+                })
+            });
+            let mut base_evidence = vec![
+                format!("activation_id={activation_id}"),
+                format!("work_item_id={}", activation.work_item_id),
+                format!("admitted_generation={}", activation.admitted_generation),
+            ];
+            if active_run_id.is_none() {
+                events.push(scheduler::scheduler_invariant_diagnostic_event(
+                    &agent_id,
+                    "running_activation_without_active_run",
+                    Some(activation.work_item_id.clone()),
+                    message_id.clone(),
+                    base_evidence.clone(),
+                )?);
+            }
+            if work_items.iter().any(|work_item| {
+                work_item.id == activation.work_item_id
+                    && work_item.state == crate::types::WorkItemState::Completed
+            }) {
+                events.push(scheduler::scheduler_invariant_diagnostic_event(
+                    &agent_id,
+                    "completed_work_item_has_running_activation",
+                    Some(activation.work_item_id.clone()),
+                    message_id.clone(),
+                    base_evidence.clone(),
+                )?);
+            }
+            if let (Some(queue_entry), Some(turn)) = (queue_entry, terminal_turn) {
+                if queue_entry.status == QueueEntryStatus::Dequeued {
+                    let mut evidence = base_evidence.clone();
+                    evidence.push(format!("turn_id={}", turn.turn_id));
+                    evidence.push("queue_status=dequeued".into());
+                    events.push(scheduler::scheduler_invariant_diagnostic_event(
+                        &agent_id,
+                        "terminal_turn_has_dequeued_queue",
+                        Some(activation.work_item_id.clone()),
+                        message_id.clone(),
+                        evidence,
+                    )?);
+                }
+            }
+            if let Some(queue_entry) = queue_entry {
+                let age = self.now().signed_duration_since(queue_entry.updated_at);
+                if age >= STUCK_ACTIVATION_AGE {
+                    base_evidence.push(format!("age_seconds={}", age.num_seconds()));
+                    events.push(scheduler::scheduler_invariant_diagnostic_event(
+                        &agent_id,
+                        "running_activation_age_exceeded",
+                        Some(activation.work_item_id.clone()),
+                        message_id,
+                        base_evidence,
+                    )?);
+                }
+            }
+        }
+
+        if !events.is_empty() {
+            tracing::warn!(
+                agent_id = %agent_id,
+                diagnostic_count = events.len(),
+                "scheduler bootstrap invariants require attention"
+            );
+            let recent_events = self.inner.storage.read_recent_events(128)?;
+            events.retain(|event| {
+                !recent_events
+                    .iter()
+                    .any(|recent| recent.kind == event.kind && recent.data == event.data)
+            });
+        }
+        if !events.is_empty() {
+            self.inner.storage.append_events(&events)?;
+        }
+        Ok(())
     }
 
     async fn bootstrap_recovery(&self) -> Result<()> {

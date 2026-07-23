@@ -1,6 +1,10 @@
 use super::super::*;
 use super::support::*;
-use crate::domain::scheduler_protocol::{ActivationSlot, SchedulerScenarioClass, WorkStatus};
+use crate::domain::scheduler_protocol::{
+    ActivationSlot, Decision, ObservationalDivergenceAllowance, ProtocolMode, RollbackAction,
+    RollbackPolicy, RollbackTrigger, RolloutClassEvidence, RolloutCommand, RolloutManifest,
+    ScenarioMode, SchedulerScenarioClass, WorkStatus,
+};
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, QueueEntryStatus, SkillActivationSource,
     SkillActivationState, SkillLoadReason, SkillScope, WaitConditionKind, WaitConditionRecord,
@@ -10,6 +14,188 @@ use crate::types::{
 
 struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
+}
+
+async fn finish_claimed_test_run(runtime: &RuntimeHandle) {
+    let mut guard = runtime.inner.agent.lock().await;
+    scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage).unwrap();
+    guard.current_run_abort = None;
+    guard.persist_state(&runtime.inner.storage).unwrap();
+}
+
+fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
+    let evidence = |items: &[&str]| {
+        ["restart", "fault_injection", "rollback_drill"]
+            .into_iter()
+            .chain(items.iter().copied())
+            .map(ToString::to_string)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let classes = [
+        (
+            SchedulerScenarioClass::WorkItemAutonomousContinuation,
+            2_000,
+            14 * 24 * 60 * 60,
+            evidence(&[
+                "concurrent_claim",
+                "reservation_conflict",
+                "yield_return",
+                "work_item_rollback",
+            ]),
+        ),
+        (
+            SchedulerScenarioClass::Settlement,
+            1_000,
+            7 * 24 * 60 * 60,
+            evidence(&[
+                "duplicate_settlement",
+                "missing_settlement_recovery",
+                "restart_before_settlement_commit",
+            ]),
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(scenario, minimum_shadow_samples, minimum_shadow_duration_secs, evidence)| {
+            (
+                scenario.as_str().to_string(),
+                RolloutClassEvidence {
+                    configured_mode: ScenarioMode::Authoritative,
+                    minimum_shadow_samples,
+                    minimum_shadow_duration_secs,
+                    observed_shadow_samples: minimum_shadow_samples,
+                    observed_shadow_duration_secs: minimum_shadow_duration_secs,
+                    maximum_p99_latency_regression_bps: 500,
+                    observed_p99_latency_regression_bps: 0,
+                    hard_blocker_count: 0,
+                    unresolved_divergence_count: 0,
+                    required_evidence: evidence.clone(),
+                    verified_evidence: evidence,
+                    rollback_policy: RollbackPolicy {
+                        trigger: RollbackTrigger::AnyHardBlocker,
+                        action: RollbackAction::StopAdmissionsAndRevert {
+                            target: ScenarioMode::Shadow,
+                        },
+                    },
+                },
+            )
+        },
+    )
+    .collect();
+    let manifest = RolloutManifest {
+        revision: 1,
+        preflight_revision: 1,
+        preflight_for_manifest_revision: 1,
+        preflight_succeeded: true,
+        protocol_build: "holon-test".into(),
+        schema_build: "scheduler-protocol-schema-v1".into(),
+        schema_revision: 1,
+        fixture_corpus_revision: "runtime-state-production-authority-v1".into(),
+        classes,
+        safety_divergence_bps: 0,
+        canonical_state_divergence_bps: 0,
+        allowed_observational_divergence: std::collections::BTreeMap::from([(
+            "diagnostic_order".into(),
+            ObservationalDivergenceAllowance {
+                maximum_rate_bps: 0,
+                reviewed_by: "runtime-test".into(),
+            },
+        )]),
+        approver: "runtime-test".into(),
+        approved_at: "2026-07-23T00:00:00Z".into(),
+    };
+    let commands = [
+        (
+            "open",
+            RolloutCommand::OpenPreflight {
+                expected_config_revision: 0,
+                manifest_revision: 1,
+            },
+            Decision::RolloutPreflightOpened,
+        ),
+        (
+            "complete",
+            RolloutCommand::CompletePreflight {
+                expected_config_revision: 0,
+                expected_preflight_revision: 1,
+                manifest: manifest.clone(),
+            },
+            Decision::RolloutPreflightCompleted,
+        ),
+        (
+            "install",
+            RolloutCommand::InstallManifest {
+                expected_config_revision: 0,
+                manifest,
+            },
+            Decision::ManifestInstalled,
+        ),
+        (
+            "protocol",
+            RolloutCommand::ConfigureProtocol {
+                expected_config_revision: 1,
+                mode: ProtocolMode::Authoritative,
+            },
+            Decision::ProtocolConfigured,
+        ),
+        (
+            "continuation-shadow",
+            RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: SchedulerScenarioClass::WorkItemAutonomousContinuation
+                    .as_str()
+                    .into(),
+                expected_config_revision: 2,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Shadow,
+            },
+            Decision::ScenarioAuthorityChanged,
+        ),
+        (
+            "continuation-authoritative",
+            RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: SchedulerScenarioClass::WorkItemAutonomousContinuation
+                    .as_str()
+                    .into(),
+                expected_config_revision: 3,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Authoritative,
+            },
+            Decision::ScenarioAuthorityChanged,
+        ),
+        (
+            "settlement-shadow",
+            RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: SchedulerScenarioClass::Settlement.as_str().into(),
+                expected_config_revision: 4,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Shadow,
+            },
+            Decision::ScenarioAuthorityChanged,
+        ),
+        (
+            "settlement-authoritative",
+            RolloutCommand::ChangeScenarioAuthority {
+                scenario_class: SchedulerScenarioClass::Settlement.as_str().into(),
+                expected_config_revision: 5,
+                expected_manifest_revision: 1,
+                expected_preflight_revision: 1,
+                mode: ScenarioMode::Authoritative,
+            },
+            Decision::ScenarioAuthorityChanged,
+        ),
+    ];
+    for (identity, command, expected) in commands {
+        let committed = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_scheduler_rollout_command(identity, &command, None)
+            .unwrap();
+        assert_eq!(committed.result.decision, expected);
+    }
 }
 
 struct OperatorInterjectionProbeProvider {
@@ -581,6 +767,265 @@ async fn run_loop_claim_fault_rolls_back_scheduler_events_with_claim_facts() {
 }
 
 #[tokio::test]
+async fn legacy_mode_with_production_capability_does_not_write_canonical_scheduler_state() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    let work_item = runtime
+        .create_work_item("legacy capability ceiling".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "remain on legacy authority".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id);
+    let message = runtime.enqueue(message).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized("default")
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+}
+
+#[tokio::test]
+async fn bootstrap_diagnostics_report_cross_model_scheduler_invariant_failures() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item("diagnose stuck activation".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claim and leave unsettled".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    finish_claimed_test_run(&runtime).await;
+
+    let mut completed = runtime
+        .inner
+        .runtime_db
+        .work_items()
+        .latest(&work_item.id)
+        .unwrap()
+        .unwrap();
+    let expected_revision = completed.revision;
+    completed.revision += 1;
+    completed.state = WorkItemState::Completed;
+    completed.updated_at = Utc::now();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .work_items()
+        .update_expected(&completed, expected_revision)
+        .unwrap());
+
+    let mut turn = crate::types::TurnRecord::new("default", "turn-stuck", 1);
+    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+    turn.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: crate::types::TurnTerminalKind::Completed,
+        reason: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    });
+    runtime.storage().append_turn(&turn).unwrap();
+
+    runtime
+        .record_scheduler_bootstrap_diagnostics()
+        .await
+        .unwrap();
+
+    let reasons = runtime
+        .storage()
+        .read_recent_events(64)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "scheduler_diagnostic")
+        .filter_map(|event| event.data["reason"].as_str().map(ToString::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(reasons.contains("running_activation_without_active_run"));
+    assert!(reasons.contains("completed_work_item_has_running_activation"));
+    assert!(reasons.contains("terminal_turn_has_dequeued_queue"));
+}
+
+#[tokio::test]
+async fn bootstrap_recovery_marks_dequeued_canonical_activation_as_missing_settlement() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "recover stale canonical claim".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claim before restart".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    finish_claimed_test_run(&runtime).await;
+
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(snapshot.slot, ActivationSlot::Idle);
+    assert_eq!(
+        snapshot
+            .activations
+            .get(&activation_id)
+            .map(|activation| activation.state.clone()),
+        Some(crate::domain::scheduler_protocol::ActivationState::SettlementMissing)
+    );
+    assert_eq!(
+        snapshot
+            .work
+            .get(&work_item.id)
+            .map(|demand| &demand.status),
+        Some(&WorkStatus::NeedsSettlement {
+            activation_id: activation_id.clone(),
+        })
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Aborted)
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(32)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_bootstrap_claim_recovered"
+                && event.data["message_id"] == message.id
+                && event.data["activation_id"] == activation_id
+        }));
+}
+
+#[tokio::test]
 async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -598,6 +1043,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     )
     .unwrap();
     runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
     let work_item = runtime
         .create_work_item("canonical production loop".into(), None, None, Vec::new())
         .await
@@ -645,6 +1091,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     );
     assert!(claimed.activations.contains_key(&activation_id));
 
+    finish_claimed_test_run(&runtime).await;
     runtime
         .commit_queue_settlement(
             QueueEntryRecord {
@@ -721,6 +1168,7 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_canonical_fac
         )
         .unwrap();
         runtime.set_scheduler_protocol_production_commands_enabled(true);
+        enable_production_protocol_authority(&runtime);
         let work_item = runtime
             .create_work_item(
                 "canonical settlement rollback".into(),
@@ -755,6 +1203,7 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_canonical_fac
             .transitions()
             .load_scheduler_protocol_snapshot("default")
             .unwrap();
+        finish_claimed_test_run(&runtime).await;
         runtime.inject_next_transition_fault(fault);
 
         let error = runtime

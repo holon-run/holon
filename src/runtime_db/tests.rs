@@ -1414,7 +1414,7 @@ mod tests {
             .initialize_scheduler_protocol_partition(agent_id, &initial)?;
         let committed = db
             .transitions()
-            .commit_scheduler_protocol_command(agent_id, &command, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
         assert!(committed.applied);
         assert!(!committed.replayed);
         assert_eq!(committed.result.decision, Decision::AuthorityIssued);
@@ -1429,7 +1429,7 @@ mod tests {
         );
         let replayed = reopened
             .transitions()
-            .commit_scheduler_protocol_command(agent_id, &command, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
         assert!(!replayed.applied);
         assert!(replayed.replayed);
         assert_eq!(replayed.result, committed.result);
@@ -1446,6 +1446,33 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(ledger_rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_protocol_command_requires_authoritative_rollout_scenario() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let agent_id = "agent-a";
+        let initial = scheduler_protocol_snapshot(1);
+        let command = scheduler_protocol_authority_command(agent_id, 1);
+        db.transitions()
+            .initialize_scheduler_protocol_partition(agent_id, &initial)?;
+
+        let error = db
+            .transitions()
+            .commit_scheduler_protocol_command(agent_id, &command, None)
+            .unwrap_err();
+
+        assert!(error.to_string().contains(
+            "scheduler protocol production commands require authoritative scenario \
+             work_item_autonomous_continuation"
+        ));
+        assert_eq!(
+            db.transitions()
+                .load_scheduler_protocol_snapshot(agent_id)?,
+            initial
+        );
         Ok(())
     }
 
@@ -1533,13 +1560,13 @@ mod tests {
         db.transitions()
             .initialize_scheduler_protocol_partition(agent_id, &initial)?;
         db.transitions()
-            .commit_scheduler_protocol_command(agent_id, &authority, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &authority, None)?;
         let after_authority = db
             .transitions()
             .load_scheduler_protocol_snapshot(agent_id)?;
         let error = db
             .transitions()
-            .commit_scheduler_protocol_command(
+            .commit_scheduler_protocol_command_unchecked_for_test(
                 agent_id,
                 &admission,
                 Some(TransitionFaultPoint::AfterCanonicalWrites),
@@ -1567,7 +1594,7 @@ mod tests {
 
         let committed = db
             .transitions()
-            .commit_scheduler_protocol_command(agent_id, &admission, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
         assert_eq!(committed.result.decision, Decision::Admitted);
         drop(db);
 
@@ -1609,12 +1636,12 @@ mod tests {
         db.transitions()
             .initialize_scheduler_protocol_partition(agent_id, &initial)?;
         db.transitions()
-            .commit_scheduler_protocol_command(agent_id, &authority, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &authority, None)?;
         db.transitions()
-            .commit_scheduler_protocol_command(agent_id, &admission, None)?;
-        let committed =
-            db.transitions()
-                .commit_scheduler_protocol_command(agent_id, &completion, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
+        let committed = db
+            .transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &completion, None)?;
         assert_eq!(committed.result.decision, Decision::Settled);
 
         let persisted = db
@@ -1657,12 +1684,12 @@ mod tests {
         db.transitions()
             .initialize_scheduler_protocol_partition(agent_id, &initial)?;
         db.transitions()
-            .commit_scheduler_protocol_command(agent_id, &authority, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &authority, None)?;
         db.transitions()
-            .commit_scheduler_protocol_command(agent_id, &admission, None)?;
-        let committed =
-            db.transitions()
-                .commit_scheduler_protocol_command(agent_id, &completion, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &admission, None)?;
+        let committed = db
+            .transitions()
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &completion, None)?;
         assert_eq!(committed.result.decision, Decision::Settled);
 
         let persisted = db
@@ -1699,7 +1726,11 @@ mod tests {
 
             let error = db
                 .transitions()
-                .commit_scheduler_protocol_command(agent_id, &command, Some(fault))
+                .commit_scheduler_protocol_command_unchecked_for_test(
+                    agent_id,
+                    &command,
+                    Some(fault),
+                )
                 .unwrap_err();
             assert!(
                 error
@@ -1732,7 +1763,7 @@ mod tests {
 
             let retried = db
                 .transitions()
-                .commit_scheduler_protocol_command(agent_id, &command, None)?;
+                .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
             assert!(retried.applied);
             assert!(!retried.replayed);
             assert_eq!(
@@ -1754,7 +1785,7 @@ mod tests {
         db.transitions()
             .initialize_scheduler_protocol_partition(agent_id, &initial)?;
         db.transitions()
-            .commit_scheduler_protocol_command(agent_id, &command, None)?;
+            .commit_scheduler_protocol_command_unchecked_for_test(agent_id, &command, None)?;
 
         let mut conflicting_command = command.clone();
         let ProtocolCommand::IssueActivationAuthority(conflicting_authority) =
@@ -1765,7 +1796,11 @@ mod tests {
         conflicting_authority.expected_dispatch_revision = 1;
         let error = db
             .transitions()
-            .commit_scheduler_protocol_command(agent_id, &conflicting_command, None)
+            .commit_scheduler_protocol_command_unchecked_for_test(
+                agent_id,
+                &conflicting_command,
+                None,
+            )
             .unwrap_err();
         let conflict = error
             .downcast_ref::<SchedulerProtocolCommandIdentityConflict>()

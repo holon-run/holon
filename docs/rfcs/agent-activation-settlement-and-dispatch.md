@@ -894,6 +894,11 @@ after restart. Command and migration result ledgers are loaded before accepting
 new commands so previously rejected stale commands and successful commands
 retain their original outcome.
 
+When bootstrap finds the persisted work-queue message still `Dequeued`, it
+records the missing settlement before terminally aborting that queue claim.
+This releases the canonical slot without replaying the original provider turn
+or tool calls.
+
 An optional serialized snapshot may be stored only as a versioned,
 checksummed recovery cache. Canonical rows remain the source of truth, and the
 cache must be discarded and rebuilt when its schema version, checksum, or
@@ -1229,6 +1234,13 @@ not the authority mechanism. In-flight commands complete only under their
 original authority and revision fences; they are never reinterpreted under the
 new mode.
 
+The production-command environment switch is only a capability ceiling. It
+must not grant authority by itself. A new WorkItem activation requires both
+the WorkItem autonomous-continuation class and the settlement class to be
+authoritative under the installed rollout state. Once admitted, terminal
+settlement remains drainable under the activation's original authority even
+if a hard blocker stops subsequent admissions.
+
 The blocker is an append-only authoritative fact containing the scenario
 class, stable blocker code, configuration/manifest/preflight revisions, and
 the trigger/action that caused rollback. It survives snapshot serialization
@@ -1312,6 +1324,14 @@ Required diagnostics include:
 - stale command conflicts;
 - incomplete rollback prerequisites; and
 - completion intent without terminal publication.
+
+Host supervision must also expose a top-level runtime-loop failure as a
+durable audit event and agent health signal before the failed loop exits.
+Recovery must rebuild a fresh Runtime from canonical storage; it must not rerun
+the same in-memory queue after a partially completed transition.
+Bootstrap diagnostics must report cross-model fractures such as a running
+activation without an active run, a completed WorkItem with a running
+activation, or a terminal Turn whose legacy queue record remains dequeued.
 
 ## Verification
 
