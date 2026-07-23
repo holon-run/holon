@@ -1828,6 +1828,15 @@ impl RuntimeHandle {
         if !self.scheduler_protocol_production_commands_enabled() {
             return Ok(Vec::new());
         }
+        if self
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_scenario_mode(scheduler::SETTLEMENT_SCENARIO)?
+            != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+        {
+            return Ok(Vec::new());
+        }
         let Some(message) = self.inner.storage.read_message_by_id(&record.message_id)? else {
             return Ok(Vec::new());
         };
