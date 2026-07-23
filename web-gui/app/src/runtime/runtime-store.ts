@@ -518,6 +518,7 @@ const GLOBAL_BACKFILL_LIMIT = 100;
 const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 const BRIEF_HYDRATION_RETRY_DELAYS_MS = [1_000, 2_000] as const;
+const BRIEF_HYDRATION_MAX_ATTEMPTS = 5;
 
 function nextClientGeneration(): number {
   clientGeneration += 1;
@@ -549,6 +550,28 @@ function clearInFlightHydration(): void {
   briefHydrationInFlight.clear();
   for (const timer of briefHydrationRetryTimers.values()) window.clearTimeout(timer);
   briefHydrationRetryTimers.clear();
+}
+
+function resetBriefHydrationLoading(set: StoreSet): void {
+  set((state) => {
+    let changed = false;
+    const sessionsByAgentId = { ...state.sessionsByAgentId };
+    for (const [agentId, session] of Object.entries(sessionsByAgentId)) {
+      const briefHydrationById = { ...session.briefHydrationById };
+      let modified = false;
+      for (const [briefId, view] of Object.entries(briefHydrationById)) {
+        if (view.status === "loading") {
+          briefHydrationById[briefId] = { ...view, status: "pending" };
+          modified = true;
+        }
+      }
+      if (modified) {
+        sessionsByAgentId[agentId] = { ...session, briefHydrationById };
+        changed = true;
+      }
+    }
+    return changed ? { sessionsByAgentId } : {};
+  });
 }
 
 function cancelClientGenerationWork(): void {
@@ -1297,6 +1320,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   setRuntimeConnection: async (config) => {
     nextClientGeneration();
     cancelClientGenerationWork();
+    resetBriefHydrationLoading(set);
     const normalizedBaseUrl = config.mode === "remote" ? normalizeConnectionBaseUrl(config.baseUrl) : "";
     const retainedToken =
       config.mode === "remote" &&
@@ -1490,6 +1514,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
     const generation = nextClientGeneration();
     cancelClientGenerationWork();
+    resetBriefHydrationLoading(set);
     closeEventStreamsForResume(set);
     // First invalidate transient layout/loading state before fresh projections arrive.
     set((state) => ({
@@ -2310,6 +2335,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       session.lastValidatedAt != null &&
       Date.now() - session.lastValidatedAt < AGENT_VALIDATION_TTL_MS;
     if (hasCachedContent && fresh && get().globalStreamStatus === "streaming") {
+      if (session && missingBriefIdsForHydration(session).length > 0) {
+        scheduleBriefHydration(get, set, agentId, displayLevel);
+      }
       startRuntimeSpan(trace, "agent.validate", { reason: "fresh_stream" }).end("skipped");
       return;
     }
@@ -4418,7 +4446,13 @@ function scheduleBriefHydration(
     inFlight = new Set<string>();
     briefHydrationInFlight.set(agentId, inFlight);
   }
-  const requestIds = briefIds.filter((briefId) => !inFlight.has(briefId));
+  const isForced = Boolean(options.forceIds);
+  const requestIds = briefIds.filter((briefId) => {
+    if (inFlight.has(briefId)) return false;
+    if (isForced) return true;
+    const attempt = session?.briefHydrationById[briefId]?.attempt ?? 0;
+    return attempt < BRIEF_HYDRATION_MAX_ATTEMPTS;
+  });
   if (!requestIds.length) return;
   requestIds.forEach((briefId) => inFlight.add(briefId));
   set((state) => updateBriefHydrationState(state, agentId, {
