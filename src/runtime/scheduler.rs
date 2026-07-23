@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::scheduler_protocol::SchedulerScenarioClass;
+use crate::domain::scheduler_protocol::{SchedulerScenarioClass, WorkStatus};
 use crate::domain::scheduler_semantic::{
     structural_semantic_proposal, SemanticProposalProviderConfig, SemanticProposalProviderIdentity,
     SemanticProposalResponse, SemanticValidationPolicy, SemanticWaitCandidate,
@@ -20,7 +20,7 @@ use crate::work_item_scheduling::WorkItemSchedulingProjection;
 use anyhow::bail;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ReducerOnlyCandidates;
@@ -121,6 +121,8 @@ pub(crate) struct SchedulerProjection {
     pub turn_in_progress: bool,
     pub runtime_error: bool,
     semantic_waits: Vec<WaitConditionRecord>,
+    activation_waits: Vec<WaitConditionRecord>,
+    canonical_work_statuses: Option<HashMap<String, WorkStatus>>,
     semantic_work_items: Vec<WorkItemSchedulingProjection>,
 }
 
@@ -237,6 +239,32 @@ impl SchedulerProjection {
         let waiting_work_item_scheduling_state =
             waiting_work_item_projection.map(|item| item.scheduling_state);
         let active_wait_conditions = storage.active_wait_conditions_for_agent(&snapshot.id)?;
+        let activation_waits = storage
+            .latest_wait_conditions()?
+            .into_iter()
+            .filter(|condition| condition.agent_id == snapshot.id)
+            .filter(|condition| {
+                condition.status == WaitConditionStatus::Active
+                    || (condition.status == WaitConditionStatus::Resolved
+                        && condition.kind == WaitConditionKind::Task)
+            })
+            .collect();
+        let canonical_work_statuses = storage
+            .runtime_db()?
+            .map(|runtime_db| {
+                runtime_db
+                    .transitions()
+                    .load_scheduler_protocol_snapshot_if_initialized(&snapshot.id)
+            })
+            .transpose()?
+            .flatten()
+            .map(|snapshot| {
+                snapshot
+                    .work
+                    .into_iter()
+                    .map(|(work_item_id, demand)| (work_item_id, demand.status))
+                    .collect()
+            });
         let active_work_item_waiting_intents = active_wait_conditions
             .iter()
             .filter(|condition| condition.work_item_id.is_some())
@@ -284,6 +312,8 @@ impl SchedulerProjection {
                 &storage.read_recent_briefs(64)?,
             ),
             semantic_waits: active_wait_conditions,
+            activation_waits,
+            canonical_work_statuses,
             semantic_work_items: work_queue.items,
         })
     }
@@ -933,10 +963,21 @@ pub(crate) fn decide_next_action(
             message,
             model_turn_allowed,
             continuation_resolution,
-        } => message_processing_decision(message, model_turn_allowed, continuation_resolution)
-            .boundary(boundary_label)
-            .evidence(format!("queue_len={}", projection.queue_len))
-            .evidence(format!("turn_in_progress={}", projection.turn_in_progress)),
+        } => {
+            let matching_wait_work_item_id = matching_wait_conditions(projection, message)
+                .into_iter()
+                .filter_map(|condition| condition.work_item_id.clone())
+                .next();
+            let mut decision =
+                message_processing_decision(message, model_turn_allowed, continuation_resolution)
+                    .boundary(boundary_label)
+                    .evidence(format!("queue_len={}", projection.queue_len))
+                    .evidence(format!("turn_in_progress={}", projection.turn_in_progress));
+            if decision.work_item_id.is_none() {
+                decision.work_item_id = matching_wait_work_item_id;
+            }
+            decision
+        }
         SchedulerInput::IdleSignal(signal) => {
             decide_idle_signal_action(projection, boundary_label, signal)
         }
@@ -1334,6 +1375,15 @@ pub(crate) fn canonical_activation_scenario(
         if matching_wait.is_some_and(|wait| wait.work_item_id.as_deref() != Some(work_item_id)) {
             bail!("canonical task rejoin wait owner does not match task WorkItem");
         }
+        if matching_wait.is_none()
+            && projection
+                .canonical_work_statuses
+                .as_ref()
+                .and_then(|statuses| statuses.get(work_item_id))
+                .is_some_and(|status| matches!(status, WorkStatus::Waiting { .. }))
+        {
+            return Ok(None);
+        }
         return Ok(Some(CanonicalActivationScenario::ExactTaskRejoin {
             task_id: task_id.clone(),
             work_item_id: work_item_id.to_string(),
@@ -1387,13 +1437,34 @@ fn matching_wait_conditions<'a>(
     message: &MessageEnvelope,
 ) -> Vec<&'a WaitConditionRecord> {
     projection
-        .semantic_waits
+        .activation_waits
         .iter()
         .filter(|condition| {
-            condition.status == WaitConditionStatus::Active
+            (condition.status == WaitConditionStatus::Active
+                || (message.kind == MessageKind::TaskResult
+                    && condition.status == WaitConditionStatus::Resolved
+                    && condition.kind == WaitConditionKind::Task
+                    && condition.work_item_id == message.work_item_id
+                    && resolved_task_wait_is_current(projection, condition)))
                 && message_matches_wait_condition(message, condition)
         })
         .collect()
+}
+
+fn resolved_task_wait_is_current(
+    projection: &SchedulerProjection,
+    condition: &WaitConditionRecord,
+) -> bool {
+    let Some(statuses) = &projection.canonical_work_statuses else {
+        return true;
+    };
+    let Some(work_item_id) = condition.work_item_id.as_deref() else {
+        return false;
+    };
+    matches!(
+        statuses.get(work_item_id),
+        Some(WorkStatus::Waiting { wait_id }) if wait_id == &condition.id
+    )
 }
 
 fn trusted_explicit_operator_binding(message: &MessageEnvelope) -> bool {
@@ -1442,14 +1513,7 @@ pub(crate) fn shadow_comparison_for_wait_resume(
     if !wait_resume_scenario_applies(projection, message) {
         return None;
     }
-    let matching_waits: Vec<&WaitConditionRecord> = projection
-        .semantic_waits
-        .iter()
-        .filter(|condition| {
-            condition.status == WaitConditionStatus::Active
-                && message_matches_wait_condition(message, condition)
-        })
-        .collect();
+    let matching_waits = matching_wait_conditions(projection, message);
     if matching_waits.is_empty() {
         return None;
     }
@@ -1529,13 +1593,10 @@ fn wait_resume_scenario_applies(
     matches!(
         message.kind,
         MessageKind::TaskResult | MessageKind::SystemTick
-    ) && projection.semantic_waits.iter().any(|condition| {
-        condition.status == WaitConditionStatus::Active
-            && message_matches_wait_condition(message, condition)
-    })
+    ) && !matching_wait_conditions(projection, message).is_empty()
 }
 
-fn message_matches_wait_condition(
+pub(super) fn message_matches_wait_condition(
     message: &MessageEnvelope,
     condition: &WaitConditionRecord,
 ) -> bool {
@@ -1574,6 +1635,18 @@ fn message_matches_wait_condition(
         (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
             if subsystem == "work_queue" {
                 return false;
+            }
+            if let Some(external_trigger_id) = message.source_refs.get("external_trigger_id") {
+                return condition.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        WakeSource::ExternalIngress {
+                            external_trigger_id: expected,
+                        } if expected.as_ref().is_none_or(|expected| {
+                            expected == external_trigger_id
+                        })
+                    )
+                });
             }
             condition
                 .wake_sources

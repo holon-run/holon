@@ -2115,6 +2115,226 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
 }
 
 #[tokio::test]
+async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[
+            SchedulerScenarioClass::ExactTaskRejoin,
+            SchedulerScenarioClass::ExactWaitResume,
+        ],
+    );
+    let work_item = runtime
+        .create_work_item("canonical wait settlement".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "wait for task".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-rejoin".into()),
+            "waiting for task-rejoin".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    finish_claimed_test_run(&runtime).await;
+    runtime
+        .commit_queue_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let wait_generation = work_item.revision + 1;
+    assert_eq!(settled.slot, ActivationSlot::Idle);
+    assert_eq!(settled.dispatch, AgentDispatchState::Open);
+    assert_eq!(
+        settled.work.get(&work_item.id).map(|demand| &demand.status),
+        Some(&WorkStatus::Waiting {
+            wait_id: registration.condition.id.clone(),
+        })
+    );
+    assert_eq!(
+        settled
+            .waits
+            .get(&registration.condition.id)
+            .map(|wait| wait.current_generation),
+        Some(wait_generation)
+    );
+    assert!(settled
+        .settlements
+        .contains_key(&canonical_settlement_id(&message.id)));
+    assert!(settled.missing_settlements.is_empty());
+
+    let mut rejoin = task_result_message("task-rejoin").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    rejoin.work_item_id = Some(work_item.id.clone());
+    rejoin.metadata = Some(serde_json::json!({
+        "task_id": "task-rejoin",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-rejoin",
+        "work_item_id": work_item.id,
+    }));
+    let rejoin = runtime.enqueue(rejoin).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let rejoined = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(matches!(
+        rejoined.slot,
+        ActivationSlot::Running {
+            ref work_item_id,
+            admitted_generation,
+            ..
+        } if work_item_id == &work_item.id && admitted_generation == wait_generation
+    ));
+    assert_eq!(
+        rejoined.waits[&registration.condition.id].generations[&wait_generation].state,
+        WaitState::Consumed
+    );
+    assert_eq!(
+        rejoined.waits[&registration.condition.id].generations[&wait_generation]
+            .consuming_activation_id,
+        Some(scheduler_executor::canonical_activation_id(&rejoin.id))
+    );
+
+    let external_wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("external-rejoin".into()),
+            "waiting for external-rejoin".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    finish_claimed_test_run(&runtime).await;
+    runtime
+        .commit_queue_settlement(
+            QueueEntryRecord {
+                message_id: rejoin.id.clone(),
+                agent_id: rejoin.agent_id.clone(),
+                priority: rejoin.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: rejoin.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+    let settled_rejoin = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let external_wait_generation = wait_generation + 1;
+    assert_eq!(settled_rejoin.slot, ActivationSlot::Idle);
+    assert_eq!(
+        settled_rejoin
+            .work
+            .get(&work_item.id)
+            .map(|demand| &demand.status),
+        Some(&WorkStatus::Waiting {
+            wait_id: external_wait.condition.id.clone(),
+        })
+    );
+    assert_eq!(
+        settled_rejoin
+            .waits
+            .get(&external_wait.condition.id)
+            .map(|wait| wait.current_generation),
+        Some(external_wait_generation)
+    );
+    assert_eq!(
+        settled_rejoin.waits[&registration.condition.id].generations[&wait_generation].state,
+        WaitState::Resolved
+    );
+    assert_eq!(
+        settled_rejoin.waits[&registration.condition.id].generations[&wait_generation]
+            .consuming_activation_id,
+        None
+    );
+    assert!(settled_rejoin
+        .settlements
+        .contains_key(&canonical_settlement_id(&rejoin.id)));
+}
+
+#[tokio::test]
 async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -2175,6 +2395,40 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         .transitions()
         .load_scheduler_protocol_snapshot("default")
         .unwrap();
+    runtime
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-rejoin".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: Some(work_item.id.clone()),
+                summary: Some("task-rejoin".into()),
+                detail: None,
+                recovery: None,
+            },
+            "task_completed",
+        )
+        .await
+        .unwrap();
+    assert!(runtime
+        .storage()
+        .active_wait_conditions_for_work_item("default", &work_item.id)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Resolved)
+    );
 
     let mut message = task_result_message("task-rejoin").with_admission(
         MessageDeliverySurface::TaskRejoin,
@@ -3002,6 +3256,54 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         )
         .await
         .unwrap();
+    let work_item = runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("settle exact completion brief after metadata update".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let scheduling_generation = work_item.revision.saturating_sub(1);
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition(
+            "default",
+            &Snapshot {
+                slot: ActivationSlot::Idle,
+                dispatch: AgentDispatchState::Open,
+                dispatch_revision: 0,
+                focus: None,
+                work: std::collections::BTreeMap::from([(
+                    work_item.id.clone(),
+                    WorkDemand {
+                        metadata_revision: work_item.revision,
+                        scheduling_generation,
+                        status: WorkStatus::Runnable,
+                        capabilities: Default::default(),
+                        locks: Default::default(),
+                        locality: "runtime".into(),
+                        cost_class: "default".into(),
+                    },
+                )]),
+                waits: Default::default(),
+                activations: Default::default(),
+                activation_authorities: Default::default(),
+                activation_admissions: Default::default(),
+                settlements: Default::default(),
+                missing_settlements: Default::default(),
+                rollout: Default::default(),
+                admitted_generations: Default::default(),
+                continuation_admissions: Default::default(),
+                activation_inputs: Default::default(),
+            },
+        )
+        .unwrap();
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::SystemTick,
@@ -3028,6 +3330,21 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         .unwrap();
     assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let activation = &claimed.activations[&activation_id];
+    assert_eq!(activation.admitted_generation, scheduling_generation);
+    assert_eq!(
+        claimed.activation_admissions[&activation_id]
+            .activation
+            .source_revision,
+        Some(work_item.revision)
+    );
+    assert_ne!(activation.admitted_generation, work_item.revision);
 
     runtime
         .begin_interactive_turn(Some(&message), None, None)

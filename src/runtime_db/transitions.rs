@@ -215,6 +215,65 @@ impl RuntimeDb {
     pub(crate) fn transitions(&self) -> RuntimeTransitionRepository<'_> {
         RuntimeTransitionRepository { db: self }
     }
+
+    pub fn apply_scheduler_rollout_command(
+        &self,
+        command_identity: &str,
+        command: &crate::domain::scheduler_protocol::RolloutCommand,
+    ) -> Result<SchedulerRolloutCommandReceipt> {
+        let committed =
+            self.transitions()
+                .commit_scheduler_rollout_command(command_identity, command, None)?;
+        Ok(SchedulerRolloutCommandReceipt {
+            command_identity: command_identity.to_string(),
+            applied: committed.applied,
+            replayed: committed.replayed,
+            decision: committed.result.decision,
+            conflict: committed.result.conflict,
+            diagnostics: committed.result.diagnostics,
+            fact_references: committed.result.fact_references,
+            pre_state_fence: committed.result.pre_state_fence,
+            post_state_fence: committed.result.post_state_fence,
+        })
+    }
+
+    pub fn apply_scheduler_rollout_commands(
+        &self,
+        commands: &[(String, crate::domain::scheduler_protocol::RolloutCommand)],
+    ) -> Result<Vec<SchedulerRolloutCommandReceipt>> {
+        self.transitions()
+            .commit_scheduler_rollout_commands(commands, None)?
+            .into_iter()
+            .zip(commands)
+            .map(|(committed, (command_identity, _))| {
+                Ok(SchedulerRolloutCommandReceipt {
+                    command_identity: command_identity.clone(),
+                    applied: committed.applied,
+                    replayed: committed.replayed,
+                    decision: committed.result.decision,
+                    conflict: committed.result.conflict,
+                    diagnostics: committed.result.diagnostics,
+                    fact_references: committed.result.fact_references,
+                    pre_state_fence: committed.result.pre_state_fence,
+                    post_state_fence: committed.result.post_state_fence,
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SchedulerRolloutCommandReceipt {
+    pub command_identity: String,
+    pub applied: bool,
+    pub replayed: bool,
+    pub decision: crate::domain::scheduler_protocol::Decision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<crate::domain::scheduler_protocol::ProtocolConflict>,
+    pub diagnostics: Vec<String>,
+    pub fact_references: Vec<String>,
+    pub pre_state_fence: serde_json::Value,
+    pub post_state_fence: serde_json::Value,
 }
 
 impl RuntimeTransitionRepository<'_> {

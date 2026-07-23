@@ -1,5 +1,9 @@
 use super::super::*;
 use super::support::*;
+use crate::domain::scheduler_protocol::{
+    ActivationSlot, AgentDispatchState, Snapshot, WaitGenerationRecord, WaitIdentity, WaitRecord,
+    WaitState, WorkDemand, WorkStatus,
+};
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
     WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
@@ -8,6 +12,7 @@ use crate::types::{
 use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
@@ -1357,6 +1362,190 @@ fn wait_resume_shadow_comparison_records_task_result_matching_active_wait() {
 }
 
 #[test]
+fn task_rejoin_comparison_retains_resolved_legacy_wait_identity() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    let mut resolved = storage
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == "wait-1")
+        .unwrap();
+    resolved.status = WaitConditionStatus::Resolved;
+    resolved.resolved_at = Some(Utc::now());
+    resolved.updated_at = Utc::now();
+    storage.append_wait_condition(&resolved).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    message.work_item_id = Some("wi-1".into());
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "task_result_wait_resume",
+    )
+    .message(&message)
+    .model_reentry(true)
+    .work_item_id("wi-1");
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::EXACT_TASK_REJOIN_SCENARIO]
+    );
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("resolved task wait should retain exact task rejoin evidence");
+    assert_eq!(comparison.scenario_class.as_str(), "exact_task_rejoin");
+    assert!(comparison.matched);
+    let candidate = serde_json::to_value(&comparison.shadow_candidate).unwrap();
+    assert_eq!(
+        candidate["consumed_wait_condition_ids"],
+        serde_json::json!(["wait-1"])
+    );
+    assert_eq!(candidate["binding_work_item_id"], "wi-1");
+}
+
+#[test]
+fn stale_resolved_task_wait_is_not_reused_after_work_item_moves_to_external_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-task", "default", Some("wi-1"), "task-1");
+    let mut resolved = storage
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == "wait-task")
+        .unwrap();
+    resolved.status = WaitConditionStatus::Resolved;
+    resolved.resolved_at = Some(Utc::now());
+    resolved.updated_at = Utc::now();
+    storage.append_wait_condition(&resolved).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-external".into(),
+            agent_id: "default".into(),
+            work_item_id: Some("wi-1".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("test".into()),
+            subject_ref: Some("external:next".into()),
+            waiting_for: "next external wake".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-next".into()),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+    let work_item = storage.latest_work_item("wi-1").unwrap().unwrap();
+    let canonical = Snapshot {
+        slot: ActivationSlot::Idle,
+        dispatch: AgentDispatchState::Awaiting {
+            wait: WaitIdentity {
+                id: "wait-external".into(),
+                generation: 2,
+            },
+        },
+        dispatch_revision: 1,
+        focus: Some(work_item.id.clone()),
+        work: BTreeMap::from([(
+            work_item.id.clone(),
+            WorkDemand {
+                metadata_revision: work_item.revision,
+                scheduling_generation: 2,
+                status: WorkStatus::Waiting {
+                    wait_id: "wait-external".into(),
+                },
+                capabilities: Default::default(),
+                locks: Default::default(),
+                locality: "runtime".into(),
+                cost_class: "default".into(),
+            },
+        )]),
+        waits: BTreeMap::from([(
+            "wait-external".into(),
+            WaitRecord {
+                current_generation: 2,
+                generations: BTreeMap::from([(
+                    2,
+                    WaitGenerationRecord {
+                        owner_work_item_id: work_item.id,
+                        state: WaitState::Active,
+                        trigger: None,
+                        consuming_activation_id: None,
+                    },
+                )]),
+            },
+        )]),
+        activations: Default::default(),
+        activation_authorities: Default::default(),
+        activation_admissions: Default::default(),
+        settlements: Default::default(),
+        missing_settlements: Default::default(),
+        rollout: Default::default(),
+        admitted_generations: Default::default(),
+        continuation_admissions: Default::default(),
+        activation_inputs: Default::default(),
+    };
+    storage
+        .runtime_db()
+        .unwrap()
+        .unwrap()
+        .transitions()
+        .initialize_scheduler_protocol_partition("default", &canonical)
+        .unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    message.work_item_id = Some("wi-1".into());
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "duplicate_task_result",
+    )
+    .message(&message)
+    .model_reentry(true)
+    .work_item_id("wi-1");
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        Vec::<crate::domain::scheduler_protocol::SchedulerScenarioClass>::new()
+    );
+    assert!(
+        scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision).is_none()
+    );
+}
+
+#[test]
 fn message_claim_authority_scope_is_derived_without_shadow_evidence() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -1464,6 +1653,140 @@ fn system_wait_resume_uses_exact_wait_resume_authority_class() {
     let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
         .expect("system tick matching an active wait should produce a comparison");
     assert_eq!(comparison.scenario_class.as_str(), "exact_wait_resume");
+}
+
+#[test]
+fn wake_hint_system_tick_matches_external_ingress_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "work-external", "default");
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-external".into(),
+            agent_id: "default".into(),
+            work_item_id: Some("work-external".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "external callback".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-external".into()),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "wake_hint".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    message
+        .source_refs
+        .insert("external_trigger_id".into(), "trigger-external".into());
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "external_wait_resume",
+    )
+    .message(&message)
+    .work_item_id("work-external")
+    .model_reentry(true);
+
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("wake hint matching an external wait should produce a comparison");
+    assert_eq!(comparison.scenario_class.as_str(), "exact_wait_resume");
+    assert!(comparison.matched);
+}
+
+#[test]
+fn message_decision_inherits_work_item_from_matching_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "work-external", "default");
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-external".into(),
+            agent_id: "default".into(),
+            work_item_id: Some("work-external".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "external callback".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-external".into()),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "wake_hint".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+    message
+        .source_refs
+        .insert("external_trigger_id".into(), "trigger-external".into());
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::SystemTick,
+        class: ContinuationClass::LocalContinuation,
+        model_reentry: true,
+        prior_closure_outcome: ClosureOutcome::Waiting,
+        prior_waiting_reason: Some(WaitingReason::AwaitingExternalChange),
+        matched_waiting_reason: true,
+        evidence: Vec::new(),
+    };
+
+    let decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::RunLoop,
+        scheduler::SchedulerInput::Message {
+            message: &message,
+            model_turn_allowed: true,
+            continuation_resolution: Some(&continuation),
+        },
+    );
+
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::StartModelTurn
+    );
+    assert_eq!(decision.work_item_id.as_deref(), Some("work-external"));
+    let comparison = scheduler::shadow_comparison_for_wait_resume(&projection, &message, &decision)
+        .expect("matching wait should produce a comparison");
+    assert!(comparison.matched);
 }
 
 #[test]

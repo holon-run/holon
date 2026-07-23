@@ -1037,85 +1037,123 @@ impl RuntimeTransitionRepository<'_> {
         command: &RolloutCommand,
         fault: Option<TransitionFaultPoint>,
     ) -> Result<SchedulerRolloutTransitionCommit> {
-        if command_identity.is_empty() {
-            bail!("scheduler rollout command requires a non-empty identity");
-        }
-        let command_kind = rollout_command_kind(command);
-        let payload_hash = canonical_rollout_command_hash(command_kind, command)?;
-
         let outcome = self.db.transaction(|tx| {
-            if let Some(stored) =
-                stored_rollout_command_result_tx(tx, command_kind, command_identity)?
-            {
-                if stored.payload_hash != payload_hash {
-                    let conflict = insert_command_identity_conflict_attempt_tx(
-                        tx,
-                        "global_rollout",
-                        "global",
-                        command_kind,
-                        command_identity,
-                        &stored.payload_hash,
-                        &payload_hash,
-                    )?;
-                    return Ok(CommandTransactionOutcome::Conflict(conflict));
-                }
-                return Ok(CommandTransactionOutcome::Commit(
-                    SchedulerRolloutTransitionCommit {
-                        applied: false,
-                        replayed: true,
-                        result: stored.result,
-                    },
-                ));
-            }
-
-            let rollout = load_rollout(tx)?;
-            let snapshot = rollout_snapshot(rollout.clone());
-            let outcome = scheduler_protocol::reduce_rollout_command(&snapshot, command);
-            scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
-                anyhow!("scheduler rollout reducer produced invalid state: {error}")
-            })?;
-            inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
-
-            if outcome.outcome.decision != Decision::Rejected {
-                persist_rollout_tx(tx, &rollout, &outcome.outcome.snapshot.rollout)?;
-            }
-            inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-
-            let decision = outcome.outcome.decision.clone();
-            let result = SchedulerProtocolCommandResult {
-                decision: decision.clone(),
-                conflict: outcome.conflict,
-                transitions: outcome.outcome.transitions,
-                diagnostics: outcome.outcome.diagnostics,
-                fact_references: decision_fact_references(
-                    &decision,
-                    rollout_command_fact_references(command, &outcome.outcome.snapshot.rollout),
-                ),
-                pre_state_fence: rollout_fence(&rollout),
-                post_state_fence: rollout_fence(&outcome.outcome.snapshot.rollout),
-            };
-            insert_rollout_command_result_tx(
-                tx,
-                command_kind,
-                command_identity,
-                &payload_hash,
-                &result,
-            )?;
-            inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
-
-            Ok(CommandTransactionOutcome::Commit(
-                SchedulerRolloutTransitionCommit {
-                    applied: true,
-                    replayed: false,
-                    result,
-                },
-            ))
+            apply_scheduler_rollout_command_tx(tx, command_identity, command, fault)
         })?;
         match outcome {
             CommandTransactionOutcome::Commit(commit) => Ok(commit),
             CommandTransactionOutcome::Conflict(conflict) => Err(conflict.into()),
         }
     }
+
+    pub(crate) fn commit_scheduler_rollout_commands(
+        &self,
+        commands: &[(String, RolloutCommand)],
+        fault: Option<TransitionFaultPoint>,
+    ) -> Result<Vec<SchedulerRolloutTransitionCommit>> {
+        if commands.is_empty() {
+            bail!("scheduler rollout command list must not be empty");
+        }
+        self.db.transaction(|tx| {
+            let mut commits = Vec::with_capacity(commands.len());
+            for (command_identity, command) in commands {
+                let commit =
+                    match apply_scheduler_rollout_command_tx(tx, command_identity, command, fault)?
+                    {
+                        CommandTransactionOutcome::Commit(commit) => commit,
+                        CommandTransactionOutcome::Conflict(conflict) => {
+                            return Err(conflict.into());
+                        }
+                    };
+                if commit.result.decision == Decision::Rejected {
+                    let detail = commit
+                        .result
+                        .conflict
+                        .as_ref()
+                        .map(|conflict| format!("{:?}: {}", conflict.kind, conflict.code))
+                        .unwrap_or_else(|| "reducer rejected command".to_string());
+                    bail!(
+                        "scheduler rollout command {} was rejected: {}",
+                        command_identity,
+                        detail
+                    );
+                }
+                commits.push(commit);
+            }
+            Ok(commits)
+        })
+    }
+}
+
+fn apply_scheduler_rollout_command_tx(
+    tx: &Transaction<'_>,
+    command_identity: &str,
+    command: &RolloutCommand,
+    fault: Option<TransitionFaultPoint>,
+) -> Result<CommandTransactionOutcome<SchedulerRolloutTransitionCommit>> {
+    if command_identity.is_empty() {
+        bail!("scheduler rollout command requires a non-empty identity");
+    }
+    let command_kind = rollout_command_kind(command);
+    let payload_hash = canonical_rollout_command_hash(command_kind, command)?;
+
+    if let Some(stored) = stored_rollout_command_result_tx(tx, command_kind, command_identity)? {
+        if stored.payload_hash != payload_hash {
+            let conflict = insert_command_identity_conflict_attempt_tx(
+                tx,
+                "global_rollout",
+                "global",
+                command_kind,
+                command_identity,
+                &stored.payload_hash,
+                &payload_hash,
+            )?;
+            return Ok(CommandTransactionOutcome::Conflict(conflict));
+        }
+        return Ok(CommandTransactionOutcome::Commit(
+            SchedulerRolloutTransitionCommit {
+                applied: false,
+                replayed: true,
+                result: stored.result,
+            },
+        ));
+    }
+
+    let rollout = load_rollout(tx)?;
+    let snapshot = rollout_snapshot(rollout.clone());
+    let outcome = scheduler_protocol::reduce_rollout_command(&snapshot, command);
+    scheduler_protocol::assert_invariants(&outcome.outcome.snapshot)
+        .map_err(|error| anyhow!("scheduler rollout reducer produced invalid state: {error}"))?;
+    inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+
+    if outcome.outcome.decision != Decision::Rejected {
+        persist_rollout_tx(tx, &rollout, &outcome.outcome.snapshot.rollout)?;
+    }
+    inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+    let decision = outcome.outcome.decision.clone();
+    let result = SchedulerProtocolCommandResult {
+        decision: decision.clone(),
+        conflict: outcome.conflict,
+        transitions: outcome.outcome.transitions,
+        diagnostics: outcome.outcome.diagnostics,
+        fact_references: decision_fact_references(
+            &decision,
+            rollout_command_fact_references(command, &outcome.outcome.snapshot.rollout),
+        ),
+        pre_state_fence: rollout_fence(&rollout),
+        post_state_fence: rollout_fence(&outcome.outcome.snapshot.rollout),
+    };
+    insert_rollout_command_result_tx(tx, command_kind, command_identity, &payload_hash, &result)?;
+    inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
+
+    Ok(CommandTransactionOutcome::Commit(
+        SchedulerRolloutTransitionCommit {
+            applied: true,
+            replayed: false,
+            result,
+        },
+    ))
 }
 
 fn decision_fact_references(decision: &Decision, references: Vec<String>) -> Vec<String> {

@@ -213,7 +213,7 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
         "expected child agent summary while delegated task runs"
     );
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(30), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed

@@ -24,12 +24,26 @@ impl RuntimeHandle {
         };
         let continuation_trigger =
             ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref));
+        let matching_wait_work_item_id = if continuation_trigger.is_some() {
+            let matching_waits = self
+                .inner
+                .storage
+                .active_wait_conditions_for_agent(&message.agent_id)?
+                .into_iter()
+                .filter(|condition| scheduler::message_matches_wait_condition(message, condition))
+                .collect::<Vec<_>>();
+            (matching_waits.len() == 1)
+                .then(|| matching_waits[0].work_item_id.clone())
+                .flatten()
+        } else {
+            None
+        };
+        let continuation_work_item_id = matching_wait_work_item_id
+            .as_deref()
+            .or(scheduler_state.current_turn_work_item_id.as_deref())
+            .or(scheduler_state.current_work_item_id.as_deref());
         let continuation_resolution = continuation_trigger.as_ref().map(|trigger| {
-            resolve_continuation(
-                &prior_closure,
-                trigger,
-                scheduler_state.current_work_item_id.as_deref(),
-            )
+            resolve_continuation(&prior_closure, trigger, continuation_work_item_id)
         });
         let model_turn_allowed = !matches!(scheduler_state.status, AgentStatus::Stopped);
         Ok(MessageDispatchPlan {

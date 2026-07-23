@@ -11,6 +11,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use clap::ValueEnum;
+use serde::Deserialize;
 
 use holon::{
     client::{normalize_control_base_url, LocalClient, LocalHttpError},
@@ -41,7 +42,7 @@ use holon::{
     onboarding_tui::run_onboarding_tui,
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
-    runtime::maybe_enqueue_first_run_intro,
+    runtime::{maybe_enqueue_first_run_intro, seed_scheduler_terminal_recovery_fixture},
     runtime_db::{RuntimeDb, RuntimeDbLock},
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
@@ -177,7 +178,11 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         return run_tui(config, *no_alt_screen, Some(client)).await;
     }
 
-    let config = AppConfig::load()?;
+    let config = if runtime_command_uses_config_inspection(&command) {
+        AppConfig::load_for_config_inspection()?
+    } else {
+        AppConfig::load()?
+    };
     match command {
         Commands::Serve { options } => serve(config, options).await,
         Commands::Daemon { command } => handle_daemon_command(config, command).await,
@@ -267,6 +272,16 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Onboard { .. } => unreachable!("onboard command is handled before runtime load"),
         Commands::Config { .. } => unreachable!("config commands are handled separately"),
     }
+}
+
+fn runtime_command_uses_config_inspection(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Debug {
+            command: DebugCommands::SchedulerRolloutApply { .. }
+                | DebugCommands::SchedulerRecoveryFixture { .. }
+        }
+    )
 }
 
 async fn handle_memory_index_command(
@@ -1477,6 +1492,80 @@ mod tests {
     }
 
     #[test]
+    fn hidden_scheduler_rollout_apply_parses_input_and_json() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-rollout-apply",
+            "--input",
+            "/tmp/rollout.json",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command: DebugCommands::SchedulerRolloutApply { input, json },
+        } = cli.command
+        else {
+            panic!("expected hidden scheduler-rollout-apply command");
+        };
+        assert_eq!(input, PathBuf::from("/tmp/rollout.json"));
+        assert!(json);
+    }
+
+    #[test]
+    fn hidden_scheduler_recovery_fixture_parses_objective() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-recovery-fixture",
+            "--agent",
+            "runner",
+            "--objective",
+            "terminal before settlement",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::SchedulerRecoveryFixture {
+                    agent,
+                    objective,
+                    json,
+                },
+        } = cli.command
+        else {
+            panic!("expected hidden scheduler-recovery-fixture command");
+        };
+        assert_eq!(agent.as_deref(), Some("runner"));
+        assert_eq!(objective, "terminal before settlement");
+        assert!(json);
+    }
+
+    #[test]
+    fn hidden_offline_scheduler_commands_skip_runtime_model_resolution() {
+        for args in [
+            vec![
+                "holon",
+                "debug",
+                "scheduler-rollout-apply",
+                "--input",
+                "/tmp/rollout.json",
+            ],
+            vec![
+                "holon",
+                "debug",
+                "scheduler-recovery-fixture",
+                "--objective",
+                "terminal before settlement",
+            ],
+        ] {
+            let cli = Cli::parse_from(args);
+            assert!(runtime_command_uses_config_inspection(&cli.command));
+        }
+
+        let cli = Cli::parse_from(["holon", "debug", "scheduler-recovery"]);
+        assert!(!runtime_command_uses_config_inspection(&cli.command));
+    }
+
+    #[test]
     fn debug_performance_command_parses_json_flag() {
         let cli = Cli::parse_from(["holon", "debug", "performance", "--json"]);
         let Commands::Debug {
@@ -2216,6 +2305,70 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
         DebugCommands::SchedulerRecovery { agent, json } => {
             print_scheduler_recovery_report(&config, agent, json)
         }
+        DebugCommands::SchedulerRolloutApply { input, json } => {
+            apply_scheduler_rollout_command(&config, &input, json)
+        }
+        DebugCommands::SchedulerRecoveryFixture {
+            agent,
+            objective,
+            json,
+        } => seed_scheduler_recovery_fixture(&config, agent, objective, json).await,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SchedulerRolloutApplyInput {
+    commands: Vec<SchedulerRolloutApplyCommand>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SchedulerRolloutApplyCommand {
+    command_identity: String,
+    command: holon::domain::scheduler_protocol::RolloutCommand,
+}
+
+fn apply_scheduler_rollout_command(config: &AppConfig, input: &Path, json: bool) -> Result<()> {
+    holon::runtime::require_scheduler_acceptance_fixtures_enabled()?;
+    let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+        .context("scheduler rollout apply requires holon serve to be stopped")?;
+    let request: SchedulerRolloutApplyInput = serde_json::from_slice(
+        &fs::read(input).with_context(|| format!("reading {}", input.display()))?,
+    )
+    .with_context(|| format!("parsing scheduler rollout command {}", input.display()))?;
+    let db = RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+    if request.commands.is_empty() {
+        return Err(anyhow!("scheduler rollout command list must not be empty"));
+    }
+    let commands = request
+        .commands
+        .into_iter()
+        .map(|request| (request.command_identity, request.command))
+        .collect::<Vec<_>>();
+    let receipts = db.apply_scheduler_rollout_commands(&commands)?;
+    if json {
+        print_json(&serde_json::json!({ "receipts": receipts }))
+    } else {
+        println!("{}", serde_json::to_string_pretty(&receipts)?);
+        Ok(())
+    }
+}
+
+async fn seed_scheduler_recovery_fixture(
+    config: &AppConfig,
+    agent: Option<String>,
+    objective: String,
+    json: bool,
+) -> Result<()> {
+    holon::runtime::require_scheduler_acceptance_fixtures_enabled()?;
+    let _maintenance_lock = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+        .context("scheduler recovery fixture requires holon serve to be stopped")?;
+    let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
+    let fixture = seed_scheduler_terminal_recovery_fixture(config, &agent_id, objective).await?;
+    if json {
+        print_json(&serde_json::to_value(fixture)?)
+    } else {
+        println!("{}", serde_json::to_string_pretty(&fixture)?);
+        Ok(())
     }
 }
 

@@ -574,7 +574,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             return Ok(None);
         }
         let task = dispatch_plan.task.as_ref().ok().and_then(Option::as_ref);
-        let Some(scenario) = scheduler::canonical_activation_scenario(
+        let Some(mut scenario) = scheduler::canonical_activation_scenario(
             projection,
             message,
             dispatch_plan.continuation_resolution.as_ref(),
@@ -596,6 +596,50 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
         }) {
             return Ok(None);
+        }
+
+        use crate::domain::scheduler_protocol::WorkStatus;
+
+        let existing = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?;
+        if let scheduler::CanonicalActivationScenario::ExactTaskRejoin {
+            work_item_id,
+            wait_id,
+            ..
+        } = &mut scenario
+        {
+            if wait_id.is_none() {
+                let authoritative_wait_id = existing
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.work.get(work_item_id))
+                    .and_then(|demand| match &demand.status {
+                        WorkStatus::Waiting { wait_id } => Some(wait_id),
+                        _ => None,
+                    });
+                if let Some(authoritative_wait_id) = authoritative_wait_id {
+                    let resolved_legacy_wait_matches = self
+                        .runtime
+                        .inner
+                        .storage
+                        .latest_wait_conditions()?
+                        .into_iter()
+                        .any(|condition| {
+                            condition.id == *authoritative_wait_id
+                                && condition.agent_id == message.agent_id
+                                && condition.work_item_id.as_deref() == Some(work_item_id.as_str())
+                                && condition.status == crate::types::WaitConditionStatus::Resolved
+                                && condition.kind == crate::types::WaitConditionKind::Task
+                                && scheduler::message_matches_wait_condition(message, &condition)
+                        });
+                    if resolved_legacy_wait_matches {
+                        *wait_id = Some(authoritative_wait_id.clone());
+                    }
+                }
+            }
         }
 
         let work_item_id = scenario.work_item_id();
@@ -635,15 +679,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             AdmitActivationCommand, AgentActivation, AgentDispatchState,
             IssueActivationAuthorityCommand, PreemptionPolicy, ProtocolCommand,
             RegisterWorkDemandCommand, RolloutState, Snapshot, TriggerWaitCommand, WaitResumeClaim,
-            WorkDemand, WorkStatus,
+            WorkDemand,
         };
 
-        let existing = self
-            .runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)?;
         if let Some(snapshot) = existing.as_ref() {
             if let Some(activation) = snapshot.activations.get(&activation_id) {
                 let slot_matches = matches!(

@@ -48,7 +48,16 @@ deepseek/deepseek-v4-flash
 
 The suite requires network access and provider quota, so ordinary pull-request
 CI only validates its manifest and Python runner. Each release candidate runs
-the real suite through the protected `Release E2E` workflow.
+the core cases plus all scheduler-tagged rollout cases through the protected
+`Release E2E` workflow.
+
+The scheduler rollout cases use hidden offline fixtures guarded by both
+`HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true` and
+`HOLON_SCHEDULER_ACCEPTANCE_FIXTURES=true`. Their manifest is explicitly
+synthetic acceptance data: it exercises the production reducer, revision
+fences, atomic batch application, rejection of insufficient evidence, cutover,
+and rollback. It does not claim that one Docker run collected the production
+sample counts or the full fleet evidence corpus encoded by those gates.
 
 Run locally with a credential environment variable:
 
@@ -165,6 +174,19 @@ counts, cleanup status, and previous image when supplied.
 5. Assert the required tools succeeded and the durable completion result
    contains the generated completion marker.
 
+#### Scheduler rollout cases
+
+The protected release run also selects every case tagged `scheduler`:
+
+1. `scheduler-autonomous-legacy` preserves the legacy comparison baseline.
+2. `scheduler-rollout-authoritative-autonomous` validates shadow evidence,
+   per-scenario authoritative cutover, task-result and external-wait
+   continuations, exact completion delivery binding, restart persistence, and
+   rollback.
+3. `scheduler-terminal-before-settlement-restart` uses a checked-in offline
+   fault fixture to validate bootstrap reconciliation and second-restart
+   idempotence without issuing a model prompt.
+
 These cases validate the complete boundary:
 
 ```text
@@ -183,7 +205,8 @@ jobs:
 1. Build and push `candidate-<git-sha>` with OCI version, revision, and source
    labels.
 2. Pull and test the resulting immutable digest in the `release-e2e`
-   environment using `DEEPSEEK_API_KEY`.
+   environment using `DEEPSEEK_API_KEY`, selecting all core and
+   scheduler-tagged cases in one attested runner invocation.
 
 The E2E job has read-only repository/package permissions and cannot publish a
 GitHub release, promote `latest`, or update Homebrew. Evidence is retained as a
