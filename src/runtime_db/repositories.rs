@@ -3477,6 +3477,29 @@ pub(crate) fn try_claim_queued_message_tx(
     try_transition_claimable_message_tx(tx, record, QueueEntryStatus::Dequeued, true)
 }
 
+pub(crate) fn queue_entry_is_claimable_tx(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+    include_interrupted: bool,
+) -> Result<bool> {
+    let status = tx
+        .query_row(
+            "SELECT status
+             FROM queue_entries
+             WHERE message_id = ?1 AND agent_id = ?2",
+            params![record.message_id, record.agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(status.is_some_and(|status| {
+        status == enum_string(&QueueEntryStatus::Queued).expect("queue status serializes")
+            || (include_interrupted
+                && status
+                    == enum_string(&QueueEntryStatus::Interrupted)
+                        .expect("queue status serializes"))
+    }))
+}
+
 pub(crate) fn try_interject_queued_message_tx(
     tx: &Transaction<'_>,
     record: &QueueEntryRecord,

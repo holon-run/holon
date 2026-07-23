@@ -78,6 +78,9 @@ struct CanonicalClaimPlan {
     scheduler_claim_work_item: Option<crate::types::WorkItemRecord>,
     bootstrap: Option<crate::domain::scheduler_protocol::Snapshot>,
     commands: Vec<crate::domain::scheduler_protocol::ProtocolCommand>,
+    rollout_expectations: Vec<
+        crate::runtime_db::transitions::scheduler_protocol_repository::SchedulerRolloutExpectation,
+    >,
 }
 
 pub(super) struct SchedulerDecisionExecutor<'a> {
@@ -353,6 +356,18 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &candidate.message,
             dispatch_plan.continuation_resolution.as_ref(),
         );
+        let production_commands_enabled = self
+            .runtime
+            .scheduler_protocol_production_commands_enabled();
+        let mut scheduler_rollout_expectations = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .scheduler_rollout_expectations(
+                &scheduler_authority_scenarios,
+                production_commands_enabled,
+            )?;
         let shadow_comparison = scheduler::shadow_comparison_for_message_admission(
             &projection,
             &candidate.message,
@@ -392,28 +407,41 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &persisted_message,
         )?
         .map(scheduler_semantic_shadow_command);
-        let canonical_claim =
-            match self.canonical_activation_plan(&projection, &persisted_message, &dispatch_plan) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    if let Some(ambiguous) =
-                        error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
-                    {
-                        scheduler::append_ambiguous_wait_advisory(
-                            &self.runtime.inner.storage,
-                            &persisted_message,
-                            &ambiguous.wait_condition_ids,
-                        )?;
-                        scheduler::append_scheduling_advisories(
-                            &self.runtime.inner.storage,
-                            &candidate.prior_state,
-                            candidate.queue_len,
-                        )?;
-                        return Ok(RunLoopPoll::Idle);
-                    }
-                    return Err(error);
+        let canonical_claim = match self.canonical_activation_plan(
+            &projection,
+            &persisted_message,
+            &dispatch_plan,
+            production_commands_enabled,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                if let Some(ambiguous) = error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
+                {
+                    scheduler::append_ambiguous_wait_advisory(
+                        &self.runtime.inner.storage,
+                        &persisted_message,
+                        &ambiguous.wait_condition_ids,
+                    )?;
+                    scheduler::append_scheduling_advisories(
+                        &self.runtime.inner.storage,
+                        &candidate.prior_state,
+                        candidate.queue_len,
+                    )?;
+                    return Ok(RunLoopPoll::Idle);
                 }
-            };
+                return Err(error);
+            }
+        };
+        if let Some(plan) = canonical_claim.as_ref() {
+            for expectation in &plan.rollout_expectations {
+                if !scheduler_rollout_expectations
+                    .iter()
+                    .any(|candidate| candidate.scenario_class == expectation.scenario_class)
+                {
+                    scheduler_rollout_expectations.push(expectation.clone());
+                }
+            }
+        }
         scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -468,6 +496,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         .map(|plan| plan.commands.clone())
                         .unwrap_or_default(),
                     scheduler_authority_scenarios,
+                    scheduler_rollout_expectations,
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(guard.state.clone())),
                         record: Box::new(running_state.clone()),
@@ -496,6 +525,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     brief_evidence: Vec::new(),
                 },
             )?;
+            if commit.scheduler_authority_blocked {
+                commit.effects.agent_state = None;
+                drop(guard);
+                self.runtime.apply_transition_commit(commit).await;
+                return Ok(RunLoopPoll::Idle);
+            }
             if !commit.applied {
                 let _ = guard.queue.pop_if_next(&candidate.message.id);
                 guard.state.pending = guard.queue.len();
@@ -533,11 +568,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         projection: &scheduler::SchedulerProjection,
         message: &MessageEnvelope,
         dispatch_plan: &MessageDispatchPlan,
+        production_commands_enabled: bool,
     ) -> Result<Option<CanonicalClaimPlan>> {
-        if !self
-            .runtime
-            .scheduler_protocol_production_commands_enabled()
-        {
+        if !production_commands_enabled {
             return Ok(None);
         }
         let task = dispatch_plan.task.as_ref().ok().and_then(Option::as_ref);
@@ -550,21 +583,18 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         else {
             return Ok(None);
         };
-        if self
+        let rollout_expectations = self
             .runtime
             .inner
             .runtime_db
             .transitions()
-            .scheduler_scenario_mode(scenario.scenario_class())?
-            != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-            || self
-                .runtime
-                .inner
-                .runtime_db
-                .transitions()
-                .scheduler_scenario_mode(scheduler::SETTLEMENT_SCENARIO)?
-                != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-        {
+            .scheduler_rollout_expectations(
+                &[scenario.scenario_class(), scheduler::SETTLEMENT_SCENARIO],
+                production_commands_enabled,
+            )?;
+        if rollout_expectations.iter().any(|expectation| {
+            expectation.mode != crate::domain::scheduler_protocol::ScenarioMode::Authoritative
+        }) {
             return Ok(None);
         }
 
@@ -645,6 +675,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         .then_some(work_item),
                         bootstrap: None,
                         commands: Vec::new(),
+                        rollout_expectations,
                     }));
                 }
                 return Err(anyhow!(
@@ -887,6 +918,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .then_some(work_item),
             bootstrap,
             commands,
+            rollout_expectations,
         }))
     }
 

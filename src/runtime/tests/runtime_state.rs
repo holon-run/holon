@@ -120,6 +120,11 @@ fn enable_production_protocol_authority_for(
                 "restart_before_settlement_commit",
             ]),
         ),
+        SchedulerScenarioClass::ReducerOnlyCandidates => (
+            10_000,
+            72 * 60 * 60,
+            evidence(&["deterministic_replay", "duplicate_command_idempotency"]),
+        ),
         scenario => panic!("unsupported runtime production authority scenario {scenario:?}"),
     };
     let scenarios = [
@@ -1818,6 +1823,7 @@ async fn stale_bootstrap_recovery_command_cannot_settle_successor_generation() {
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: vec![stale_command],
             scheduler_authority_scenarios: Vec::new(),
+            scheduler_rollout_expectations: Vec::new(),
             agent_state: None,
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
@@ -3836,12 +3842,14 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
                 ))
                 .unwrap();
         }
+        runtime.set_scheduler_protocol_production_commands_enabled(true);
+        enable_production_protocol_authority_for(&runtime, &[scenario_class]);
         let connection = runtime.inner.runtime_db.connection().unwrap();
         connection
             .execute(
                 "UPDATE scheduler_protocol_config
                  SET protocol_mode = 'shadow',
-                     config_revision = 1,
+                     config_revision = config_revision + 1,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE config_id = 1",
                 [],
@@ -3849,10 +3857,10 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
             .unwrap();
         connection
             .execute(
-                "INSERT INTO scheduler_scenario_authorities (
-                   scenario_class, mode, rollback_target,
-                   manifest_revision, preflight_revision, updated_at
-                 ) VALUES (?1, 'shadow', 'off', NULL, NULL, CURRENT_TIMESTAMP)",
+                "UPDATE scheduler_scenario_authorities
+                 SET mode = 'shadow',
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE scenario_class = ?1",
                 [scenario_class.as_str()],
             )
             .unwrap();
@@ -3863,7 +3871,7 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
             .execute(
                 "UPDATE scheduler_protocol_config
                  SET protocol_mode = 'authoritative',
-                     config_revision = 2,
+                     config_revision = config_revision + 1,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE config_id = 1",
                 [],
@@ -3879,26 +3887,43 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
                 [scenario_class.as_str()],
             )
             .unwrap();
+        let authority_revision: i64 = connection
+            .query_row(
+                "SELECT config_revision
+                 FROM scheduler_protocol_config
+                 WHERE config_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         runtime.omit_next_scheduler_claim_shadow_comparison();
 
-        let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-        {
-            Ok(_) => panic!(
-                "expected missing authoritative evidence to reject {}",
-                scenario_class.as_str()
-            ),
-            Err(error) => error,
-        };
-
-        assert!(
-            error
-                .to_string()
-                .contains("requires matched canonical evidence"),
-            "unexpected {} error: {error:#}",
-            scenario_class.as_str()
-        );
+            .unwrap();
+        match poll {
+            scheduler_executor::RunLoopPoll::Idle => {}
+            scheduler_executor::RunLoopPoll::Message(scheduled) => {
+                panic!(
+                    "missing authoritative executor evidence for {} unexpectedly claimed {}",
+                    scenario_class.as_str(),
+                    scheduled.message.id
+                )
+            }
+            scheduler_executor::RunLoopPoll::Shutdown => {
+                panic!(
+                    "missing authoritative executor evidence for {} unexpectedly shut down",
+                    scenario_class.as_str()
+                )
+            }
+            scheduler_executor::RunLoopPoll::Stopped(_, queue_len) => {
+                panic!(
+                    "missing authoritative executor evidence for {} unexpectedly stopped with {queue_len} queued messages",
+                    scenario_class.as_str()
+                )
+            }
+        }
         assert_eq!(runtime.agent_state().await.unwrap(), state_before_claim);
         assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
         let entries = runtime
@@ -3918,6 +3943,31 @@ async fn authoritative_claim_scope_rejects_missing_executor_evidence_without_par
             )
             .unwrap();
         assert_eq!(comparison_count, 0);
+        let (
+            scenario_mode,
+            blocker_config_revision,
+            blocker_manifest_revision,
+            blocker_preflight_revision,
+        ): (String, i64, i64, i64) = connection
+            .query_row(
+                "SELECT
+                   scheduler_scenario_authorities.mode,
+                   scheduler_scenario_hard_blockers.config_revision,
+                   scheduler_scenario_hard_blockers.manifest_revision,
+                   scheduler_scenario_hard_blockers.preflight_revision
+                 FROM scheduler_scenario_authorities
+                 JOIN scheduler_scenario_hard_blockers
+                   USING (scenario_class)
+                 WHERE scenario_class = ?1
+                   AND blocker_code = 'canonical_evidence_missing'",
+                [scenario_class.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(scenario_mode, "shadow");
+        assert_eq!(blocker_config_revision, authority_revision);
+        assert_eq!(blocker_manifest_revision, 1);
+        assert_eq!(blocker_preflight_revision, 1);
         let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
         assert!(!events.iter().any(|event| {
             event.kind == "scheduler_decision"
@@ -3947,12 +3997,16 @@ async fn run_loop_stale_head_noops_before_authoritative_fence() {
         context_config(),
     )
     .unwrap();
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::ReducerOnlyCandidates],
+    );
     let connection = runtime.inner.runtime_db.connection().unwrap();
     connection
         .execute(
             "UPDATE scheduler_protocol_config
              SET protocol_mode = 'shadow',
-                 config_revision = 1,
+                 config_revision = config_revision + 1,
                  updated_at = CURRENT_TIMESTAMP
              WHERE config_id = 1",
             [],
@@ -3960,13 +4014,10 @@ async fn run_loop_stale_head_noops_before_authoritative_fence() {
         .unwrap();
     connection
         .execute(
-            "INSERT INTO scheduler_scenario_authorities (
-               scenario_class, mode, rollback_target,
-               manifest_revision, preflight_revision, updated_at
-             ) VALUES (
-               'reducer_only_candidates', 'shadow', 'off',
-               NULL, NULL, CURRENT_TIMESTAMP
-             )",
+            "UPDATE scheduler_scenario_authorities
+             SET mode = 'shadow',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE scenario_class = 'reducer_only_candidates'",
             [],
         )
         .unwrap();
@@ -4006,7 +4057,7 @@ async fn run_loop_stale_head_noops_before_authoritative_fence() {
         .execute(
             "UPDATE scheduler_protocol_config
              SET protocol_mode = 'authoritative',
-                 config_revision = 2,
+                 config_revision = config_revision + 1,
                  updated_at = CURRENT_TIMESTAMP
              WHERE config_id = 1",
             [],
@@ -4354,29 +4405,8 @@ async fn lifecycle_sleep_work_queue_override_allows_matched_authoritative_eviden
         guard.state.current_work_item_id = Some(work_item_id.clone());
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
+    enable_production_protocol_authority(&runtime);
     let connection = runtime.inner.runtime_db.connection().unwrap();
-    connection
-        .execute(
-            "UPDATE scheduler_protocol_config
-             SET protocol_mode = 'authoritative',
-                 config_revision = 1,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE config_id = 1",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO scheduler_scenario_authorities (
-               scenario_class, mode, rollback_target,
-               manifest_revision, preflight_revision, updated_at
-             ) VALUES (
-               'work_item_autonomous_continuation', 'authoritative', 'shadow',
-               NULL, NULL, CURRENT_TIMESTAMP
-             )",
-            [],
-        )
-        .unwrap();
 
     runtime.transition_to_sleep(None).await.unwrap();
 
@@ -7695,6 +7725,7 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
             scheduler_protocol_bootstrap: None,
             scheduler_protocol_commands: Vec::new(),
             scheduler_authority_scenarios: Vec::new(),
+            scheduler_rollout_expectations: Vec::new(),
             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                 expected: Some(Box::new(expected)),
                 record: Box::new(committed),

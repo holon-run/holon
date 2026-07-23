@@ -38,15 +38,17 @@ deadlock.
 The `Authoritative` rollout mode is scenario-local and fail-closed. A queue
 transition is accepted only when the same transaction carries matched
 canonical comparison evidence for the authoritative scenario. Missing or
-divergent evidence rejects the whole transaction without leaving partial
-queue, projection, audit, or comparison writes. A reported hard blocker is a
-fenced command that records the blocker and atomically returns that scenario
-to its configured `Shadow` or `Off` rollback target.
+divergent evidence rejects the queue, projection, audit, comparison, and
+protocol writes, while the same transaction records a revision-fenced hard
+blocker and atomically returns that scenario to its configured `Shadow` or
+`Off` rollback target.
 
 `QueueTransitionCommand` declares its authority scenario requirements
-separately from the optional comparison payloads. This lets the repository
-reject an omitted payload before any queue mutation instead of treating
-absence as an unscoped legacy transition.
+separately from the optional comparison payloads and carries the exact rollout
+configuration, manifest, preflight, and production-capability expectation read
+before the boundary. This lets the repository reject stale authority or an
+omitted payload before any queue mutation instead of treating absence as an
+unscoped legacy transition.
 
 ## Reason
 

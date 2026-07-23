@@ -360,12 +360,15 @@ impl RuntimeHandle {
                     break;
                 };
                 let expected_state = guard.state.clone();
+                let production_commands_enabled =
+                    self.scheduler_protocol_production_commands_enabled();
                 let protocol_commands = self.operator_interjection_protocol_commands(
                     agent_id,
                     &expected_state,
                     &message,
                     round,
                     boundary_str,
+                    production_commands_enabled,
                 )?;
                 let mut committed_state = expected_state.clone();
                 committed_state.pending = guard.queue.len().saturating_sub(1);
@@ -430,6 +433,14 @@ impl RuntimeHandle {
                         ),
                     }),
                 );
+                let scheduler_rollout_expectations = self
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .scheduler_rollout_expectations(
+                        &[scheduler::INTERJECTION_SCENARIO],
+                        production_commands_enabled,
+                    )?;
                 let mut commit = self.inner.runtime_db.transitions().commit_queue(
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: message.agent_id.clone(),
@@ -441,6 +452,7 @@ impl RuntimeHandle {
                         scheduler_protocol_bootstrap: None,
                         scheduler_protocol_commands: protocol_commands,
                         scheduler_authority_scenarios: vec![scheduler::INTERJECTION_SCENARIO],
+                        scheduler_rollout_expectations,
                         agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                             expected: Some(Box::new(expected_state)),
                             record: Box::new(committed_state.clone()),
@@ -457,6 +469,11 @@ impl RuntimeHandle {
                         brief_evidence: Vec::new(),
                     },
                 )?;
+                if commit.scheduler_authority_blocked {
+                    drop(guard);
+                    self.apply_transition_commit(commit).await;
+                    break;
+                }
                 if !commit.applied {
                     return Err(anyhow::anyhow!(
                         "interjection settlement made no durable progress"
@@ -484,13 +501,14 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         round: usize,
         boundary: &str,
+        production_commands_enabled: bool,
     ) -> Result<Vec<crate::domain::scheduler_protocol::ProtocolCommand>> {
         use crate::domain::scheduler_protocol::{
             ActivationInputAttachment, ActivationOrigin, ActivationProvenance, ActivationTrust,
             AttachActivationInputCommand, ProtocolCommand, ScenarioMode,
         };
 
-        if !self.scheduler_protocol_production_commands_enabled()
+        if !production_commands_enabled
             || self
                 .inner
                 .runtime_db

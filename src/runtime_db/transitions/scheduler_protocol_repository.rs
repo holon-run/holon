@@ -53,6 +53,25 @@ pub(crate) struct SchedulerSemanticShadowCommand {
     pub policy: SemanticValidationPolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedulerRolloutExpectation {
+    pub scenario_class: SchedulerScenarioClass,
+    pub production_commands_enabled: bool,
+    pub mode: ScenarioMode,
+    pub config_revision: u64,
+    pub manifest_revision: Option<u64>,
+    pub preflight_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SchedulerAuthorityHardBlocker {
+    pub scenario_class: SchedulerScenarioClass,
+    pub blocker_code: String,
+    pub expected_config_revision: u64,
+    pub expected_manifest_revision: u64,
+    pub expected_preflight_revision: u64,
+}
+
 pub(super) struct PreparedShadowComparison {
     command: SchedulerShadowComparisonCommand,
     payload_hash: String,
@@ -174,30 +193,118 @@ enum CommandTransactionOutcome<T> {
 pub(super) fn validate_required_shadow_comparisons_tx(
     tx: &Transaction<'_>,
     required_scenarios: &[SchedulerScenarioClass],
+    expectations: &[SchedulerRolloutExpectation],
     commands: [Option<&SchedulerShadowComparisonCommand>; 2],
-) -> Result<()> {
+) -> Result<Option<SchedulerAuthorityHardBlocker>> {
+    let rollout = load_rollout(tx)?;
+    validate_rollout_expectations(&rollout, expectations)?;
     for scenario_class in required_scenarios {
-        if effective_scenario_mode_tx(tx, scenario_class.as_str())? != ScenarioMode::Authoritative {
+        let expectation = expectations
+            .iter()
+            .find(|expectation| expectation.scenario_class == *scenario_class)
+            .ok_or_else(|| {
+                anyhow!(
+                    "scheduler authority boundary is missing rollout expectation for {}",
+                    scenario_class.as_str()
+                )
+            })?;
+        if expectation.mode != ScenarioMode::Authoritative {
             continue;
         }
-        let has_evidence = commands
+        let evidence = commands
             .iter()
             .flatten()
-            .any(|command| command.scenario_class == scenario_class.as_str());
-        if !has_evidence {
+            .find(|command| command.scenario_class == expectation.scenario_class.as_str());
+        let blocker_code = match evidence {
+            None => Some("canonical_evidence_missing".to_string()),
+            Some(command) if !command.matched => Some(
+                command
+                    .divergence_code
+                    .clone()
+                    .unwrap_or_else(|| "canonical_evidence_diverged".to_string()),
+            ),
+            Some(_) => None,
+        };
+        if let Some(blocker_code) = blocker_code {
+            return Ok(Some(SchedulerAuthorityHardBlocker {
+                scenario_class: expectation.scenario_class,
+                blocker_code,
+                expected_config_revision: expectation.config_revision,
+                expected_manifest_revision: expectation.manifest_revision.ok_or_else(|| {
+                    anyhow!(
+                        "authoritative scheduler scenario {} is missing a manifest revision",
+                        expectation.scenario_class.as_str()
+                    )
+                })?,
+                expected_preflight_revision: expectation.preflight_revision.ok_or_else(|| {
+                    anyhow!(
+                        "authoritative scheduler scenario {} is missing a preflight revision",
+                        expectation.scenario_class.as_str()
+                    )
+                })?,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn persist_authority_hard_blocker_tx(
+    tx: &Transaction<'_>,
+    blocker: &SchedulerAuthorityHardBlocker,
+) -> Result<()> {
+    let previous = load_rollout(tx)?;
+    let command = RolloutCommand::ReportScenarioHardBlocker {
+        scenario_class: blocker.scenario_class.as_str().to_string(),
+        blocker_code: blocker.blocker_code.clone(),
+        expected_config_revision: blocker.expected_config_revision,
+        expected_manifest_revision: blocker.expected_manifest_revision,
+        expected_preflight_revision: blocker.expected_preflight_revision,
+    };
+    let outcome =
+        scheduler_protocol::reduce_rollout_command(&rollout_snapshot(previous.clone()), &command);
+    if outcome.outcome.decision != Decision::RollbackTripped {
+        bail!(
+            "scheduler authority hard blocker was rejected: {:?}",
+            outcome.outcome.diagnostics
+        );
+    }
+    scheduler_protocol::assert_invariants(&outcome.outcome.snapshot).map_err(|error| {
+        anyhow!("scheduler hard blocker produced invalid rollout state: {error}")
+    })?;
+    persist_rollout_tx(tx, &previous, &outcome.outcome.snapshot.rollout)
+}
+
+pub(super) fn validate_protocol_command_authority_tx(
+    tx: &Transaction<'_>,
+    commands: &[ProtocolCommand],
+    expectations: &[SchedulerRolloutExpectation],
+) -> Result<()> {
+    let rollout = load_rollout(tx)?;
+    validate_rollout_expectations(&rollout, expectations)?;
+    for required_scenario in required_protocol_command_scenarios(commands) {
+        let expectation = expectations
+            .iter()
+            .find(|expectation| expectation.scenario_class == required_scenario)
+            .ok_or_else(|| {
+                anyhow!(
+                    "scheduler protocol production command is missing rollout expectation for {}",
+                    required_scenario.as_str()
+                )
+            })?;
+        if expectation.mode != ScenarioMode::Authoritative {
             bail!(
-                "scheduler scenario {} requires matched canonical evidence",
-                scenario_class.as_str()
+                "scheduler protocol production commands require authoritative scenario {}, got {:?}",
+                required_scenario.as_str(),
+                expectation.mode
             );
         }
     }
     Ok(())
 }
 
-pub(super) fn validate_protocol_command_authority_tx(
-    tx: &Transaction<'_>,
+fn required_protocol_command_scenarios(
     commands: &[ProtocolCommand],
-) -> Result<()> {
+) -> BTreeSet<SchedulerScenarioClass> {
     let mut required_scenarios = BTreeSet::new();
     for command in commands {
         match command {
@@ -212,9 +319,7 @@ pub(super) fn validate_protocol_command_authority_tx(
                 required_scenarios.insert(activation_authority_scenario(&command.activation));
                 required_scenarios.insert(SchedulerScenarioClass::Settlement);
             }
-            ProtocolCommand::TriggerWait(_) => {
-                required_scenarios.insert(SchedulerScenarioClass::ExactWaitResume);
-            }
+            ProtocolCommand::TriggerWait(_) => {}
             ProtocolCommand::AttachActivationInput(_) => {
                 required_scenarios.insert(SchedulerScenarioClass::OperatorInterjection);
             }
@@ -223,17 +328,7 @@ pub(super) fn validate_protocol_command_authority_tx(
             }
         }
     }
-    for required_scenario in required_scenarios {
-        let mode = effective_scenario_mode_tx(tx, required_scenario.as_str())?;
-        if mode != ScenarioMode::Authoritative {
-            bail!(
-                "scheduler protocol production commands require authoritative scenario {}, got {:?}",
-                required_scenario.as_str(),
-                mode
-            );
-        }
-    }
-    Ok(())
+    required_scenarios
 }
 
 fn activation_authority_scenario(
@@ -589,37 +684,124 @@ pub(super) fn persist_semantic_shadow_decision_tx(
     Ok(())
 }
 
-fn effective_scenario_mode_tx(tx: &Transaction<'_>, scenario_class: &str) -> Result<ScenarioMode> {
-    let protocol_mode = tx.query_row(
-        "SELECT protocol_mode
-         FROM scheduler_protocol_config
-         WHERE config_id = 1",
-        [],
-        |row| row.get::<_, String>(0),
-    )?;
-    let scenario_mode = tx
-        .query_row(
-            "SELECT mode
-             FROM scheduler_scenario_authorities
-             WHERE scenario_class = ?1",
-            [scenario_class],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-
-    match (protocol_mode.as_str(), scenario_mode.as_deref()) {
-        ("legacy", _) | (_, None | Some("off")) => Ok(ScenarioMode::Off),
-        ("shadow", Some("shadow")) | ("authoritative", Some("shadow")) => {
-            Ok(ScenarioMode::Shadow)
+fn effective_scenario_mode(
+    rollout: &RolloutState,
+    scenario_class: SchedulerScenarioClass,
+) -> Result<ScenarioMode> {
+    let scenario_mode = rollout
+        .scenarios
+        .get(scenario_class.as_str())
+        .map(|scenario| scenario.mode)
+        .unwrap_or(ScenarioMode::Off);
+    match (rollout.protocol_mode, scenario_mode) {
+        (ProtocolMode::Legacy, _) | (_, ScenarioMode::Off) => Ok(ScenarioMode::Off),
+        (ProtocolMode::Shadow, ScenarioMode::Shadow)
+        | (ProtocolMode::Authoritative, ScenarioMode::Shadow) => Ok(ScenarioMode::Shadow),
+        (ProtocolMode::Authoritative, ScenarioMode::Authoritative) => {
+            Ok(ScenarioMode::Authoritative)
         }
-        ("authoritative", Some("authoritative")) => Ok(ScenarioMode::Authoritative),
-        ("shadow", Some("authoritative")) => {
+        (ProtocolMode::Shadow, ScenarioMode::Authoritative) => {
             bail!("scheduler scenario authority exceeds the protocol mode ceiling")
         }
-        (mode, scenario) => bail!(
-            "invalid scheduler rollout authority state: protocol_mode={mode}, scenario_mode={scenario:?}"
-        ),
     }
+}
+
+fn rollout_expectation(
+    rollout: &RolloutState,
+    scenario_class: SchedulerScenarioClass,
+    production_commands_enabled: bool,
+) -> Result<SchedulerRolloutExpectation> {
+    let configured_mode = effective_scenario_mode(rollout, scenario_class)?;
+    let mode = if !production_commands_enabled && configured_mode == ScenarioMode::Authoritative {
+        ScenarioMode::Shadow
+    } else {
+        configured_mode
+    };
+    let manifest_revision = rollout.manifest.as_ref().map(|manifest| manifest.revision);
+    let preflight_revision = rollout
+        .manifest
+        .as_ref()
+        .map(|manifest| manifest.preflight_revision);
+    if configured_mode == ScenarioMode::Authoritative {
+        let scenario = rollout
+            .scenarios
+            .get(scenario_class.as_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "authoritative scheduler scenario {} is missing authority state",
+                    scenario_class.as_str()
+                )
+            })?;
+        if scenario.manifest_revision != manifest_revision
+            || scenario.preflight_revision != preflight_revision
+        {
+            bail!(
+                "authoritative scheduler scenario {} disagrees with the installed rollout manifest",
+                scenario_class.as_str()
+            );
+        }
+        let preflight_revision = preflight_revision.ok_or_else(|| {
+            anyhow!(
+                "authoritative scheduler scenario {} is missing preflight authority",
+                scenario_class.as_str()
+            )
+        })?;
+        if !rollout
+            .preflights
+            .get(&preflight_revision)
+            .is_some_and(|preflight| {
+                preflight.state == RolloutPreflightState::Consumed
+                    && preflight.manifest.as_ref() == rollout.manifest.as_ref()
+            })
+        {
+            bail!(
+                "authoritative scheduler scenario {} lacks a consumed matching preflight",
+                scenario_class.as_str()
+            );
+        }
+    }
+    Ok(SchedulerRolloutExpectation {
+        scenario_class,
+        production_commands_enabled,
+        mode,
+        config_revision: rollout.config_revision,
+        manifest_revision,
+        preflight_revision,
+    })
+}
+
+fn validate_rollout_expectations(
+    rollout: &RolloutState,
+    expectations: &[SchedulerRolloutExpectation],
+) -> Result<()> {
+    let mut scenario_classes = BTreeSet::new();
+    for expectation in expectations {
+        if !scenario_classes.insert(expectation.scenario_class) {
+            bail!(
+                "duplicate scheduler rollout expectation for {}",
+                expectation.scenario_class.as_str()
+            );
+        }
+        let current = rollout_expectation(
+            rollout,
+            expectation.scenario_class,
+            expectation.production_commands_enabled,
+        )?;
+        if &current != expectation {
+            bail!(
+                "stale scheduler rollout expectation for {}",
+                expectation.scenario_class.as_str()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn effective_scenario_mode_tx(tx: &Transaction<'_>, scenario_class: &str) -> Result<ScenarioMode> {
+    let scenario_class = scenario_class
+        .parse::<SchedulerScenarioClass>()
+        .map_err(|_| anyhow!("unknown scheduler scenario class {scenario_class}"))?;
+    effective_scenario_mode(&load_rollout(tx)?, scenario_class)
 }
 
 fn canonical_shadow_comparison_hash(command: &SchedulerShadowComparisonCommand) -> Result<String> {
@@ -647,6 +829,25 @@ fn scenario_mode_token(mode: ScenarioMode) -> &'static str {
 }
 
 impl RuntimeTransitionRepository<'_> {
+    pub(crate) fn scheduler_rollout_expectations(
+        &self,
+        scenario_classes: &[SchedulerScenarioClass],
+        production_commands_enabled: bool,
+    ) -> Result<Vec<SchedulerRolloutExpectation>> {
+        self.db.transaction(|tx| {
+            let rollout = load_rollout(tx)?;
+            let mut unique = BTreeSet::new();
+            scenario_classes
+                .iter()
+                .copied()
+                .filter(|scenario_class| unique.insert(*scenario_class))
+                .map(|scenario_class| {
+                    rollout_expectation(&rollout, scenario_class, production_commands_enabled)
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn scheduler_scenario_mode(
         &self,
         scenario_class: SchedulerScenarioClass,
@@ -747,7 +948,17 @@ impl RuntimeTransitionRepository<'_> {
 
         let outcome = self.db.transaction(|tx| {
             if enforce_authority {
-                validate_protocol_command_authority_tx(tx, std::slice::from_ref(command))?;
+                let rollout = load_rollout(tx)?;
+                let expectations =
+                    required_protocol_command_scenarios(std::slice::from_ref(command))
+                        .into_iter()
+                        .map(|scenario_class| rollout_expectation(&rollout, scenario_class, true))
+                        .collect::<Result<Vec<_>>>()?;
+                validate_protocol_command_authority_tx(
+                    tx,
+                    std::slice::from_ref(command),
+                    &expectations,
+                )?;
             }
             if let Some(stored) =
                 stored_command_result_tx(tx, agent_id, command_kind, &command_identity)?
