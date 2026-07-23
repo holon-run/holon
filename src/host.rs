@@ -2158,8 +2158,15 @@ impl RuntimeHost {
         runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
         let runtime_task = tokio::spawn({
             let runtime = runtime.clone();
+            let agent_id = agent_id.to_string();
             async move {
-                let _ = runtime.run().await;
+                if let Err(error) = runtime.clone().run().await {
+                    runtime.record_runtime_loop_failure(&error).await;
+                    tracing::warn!(
+                        agent_id,
+                        "agent runtime loop stopped; the next host access will rebuild it"
+                    );
+                }
             }
         });
         Ok((runtime, runtime_task))
@@ -4769,6 +4776,88 @@ mod tests {
             event.kind == "message_acknowledged"
                 && event.data["summary"].as_str() == Some("Queued work: start me")
         }));
+    }
+
+    #[tokio::test]
+    async fn runtime_loop_failure_releases_claim_and_rebuilds_on_next_host_access() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let runtime = host.default_runtime().await.unwrap();
+        runtime.inject_runtime_loop_failure_after_next_claim();
+        let message = runtime
+            .enqueue(MessageEnvelope::new(
+                &agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "recover claimed message".into(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let events = runtime.storage().read_recent_events(32).unwrap();
+            let task_finished = host
+                .inner
+                .agents
+                .read()
+                .await
+                .get(&agent_id)
+                .is_some_and(|entry| entry.task.is_finished());
+            if task_finished
+                && events
+                    .iter()
+                    .any(|event| event.kind == "agent_runtime_loop_failed")
+                && runtime
+                    .storage()
+                    .latest_queue_entries()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| {
+                        entry.message_id == message.id
+                            && entry.status == QueueEntryStatus::Interrupted
+                    })
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for runtime loop failure event"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let state = runtime.agent_state().await.unwrap();
+        let failure = state
+            .last_runtime_failure
+            .expect("runtime loop failure should be visible in agent state");
+        assert!(failure
+            .summary
+            .contains("injected agent runtime loop failure after queue claim"));
+
+        let rebuilt = host.get_or_create_agent(&agent_id).await.unwrap();
+        assert_eq!(rebuilt.agent_state().await.unwrap().id, agent_id);
+        wait_for_brief_count(&rebuilt, 1).await;
+        assert!(rebuilt
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
+            }));
+        let agents = host.inner.agents.read().await;
+        let entry = agents
+            .get(&agent_id)
+            .expect("rebuilt runtime should be registered");
+        assert!(
+            !entry.task.is_finished(),
+            "next host access should start a fresh runtime loop"
+        );
     }
 
     #[test]

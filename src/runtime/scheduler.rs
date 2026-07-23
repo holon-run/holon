@@ -997,6 +997,31 @@ pub(crate) fn scheduler_diagnostic_event(
     )
 }
 
+pub(crate) fn scheduler_invariant_diagnostic_event(
+    agent_id: &str,
+    code: &str,
+    work_item_id: Option<String>,
+    message_id: Option<String>,
+    evidence: Vec<String>,
+) -> Result<AuditEvent> {
+    AuditEvent::typed(
+        crate::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
+        &crate::types::SchedulerDiagnosticAuditEvent {
+            agent_id: agent_id.to_string(),
+            decision: "InvariantViolation".into(),
+            reason: code.to_string(),
+            boundary: Some("bootstrap_recovery".into()),
+            scenario_class: None,
+            shadow_matched: None,
+            divergence_code: Some(code.to_string()),
+            work_item_id,
+            message_id,
+            task_id: None,
+            evidence,
+        },
+    )
+}
+
 pub(crate) fn scheduler_decision_events(
     agent_id: &str,
     decision: &SchedulerDecision,

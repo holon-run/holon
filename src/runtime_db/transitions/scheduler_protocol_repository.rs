@@ -188,6 +188,72 @@ pub(super) fn validate_required_shadow_comparisons_tx(
     Ok(())
 }
 
+pub(super) fn validate_protocol_command_authority_tx(
+    tx: &Transaction<'_>,
+    commands: &[ProtocolCommand],
+) -> Result<()> {
+    let mut required_scenarios = BTreeSet::new();
+    for command in commands {
+        match command {
+            ProtocolCommand::RegisterWorkDemand(_) => {
+                required_scenarios.insert(SchedulerScenarioClass::WorkItemAutonomousContinuation);
+            }
+            ProtocolCommand::IssueActivationAuthority(command) => {
+                required_scenarios.insert(activation_authority_scenario(&command.activation));
+                required_scenarios.insert(SchedulerScenarioClass::Settlement);
+            }
+            ProtocolCommand::AdmitActivation(command) => {
+                required_scenarios.insert(activation_authority_scenario(&command.activation));
+                required_scenarios.insert(SchedulerScenarioClass::Settlement);
+            }
+            ProtocolCommand::TriggerWait(_) => {
+                required_scenarios.insert(SchedulerScenarioClass::ExactWaitResume);
+            }
+            ProtocolCommand::SettleActivation(_) | ProtocolCommand::RecordMissingSettlement(_) => {
+                // Terminal commands drain authority granted when the activation was admitted.
+            }
+        }
+    }
+    for required_scenario in required_scenarios {
+        let mode = effective_scenario_mode_tx(tx, required_scenario.as_str())?;
+        if mode != ScenarioMode::Authoritative {
+            bail!(
+                "scheduler protocol production commands require authoritative scenario {}, got {:?}",
+                required_scenario.as_str(),
+                mode
+            );
+        }
+    }
+    Ok(())
+}
+
+fn activation_authority_scenario(
+    activation: &scheduler_protocol::AgentActivation,
+) -> SchedulerScenarioClass {
+    match &activation.cause {
+        ActivationCause::OperatorInput { .. } => match activation.binding {
+            scheduler_protocol::ActivationBinding::WorkItem { .. } => {
+                SchedulerScenarioClass::ExplicitlyBoundOperatorInput
+            }
+            _ => SchedulerScenarioClass::OrdinarySemanticOperatorBinding,
+        },
+        ActivationCause::OperatorInterjection { .. } => {
+            SchedulerScenarioClass::OperatorInterjection
+        }
+        ActivationCause::MessageIngress { .. } => SchedulerScenarioClass::ReducerOnlyCandidates,
+        ActivationCause::TaskRejoin { .. } => SchedulerScenarioClass::ExactTaskRejoin,
+        ActivationCause::WaitResume { .. } => SchedulerScenarioClass::ExactWaitResume,
+        ActivationCause::WorkItemRunnable { .. }
+        | ActivationCause::WorkItemRecheck { .. }
+        | ActivationCause::InternalFollowup { .. } => {
+            SchedulerScenarioClass::WorkItemAutonomousContinuation
+        }
+        ActivationCause::RuntimeRecovery { .. } | ActivationCause::SettlementRecovery { .. } => {
+            SchedulerScenarioClass::Settlement
+        }
+    }
+}
+
 pub(super) fn validate_protocol_commands_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -572,6 +638,14 @@ fn scenario_mode_token(mode: ScenarioMode) -> &'static str {
 }
 
 impl RuntimeTransitionRepository<'_> {
+    pub(crate) fn scheduler_scenario_mode(
+        &self,
+        scenario_class: SchedulerScenarioClass,
+    ) -> Result<ScenarioMode> {
+        self.db
+            .transaction(|tx| effective_scenario_mode_tx(tx, scenario_class.as_str()))
+    }
+
     pub(crate) fn initialize_scheduler_protocol_partition(
         &self,
         agent_id: &str,
@@ -638,11 +712,34 @@ impl RuntimeTransitionRepository<'_> {
         command: &ProtocolCommand,
         fault: Option<TransitionFaultPoint>,
     ) -> Result<SchedulerProtocolTransitionCommit> {
+        self.commit_scheduler_protocol_command_inner(agent_id, command, fault, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_scheduler_protocol_command_unchecked_for_test(
+        &self,
+        agent_id: &str,
+        command: &ProtocolCommand,
+        fault: Option<TransitionFaultPoint>,
+    ) -> Result<SchedulerProtocolTransitionCommit> {
+        self.commit_scheduler_protocol_command_inner(agent_id, command, fault, false)
+    }
+
+    fn commit_scheduler_protocol_command_inner(
+        &self,
+        agent_id: &str,
+        command: &ProtocolCommand,
+        fault: Option<TransitionFaultPoint>,
+        enforce_authority: bool,
+    ) -> Result<SchedulerProtocolTransitionCommit> {
         validate_command_agent(agent_id, command)?;
         let (command_kind, command_identity) = command_identity(command)?;
         let payload_hash = canonical_command_hash(command_kind, command)?;
 
         let outcome = self.db.transaction(|tx| {
+            if enforce_authority {
+                validate_protocol_command_authority_tx(tx, std::slice::from_ref(command))?;
+            }
             if let Some(stored) =
                 stored_command_result_tx(tx, agent_id, command_kind, &command_identity)?
             {

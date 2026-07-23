@@ -89,6 +89,7 @@ pub(crate) enum QueueOperation {
     Admit,
     Claim,
     Interject,
+    Release,
     Settle,
 }
 
@@ -361,6 +362,10 @@ impl RuntimeTransitionRepository<'_> {
                 command.operation,
                 command.scheduler_claim_work_item.as_ref(),
             )?;
+            scheduler_protocol_repository::validate_protocol_command_authority_tx(
+                tx,
+                &command.scheduler_protocol_commands,
+            )?;
             let scheduler_protocol = scheduler_protocol_repository::validate_protocol_commands_tx(
                 tx,
                 &command.agent_id,
@@ -380,7 +385,7 @@ impl RuntimeTransitionRepository<'_> {
                 QueueMutation::Consume(record) => match command.operation {
                     QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
                     QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
-                    QueueOperation::Admit | QueueOperation::Settle => {
+                    QueueOperation::Admit | QueueOperation::Release | QueueOperation::Settle => {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 },
@@ -889,6 +894,12 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
             QueueOperation::Interject,
             QueueMutation::Consume(QueueEntryRecord {
                 status: QueueEntryStatus::Interjected,
+                ..
+            })
+        ) | (
+            QueueOperation::Release,
+            QueueMutation::Upsert(QueueEntryRecord {
+                status: QueueEntryStatus::Interrupted,
                 ..
             })
         ) | (
