@@ -521,6 +521,7 @@ const GLOBAL_BACKFILL_LIMIT = 100;
 const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 const BRIEF_HYDRATION_RETRY_DELAYS_MS = [1_000, 2_000] as const;
+const BRIEF_HYDRATION_MAX_ATTEMPTS = 5;
 const AGENT_DETAIL_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
 
 function nextClientGeneration(): number {
@@ -634,6 +635,12 @@ export function resetSessionsForResume(
         sendingPrompt: false,
         liveStatus: "stale" as const,
         reconnectAttempt: 0,
+        briefHydrationById: Object.fromEntries(
+          Object.entries(session.briefHydrationById).map(([briefId, hydration]) => [
+            briefId,
+            hydration.status === "loading" ? { ...hydration, status: "pending" as const } : hydration,
+          ]),
+        ),
         workItemDetailsById: resetDetailLoading(session.workItemDetailsById),
         taskDetailsById: resetDetailLoading(session.taskDetailsById),
         toolExecutionDetailsById: resetDetailLoading(session.toolExecutionDetailsById),
@@ -4492,7 +4499,14 @@ function scheduleBriefHydration(
     inFlight = new Set<string>();
     briefHydrationInFlight.set(agentId, inFlight);
   }
-  const requestIds = briefIds.filter((briefId) => !inFlight.has(briefId));
+  const isForced = Boolean(options.forceIds);
+  const requestIds = briefIds.filter((briefId) => {
+    if (inFlight.has(briefId)) return false;
+    // Forced IDs cover manual retry and scheduled retry, which has its own attempt cap.
+    if (isForced) return true;
+    const attempt = session?.briefHydrationById[briefId]?.attempt ?? 0;
+    return attempt < BRIEF_HYDRATION_MAX_ATTEMPTS;
+  });
   if (!requestIds.length) return;
   requestIds.forEach((briefId) => inFlight.add(briefId));
   set((state) => updateBriefHydrationState(state, agentId, {

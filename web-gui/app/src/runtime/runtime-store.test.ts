@@ -151,6 +151,10 @@ describe("resume session reset", () => {
         sendingPrompt: true,
         liveStatus: "recovering",
         reconnectAttempt: 4,
+        briefHydrationById: {
+          loading: { briefId: "loading", status: "loading", attempt: 2 },
+          failed: { briefId: "failed", status: "failed", attempt: 5, errorKind: "timeout" },
+        },
         workItemDetailsById: { "work-1": { loading: true } },
         taskDetailsById: { "task-1": { loading: true } },
         toolExecutionDetailsById: { "tool-1": { loading: true } },
@@ -163,6 +167,10 @@ describe("resume session reset", () => {
       sendingPrompt: false,
       liveStatus: "stale",
       reconnectAttempt: 0,
+      briefHydrationById: {
+        loading: { briefId: "loading", status: "pending", attempt: 2 },
+        failed: { briefId: "failed", status: "failed", attempt: 5, errorKind: "timeout" },
+      },
       workItemDetailsById: { "work-1": { loading: false } },
       taskDetailsById: { "task-1": { loading: false } },
       toolExecutionDetailsById: { "tool-1": { loading: false } },
@@ -781,6 +789,92 @@ describe("runtime client generation", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("brief hydration retry limits", () => {
+  afterEach(() => {
+    useRuntimeStore.setState({
+      sessionsByAgentId: {},
+      globalStreamStatus: "idle",
+      selectedAgentId: "",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("stops automatic hydration after five attempts but still allows manual retry", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/agents/agent-a/briefs:batchGet")) {
+        return Promise.resolve(jsonResponse({
+          briefs: [{ id: "brief-123", text: "Hydrated after manual retry." }],
+          missing_brief_ids: [],
+        }));
+      }
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    const now = Date.now();
+    useRuntimeStore.setState({
+      globalStreamStatus: "streaming",
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          cacheStatus: "hit",
+          contentStatus: "available",
+          syncStatus: "streaming",
+          detailValidatedAt: now,
+          eventsValidatedAt: now,
+          detail: {
+            agent: agentSummary({ id: "agent-a" }),
+            source: "http",
+            timeline: [],
+          },
+          eventsBySeq: {
+            1: {
+              agent_id: "agent-a",
+              event_seq: 1,
+              ts: "2026-07-23T00:00:00Z",
+              type: "brief_created",
+              payload: { brief_id: "brief-123" },
+            },
+          },
+          eventSeqs: [1],
+          referencedBriefIds: { "brief-123": true },
+          briefHydrationById: {
+            "brief-123": {
+              briefId: "brief-123",
+              status: "failed",
+              attempt: 5,
+              errorKind: "request_failed",
+            },
+          },
+        }),
+      },
+    });
+
+    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    useRuntimeStore.getState().retryBriefHydration("agent-a", "brief-123");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.briefRecordsById["brief-123"]?.text)
+        .toBe("Hydrated after manual retry.");
+    });
   });
 });
 
