@@ -504,6 +504,8 @@ const agentStateRefreshInFlight = new Map<string, number>();
 const agentEventCatchUpInFlight = new Map<string, Promise<void>>();
 const agentDetailRefreshInFlight = new Map<string, { generation: number; promise: Promise<void> }>();
 const agentDetailRequestSequence = new Map<string, number>();
+const agentDetailRetryTimers = new Map<string, number>();
+const agentDetailRetryAttempts = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 let clientGeneration = 0;
@@ -519,6 +521,7 @@ const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 const BRIEF_HYDRATION_RETRY_DELAYS_MS = [1_000, 2_000] as const;
 const BRIEF_HYDRATION_MAX_ATTEMPTS = 5;
+const AGENT_DETAIL_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
 
 function nextClientGeneration(): number {
   clientGeneration += 1;
@@ -584,6 +587,9 @@ function cancelClientGenerationWork(): void {
   agentEventCatchUpInFlight.clear();
   agentDetailRefreshInFlight.clear();
   agentDetailRequestSequence.clear();
+  for (const timer of agentDetailRetryTimers.values()) window.clearTimeout(timer);
+  agentDetailRetryTimers.clear();
+  agentDetailRetryAttempts.clear();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
   workItemDetailInFlight.clear();
@@ -2447,6 +2453,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         scheduleTranscriptHydration(get, set, agentId, displayLevel);
         scheduleBriefHydration(get, set, agentId, displayLevel);
         scheduleCacheWrite(get, agentId);
+        clearAgentDetailRetry(agentId);
         span.end(detail.error ? "error" : "ok", {
           eventCount: detail.events?.length ?? 0,
         });
@@ -2470,6 +2477,30 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           span.end("skipped", { reason: "projection_busy" });
           return;
         }
+        const currentSession = get().sessionsByAgentId[agentId];
+        const canRecover =
+          get().globalStreamStatus === "streaming" &&
+          Boolean(currentSession?.eventSeqs.length);
+        if (canRecover) {
+          set((state) => ({
+            sessionsByAgentId: {
+              ...state.sessionsByAgentId,
+              [agentId]: {
+                ...emptyAgentSession(),
+                ...state.sessionsByAgentId[agentId],
+                loading: false,
+                syncStatus: "recovering",
+                contentStatus: state.sessionsByAgentId[agentId]?.eventSeqs.length
+                  ? "available"
+                  : "unknown",
+                error: error instanceof Error ? error.message : String(error),
+              },
+            },
+          }));
+          span.end("error", { recovery: true });
+          scheduleAgentDetailRetry(get, agentId, displayLevel);
+          return;
+        }
         set((state) => ({
           sessionsByAgentId: {
             ...state.sessionsByAgentId,
@@ -2483,7 +2514,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             },
           },
         }));
-        span.end("error");
+        span.end("error", { errorKind: agentDetailErrorKind(error), phase: "fetch" });
       } finally {
         const current = agentDetailRefreshInFlight.get(key);
         if (current?.promise === promise) {
@@ -3127,6 +3158,30 @@ function scheduleCacheWrite(get: () => RuntimeStoreState, agentId: string): void
   const session = get().sessionsByAgentId[agentId];
   if (!session) return;
   sessionCacheWriter.scheduleWrite(agentId, session);
+}
+
+function scheduleAgentDetailRetry(
+  get: () => RuntimeStoreState,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): void {
+  if (agentDetailRetryTimers.has(agentId)) return;
+  const attempt = agentDetailRetryAttempts.get(agentId) ?? 0;
+  if (attempt >= AGENT_DETAIL_RETRY_DELAYS_MS.length) return;
+  const delay = AGENT_DETAIL_RETRY_DELAYS_MS[attempt];
+  agentDetailRetryAttempts.set(agentId, attempt + 1);
+  const timer = window.setTimeout(() => {
+    agentDetailRetryTimers.delete(agentId);
+    void get().refreshAgentDetail(agentId, displayLevel, { force: true });
+  }, delay);
+  agentDetailRetryTimers.set(agentId, timer);
+}
+
+function clearAgentDetailRetry(agentId: string): void {
+  const timer = agentDetailRetryTimers.get(agentId);
+  if (timer != null) window.clearTimeout(timer);
+  agentDetailRetryTimers.delete(agentId);
+  agentDetailRetryAttempts.delete(agentId);
 }
 
 // ─── Global event stream ────────────────────────────────────────────
@@ -4183,7 +4238,7 @@ async function catchUpAgentEvents(
       eventCount: page.events?.length ?? 0,
     });
   })().catch((error) => {
-    span.end("error");
+    span.end("error", { errorKind: agentDetailErrorKind(error) });
     throw error;
   }).finally(() => {
     if (agentEventCatchUpInFlight.get(agentId) === request) {
@@ -4540,6 +4595,17 @@ function scheduleAutomaticBriefHydrationRetry(
     });
   }, delay);
   briefHydrationRetryTimers.set(key, timer);
+}
+
+export function agentDetailErrorKind(error: unknown): string {
+  if (error instanceof DOMException && error.name === "AbortError") return "timeout";
+  if (error instanceof Error) {
+    if (error.name === "RuntimeHttpError") return "http_error";
+    if (error.name === "SyntaxError") return "parse_error";
+    if (error.name === "TypeError") return "network_error";
+    if (/timeout|timed out|aborted/i.test(error.message)) return "timeout";
+  }
+  return "unknown";
 }
 
 function briefHydrationErrorKind(error: unknown): string {
