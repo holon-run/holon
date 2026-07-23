@@ -2267,12 +2267,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     if (!agentId) return;
     const existing = ensureAgentSessionInFlight.get(agentId);
     if (existing) return existing;
-    const trace = createRuntimeTrace("agent.open", { agentId, trigger: "agent.open" });
     let promise!: Promise<void>;
     promise = (async () => {
       try {
+        const trace = createRuntimeTrace("agent.open", { agentId, trigger: "agent.open" });
         let session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-
         if (session.cacheStatus === "unchecked") {
           if (sessionCacheInitPromise) await sessionCacheInitPromise;
           session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
