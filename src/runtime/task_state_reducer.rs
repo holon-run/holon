@@ -106,16 +106,16 @@ impl RuntimeHandle {
             index_changes.extend(self.inner.storage.index_changes_for_task(task)?);
         }
         if emit_event {
-            let payload = TaskLifecycleAuditEvent::from_task(task);
+            let payload = TaskLifecycleAuditEvent::from_task(&persisted_task);
             let mut event =
                 if let Some(kind) = RuntimeEventKind::from_wire_name(transition.event_kind) {
                     AuditEvent::typed(kind, &payload)?
                 } else {
                     AuditEvent::legacy(transition.event_kind, to_json_value(&payload))
                 };
-            if is_terminal_task_status(&task.status) {
-                event.id = stable_terminal_task_event_id(transition.event_kind, task);
-                event.created_at = task.updated_at;
+            if is_terminal_task_status(&persisted_task.status) {
+                event.id = stable_terminal_task_event_id(transition.event_kind, &persisted_task);
+                event.created_at = persisted_task.updated_at;
             }
             audit_events.push(event);
         }
@@ -650,8 +650,15 @@ mod tests {
             "source": "message",
             "parent_turn_id": "turn-1",
         }));
+        let mut redispatched = repeated.clone();
+        redispatched.created_at += chrono::Duration::seconds(1);
+        redispatched.updated_at += chrono::Duration::seconds(1);
         runtime
             .reduce_task_result_message(&task_result_message("task-1"), repeated, false, None)
+            .await
+            .unwrap();
+        runtime
+            .reduce_task_result_message(&task_result_message("task-1"), redispatched, false, None)
             .await
             .unwrap();
 
@@ -659,11 +666,16 @@ mod tests {
         assert_eq!(latest.parent_message_id.as_deref(), Some("original-parent"));
         assert_eq!(latest.detail, recorded.detail);
         let events = runtime.recent_events(20).await.unwrap();
-        assert!(events.iter().any(|event| {
-            event.kind == "task_result_received"
-                && event.data.get("task_id").and_then(|value| value.as_str()) == Some("task-1")
-                && event.data.get("status").and_then(|value| value.as_str()) == Some("completed")
-        }));
+        let result_events = events
+            .iter()
+            .filter(|event| event.kind == "task_result_received")
+            .collect::<Vec<_>>();
+        assert_eq!(result_events.len(), 1);
+        assert_eq!(result_events[0].created_at, recorded.updated_at);
+        let payload =
+            serde_json::from_value::<TaskLifecycleAuditEvent>(result_events[0].data.clone())
+                .unwrap();
+        assert_eq!(payload, TaskLifecycleAuditEvent::from_task(&recorded));
         let briefs = runtime.storage().read_recent_briefs(10).unwrap();
         assert!(briefs.iter().any(|brief| {
             brief.kind == crate::types::BriefKind::Result
