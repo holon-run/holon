@@ -4,6 +4,29 @@ use crate::types::{
 };
 use sha2::{Digest, Sha256};
 
+const TASK_TRANSITION_MAX_ATTEMPTS: usize = 3;
+
+#[derive(Debug)]
+pub(super) struct TaskTransitionRetryExhausted {
+    source: anyhow::Error,
+}
+
+impl std::fmt::Display for TaskTransitionRetryExhausted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "task transition retry budget exhausted: {}",
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for TaskTransitionRetryExhausted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 pub(super) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     scheduler::is_terminal_task_status(status)
 }
@@ -61,6 +84,32 @@ impl RuntimeHandle {
     async fn apply_task_transition_inner(
         &self,
         transition: TaskTransition<'_>,
+        emit_event: bool,
+    ) -> Result<()> {
+        for attempt in 0..TASK_TRANSITION_MAX_ATTEMPTS {
+            match self
+                .apply_task_transition_attempt(&transition, emit_event)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if task_transition_error_is_retryable_conflict(&error)
+                        && attempt + 1 < TASK_TRANSITION_MAX_ATTEMPTS =>
+                {
+                    continue;
+                }
+                Err(error) if task_transition_error_is_retryable_conflict(&error) => {
+                    return Err(TaskTransitionRetryExhausted { source: error }.into());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("task transition attempts are non-empty")
+    }
+
+    async fn apply_task_transition_attempt(
+        &self,
+        transition: &TaskTransition<'_>,
         emit_event: bool,
     ) -> Result<()> {
         let task = transition.task;
@@ -205,16 +254,20 @@ impl RuntimeHandle {
                 ));
             }
         }
+        #[cfg(test)]
+        self.inject_task_transition_conflict_if_armed().await?;
+        let agent_state =
+            (state != expected_state).then(|| crate::runtime_db::transitions::AgentStateMutation {
+                expected: Some(Box::new(expected_state)),
+                record: Box::new(state),
+            });
         let commit = self.inner.runtime_db.transitions().commit_task(
             &crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
                 task: persisted_task,
                 work_items,
                 wait_conditions,
-                agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(expected_state)),
-                    record: Box::new(state),
-                }),
+                agent_state,
                 audit_events,
                 index_changes,
                 notify_scheduler: false,
@@ -226,6 +279,42 @@ impl RuntimeHandle {
         )?;
         self.apply_transition_commit(commit).await;
         Ok(())
+    }
+
+    #[cfg(test)]
+    async fn inject_task_transition_conflict_if_armed(&self) -> Result<()> {
+        let remaining = match self.inner.task_transition_conflicts_remaining.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |remaining| remaining.checked_sub(1),
+        ) {
+            Ok(remaining) => remaining,
+            Err(_) => return Ok(()),
+        };
+        let mut guard = self.inner.agent.lock().await;
+        guard.state.pending_wake_hint = Some(crate::types::PendingWakeHint {
+            reason: "test_conflict".into(),
+            description: Some(format!(
+                "concurrent task transition test attempt {remaining}"
+            )),
+            source: Some("test".into()),
+            scope: None,
+            external_trigger_id: None,
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: Utc::now(),
+        });
+        guard.persist_state(&self.inner.storage)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_task_transition_conflicts(&self, count: usize) {
+        self.inner
+            .task_transition_conflicts_remaining
+            .store(count, Ordering::SeqCst);
     }
 
     pub(super) async fn persist_task_transition(
@@ -306,6 +395,14 @@ impl RuntimeHandle {
         }
         Ok(())
     }
+}
+
+fn task_transition_error_is_retryable_conflict(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+            .is_some_and(crate::runtime_db::RuntimeStateTransitionConflict::retryable)
+    })
 }
 
 fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String {
@@ -561,6 +658,101 @@ mod tests {
         assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
         let active_tasks = runtime.active_tasks(10).await.unwrap();
         assert!(active_tasks.iter().any(|task| task.id == "task-1"));
+    }
+
+    #[tokio::test]
+    async fn task_transition_without_agent_state_change_ignores_concurrent_agent_write() {
+        let runtime = runtime();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::AwakeIdle;
+            guard.persist_state(&runtime.inner.storage).unwrap();
+        }
+        runtime.inject_task_transition_conflicts(1);
+
+        runtime
+            .apply_task_transition(TaskTransition::new(
+                &task("task-1", TaskStatus::Running, false),
+                "task_status_updated",
+            ))
+            .await
+            .unwrap();
+
+        assert!(runtime.task_record("task-1").await.unwrap().is_some());
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(
+            state
+                .pending_wake_hint
+                .as_ref()
+                .map(|hint| hint.reason.as_str()),
+            Some("test_conflict")
+        );
+    }
+
+    #[tokio::test]
+    async fn task_transition_recomputes_from_latest_agent_state_after_conflict() {
+        let runtime = runtime();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::Booting;
+            guard.persist_state(&runtime.inner.storage).unwrap();
+        }
+        runtime.inject_task_transition_conflicts(1);
+
+        runtime
+            .apply_task_transition(TaskTransition::new(
+                &task("task-1", TaskStatus::Running, false),
+                "task_status_updated",
+            ))
+            .await
+            .unwrap();
+
+        assert!(runtime.task_record("task-1").await.unwrap().is_some());
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(
+            state
+                .pending_wake_hint
+                .as_ref()
+                .and_then(|hint| hint.description.as_deref()),
+            Some("concurrent task transition test attempt 1")
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_task_transition_conflicts_only_requeue_task_results() {
+        let runtime = runtime();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::Booting;
+            guard.persist_state(&runtime.inner.storage).unwrap();
+        }
+        runtime.inject_task_transition_conflicts(TASK_TRANSITION_MAX_ATTEMPTS);
+
+        let error = runtime
+            .apply_task_transition(TaskTransition::new(
+                &task("task-1", TaskStatus::Running, false),
+                "task_status_updated",
+            ))
+            .await
+            .expect_err("retry budget should be exhausted");
+        assert!(error.chain().any(|source| source
+            .downcast_ref::<TaskTransitionRetryExhausted>()
+            .is_some()));
+
+        assert_eq!(
+            runtime_error_queue_settlement(&MessageKind::TaskResult, &error),
+            (
+                QueueEntryStatus::Interrupted,
+                "task_transition_retry_exhausted"
+            )
+        );
+        assert_eq!(
+            runtime_error_queue_settlement(&MessageKind::OperatorPrompt, &error),
+            (QueueEntryStatus::Aborted, "runtime_error")
+        );
+        assert!(runtime.task_record("task-1").await.unwrap().is_none());
     }
 
     #[tokio::test]

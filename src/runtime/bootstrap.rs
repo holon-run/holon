@@ -1,5 +1,5 @@
 #[cfg(test)]
-use std::sync::Mutex as StdMutex;
+use std::sync::{atomic::AtomicUsize, Mutex as StdMutex};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -363,6 +363,8 @@ impl RuntimeHandle {
                 ),
                 #[cfg(test)]
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
+                #[cfg(test)]
+                task_transition_conflicts_remaining: AtomicUsize::new(0),
                 #[cfg(test)]
                 omit_next_scheduler_claim_shadow_comparison: AtomicBool::new(false),
                 #[cfg(test)]
