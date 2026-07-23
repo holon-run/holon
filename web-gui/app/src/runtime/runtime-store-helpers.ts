@@ -14,6 +14,7 @@ import type {
   ToolExecutionDetailState,
 } from "./types";
 import type { SessionProjectionState } from "./session-projection";
+import type { SessionEventEnvelope } from "./session-events";
 
 export type { WorkItemDetailState, TaskDetailState, ToolExecutionDetailState };
 
@@ -21,6 +22,18 @@ export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnectin
 export type AgentCacheStatus = "unchecked" | "loading" | "hit" | "miss" | "unavailable";
 export type AgentContentStatus = "unknown" | "available" | "confirmed-empty";
 export type AgentSyncStatus = "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
+
+export interface TimelineEventsState {
+  eventLogEpoch?: string;
+  eventsBySeq: Record<number, SessionEventEnvelope>;
+  eventSeqs: number[];
+  oldestSeq?: number;
+  newestSeq?: number;
+  hasOlder: boolean;
+  loading: boolean;
+  loadingOlder: boolean;
+  error?: string;
+}
 
 export interface AgentSessionState extends SessionProjectionState {
   loading: boolean;

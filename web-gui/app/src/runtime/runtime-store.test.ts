@@ -11,6 +11,7 @@ import {
   materializeProjectionDetail,
   mergeBootstrapAgentState,
   mergeCachedSessionIntoCurrent,
+  mergeTimelineEventPage,
   missingBriefIdsForHydration,
   readStoredRemoteConnectionProfiles,
   resetSessionsForResume,
@@ -223,6 +224,94 @@ describe("resume session reset", () => {
       searchResultContentLoadingBySourceRef: { source: false },
       rightPanelView: { detailState: { loading: false } },
       rightPanelViewStack: [{ detailState: { loading: false } }],
+    });
+  });
+});
+
+describe("timeline events state", () => {
+  afterEach(() => {
+    useRuntimeStore.setState({
+      rightPanelOpen: true,
+      rightPanelView: undefined,
+      rightPanelViewStack: [],
+      timelineEventsByAgentId: {},
+    });
+  });
+
+  it("opens as a first-class right panel view and preserves back navigation", () => {
+    useRuntimeStore.setState({
+      selectedAgentId: "agent-a",
+      rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
+      rightPanelViewStack: [],
+      timelineEventsByAgentId: {
+        "agent-a": {
+          eventsBySeq: { 1: { id: "event-1", event_seq: 1, type: "message_enqueued" } },
+          eventSeqs: [1],
+          oldestSeq: 1,
+          newestSeq: 1,
+          hasOlder: false,
+          loading: false,
+          loadingOlder: false,
+        },
+      },
+    });
+
+    useRuntimeStore.getState().showTimelineEvents("agent-a");
+    expect(useRuntimeStore.getState()).toMatchObject({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "timeline_events", agentId: "agent-a" },
+      rightPanelViewStack: [{ kind: "agent_overview", agentId: "agent-a" }],
+    });
+
+    useRuntimeStore.getState().navigateBack();
+    expect(useRuntimeStore.getState()).toMatchObject({
+      rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
+      rightPanelViewStack: [],
+    });
+  });
+
+  it("appends older pages in sequence order and resets on epoch changes", () => {
+    const initial = mergeTimelineEventPage(
+      {
+        eventsBySeq: {},
+        eventSeqs: [],
+        hasOlder: false,
+        loading: false,
+        loadingOlder: false,
+      },
+      [
+        { id: "event-3", event_seq: 3, event_log_epoch: "epoch-a", type: "task_created" },
+        { id: "event-2", event_seq: 2, event_log_epoch: "epoch-a", type: "message_enqueued" },
+      ],
+      "epoch-a",
+      true,
+      false,
+    );
+    const appended = mergeTimelineEventPage(
+      initial,
+      [{ id: "event-1", event_seq: 1, event_log_epoch: "epoch-a", type: "agent_state_changed" }],
+      "epoch-a",
+      false,
+      true,
+    );
+    expect(appended).toMatchObject({
+      eventLogEpoch: "epoch-a",
+      eventSeqs: [1, 2, 3],
+      oldestSeq: 1,
+      newestSeq: 3,
+      hasOlder: false,
+    });
+
+    expect(mergeTimelineEventPage(
+      appended,
+      [{ id: "event-1-new", event_seq: 1, event_log_epoch: "epoch-b", type: "message_enqueued" }],
+      "epoch-b",
+      false,
+      true,
+    )).toMatchObject({
+      eventLogEpoch: "epoch-b",
+      eventSeqs: [1],
+      eventsBySeq: { 1: { id: "event-1-new" } },
     });
   });
 });

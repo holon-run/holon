@@ -80,8 +80,8 @@ import type {
   ToolExecutionArtifactContent,
 } from "./types";
 
-import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState, TaskDetailState, ToolExecutionDetailState } from "./runtime-store-helpers";
-export type { AgentLiveStatus, AgentSessionState };
+import type { AgentLiveStatus, AgentSessionState, TimelineEventsState, WorkItemDetailState, TaskDetailState, ToolExecutionDetailState } from "./runtime-store-helpers";
+export type { AgentLiveStatus, AgentSessionState, TimelineEventsState };
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
@@ -263,6 +263,7 @@ export interface RuntimeStoreState {
   rightPanelViewStack: RightPanelView[];
   rightPanelOpen: boolean;
   rightPanelView?: RightPanelView;
+  timelineEventsByAgentId: Record<string, TimelineEventsState>;
   navCollapsed: boolean;
 
   bootstrap: RuntimeBootstrap;
@@ -316,6 +317,9 @@ export interface RuntimeStoreState {
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
+  showTimelineEvents: (agentId: string) => void;
+  refreshTimelineEvents: (agentId: string) => Promise<void>;
+  loadOlderTimelineEvents: (agentId: string) => Promise<void>;
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
   showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef) => void;
@@ -411,6 +415,12 @@ export function resetTransientRuntimeStateForResume(
     searchResultContentLoadingBySourceRef: resetBooleanMap(state.searchResultContentLoadingBySourceRef),
     rightPanelView: resetRightPanelLoading(state.rightPanelView),
     rightPanelViewStack: state.rightPanelViewStack.map(resetRightPanelLoading).filter((view): view is RightPanelView => view !== undefined),
+    timelineEventsByAgentId: Object.fromEntries(
+      Object.entries(state.timelineEventsByAgentId).map(([agentId, timelineEvents]) => [
+        agentId,
+        { ...timelineEvents, loading: false, loadingOlder: false },
+      ]),
+    ),
     sessionsByAgentId: resetSessionsForResume(state.sessionsByAgentId),
   };
 }
@@ -1107,6 +1117,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   rightPanelOpen: true,
   rightPanelView: undefined,
   rightPanelViewStack: [],
+  timelineEventsByAgentId: {},
   navCollapsed: false,
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
@@ -1202,6 +1213,126 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rightPanelView: { kind: "agent_overview", agentId: agentId ?? state.selectedAgentId },
       };
     }),
+  showTimelineEvents: (agentId) => {
+    set((state) => {
+      if (state.rightPanelView?.kind === "timeline_events" && state.rightPanelView.agentId === agentId) {
+        return { rightPanelOpen: true };
+      }
+      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
+      return {
+        rightPanelViewStack: stack,
+        rightPanelOpen: true,
+        rightPanelView: { kind: "timeline_events", agentId },
+      };
+    });
+    const timelineEvents = get().timelineEventsByAgentId[agentId];
+    if (!timelineEvents || (!timelineEvents.loading && timelineEvents.eventSeqs.length === 0)) {
+      void get().refreshTimelineEvents(agentId);
+    }
+  },
+  refreshTimelineEvents: async (agentId) => {
+    const request = captureClientRequest();
+    set((state) => ({
+      timelineEventsByAgentId: {
+        ...state.timelineEventsByAgentId,
+        [agentId]: {
+          ...emptyTimelineEventsState(),
+          ...state.timelineEventsByAgentId[agentId],
+          loading: true,
+          error: undefined,
+        },
+      },
+    }));
+    try {
+      const page = await request.client.getAgentEvents(agentId, {
+        limit: 80,
+        order: "desc",
+        displayLevel: "debug",
+      });
+      if (!isCurrentClientRequest(request)) return;
+      set((state) => {
+        const latest = state.timelineEventsByAgentId[agentId] ?? emptyTimelineEventsState();
+        const preserveLoadedEvents = latest.eventSeqs.length > 0;
+        return {
+          timelineEventsByAgentId: {
+            ...state.timelineEventsByAgentId,
+            [agentId]: mergeTimelineEventPage(
+              latest,
+              page.events ?? [],
+              page.event_log_epoch,
+              preserveLoadedEvents ? latest.hasOlder && page.has_older : page.has_older,
+              preserveLoadedEvents,
+            ),
+          },
+        };
+      });
+    } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
+      set((state) => ({
+        timelineEventsByAgentId: {
+          ...state.timelineEventsByAgentId,
+          [agentId]: {
+            ...emptyTimelineEventsState(),
+            ...state.timelineEventsByAgentId[agentId],
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    }
+  },
+  loadOlderTimelineEvents: async (agentId) => {
+    const current = get().timelineEventsByAgentId[agentId];
+    if (!current || current.loadingOlder || !current.hasOlder || current.oldestSeq == null) return;
+    const request = captureClientRequest();
+    set((state) => ({
+      timelineEventsByAgentId: {
+        ...state.timelineEventsByAgentId,
+        [agentId]: {
+          ...(state.timelineEventsByAgentId[agentId] ?? current),
+          loadingOlder: true,
+          error: undefined,
+        },
+      },
+    }));
+    try {
+      const page = await request.client.getAgentEvents(agentId, {
+        beforeSeq: current.oldestSeq,
+        limit: 80,
+        order: "desc",
+        displayLevel: "debug",
+      });
+      if (!isCurrentClientRequest(request)) return;
+      set((state) => {
+        const latest = state.timelineEventsByAgentId[agentId] ?? emptyTimelineEventsState();
+        return {
+          timelineEventsByAgentId: {
+            ...state.timelineEventsByAgentId,
+            [agentId]: mergeTimelineEventPage(
+              latest,
+              page.events ?? [],
+              page.event_log_epoch,
+              page.has_older,
+              true,
+            ),
+          },
+        };
+      });
+    } catch (error) {
+      if (!isCurrentClientRequest(request)) return;
+      set((state) => ({
+        timelineEventsByAgentId: {
+          ...state.timelineEventsByAgentId,
+          [agentId]: {
+            ...emptyTimelineEventsState(),
+            ...state.timelineEventsByAgentId[agentId],
+            loadingOlder: false,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    }
+  },
   showWorkItemDetail: (agentId, workItem) =>
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
@@ -3022,6 +3153,57 @@ function emptyAgentSession(): AgentSessionState {
   };
 }
 
+function emptyTimelineEventsState(): TimelineEventsState {
+  return {
+    eventsBySeq: {},
+    eventSeqs: [],
+    hasOlder: false,
+    loading: false,
+    loadingOlder: false,
+  };
+}
+
+export function mergeTimelineEventPage(
+  current: TimelineEventsState,
+  incomingEvents: StreamEventEnvelopeDto[],
+  eventLogEpoch: string | undefined,
+  hasOlder: boolean,
+  append: boolean,
+): TimelineEventsState {
+  const epochChanged = Boolean(
+    eventLogEpoch
+    && current.eventLogEpoch
+    && eventLogEpoch !== current.eventLogEpoch,
+  );
+  const base = !append || epochChanged ? emptyTimelineEventsState() : current;
+  const eventsBySeq = { ...base.eventsBySeq };
+  for (const event of incomingEvents) {
+    if (event.event_seq == null) continue;
+    if (eventLogEpoch && event.event_log_epoch && event.event_log_epoch !== eventLogEpoch) continue;
+    const existing = eventsBySeq[event.event_seq];
+    if (existing && timelineEventIdentity(existing) !== timelineEventIdentity(event)) {
+      return mergeTimelineEventPage(emptyTimelineEventsState(), incomingEvents, eventLogEpoch, hasOlder, false);
+    }
+    eventsBySeq[event.event_seq] = event;
+  }
+  const eventSeqs = Object.keys(eventsBySeq).map(Number).sort((left, right) => left - right);
+  return {
+    eventLogEpoch: eventLogEpoch || base.eventLogEpoch,
+    eventsBySeq,
+    eventSeqs,
+    oldestSeq: eventSeqs[0],
+    newestSeq: eventSeqs.at(-1),
+    hasOlder,
+    loading: false,
+    loadingOlder: false,
+    error: undefined,
+  };
+}
+
+function timelineEventIdentity(event: { id?: string; type?: string; event_seq?: number }): string {
+  return `${event.event_seq ?? ""}:${event.id ?? ""}:${event.type ?? ""}`;
+}
+
 function applyProjectionAction(
   current: AgentSessionState,
   action: SessionProjectionAction,
@@ -4309,6 +4491,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       events: uniqueEvents,
       eventLogEpoch: incomingEpoch,
     }, "debug", patchedBaseDetail);
+    const timelineEvents = state.timelineEventsByAgentId[agentId];
 
     return {
       bootstrap: sortBootstrapAgents(
@@ -4316,6 +4499,18 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
         rosterActivityByAgentId,
       ),
       rosterActivityByAgentId,
+      timelineEventsByAgentId: timelineEvents
+        ? {
+            ...state.timelineEventsByAgentId,
+            [agentId]: mergeTimelineEventPage(
+              timelineEvents,
+              incomingEvents,
+              incomingEpoch,
+              timelineEvents.hasOlder,
+              true,
+            ),
+          }
+        : state.timelineEventsByAgentId,
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
         [agentId]: {
