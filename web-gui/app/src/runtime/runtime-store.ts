@@ -2486,7 +2486,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             },
           },
         }));
-        span.end("error");
+        span.end("error", { errorKind: agentDetailErrorKind(error), phase: "fetch" });
       } finally {
         const current = agentDetailRefreshInFlight.get(key);
         if (current?.promise === promise) {
@@ -4210,7 +4210,7 @@ async function catchUpAgentEvents(
       eventCount: page.events?.length ?? 0,
     });
   })().catch((error) => {
-    span.end("error");
+    span.end("error", { errorKind: agentDetailErrorKind(error) });
     throw error;
   }).finally(() => {
     if (agentEventCatchUpInFlight.get(agentId) === request) {
@@ -4561,6 +4561,17 @@ function scheduleAutomaticBriefHydrationRetry(
     });
   }, delay);
   briefHydrationRetryTimers.set(key, timer);
+}
+
+export function agentDetailErrorKind(error: unknown): string {
+  if (error instanceof DOMException && error.name === "AbortError") return "timeout";
+  if (error instanceof Error) {
+    if (error.name === "RuntimeHttpError") return "http_error";
+    if (error.name === "SyntaxError") return "parse_error";
+    if (error.name === "TypeError") return "network_error";
+    if (/timeout|timed out|aborted/i.test(error.message)) return "timeout";
+  }
+  return "unknown";
 }
 
 function briefHydrationErrorKind(error: unknown): string {
