@@ -6,9 +6,9 @@ use crate::storage::AppStorage;
 use crate::types::{
     AgentLifecycleHint, AgentListEntry, AgentModelState, AgentPostureProjection,
     AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason, ChildAgentObservabilitySnapshot,
-    ChildAgentPhase, ChildAgentSummary, ExecutionRootEntry, TaskRecord, TaskStatus, TokenUsage,
-    WaitingReason, WorkItemState, WorkspaceOccupancyRecord, WorkspaceProjectionMetadata,
-    WorktreeSession,
+    ChildAgentPhase, ChildAgentSummary, CompletionReportState, ExecutionRootEntry, TaskRecord,
+    TaskStatus, TokenUsage, WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
+    WorkspaceProjectionMetadata, WorktreeSession,
 };
 use crate::work_item_scheduling::WorkQueueReadModel;
 
@@ -72,6 +72,10 @@ impl RuntimeHandle {
             let guard = self.inner.agent.lock().await;
             guard.state.current_turn_id.clone()
         };
+        if let Some(turn_id) = current_turn_id.as_deref() {
+            self.mark_pending_completion_reports_missing(turn_id)
+                .await?;
+        }
 
         let Some(work_item_id) = work_item_id else {
             return Ok(None);
@@ -135,6 +139,7 @@ impl RuntimeHandle {
                         expected_revision: latest.revision,
                     },
                     agent_state: None,
+                    brief_evidence: Vec::new(),
                     audit_events,
                     index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
                     notify_scheduler: true,
@@ -161,6 +166,61 @@ impl RuntimeHandle {
             }),
         ))?;
         Ok(Some(committed))
+    }
+
+    async fn mark_pending_completion_reports_missing(&self, turn_id: &str) -> Result<()> {
+        let candidates = self
+            .inner
+            .runtime_db
+            .work_items()
+            .latest_for_agent(&self.agent_id().await?, usize::MAX)?
+            .into_iter()
+            .filter(|work_item| {
+                work_item.result_brief_id.is_none()
+                    && work_item.completion_intent.as_ref().is_some_and(|intent| {
+                        intent.report_state == CompletionReportState::Pending
+                            && intent.source_turn_id.as_deref() == Some(turn_id)
+                    })
+            })
+            .collect::<Vec<_>>();
+        for existing in candidates {
+            let mut completion_intent = existing
+                .completion_intent
+                .clone()
+                .ok_or_else(|| anyhow!("missing completion intent disappeared"))?;
+            completion_intent.report_state = CompletionReportState::Missing;
+            completion_intent.updated_at = Utc::now();
+            let record = WorkItemRecord {
+                revision: existing.revision + 1,
+                completion_intent: Some(completion_intent),
+                updated_at: Utc::now(),
+                ..existing
+            };
+            let commit = self.inner.runtime_db.transitions().commit_work_item(
+                &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                    agent_id: record.agent_id.clone(),
+                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                        record: record.clone(),
+                        expected_revision: record.revision - 1,
+                    },
+                    agent_state: None,
+                    brief_evidence: Vec::new(),
+                    audit_events: vec![AuditEvent::legacy(
+                        "work_item_completion_report_missing",
+                        serde_json::json!({
+                            "agent_id": record.agent_id.clone(),
+                            "work_item_id": record.id.clone(),
+                            "turn_id": turn_id,
+                        }),
+                    )],
+                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                    notify_scheduler: false,
+                    fault: self.take_transition_fault(),
+                },
+            )?;
+            self.apply_transition_commit(commit).await;
+        }
+        Ok(())
     }
 
     pub(crate) async fn closure_decision_for_state(

@@ -2783,6 +2783,23 @@ export interface components {
             current_work_item: {
                 agent_id: string;
                 blocked_by?: string | null;
+                completion_intent?: {
+                    /** Format: date-time */
+                    created_at: string;
+                    /** Format: uint64 */
+                    expected_work_revision: number;
+                    /** @enum {string} */
+                    report_requirement: "required";
+                    /** @enum {string} */
+                    report_state: "pending" | "bound" | "missing";
+                    result_brief_id?: string | null;
+                    source_activation_id?: string | null;
+                    source_message_id?: string | null;
+                    source_turn_id?: string | null;
+                    /** Format: date-time */
+                    updated_at: string;
+                    work_item_id: string;
+                } | null;
                 /** Format: date-time */
                 created_at: string;
                 id: string;
@@ -2849,6 +2866,23 @@ export interface components {
             previous_work_item?: {
                 agent_id: string;
                 blocked_by?: string | null;
+                completion_intent?: {
+                    /** Format: date-time */
+                    created_at: string;
+                    /** Format: uint64 */
+                    expected_work_revision: number;
+                    /** @enum {string} */
+                    report_requirement: "required";
+                    /** @enum {string} */
+                    report_state: "pending" | "bound" | "missing";
+                    result_brief_id?: string | null;
+                    source_activation_id?: string | null;
+                    source_message_id?: string | null;
+                    source_turn_id?: string | null;
+                    /** Format: date-time */
+                    updated_at: string;
+                    work_item_id: string;
+                } | null;
                 /** Format: date-time */
                 created_at: string;
                 id: string;
@@ -3865,6 +3899,23 @@ export interface components {
         WorkItemRecord: {
             agent_id: string;
             blocked_by?: string | null;
+            completion_intent?: {
+                /** Format: date-time */
+                created_at: string;
+                /** Format: uint64 */
+                expected_work_revision: number;
+                /** @enum {string} */
+                report_requirement: "required";
+                /** @enum {string} */
+                report_state: "pending" | "bound" | "missing";
+                result_brief_id?: string | null;
+                source_activation_id?: string | null;
+                source_message_id?: string | null;
+                source_turn_id?: string | null;
+                /** Format: date-time */
+                updated_at: string;
+                work_item_id: string;
+            } | null;
             /** Format: date-time */
             created_at: string;
             id: string;

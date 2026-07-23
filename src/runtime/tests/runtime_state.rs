@@ -6,10 +6,10 @@ use crate::domain::scheduler_protocol::{
     ScenarioMode, SchedulerScenarioClass, WorkStatus,
 };
 use crate::types::{
-    ActiveSkillRecord, AuthorityClass, QueueEntryStatus, SkillActivationSource,
-    SkillActivationState, SkillLoadReason, SkillScope, WaitConditionKind, WaitConditionRecord,
-    WaitConditionStatus, WakeSource, WorkItemPlanStatus, WorkItemRecord, WorkItemSchedulingState,
-    WorkItemState,
+    ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,
+    QueueEntryStatus, SkillActivationSource, SkillActivationState, SkillLoadReason, SkillScope,
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
+    WorkItemRecord, WorkItemSchedulingState, WorkItemState,
 };
 
 struct BlockingProvider {
@@ -1146,6 +1146,322 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Processed)
+    );
+}
+
+#[tokio::test]
+async fn completed_production_settlement_uses_exact_bound_result_brief() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "settle exact completion brief".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete canonical work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-exact-completion".into());
+    let message = runtime.enqueue(message).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    let completed = runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let intent = completed
+        .completion_intent
+        .as_ref()
+        .expect("completion should persist an execution-bound intent");
+    assert_eq!(
+        intent.source_activation_id.as_deref(),
+        Some(activation_id.as_str())
+    );
+    assert_eq!(
+        intent.source_message_id.as_deref(),
+        Some(message.id.as_str())
+    );
+    assert_eq!(intent.source_turn_id.as_deref(), message.turn_id.as_deref());
+    assert_eq!(intent.expected_work_revision, work_item.revision);
+    assert_eq!(intent.report_state, CompletionReportState::Pending);
+
+    let completed = runtime
+        .promote_work_item_completion_report(
+            work_item.id.clone(),
+            "canonical completion report".into(),
+            Some(1),
+            Some(1),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let result_brief_id = completed
+        .result_brief_id
+        .clone()
+        .expect("completion report should have an exact brief binding");
+    let canonical_brief = runtime
+        .storage()
+        .read_brief_by_id(&result_brief_id)
+        .unwrap()
+        .expect("canonical completion brief");
+    let mut conflicting_brief = canonical_brief.clone();
+    conflicting_brief.text = "rewritten completion report".into();
+    let conflict = runtime
+        .storage()
+        .append_brief(&conflicting_brief)
+        .expect_err("a bound brief identity must reject content replacement");
+    assert!(conflict
+        .to_string()
+        .contains("conflicting brief content for evidence_id"));
+    assert_eq!(
+        runtime
+            .storage()
+            .read_brief_by_id(&result_brief_id)
+            .unwrap(),
+        Some(canonical_brief)
+    );
+    let mut decoy = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "newer decoy result that must not settle the activation",
+        Some(work_item.id.clone()),
+        None,
+    );
+    decoy.created_at = completed.updated_at + chrono::Duration::seconds(1);
+    runtime.storage().append_brief(&decoy).unwrap();
+
+    finish_claimed_test_run(&runtime).await;
+    runtime
+        .commit_queue_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            vec![AuditEvent::legacy(
+                "queue_entry_settled",
+                serde_json::json!({
+                    "message_id": message.id,
+                    "status": QueueEntryStatus::Processed,
+                }),
+            )],
+            true,
+        )
+        .await
+        .unwrap();
+
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let settlement = settled
+        .settlements
+        .get(&canonical_settlement_id(&message.id))
+        .expect("completed activation should have an exact settlement");
+    assert_eq!(
+        settlement.operator_delivery.as_deref(),
+        Some(result_brief_id.as_str())
+    );
+    assert_ne!(
+        settlement.operator_delivery.as_deref(),
+        Some(decoy.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn completed_production_settlement_rejects_mismatched_completion_execution() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "reject mismatched completion execution".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete canonical work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-mismatched-completion".into());
+    let message = runtime.enqueue(message).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let completed = runtime
+        .promote_work_item_completion_report(
+            work_item.id.clone(),
+            "completion report from the claimed execution".into(),
+            Some(1),
+            Some(1),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut mismatched = completed.clone();
+    mismatched.revision += 1;
+    mismatched.updated_at = Utc::now();
+    mismatched
+        .completion_intent
+        .as_mut()
+        .expect("completion intent")
+        .source_activation_id = Some("activation:message:foreign-execution".into());
+    let commit = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_work_item(&crate::runtime_db::transitions::WorkItemTransitionCommand {
+            agent_id: mismatched.agent_id.clone(),
+            mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                record: mismatched,
+                expected_revision: completed.revision,
+            },
+            agent_state: None,
+            brief_evidence: Vec::new(),
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+        })
+        .unwrap();
+    runtime.apply_transition_commit(commit).await;
+
+    finish_claimed_test_run(&runtime).await;
+    let error = runtime
+        .commit_queue_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            vec![AuditEvent::legacy(
+                "queue_entry_settled",
+                serde_json::json!({
+                    "message_id": message.id,
+                    "status": QueueEntryStatus::Processed,
+                }),
+            )],
+            true,
+        )
+        .await
+        .expect_err("settlement must reject a completion intent from another execution");
+    assert!(error
+        .to_string()
+        .contains("completion intent does not match the settling execution"));
+
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert!(!snapshot
+        .settlements
+        .contains_key(&canonical_settlement_id(&message.id)));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
     );
 }
 
@@ -5186,6 +5502,7 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
                     record: record.clone(),
                 },
                 agent_state: None,
+                brief_evidence: Vec::new(),
                 audit_events: vec![AuditEvent::legacy(
                     "post_commit_fault_test",
                     serde_json::json!({}),

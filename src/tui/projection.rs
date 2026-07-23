@@ -1492,6 +1492,7 @@ fn tui_work_item_from_dto(item: SlimWorkItemDto) -> WorkItemSchedulingProjection
             recheck_consumed_at: None,
             result_brief_id: item.result_brief_id,
             result_summary: item.result_summary,
+            completion_intent: None,
             created_at: item.created_at,
             updated_at: item.updated_at,
             turn_id: item.turn_id,

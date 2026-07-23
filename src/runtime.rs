@@ -114,8 +114,8 @@ use crate::{
         SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
         TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
         TimerStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind,
-        ViewImageObservation, WaitingReason, WorkItemLifecycleAuditEvent, WorkspaceEntry,
-        AGENT_HOME_WORKSPACE_ID,
+        ViewImageObservation, WaitingReason, WorkItemExecutionBinding, WorkItemLifecycleAuditEvent,
+        WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -1374,13 +1374,53 @@ impl RuntimeHandle {
         let state = {
             let mut guard = self.inner.agent.lock().await;
             guard.state.turn_index += 1;
-            guard.state.current_turn_id = message
+            let turn_id = message
                 .and_then(|message| normalized_turn_id(message.turn_id.as_deref()))
-                .or_else(|| Some(crate::ids::turn_id()));
+                .unwrap_or_else(crate::ids::turn_id);
+            guard.state.current_turn_id = Some(turn_id.clone());
             guard.state.last_turn_terminal = None;
             if guard.state.current_turn_work_item_id.is_none() {
                 guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
             }
+            guard.state.current_execution_binding = message.map(|message| {
+                let work_item_id = message
+                    .work_item_id
+                    .clone()
+                    .or_else(|| guard.state.current_turn_work_item_id.clone());
+                let claimed_work_revision = work_item_id
+                    .as_deref()
+                    .and_then(|work_item_id| {
+                        self.inner
+                            .runtime_db
+                            .work_items()
+                            .latest(work_item_id)
+                            .ok()
+                            .flatten()
+                    })
+                    .map(|work_item| work_item.revision);
+                let activation_id = matches!(
+                    (&message.kind, &message.origin),
+                    (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+                        if subsystem == "work_queue"
+                )
+                .then(|| scheduler_executor::canonical_activation_id(&message.id))
+                .filter(|activation_id| {
+                    self.inner
+                        .runtime_db
+                        .transitions()
+                        .load_scheduler_protocol_snapshot_if_initialized(&message.agent_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|snapshot| snapshot.activations.contains_key(activation_id))
+                });
+                WorkItemExecutionBinding {
+                    activation_id,
+                    source_message_id: message.id.clone(),
+                    turn_id,
+                    work_item_id,
+                    claimed_work_revision,
+                }
+            });
             guard.state.current_turn_operator_binding_id =
                 operator_binding_id.and_then(|binding_id| {
                     let binding_id = binding_id.trim();
@@ -1838,23 +1878,59 @@ impl RuntimeHandle {
                     })
                 }
                 Some(crate::types::WorkItemSchedulingState::Completed) => {
-                    let brief = self
+                    let work_item = self
                         .inner
-                        .storage
-                        .read_recent_briefs(usize::MAX)?
-                        .into_iter()
-                        .filter(|brief| {
-                            brief.kind.is_success()
-                                && brief.work_item_id.as_deref() == Some(work_item_id.as_str())
-                                && !brief.text.trim().is_empty()
-                        })
-                        .max_by_key(|brief| brief.created_at)
+                        .runtime_db
+                        .work_items()
+                        .latest(&work_item_id)?
                         .ok_or_else(|| {
-                            anyhow!("canonical WorkItem completion requires a result brief binding")
+                            anyhow!("canonical WorkItem completion references missing WorkItem")
                         })?;
                     let turn_terminal = message.turn_id.clone().ok_or_else(|| {
                         anyhow!("canonical WorkItem completion requires a turn identity")
                     })?;
+                    let completion_intent =
+                        work_item.completion_intent.as_ref().ok_or_else(|| {
+                            anyhow!(
+                                "canonical WorkItem completion requires a completion intent binding"
+                            )
+                        })?;
+                    anyhow::ensure!(
+                        completion_intent.work_item_id == work_item_id
+                            && completion_intent.source_activation_id.as_deref()
+                                == Some(activation_id.as_str())
+                            && completion_intent.source_message_id.as_deref()
+                                == Some(record.message_id.as_str())
+                            && completion_intent.source_turn_id.as_deref()
+                                == Some(turn_terminal.as_str())
+                            && completion_intent.expected_work_revision
+                                == activation.admitted_generation,
+                        "canonical WorkItem completion intent does not match the settling execution"
+                    );
+                    let result_brief_id = completion_intent
+                        .result_brief_id
+                        .as_deref()
+                        .filter(|result_brief_id| {
+                            work_item.result_brief_id.as_deref() == Some(*result_brief_id)
+                        })
+                        .ok_or_else(|| {
+                            anyhow!("canonical WorkItem completion requires a result brief binding")
+                        })?;
+                    let brief = self
+                        .inner
+                        .storage
+                        .read_brief_by_id(result_brief_id)?
+                        .filter(|brief| {
+                            brief.kind.is_success()
+                                && brief.work_item_id.as_deref() == Some(work_item_id.as_str())
+                                && brief.turn_id.as_deref() == Some(turn_terminal.as_str())
+                                && brief.related_message_id.as_deref()
+                                    == Some(record.message_id.as_str())
+                                && !brief.text.trim().is_empty()
+                        })
+                        .ok_or_else(|| {
+                            anyhow!("canonical WorkItem completion result brief binding is invalid")
+                        })?;
                     ProtocolCommand::SettleActivation(SettleActivationCommand {
                         settlement: ActivationSettlement {
                             id: canonical_settlement_id(&record.message_id),

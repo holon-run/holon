@@ -1,7 +1,7 @@
 use super::super::*;
 use super::support::*;
 use crate::types::{
-    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
+    CompletionReportState, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
     WorkItemContinuationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState,
     AGENT_HOME_WORKSPACE_ID,
 };
@@ -1929,6 +1929,12 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         .unwrap();
 
     let report_text = "Implemented completion report promotion and verified focused tests.";
+    let expected_work_revision = seed_runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: work_item.id.clone(),
         report_text: Some(report_text.into()),
@@ -1996,6 +2002,27 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         completed.result_brief_id.as_deref(),
         Some(result_briefs[0].id.as_str())
     );
+    let completion_intent = completed
+        .completion_intent
+        .as_ref()
+        .expect("completed work item should retain completion intent");
+    assert_eq!(
+        completion_intent.source_message_id.as_deref(),
+        Some(message.id.as_str())
+    );
+    assert_eq!(
+        completion_intent.source_turn_id.as_deref(),
+        result_briefs[0].turn_id.as_deref()
+    );
+    assert_eq!(
+        completion_intent.expected_work_revision,
+        expected_work_revision
+    );
+    assert_eq!(completion_intent.report_state, CompletionReportState::Bound);
+    assert_eq!(
+        completion_intent.result_brief_id.as_deref(),
+        Some(result_briefs[0].id.as_str())
+    );
     assert_eq!(result_briefs[0].turn_index, Some(1));
     assert!(runtime
         .storage()
@@ -2048,6 +2075,326 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
     assert_eq!(
         tool_result["result"]["completion_report_promoted"].as_bool(),
         Some(true)
+    );
+}
+
+#[tokio::test]
+async fn later_final_report_binds_completed_work_item_after_continuation_resume() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let caller = seed_runtime
+        .create_work_item(
+            "resume caller after child completion".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(caller.id.clone())
+        .await
+        .unwrap();
+    let completed_work = seed_runtime
+        .create_work_item(
+            "complete child without preceding report".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(completed_work.id.clone())
+        .await
+        .unwrap();
+
+    let provider = Arc::new(CompleteWorkItemReportProvider {
+        work_item_id: completed_work.id.clone(),
+        report_text: None,
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete the child and return to the caller".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let completed = runtime
+        .latest_work_item(&completed_work.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let result_brief_id = completed
+        .result_brief_id
+        .as_deref()
+        .expect("later final report should bind the completed work item");
+    let result_brief = runtime
+        .storage()
+        .read_brief_by_id(result_brief_id)
+        .unwrap()
+        .expect("bound later final report should exist");
+    assert_eq!(result_brief.text, "done");
+    assert_eq!(
+        result_brief.work_item_id.as_deref(),
+        Some(completed_work.id.as_str())
+    );
+    assert_eq!(
+        result_brief.related_message_id.as_deref(),
+        Some(message.id.as_str())
+    );
+    let completion_intent = completed
+        .completion_intent
+        .as_ref()
+        .expect("completion intent should remain durable");
+    assert_eq!(completion_intent.report_state, CompletionReportState::Bound);
+    assert_eq!(
+        completion_intent.result_brief_id.as_deref(),
+        Some(result_brief_id)
+    );
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(caller.id.as_str())
+    );
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(caller.id.as_str())
+    );
+    assert!(
+        runtime
+            .recent_briefs(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|brief| brief.work_item_id.as_deref() != Some(caller.id.as_str())),
+        "completed child final report must not be rebound to resumed caller"
+    );
+
+    let restarted = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let restarted_completed = restarted
+        .latest_work_item(&completed_work.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restarted_completed.result_brief_id,
+        completed.result_brief_id
+    );
+    assert_eq!(
+        restarted_completed.completion_intent,
+        completed.completion_intent
+    );
+}
+
+#[tokio::test]
+async fn completion_intent_does_not_borrow_mismatched_execution_identity() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let active = runtime
+        .create_work_item("active execution".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let unrelated = runtime
+        .create_work_item(
+            "completed outside active execution".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(active.id.clone()).await.unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue active execution".into(),
+        },
+    );
+    message.turn_id = Some("turn-active-execution".into());
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+
+    let completed = runtime
+        .complete_work_item(unrelated.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let intent = completed
+        .completion_intent
+        .as_ref()
+        .expect("completion intent");
+    assert_eq!(intent.source_activation_id, None);
+    assert_eq!(intent.source_message_id, None);
+    assert_eq!(intent.source_turn_id, None);
+    assert_eq!(intent.expected_work_revision, unrelated.revision);
+}
+
+#[tokio::test]
+async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "complete without a final report".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete without reporting".into(),
+        },
+    );
+    message.turn_id = Some("turn-missing-completion-report".into());
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+
+    let completed = runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        completed
+            .completion_intent
+            .as_ref()
+            .expect("completion intent")
+            .report_state,
+        CompletionReportState::Pending
+    );
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_id: message.turn_id.clone().unwrap(),
+            turn_index: guard.state.turn_index,
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 10,
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    assert!(runtime
+        .maybe_commit_turn_end_work_item_transition()
+        .await
+        .unwrap()
+        .is_none());
+    let missing = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(missing.result_brief_id, None);
+    assert_eq!(
+        missing
+            .completion_intent
+            .as_ref()
+            .expect("completion intent")
+            .report_state,
+        CompletionReportState::Missing
+    );
+
+    let restarted = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    assert_eq!(
+        restarted
+            .latest_work_item(&work_item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .completion_intent,
+        missing.completion_intent
     );
 }
 
@@ -2640,6 +2987,84 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
         tool_result["result"]["completion_report_promoted"].as_bool(),
         Some(true)
     );
+}
+
+#[tokio::test]
+async fn conflicting_completion_report_promotion_keeps_first_canonical_brief() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("bind one canonical report".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let completed = runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let first = runtime
+        .promote_work_item_completion_report(
+            completed.id.clone(),
+            "First canonical completion report".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let first_brief_id = first
+        .result_brief_id
+        .clone()
+        .expect("first promotion should bind a brief");
+
+    let repeated = runtime
+        .promote_work_item_completion_report(
+            completed.id.clone(),
+            "Conflicting replacement report".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repeated.result_brief_id.as_deref(),
+        Some(first_brief_id.as_str())
+    );
+    assert_eq!(
+        repeated
+            .completion_intent
+            .as_ref()
+            .expect("completion intent")
+            .result_brief_id
+            .as_deref(),
+        Some(first_brief_id.as_str())
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .read_brief_by_id(&first_brief_id)
+            .unwrap()
+            .expect("first canonical brief")
+            .text,
+        "First canonical completion report"
+    );
+    assert!(runtime
+        .recent_briefs(10)
+        .await
+        .unwrap()
+        .iter()
+        .all(|brief| brief.text != "Conflicting replacement report"));
 }
 
 #[tokio::test]

@@ -133,6 +133,38 @@ pub enum TodoItemState {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionReportRequirement {
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionReportState {
+    Pending,
+    Bound,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkItemCompletionIntent {
+    pub work_item_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_activation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_id: Option<String>,
+    pub expected_work_revision: u64,
+    pub report_requirement: CompletionReportRequirement,
+    pub report_state: CompletionReportState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_brief_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WorkItemRecord {
     pub id: String,
@@ -161,6 +193,8 @@ pub struct WorkItemRecord {
     pub result_brief_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_intent: Option<WorkItemCompletionIntent>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +225,7 @@ impl WorkItemRecord {
             recheck_consumed_at: None,
             result_brief_id: None,
             result_summary: None,
+            completion_intent: None,
             created_at: now,
             updated_at: now,
             turn_id: None,
