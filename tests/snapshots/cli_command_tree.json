@@ -783,6 +783,30 @@
     "aliases": []
   },
   {
+    "path": "debug.scheduler-recovery",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "events",
     "positionals": [],
     "flags": [],

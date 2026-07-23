@@ -74,6 +74,12 @@ pub(super) struct PreparedProtocolCommands {
     results: Vec<PreparedProtocolCommandResult>,
 }
 
+impl PreparedProtocolCommands {
+    pub(super) fn has_writes(&self) -> bool {
+        self.initialized_partition || !self.results.is_empty()
+    }
+}
+
 struct PreparedProtocolCommandResult {
     command_kind: &'static str,
     command_identity: String,

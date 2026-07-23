@@ -3258,6 +3258,46 @@ pub(crate) fn upsert_queue_entry_tx(
     Ok(true)
 }
 
+pub(crate) fn compare_and_set_queue_entry_tx(
+    tx: &Transaction<'_>,
+    expected: &QueueEntryRecord,
+    record: &QueueEntryRecord,
+) -> Result<bool> {
+    if expected.message_id != record.message_id || expected.agent_id != record.agent_id {
+        return Err(anyhow!(
+            "queue compare-and-set identity must remain unchanged"
+        ));
+    }
+    queue_entry_transition(expected, record)?;
+
+    let expected_payload_json = serde_json::to_string(expected)?;
+    let payload_json = serde_json::to_string(record)?;
+    let priority = enum_string(&record.priority)?;
+    let status = enum_string(&record.status)?;
+    let changed = tx.execute(
+        "UPDATE queue_entries
+         SET priority = ?3,
+             status = ?4,
+             created_at = ?5,
+             updated_at = ?6,
+             payload_json = ?7
+         WHERE message_id = ?1
+           AND agent_id = ?2
+           AND payload_json = ?8",
+        params![
+            record.message_id,
+            record.agent_id,
+            priority,
+            status,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            payload_json,
+            expected_payload_json,
+        ],
+    )?;
+    Ok(changed == 1)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StateTransitionOutcome {
     Applied,
