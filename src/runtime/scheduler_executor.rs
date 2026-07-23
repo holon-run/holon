@@ -393,7 +393,27 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )?
         .map(scheduler_semantic_shadow_command);
         let canonical_claim =
-            self.canonical_activation_plan(&projection, &persisted_message, &dispatch_plan)?;
+            match self.canonical_activation_plan(&projection, &persisted_message, &dispatch_plan) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    if let Some(ambiguous) =
+                        error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
+                    {
+                        scheduler::append_ambiguous_wait_advisory(
+                            &self.runtime.inner.storage,
+                            &persisted_message,
+                            &ambiguous.wait_condition_ids,
+                        )?;
+                        scheduler::append_scheduling_advisories(
+                            &self.runtime.inner.storage,
+                            &candidate.prior_state,
+                            candidate.queue_len,
+                        )?;
+                        return Ok(RunLoopPoll::Idle);
+                    }
+                    return Err(error);
+                }
+            };
         scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,

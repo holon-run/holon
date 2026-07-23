@@ -20,6 +20,7 @@ use crate::work_item_scheduling::WorkItemSchedulingProjection;
 use anyhow::bail;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::fmt;
 
 pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ReducerOnlyCandidates;
@@ -55,6 +56,24 @@ pub(crate) enum CanonicalActivationScenario {
         wait_id: Option<String>,
     },
 }
+
+#[derive(Debug)]
+pub(crate) struct AmbiguousCanonicalWaits {
+    pub(crate) message_id: String,
+    pub(crate) wait_condition_ids: Vec<String>,
+}
+
+impl fmt::Display for AmbiguousCanonicalWaits {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "canonical activation message {} matches multiple active waits",
+            self.message_id
+        )
+    }
+}
+
+impl std::error::Error for AmbiguousCanonicalWaits {}
 
 impl CanonicalActivationScenario {
     pub(crate) fn work_item_id(&self) -> &str {
@@ -511,6 +530,32 @@ pub(crate) fn append_scheduling_advisories(
     }
 
     Ok(appended)
+}
+
+pub(crate) fn append_ambiguous_wait_advisory(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    wait_condition_ids: &[String],
+) -> Result<()> {
+    let diagnostic = SchedulingAdvisory::warning(
+        "ambiguous_canonical_wait_binding",
+        "canonical activation input matches multiple active waits and remains queued",
+    )
+    .maybe_work_item_id(message.work_item_id.clone())
+    .evidence(format!("message_id={}", message.id))
+    .evidence(format!(
+        "wait_condition_ids={}",
+        wait_condition_ids.join(",")
+    ));
+    let event = scheduling_advisory_event(&diagnostic);
+    let duplicate = storage
+        .read_recent_events(64)?
+        .iter()
+        .any(|latest| latest.kind == event.kind && latest.data == event.data);
+    if !duplicate {
+        storage.append_event(&event)?;
+    }
+    Ok(())
 }
 
 trait SchedulingAdvisoryExt {
@@ -1253,10 +1298,10 @@ pub(crate) fn canonical_activation_scenario(
 
     let matching_waits = matching_wait_conditions(projection, message);
     if matching_waits.len() > 1 {
-        bail!(
-            "canonical activation message {} matches multiple active waits",
-            message.id
-        );
+        return Err(anyhow::Error::new(AmbiguousCanonicalWaits {
+            message_id: message.id.clone(),
+            wait_condition_ids: matching_waits.iter().map(|wait| wait.id.clone()).collect(),
+        }));
     }
     let matching_wait = matching_waits.first().copied();
 
