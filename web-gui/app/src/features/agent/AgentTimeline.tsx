@@ -112,6 +112,7 @@ const TimelineMessage = memo(function TimelineMessage({
   const isRuntimeItem = isRuntimeActivityItem(item);
   const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
   const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
+  const retryBriefHydration = useRuntimeStore((s) => s.retryBriefHydration);
   const activities =
     isRuntimeItem && item.meta === "activity"
       ? (item.activities ?? [])
@@ -156,6 +157,12 @@ const TimelineMessage = memo(function TimelineMessage({
       <div className="bubble">
         <TimelineItemContent item={item} />
         <TimelineItemDetail detail={item.detail} />
+        {item.briefHydration ? (
+          <BriefHydrationStatus
+            hydration={item.briefHydration}
+            onRetry={() => selectedAgentId && retryBriefHydration(selectedAgentId, item.briefHydration!.briefId)}
+          />
+        ) : null}
       </div>
       <div className="message-actions" aria-label={t("agent.messageActions")}>
         <button className="message-action" type="button" title={t("agent.copyMessage")} onClick={() => copyMessageText(item.body)}>
@@ -204,6 +211,34 @@ function extractWorkspaceImageRefs(text: string): WorkspaceImageRef[] {
 }
 function TimelineItemContent({ item }: { item: AgentTimelineItem }) {
   return <MarkdownContent text={item.body} compact={false} />;
+}
+
+export function BriefHydrationStatus({
+  hydration,
+  onRetry,
+}: {
+  hydration: NonNullable<AgentTimelineItem["briefHydration"]>;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  const isLoading = hydration.status === "loading";
+  const label = isLoading
+    ? t("agentPage.briefLoading")
+    : hydration.status === "not_found"
+      ? t("agentPage.briefNotFound")
+      : t("agentPage.briefLoadFailed");
+  return (
+    <div className={`brief-hydration-status is-${hydration.status}`} role="status">
+      {isLoading ? <LoaderCircle className="is-spinning" size={14} /> : <CircleAlert size={14} />}
+      <span>{label}</span>
+      {!isLoading ? (
+        <button type="button" onClick={onRetry}>
+          <RefreshCw size={13} />
+          {t("agentPage.retryBrief")}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function TimelineItemDetail({ detail, compact = false }: { detail?: AgentTimelineItem["detail"]; compact?: boolean }) {

@@ -1640,6 +1640,40 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "BatchGetBriefsRequest": {
+        "properties": {
+          "brief_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "title": "BatchGetBriefsRequest",
+        "type": "object"
+      },
+      "BatchGetBriefsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "briefs": {
+            "items": {
+              "$ref": "#/components/schemas/BriefRecord"
+            },
+            "type": "array"
+          },
+          "missing_brief_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "briefs"
+        ],
+        "type": "object"
+      },
       "BatchGetMessagesRequest": {
         "properties": {
           "message_ids": {
@@ -7825,6 +7859,74 @@
           }
         ],
         "summary": "Brief detail",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}/briefs:batchGet": {
+      "post": {
+        "description": "Return persisted briefs for the selected agent. Missing or cross-agent ids are reported in missing_brief_ids.",
+        "operationId": "agentBriefsBatchGet",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchGetBriefsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchGetBriefsResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Batch get briefs",
         "tags": [
           "agents"
         ]

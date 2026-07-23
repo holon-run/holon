@@ -86,7 +86,7 @@ fn render_live_inventory() -> String {
             route
         })
         .collect();
-    assert_eq!(routes.len(), 96, "unexpected parsed HTTP route count");
+    assert_eq!(routes.len(), 97, "unexpected parsed HTTP route count");
 
     let openapi = holon::openapi::generate_openapi_json();
     let mut entries = Vec::new();

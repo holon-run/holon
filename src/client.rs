@@ -11,12 +11,12 @@ use crate::{
     daemon::{RuntimeShutdownResponse, RuntimeStatusResponse},
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
-        AttachWorkspaceRequest, BatchGetMessagesRequest, BatchGetMessagesResponse,
-        BatchGetTranscriptEntriesRequest, BatchGetTranscriptEntriesResponse,
-        ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest, DebugPromptRequest,
-        DetachWorkspaceRequest, ExitWorkspaceRequest, ModelConfigMigrationRequest,
-        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
-        SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
+        AttachWorkspaceRequest, BatchGetBriefsRequest, BatchGetBriefsResponse,
+        BatchGetMessagesRequest, BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest,
+        BatchGetTranscriptEntriesResponse, ClearAgentModelRequest, ControlPromptRequest,
+        CreateAgentRequest, DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
+        ModelConfigMigrationRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+        RuntimeConfigUpdateResponse, SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
     },
     http_dto::AgentStateSnapshotDto,
     model_catalog::BuiltInModelMetadata,
@@ -473,6 +473,18 @@ impl LocalClient {
     pub async fn agent_brief(&self, agent_id: &str, brief_id: &str) -> Result<BriefRecord> {
         self.get_json(&format!("/agents/{agent_id}/briefs/{brief_id}"))
             .await
+    }
+
+    pub async fn agent_briefs_batch_get(
+        &self,
+        agent_id: &str,
+        brief_ids: Vec<String>,
+    ) -> Result<BatchGetBriefsResponse> {
+        self.post_json(
+            &format!("/agents/{agent_id}/briefs:batchGet"),
+            &BatchGetBriefsRequest { brief_ids },
+        )
+        .await
     }
 
     pub async fn agent_transcript(

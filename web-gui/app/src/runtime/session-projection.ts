@@ -9,6 +9,7 @@ import { cloneSessionState, createSessionState, type SessionState } from "./sess
 import { deriveTimelineView } from "./timeline-view-model";
 import type {
   AgentTimelineItem,
+  BriefHydrationViewState,
   DisplayLevel,
   RuntimeBriefRecord,
   RuntimeMessageEnvelope,
@@ -39,6 +40,7 @@ export interface SessionProjectionState {
   missingTranscriptEntryIds: Record<string, true>;
   briefRecordsById: Record<string, RuntimeBriefRecord>;
   missingBriefIds: Record<string, true>;
+  briefHydrationById: Record<string, BriefHydrationViewState>;
   referencedMessageIds: Record<string, true>;
   referencedTranscriptEntryIds: Record<string, true>;
   referencedBriefIds: Record<string, true>;
@@ -81,6 +83,15 @@ export type SessionProjectionAction =
       missingIds: string[];
     }
   | {
+      type: "briefs_hydration_started";
+      briefIds: string[];
+    }
+  | {
+      type: "briefs_hydration_failed";
+      briefIds: string[];
+      errorKind: string;
+    }
+  | {
       type: "reset";
       eventLogEpoch?: string;
       reason?: SessionProjectionState["invalidatedReason"];
@@ -102,6 +113,7 @@ export function createSessionProjectionState(eventLogEpoch?: string): SessionPro
     missingTranscriptEntryIds: {},
     briefRecordsById: {},
     missingBriefIds: {},
+    briefHydrationById: {},
     referencedMessageIds: {},
     referencedTranscriptEntryIds: {},
     referencedBriefIds: {},
@@ -171,11 +183,53 @@ export function reduceSessionProjection(
     }
     case "briefs_hydrated": {
       const briefRecordsById = { ...current.briefRecordsById, ...action.recordsById };
+      const briefHydrationById = { ...current.briefHydrationById };
+      for (const briefId of Object.keys(action.recordsById)) {
+        briefHydrationById[briefId] = {
+          briefId,
+          status: "resolved",
+          attempt: briefHydrationById[briefId]?.attempt ?? 1,
+        };
+      }
+      for (const briefId of action.missingIds) {
+        briefHydrationById[briefId] = {
+          briefId,
+          status: "not_found",
+          attempt: briefHydrationById[briefId]?.attempt ?? 1,
+        };
+      }
       return {
         ...current,
         briefRecordsById,
+        briefHydrationById,
         missingBriefIds: mergeMissingIds(current.missingBriefIds, action.missingIds, Object.keys(briefRecordsById)),
       };
+    }
+    case "briefs_hydration_started": {
+      const briefHydrationById = { ...current.briefHydrationById };
+      const missingBriefIds = { ...current.missingBriefIds };
+      for (const briefId of action.briefIds) {
+        const previous = briefHydrationById[briefId];
+        briefHydrationById[briefId] = {
+          briefId,
+          status: "loading",
+          attempt: (previous?.attempt ?? 0) + 1,
+        };
+        delete missingBriefIds[briefId];
+      }
+      return { ...current, briefHydrationById, missingBriefIds };
+    }
+    case "briefs_hydration_failed": {
+      const briefHydrationById = { ...current.briefHydrationById };
+      for (const briefId of action.briefIds) {
+        briefHydrationById[briefId] = {
+          briefId,
+          status: "failed",
+          attempt: briefHydrationById[briefId]?.attempt ?? 1,
+          errorKind: action.errorKind,
+        };
+      }
+      return { ...current, briefHydrationById };
     }
   }
 }
@@ -193,6 +247,7 @@ export function deriveSessionTimeline(
     messagesById: projection.messagesById,
     transcriptEntriesById: projection.transcriptEntriesById,
     briefRecordsById: projection.briefRecordsById,
+    briefHydrationById: projection.briefHydrationById,
   });
 }
 

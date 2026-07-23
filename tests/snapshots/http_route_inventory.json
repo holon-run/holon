@@ -905,6 +905,28 @@
   },
   {
     "method": "post",
+    "path": "/api/agents/{agent_id}/briefs:batchGet",
+    "handler": "briefs_batch_get",
+    "operation_id": "agentBriefsBatchGet",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "BatchGetBriefsRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/agents/{agent_id}/enqueue",
     "handler": "enqueue",
     "operation_id": "enqueueAgent",

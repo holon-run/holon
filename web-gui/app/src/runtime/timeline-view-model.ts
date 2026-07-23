@@ -1,4 +1,11 @@
-import type { AgentTimelineItem, DisplayLevel, RuntimeMessageEnvelope, RuntimeBriefRecord, RuntimeTranscriptEntry } from "./types";
+import type {
+  AgentTimelineItem,
+  BriefHydrationViewState,
+  DisplayLevel,
+  RuntimeMessageEnvelope,
+  RuntimeBriefRecord,
+  RuntimeTranscriptEntry,
+} from "./types";
 import type { SessionEventEnvelope } from "./session-events";
 import type { SessionState } from "./session-state-reducer";
 import type { DomainObject, InsertionEntry, SessionObjectType } from "./session-object-types";
@@ -18,6 +25,7 @@ export interface RenderContext {
   messagesById?: Record<string, RuntimeMessageEnvelope>;
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
   briefRecordsById?: Record<string, RuntimeBriefRecord>;
+  briefHydrationById?: Record<string, BriefHydrationViewState>;
 }
 
 /**

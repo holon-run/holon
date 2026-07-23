@@ -81,6 +81,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/briefs:batchGet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch get briefs
+         * @description Return persisted briefs for the selected agent. Missing or cross-agent ids are reported in missing_brief_ids.
+         */
+        post: operations["agentBriefsBatchGet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/enqueue": {
         parameters: {
             query?: never;
@@ -2311,6 +2331,15 @@ export interface components {
         AttachWorkspaceRequest: {
             [key: string]: unknown;
         };
+        /** BatchGetBriefsRequest */
+        BatchGetBriefsRequest: {
+            /** @default [] */
+            brief_ids: string[];
+        };
+        BatchGetBriefsResponse: {
+            briefs: components["schemas"]["BriefRecord"][];
+            missing_brief_ids?: string[];
+        };
         /** BatchGetMessagesRequest */
         BatchGetMessagesRequest: {
             /** @default [] */
@@ -4045,6 +4074,51 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BriefRecord"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentBriefsBatchGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchGetBriefsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchGetBriefsResponse"];
                 };
             };
             /** @description Client error JSON response. */

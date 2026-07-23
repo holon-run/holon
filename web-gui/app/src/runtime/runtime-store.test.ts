@@ -624,6 +624,47 @@ describe("brief projection and hydration", () => {
 
     expect(missingBriefIdsForHydration(session)).toEqual(["brief-123"]);
   });
+
+  it("tracks loading, transient failure, manual retry, and not found brief states", () => {
+    let projection = reduceSessionProjection(createSessionProjectionState(), {
+      type: "briefs_hydration_started",
+      briefIds: ["brief-123"],
+    });
+    expect(projection.briefHydrationById["brief-123"]).toEqual({
+      briefId: "brief-123",
+      status: "loading",
+      attempt: 1,
+    });
+
+    projection = reduceSessionProjection(projection, {
+      type: "briefs_hydration_failed",
+      briefIds: ["brief-123"],
+      errorKind: "request_failed",
+    });
+    expect(projection.briefHydrationById["brief-123"]).toEqual({
+      briefId: "brief-123",
+      status: "failed",
+      attempt: 1,
+      errorKind: "request_failed",
+    });
+
+    projection = reduceSessionProjection(projection, {
+      type: "briefs_hydration_started",
+      briefIds: ["brief-123"],
+    });
+    expect(projection.briefHydrationById["brief-123"]?.attempt).toBe(2);
+
+    projection = reduceSessionProjection(projection, {
+      type: "briefs_hydrated",
+      recordsById: {},
+      missingIds: ["brief-123"],
+    });
+    expect(projection.briefHydrationById["brief-123"]).toEqual({
+      briefId: "brief-123",
+      status: "not_found",
+      attempt: 2,
+    });
+  });
 });
 
 describe("optimistic operator prompt reconciliation", () => {

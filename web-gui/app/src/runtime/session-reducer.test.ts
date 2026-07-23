@@ -1320,6 +1320,36 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("keeps the brief preview while full text hydration is pending", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "brief-event",
+            event_seq: 22,
+            type: "brief_created",
+            payload: {
+              brief_id: "brief_123",
+              kind: "result",
+              text_preview: "Preview remains visible.",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        body: "Preview remains visible.",
+        briefHydration: {
+          briefId: "brief_123",
+          status: "loading",
+          attempt: 0,
+        },
+      }),
+    );
+  });
+
   it("uses the persisted brief instead of associated transcript thinking", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {

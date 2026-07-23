@@ -19,6 +19,10 @@ impl RuntimeHandle {
         self.inner.storage.read_brief_by_id(brief_id)
     }
 
+    pub async fn briefs_by_ids(&self, brief_ids: &[String]) -> Result<Vec<BriefRecord>> {
+        self.inner.storage.read_briefs_by_ids(brief_ids)
+    }
+
     pub async fn recent_operator_messages(
         &self,
         limit: usize,

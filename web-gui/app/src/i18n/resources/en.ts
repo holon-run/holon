@@ -352,6 +352,10 @@ const en = {
     },
     assistantMessage: "Assistant message",
     action: "Action",
+    briefLoading: "Loading full result…",
+    briefLoadFailed: "Could not load the full result.",
+    briefNotFound: "The full result was not found.",
+    retryBrief: "Retry",
   },
   settings: {
     title: "Settings",

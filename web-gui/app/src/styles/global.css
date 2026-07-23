@@ -1989,6 +1989,38 @@ code {
   background: transparent;
 }
 
+.brief-hydration-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.brief-hydration-status.is-failed,
+.brief-hydration-status.is-not_found {
+  color: var(--danger);
+}
+
+.brief-hydration-status button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.brief-hydration-status .is-spinning {
+  animation: spin 1s linear infinite;
+}
+
 .operator .bubble::before,
 .assistant .bubble::before {
   content: none;

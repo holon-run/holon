@@ -18,6 +18,7 @@ http_async_tests!(
     runtime_search_route_returns_memory_search_results,
     runtime_search_route_filters_memory_results_by_agent_ids,
     agent_brief_route_returns_full_brief_by_id,
+    agent_briefs_batch_get_returns_found_missing_and_scoped_briefs,
     agent_state_route_scopes_work_items_to_requested_agent,
     agent_state_route_does_not_prune_stale_workspaces,
     agent_state_route_includes_bootstrap_projection_fields_when_present,
