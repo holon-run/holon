@@ -221,17 +221,18 @@ export function BriefHydrationStatus({
   onRetry: () => void;
 }) {
   const { t } = useTranslation();
-  const isLoading = hydration.status === "loading";
-  const label = isLoading
-    ? t("agentPage.briefLoading")
-    : hydration.status === "not_found"
-      ? t("agentPage.briefNotFound")
-      : t("agentPage.briefLoadFailed");
+  const showSpinner = hydration.status === "loading";
+  const showError = hydration.status === "failed" || hydration.status === "not_found";
+  const label = hydration.status === "not_found"
+    ? t("agentPage.briefNotFound")
+    : hydration.status === "failed"
+      ? t("agentPage.briefLoadFailed")
+      : t("agentPage.briefLoading");
   return (
     <div className={`brief-hydration-status is-${hydration.status}`} role="status">
-      {isLoading ? <LoaderCircle className="is-spinning" size={14} /> : <CircleAlert size={14} />}
+      {showSpinner ? <LoaderCircle className="is-spinning" size={14} /> : showError ? <CircleAlert size={14} /> : null}
       <span>{label}</span>
-      {!isLoading ? (
+      {showError ? (
         <button type="button" onClick={onRetry}>
           <RefreshCw size={13} />
           {t("agentPage.retryBrief")}

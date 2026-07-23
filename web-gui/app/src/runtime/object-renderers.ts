@@ -80,7 +80,7 @@ function briefHydrationForEvent(
   if (!briefId || stringField(payload, "text") || ctx.briefRecordsById?.[briefId]?.text) return undefined;
   return ctx.briefHydrationById?.[briefId] ?? {
     briefId,
-    status: "loading",
+    status: "pending",
     attempt: 0,
   };
 }
