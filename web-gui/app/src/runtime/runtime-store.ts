@@ -504,6 +504,7 @@ const agentStateRefreshInFlight = new Map<string, number>();
 const agentEventCatchUpInFlight = new Map<string, Promise<void>>();
 const agentDetailRefreshInFlight = new Map<string, { generation: number; promise: Promise<void> }>();
 const agentDetailRequestSequence = new Map<string, number>();
+const ensureAgentSessionInFlight = new Map<string, Promise<void>>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 let clientGeneration = 0;
@@ -561,6 +562,7 @@ function cancelClientGenerationWork(): void {
   agentEventCatchUpInFlight.clear();
   agentDetailRefreshInFlight.clear();
   agentDetailRequestSequence.clear();
+  ensureAgentSessionInFlight.clear();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
   workItemDetailInFlight.clear();
@@ -2257,109 +2259,123 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   ensureAgentSession: async (agentId, displayLevel) => {
     if (!agentId) return;
+    const existing = ensureAgentSessionInFlight.get(agentId);
+    if (existing) return existing;
     const trace = createRuntimeTrace("agent.open", { agentId, trigger: "agent.open" });
-    let session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-
-    if (session.cacheStatus === "unchecked") {
-      if (sessionCacheInitPromise) await sessionCacheInitPromise;
-      session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-    }
-    if (session.cacheStatus === "unchecked") {
-      const cacheSpan = startRuntimeSpan(trace, "cache.read");
-      set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...emptyAgentSession(),
-            ...state.sessionsByAgentId[agentId],
-            cacheStatus: "loading",
-            loading: !state.sessionsByAgentId[agentId]?.detail,
-          },
-        },
-      }));
-      const cached = await hydrateAgentSession(
-        currentRemoteKey(runtimeConnectionConfig),
-        agentId,
-      );
-      set((state) => {
-        const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-        const restored = cached ? mergeCachedSessionIntoCurrent(current, cached) : current;
-        const available = Boolean(restored.detail?.timeline.length || restored.eventSeqs.length);
-        return {
-          sessionsByAgentId: {
-            ...state.sessionsByAgentId,
-            [agentId]: {
-              ...restored,
-              cacheStatus: cached ? "hit" : "miss",
-              contentStatus: available ? "available" : "unknown",
-              syncStatus: cached ? "stale" : "refreshing",
-              loading: !restored.detail,
-            },
-          },
-        };
-      });
-      startRuntimeSpan(trace, "ui.session_state_transition", {
-        state: cached ? "cache_hit/stale" : "cache_miss/refreshing",
-      }).end("ok");
-      cacheSpan.end("ok", { cacheHit: Boolean(cached) });
-    }
-
-    session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-    const hasCachedContent = Boolean(session.detail && session.eventSeqs.length);
-    const fresh =
-      session.lastValidatedAt != null &&
-      Date.now() - session.lastValidatedAt < AGENT_VALIDATION_TTL_MS;
-    if (hasCachedContent && fresh && get().globalStreamStatus === "streaming") {
-      startRuntimeSpan(trace, "agent.validate", { reason: "fresh_stream" }).end("skipped");
-      return;
-    }
-    if (hasCachedContent) {
-      set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...state.sessionsByAgentId[agentId],
-            loading: false,
-            syncStatus: "refreshing",
-          },
-        },
-      }));
+    let promise!: Promise<void>;
+    promise = (async () => {
       try {
-        await catchUpAgentEvents(get, set, agentId, displayLevel, trace);
-        if (!fresh) void get().refreshAgentState(agentId);
-        set((state) => ({
-          sessionsByAgentId: {
-            ...state.sessionsByAgentId,
-            [agentId]: {
-              ...state.sessionsByAgentId[agentId],
-              loading: false,
-              syncStatus: get().globalStreamStatus === "streaming" ? "streaming" : "idle",
-              contentStatus: "available",
-              lastValidatedAt: Date.now(),
+        let session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+
+        if (session.cacheStatus === "unchecked") {
+          if (sessionCacheInitPromise) await sessionCacheInitPromise;
+          session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+        }
+        if (session.cacheStatus === "unchecked") {
+          const cacheSpan = startRuntimeSpan(trace, "cache.read");
+          set((state) => ({
+            sessionsByAgentId: {
+              ...state.sessionsByAgentId,
+              [agentId]: {
+                ...emptyAgentSession(),
+                ...state.sessionsByAgentId[agentId],
+                cacheStatus: "loading",
+                loading: !state.sessionsByAgentId[agentId]?.detail,
+              },
             },
-          },
-        }));
-        startRuntimeSpan(trace, "ui.session_state_transition", {
-          state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
-            get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
-          }`,
-        }).end("ok");
-      } catch (error) {
-        set((state) => ({
-          sessionsByAgentId: {
-            ...state.sessionsByAgentId,
-            [agentId]: {
-              ...state.sessionsByAgentId[agentId],
-              loading: false,
-              syncStatus: "error",
-              error: error instanceof Error ? error.message : String(error),
+          }));
+          const cached = await hydrateAgentSession(
+            currentRemoteKey(runtimeConnectionConfig),
+            agentId,
+          );
+          set((state) => {
+            const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+            const restored = cached ? mergeCachedSessionIntoCurrent(current, cached) : current;
+            const available = Boolean(restored.detail?.timeline.length || restored.eventSeqs.length);
+            return {
+              sessionsByAgentId: {
+                ...state.sessionsByAgentId,
+                [agentId]: {
+                  ...restored,
+                  cacheStatus: cached ? "hit" : "miss",
+                  contentStatus: available ? "available" : "unknown",
+                  syncStatus: cached ? "stale" : "refreshing",
+                  loading: !restored.detail,
+                },
+              },
+            };
+          });
+          startRuntimeSpan(trace, "ui.session_state_transition", {
+            state: cached ? "cache_hit/stale" : "cache_miss/refreshing",
+          }).end("ok");
+          cacheSpan.end("ok", { cacheHit: Boolean(cached) });
+        }
+
+        session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+        const hasCachedContent = Boolean(session.detail && session.eventSeqs.length);
+        const freshOf = (ts?: number) => ts != null && Date.now() - ts < AGENT_VALIDATION_TTL_MS;
+        const eventsFresh = freshOf(session.eventsValidatedAt ?? session.lastValidatedAt);
+        const detailFresh = freshOf(session.detailValidatedAt ?? session.lastValidatedAt);
+        const fresh = eventsFresh && detailFresh;
+        if (hasCachedContent && fresh && get().globalStreamStatus === "streaming") {
+          startRuntimeSpan(trace, "agent.validate", { reason: "fresh_stream" }).end("skipped");
+          return;
+        }
+        if (hasCachedContent) {
+          set((state) => ({
+            sessionsByAgentId: {
+              ...state.sessionsByAgentId,
+              [agentId]: {
+                ...state.sessionsByAgentId[agentId],
+                loading: false,
+                syncStatus: "refreshing",
+              },
             },
-          },
-        }));
+          }));
+          try {
+            await catchUpAgentEvents(get, set, agentId, displayLevel, trace);
+            if (!fresh) void get().refreshAgentState(agentId);
+            set((state) => ({
+              sessionsByAgentId: {
+                ...state.sessionsByAgentId,
+                [agentId]: {
+                  ...state.sessionsByAgentId[agentId],
+                  loading: false,
+                  syncStatus: get().globalStreamStatus === "streaming" ? "streaming" : "idle",
+                  contentStatus: "available",
+                  eventsValidatedAt: Date.now(),
+                },
+              },
+            }));
+            startRuntimeSpan(trace, "ui.session_state_transition", {
+              state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
+                get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
+              }`,
+            }).end("ok");
+          } catch (error) {
+            set((state) => ({
+              sessionsByAgentId: {
+                ...state.sessionsByAgentId,
+                [agentId]: {
+                  ...state.sessionsByAgentId[agentId],
+                  loading: false,
+                  syncStatus: "error",
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              },
+            }));
+          }
+          return;
+        }
+        await get().refreshAgentDetail(agentId, displayLevel, { trace, trigger: "agent.open" });
+      } finally {
+        if (ensureAgentSessionInFlight.get(agentId) === promise) {
+          ensureAgentSessionInFlight.delete(agentId);
+        }
       }
-      return;
-    }
-    await get().refreshAgentDetail(agentId, displayLevel, { trace, trigger: "agent.open" });
+    })();
+    ensureAgentSessionInFlight.set(agentId, promise);
+    return promise;
   },
 
   refreshAgentDetail: async (agentId, displayLevel, options = {}) => {
@@ -4097,6 +4113,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
             : "confirmed-empty",
         syncStatus: detail.error ? "error" : "idle",
         lastValidatedAt: detail.error ? current.lastValidatedAt : Date.now(),
+        detailValidatedAt: detail.error ? current.detailValidatedAt : Date.now(),
         newestSeq: newestSeq || undefined,
         oldestSeq: detail.oldestEventSeq ?? projected.oldestSeq,
         hasOlder: detail.hasOlderEvents,
