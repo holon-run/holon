@@ -30,6 +30,8 @@ export interface AgentSessionState extends SessionProjectionState {
   contentStatus: AgentContentStatus;
   syncStatus: AgentSyncStatus;
   lastValidatedAt?: number;
+  detailValidatedAt?: number;
+  eventsValidatedAt?: number;
   sendingPrompt: boolean;
   detail: AgentDetail | null;
   hasOlder?: boolean;
