@@ -140,7 +140,7 @@ function TaskDetailHeader({
     <div className="task-detail-header">
       <div className="inspector-list-head">
         <strong>{summary || t("inspector.taskOutput")}</strong>
-        <StatusBadge className="state-chip" kind="connection" value={status} spinIcon />
+        <StatusBadge className="state-chip" kind="task" value={status} />
       </div>
       <div className="task-detail-subhead">
         <span className="task-detail-kind">{kind}</span>
@@ -153,7 +153,7 @@ function TaskDetailHeader({
             </span>
           </>
         ) : null}
-        {loading ? <StatusBadge className="state-chip" kind="connection" value="loading" spinIcon /> : null}
+        {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
         <button
           type="button"
           className="task-detail-refresh"
@@ -324,7 +324,7 @@ function ChildAgentTaskSection({
           <div>
             <dt>{t("inspector.phase")}</dt>
             <dd>
-              <StatusBadge className="state-chip" kind="connection" value={observability.phase} spinIcon />
+              <StatusBadge className="state-chip" kind="task" value={observability.phase} />
               {observability.waiting_reason ? ` · ${observability.waiting_reason}` : ""}
             </dd>
           </div>

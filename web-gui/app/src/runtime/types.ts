@@ -128,6 +128,9 @@ export interface WorkItemSummary {
   id: string;
   objective: string;
   state: string;
+  readiness?: string;
+  schedulingState?: string;
+  focus?: string;
   planStatus?: string;
   current?: boolean;
   revision?: number;
