@@ -156,6 +156,7 @@ impl RuntimeHandle {
         }
         if emit_event {
             let payload = TaskLifecycleAuditEvent::from_task(&persisted_task);
+            let mut skip_event = false;
             let mut event =
                 if let Some(kind) = RuntimeEventKind::from_wire_name(transition.event_kind) {
                     AuditEvent::typed(kind, &payload)?
@@ -165,8 +166,21 @@ impl RuntimeHandle {
             if is_terminal_task_status(&persisted_task.status) {
                 event.id = stable_terminal_task_event_id(transition.event_kind, &persisted_task);
                 event.created_at = persisted_task.updated_at;
+                // When a terminal transition is repeated (e.g. duplicate
+                // task_result delivery after a concurrent writer modified the
+                // stored task), the stable event id collides with the original
+                // emission but the payload may differ.  Skip re-emission when
+                // the event already exists to avoid a content conflict.
+                skip_event = repeated_terminal
+                    && self
+                        .inner
+                        .runtime_db
+                        .audit_events()
+                        .has_event_by_id(&event.id)?;
             }
-            audit_events.push(event);
+            if !skip_event {
+                audit_events.push(event);
+            }
         }
         if is_terminal_task_status(&task.status) {
             let matching = self
@@ -873,6 +887,62 @@ mod tests {
             brief.kind == crate::types::BriefKind::Result
                 && brief.text.contains("Task task-1 completed")
         }));
+    }
+
+    #[tokio::test]
+    async fn repeated_terminal_after_concurrent_update_does_not_emit_conflicting_event() {
+        let runtime = runtime();
+        let mut original = task("task-1", TaskStatus::Completed, false);
+        original.parent_message_id = Some("parent-1".into());
+        original.detail = Some(json!({"version": 1}));
+        runtime
+            .reduce_task_result_message(
+                &task_result_message("task-1"),
+                original.clone(),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Simulate a concurrent writer updating the task in the runtime_db
+        // with different content while keeping the same terminal status.
+        // Use raw SQL to bypass the transition validation that would reject
+        // a completed -> completed update with a different payload.
+        runtime
+            .runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET payload_json = json_set(payload_json, '$.detail', json('{\"version\": 2}')) WHERE task_id = 'task-1'",
+                [],
+            )
+            .unwrap();
+
+        // Re-dispatch the same task result.  Before the fix this emitted an
+        // audit event with the same stable ID but content derived from the
+        // concurrently-updated DB record, causing a conflict error.
+        runtime
+            .reduce_task_result_message(
+                &task_result_message("task-1"),
+                original.clone(),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let events = runtime.recent_events(20).await.unwrap();
+        let result_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == "task_result_received")
+            .collect();
+        // Only the original emission should exist.
+        assert_eq!(result_events.len(), 1);
+        let payload =
+            serde_json::from_value::<TaskLifecycleAuditEvent>(result_events[0].data.clone())
+                .unwrap();
+        assert_eq!(payload, TaskLifecycleAuditEvent::from_task(&original));
     }
 
     #[tokio::test]

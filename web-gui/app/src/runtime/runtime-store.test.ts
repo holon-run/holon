@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentBriefPatchFromEvents,
+  agentDetailErrorKind,
   buildResumeRefreshes,
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
@@ -894,6 +895,36 @@ describe("bounded resume refresh scheduling", () => {
     );
 
     expect(started).toEqual([1]);
+  });
+});
+
+describe("agentDetailErrorKind", () => {
+  it("classifies AbortError as timeout", () => {
+    expect(agentDetailErrorKind(new DOMException("aborted", "AbortError"))).toBe("timeout");
+  });
+
+  it("classifies error with timeout message as timeout", () => {
+    const err = new Error("Request timed out after 8000ms");
+    expect(agentDetailErrorKind(err)).toBe("timeout");
+  });
+
+  it("classifies RuntimeHttpError name as http_error", () => {
+    const err = new Error("GET /agents/x failed with 500");
+    err.name = "RuntimeHttpError";
+    expect(agentDetailErrorKind(err)).toBe("http_error");
+  });
+
+  it("classifies TypeError as network_error", () => {
+    expect(agentDetailErrorKind(new TypeError("fetch failed"))).toBe("network_error");
+  });
+
+  it("classifies SyntaxError as parse_error", () => {
+    expect(agentDetailErrorKind(new SyntaxError("Unexpected token in JSON"))).toBe("parse_error");
+  });
+
+  it("returns unknown for unclassified errors", () => {
+    expect(agentDetailErrorKind(new Error("something broke"))).toBe("unknown");
+    expect(agentDetailErrorKind("string error")).toBe("unknown");
   });
 });
 

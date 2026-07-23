@@ -2308,6 +2308,19 @@ impl AuditEventSink<'_> {
         )
     }
 
+    /// Check whether an audit event with the given id already exists.
+    pub fn has_event_by_id(&self, event_id: &str) -> Result<bool> {
+        let connection = self.db.connection()?;
+        Ok(connection
+            .query_row(
+                "SELECT 1 FROM audit_events WHERE audit_event_id = ?1",
+                [event_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     pub fn append_many(
         &self,
         agent_id: Option<&str>,

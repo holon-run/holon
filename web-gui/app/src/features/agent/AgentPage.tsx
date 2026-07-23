@@ -742,9 +742,9 @@ export function AgentPage({
               />
               ) : null
             ) : null}
-            {timeline.length > 0 && (syncStatus === "refreshing" || syncStatus === "stale") ? (
+            {timeline.length > 0 && (syncStatus === "refreshing" || syncStatus === "stale" || syncStatus === "recovering") ? (
               <div className="history-status" role="status">
-                {syncStatus === "refreshing" ? t("common.refreshing") : t("common.syncing")}
+                {syncStatus === "refreshing" ? t("common.refreshing") : syncStatus === "recovering" ? t("common.recovering") : t("common.syncing")}
               </div>
             ) : null}
           </div>

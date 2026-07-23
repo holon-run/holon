@@ -906,6 +906,11 @@ impl RuntimeHandle {
         &self.inner.storage
     }
 
+    #[cfg(test)]
+    pub(crate) fn runtime_db(&self) -> &crate::runtime_db::RuntimeDb {
+        &self.inner.runtime_db
+    }
+
     pub fn object_query_cache(&self) -> Arc<crate::object_query_cache::ObjectQueryCache> {
         self.inner.object_query_cache.clone()
     }
