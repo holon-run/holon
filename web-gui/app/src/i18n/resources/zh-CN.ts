@@ -36,6 +36,10 @@ const zh: Record<string, any> = {
     streaming: "流式传输中",
     error: "错误",
     unknown: "未知",
+    active: "活跃",
+    resolved: "已解决",
+    archived: "已归档",
+    runnable: "可运行",
   },
   nav: {
     dashboard: "仪表盘",

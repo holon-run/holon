@@ -34,6 +34,10 @@ const en = {
     streaming: "Streaming",
     error: "Error",
     unknown: "Unknown",
+    active: "Active",
+    resolved: "Resolved",
+    archived: "Archived",
+    runnable: "Runnable",
   },
   nav: {
     dashboard: "Dashboard",
