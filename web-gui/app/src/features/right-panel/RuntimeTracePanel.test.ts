@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import type { RuntimeTraceRecord } from "../../runtime/runtime-trace";
-import { filterRuntimeTraceRecords, runtimeTraceDiagnosticFilename } from "./RuntimeTracePanel";
+import {
+  filterRuntimeTraceRecords,
+  runtimeTraceDiagnosticFilename,
+  selectRuntimeTraceRecords,
+} from "./RuntimeTracePanel";
 
 const records: RuntimeTraceRecord[] = [
   {
     traceId: "trace-a",
     spanId: "span-a",
     name: "cache.read",
+    agentId: "agent-a",
     trigger: "agent.open",
     startedAt: "2026-07-23T00:00:00.000Z",
     durationMs: 2,
@@ -24,6 +29,14 @@ const records: RuntimeTraceRecord[] = [
     attributes: { status: 500 },
   },
 ];
+
+describe("selectRuntimeTraceRecords", () => {
+  it("selects current-agent, global, or all records", () => {
+    expect(selectRuntimeTraceRecords(records, "agent-a", "agent")).toEqual([records[0]]);
+    expect(selectRuntimeTraceRecords(records, "agent-a", "global")).toEqual([records[1]]);
+    expect(selectRuntimeTraceRecords(records, "agent-a", "all")).toEqual(records);
+  });
+});
 
 describe("filterRuntimeTraceRecords", () => {
   it("filters by span, trigger, attributes, and outcome", () => {
