@@ -36,6 +36,12 @@ describe("selectRuntimeTraceRecords", () => {
     expect(selectRuntimeTraceRecords(records, "agent-a", "global")).toEqual([records[1]]);
     expect(selectRuntimeTraceRecords(records, "agent-a", "all")).toEqual(records);
   });
+
+  it("does not classify an empty agent id as global", () => {
+    const emptyAgentRecord = { ...records[0], agentId: "" };
+    expect(selectRuntimeTraceRecords([...records, emptyAgentRecord], "agent-a", "global"))
+      .toEqual([records[1]]);
+  });
 });
 
 describe("filterRuntimeTraceRecords", () => {

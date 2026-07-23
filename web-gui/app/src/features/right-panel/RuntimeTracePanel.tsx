@@ -26,7 +26,7 @@ export function selectRuntimeTraceRecords(
   scope: RuntimeTraceScope,
 ): readonly RuntimeTraceRecord[] {
   if (scope === "all") return records;
-  if (scope === "global") return records.filter((record) => !record.agentId);
+  if (scope === "global") return records.filter((record) => record.agentId == null);
   return records.filter((record) => record.agentId === agentId);
 }
 
@@ -78,7 +78,7 @@ export function RuntimeTracePanel({ agentId, connection }: RuntimeTracePanelProp
   );
   const globalRecordCount = useMemo(
     () => selectRuntimeTraceRecords(allRecords, agentId, "global").length,
-    [agentId, allRecords],
+    [allRecords],
   );
   const filteredRecords = useMemo(
     () => filterRuntimeTraceRecords(records, { query, outcome }),
