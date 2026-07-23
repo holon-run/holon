@@ -35,6 +35,8 @@ pub use tasks::{
 };
 pub(crate) use waiting::{WaitForScope, WaitForWakeKind};
 
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     fs,
@@ -272,6 +274,8 @@ struct RuntimeInner {
     #[cfg(test)]
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
+    task_transition_conflicts_remaining: AtomicUsize,
+    #[cfg(test)]
     omit_next_scheduler_claim_shadow_comparison: AtomicBool,
     #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,
@@ -301,6 +305,26 @@ fn canonical_settlement_id(message_id: &str) -> String {
 
 fn canonical_missing_settlement_id(message_id: &str) -> String {
     format!("missing-settlement:message:{message_id}")
+}
+
+fn runtime_error_queue_settlement(
+    message_kind: &MessageKind,
+    error: &anyhow::Error,
+) -> (QueueEntryStatus, &'static str) {
+    let retry_task_result = matches!(message_kind, MessageKind::TaskResult)
+        && error.chain().any(|source| {
+            source
+                .downcast_ref::<task_state_reducer::TaskTransitionRetryExhausted>()
+                .is_some()
+        });
+    if retry_task_result {
+        (
+            QueueEntryStatus::Interrupted,
+            "task_transition_retry_exhausted",
+        )
+    } else {
+        (QueueEntryStatus::Aborted, "runtime_error")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2050,12 +2074,14 @@ impl RuntimeHandle {
                     ))?;
                     self.persist_runtime_failure_artifacts(&message, &err)
                         .await?;
+                    let (queue_status, settlement_reason) =
+                        runtime_error_queue_settlement(&message.kind, &err);
                     self.commit_queue_settlement(
                         QueueEntryRecord {
                             message_id: message.id.clone(),
                             agent_id: message.agent_id.clone(),
                             priority: message.priority.clone(),
-                            status: QueueEntryStatus::Aborted,
+                            status: queue_status.clone(),
                             created_at: message.created_at,
                             updated_at: Utc::now(),
                         },
@@ -2064,8 +2090,8 @@ impl RuntimeHandle {
                             serde_json::json!({
                                 "message_id": message.id,
                                 "message_kind": message.kind,
-                                "status": QueueEntryStatus::Aborted,
-                                "reason": "runtime_error",
+                                "status": queue_status,
+                                "reason": settlement_reason,
                             }),
                         )],
                         true,
