@@ -23,6 +23,18 @@ export interface RuntimeTraceContext {
 
 const TRACE_BUFFER_LIMIT = 500;
 const TRACE_ENABLED_STORAGE_KEY = "holon:runtimeTraceEnabled";
+const TRACE_ATTRIBUTE_STRING_LIMIT = 512;
+const REDACTED_ATTRIBUTE_VALUE = "[redacted]";
+const SENSITIVE_ATTRIBUTE_KEYS = [
+  "secret",
+  "token",
+  "password",
+  "authorization",
+  "cookie",
+  "credential",
+  "apikey",
+  "privatekey",
+];
 const traceBuffer: RuntimeTraceRecord[] = [];
 const traceListeners = new Set<() => void>();
 let fallbackId = 0;
@@ -47,6 +59,23 @@ function traceId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   fallbackId += 1;
   return `trace-${Date.now()}-${fallbackId}`;
+}
+
+function sanitizeRuntimeTraceAttributes(
+  attributes?: RuntimeTraceRecord["attributes"],
+): RuntimeTraceRecord["attributes"] {
+  if (!attributes) return undefined;
+  return Object.fromEntries(Object.entries(attributes).map(([key, value]) => {
+    const normalizedKey = key.replaceAll(/[^a-zA-Z0-9]/g, "").toLocaleLowerCase();
+    if (SENSITIVE_ATTRIBUTE_KEYS.some((sensitiveKey) =>
+      normalizedKey.startsWith(sensitiveKey) || normalizedKey.endsWith(sensitiveKey))) {
+      return [key, REDACTED_ATTRIBUTE_VALUE];
+    }
+    if (typeof value === "string" && value.length > TRACE_ATTRIBUTE_STRING_LIMIT) {
+      return [key, `${value.slice(0, TRACE_ATTRIBUTE_STRING_LIMIT)}…`];
+    }
+    return [key, value];
+  }));
 }
 
 export function createRuntimeTrace(
@@ -92,7 +121,7 @@ export function startRuntimeSpan(
         startedAt: startedAt.toISOString(),
         durationMs: Math.max(0, performance.now() - started),
         outcome,
-        attributes: { ...attributes, ...finalAttributes },
+        attributes: sanitizeRuntimeTraceAttributes({ ...attributes, ...finalAttributes }),
       });
       if (traceBuffer.length > TRACE_BUFFER_LIMIT) {
         traceBuffer.splice(0, traceBuffer.length - TRACE_BUFFER_LIMIT);
@@ -210,6 +239,7 @@ function updateRuntimeTraceDebugApi(): void {
   }
   Object.defineProperty(window, "__HOLON_RUNTIME_TRACE__", {
     configurable: true,
+    enumerable: false,
     value: {
       records: getRuntimeTraceRecords,
       exportJson: exportRuntimeTraceRecords,

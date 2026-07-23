@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearRuntimeTraceRecords,
@@ -6,6 +6,7 @@ import {
   createRuntimeTrace,
   exportRuntimeTraceRecords,
   getRuntimeTraceRecords,
+  installRuntimeTraceDebugApi,
   isRuntimeTraceEnabled,
   setRuntimeTraceEnabled,
   startRuntimeSpan,
@@ -14,6 +15,39 @@ import {
 describe("runtime trace", () => {
   beforeEach(() => {
     setRuntimeTraceEnabled(true, { clear: true });
+  });
+
+  it("sanitizes sensitive and oversized attributes at collection time", () => {
+    const trace = createRuntimeTrace("agent.open");
+    startRuntimeSpan(trace, "request.refresh", {
+      accessToken: "top-secret",
+      requestId: "request-1",
+      detail: "x".repeat(600),
+    }).end("ok", {
+      passwordHash: "also-secret",
+    });
+
+    expect(getRuntimeTraceRecords().at(-1)?.attributes).toEqual({
+      accessToken: "[redacted]",
+      requestId: "request-1",
+      detail: `${"x".repeat(512)}…`,
+      passwordHash: "[redacted]",
+    });
+  });
+
+  it("exposes the enabled production debug API as a non-enumerable property", () => {
+    const debugWindow = {};
+    vi.stubGlobal("window", debugWindow);
+    try {
+      installRuntimeTraceDebugApi();
+
+      expect(Object.getOwnPropertyDescriptor(debugWindow, "__HOLON_RUNTIME_TRACE__")).toMatchObject({
+        configurable: true,
+        enumerable: false,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("records structured spans without business payloads", () => {

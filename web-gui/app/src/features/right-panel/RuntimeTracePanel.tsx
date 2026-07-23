@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
@@ -59,6 +59,10 @@ export function RuntimeTracePanel({ agentId, connection }: RuntimeTracePanelProp
     () => filterRuntimeTraceRecords(records, { query, outcome }),
     [outcome, query, records],
   );
+
+  useEffect(() => {
+    if (pausedRecords && liveRecords.length === 0) setPausedRecords(undefined);
+  }, [liveRecords.length, pausedRecords]);
 
   function downloadDiagnosticBundle() {
     const exportedAt = new Date();
