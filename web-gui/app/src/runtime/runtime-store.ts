@@ -4502,6 +4502,7 @@ function scheduleBriefHydration(
   const isForced = Boolean(options.forceIds);
   const requestIds = briefIds.filter((briefId) => {
     if (inFlight.has(briefId)) return false;
+    // Forced IDs cover manual retry and scheduled retry, which has its own attempt cap.
     if (isForced) return true;
     const attempt = session?.briefHydrationById[briefId]?.attempt ?? 0;
     return attempt < BRIEF_HYDRATION_MAX_ATTEMPTS;
