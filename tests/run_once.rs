@@ -1483,8 +1483,7 @@ impl AgentProvider for WorktreeTaskProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_includes_worktree_task_metadata() -> Result<()> {
+async fn assert_run_once_includes_worktree_task_metadata() -> Result<()> {
     let test_config = test_config();
     let workspace_dir = test_config.workspace_dir().to_path_buf();
     init_git_repo(&workspace_dir)?;
@@ -1507,6 +1506,24 @@ async fn run_once_includes_worktree_task_metadata() -> Result<()> {
         format!("task-{}", response.tasks[0].task.task_id)
     );
     Ok(())
+}
+
+#[test]
+fn run_once_includes_worktree_task_metadata() -> Result<()> {
+    let test_thread = std::thread::Builder::new()
+        .name("run-once-worktree-metadata".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(assert_run_once_includes_worktree_task_metadata())
+        })?;
+
+    match test_thread.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 #[tokio::test]
