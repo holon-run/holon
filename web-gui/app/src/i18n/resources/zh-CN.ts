@@ -354,6 +354,10 @@ const zh: Record<string, any> = {
     },
     assistantMessage: "助手消息",
     action: "操作",
+    briefLoading: "正在加载完整结果…",
+    briefLoadFailed: "完整结果加载失败。",
+    briefNotFound: "未找到完整结果。",
+    retryBrief: "重试",
   },
   settings: {
     title: "设置",

@@ -243,6 +243,19 @@ pub struct BatchGetMessagesResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct BatchGetBriefsRequest {
+    #[serde(default)]
+    pub brief_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BatchGetBriefsResponse {
+    pub briefs: Vec<BriefRecord>,
+    #[serde(default)]
+    pub missing_brief_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct BatchGetTranscriptEntriesRequest {
     #[serde(default)]
     pub entry_ids: Vec<String>,

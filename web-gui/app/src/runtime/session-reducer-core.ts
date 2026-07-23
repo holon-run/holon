@@ -415,8 +415,7 @@ export function projectRuntimeEvent(
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
       body:
         briefTextForPayload(payload, briefRecordsById) ||
-        readableTextWithoutSummary(payload) ||
-        "Brief text unavailable.",
+        readableTextWithoutSummary(payload),
       timestamp: stringField(payload, "created_at"),
       minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };

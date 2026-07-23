@@ -82,13 +82,13 @@ pub(crate) use crate::{
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
         AdmissionContext, AgentRegistryStatus, AgentState, AgentVisibility, AuditEvent,
-        AuthorityClass, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
-        ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
-        MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TaskStatusSnapshot,
-        TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord, WaitingReason,
-        WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        AuthorityClass, BriefRecord, CallbackDeliveryPayload, CallbackDeliveryResult,
+        ControlAction, ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorTransportBinding,
+        OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TaskStatusSnapshot, TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord,
+        WaitingReason, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
 mod agents;
@@ -126,9 +126,9 @@ pub use skills::{
     remove_skill_from_catalog, skills_catalog, uninstall_skill,
 };
 pub use state::{
-    agent_state, brief, briefs, briefs_default, enqueue, enqueue_default, state_default, status,
-    status_default, transcript, transcript_batch_get, transcript_default, transcript_entry,
-    worktree_summary, worktree_summary_default,
+    agent_state, brief, briefs, briefs_batch_get, briefs_default, enqueue, enqueue_default,
+    state_default, status, status_default, transcript, transcript_batch_get, transcript_default,
+    transcript_entry, worktree_summary, worktree_summary_default,
 };
 pub use tasks::{
     cancel_timer, complete_work_item, create_command_task, create_timer, create_work_item,
@@ -349,6 +349,10 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/enqueue", post(state::enqueue))
         .route("/agents/{agent_id}/status", get(state::status))
         .route("/agents/{agent_id}/briefs", get(state::briefs))
+        .route(
+            "/agents/{agent_id}/briefs:batchGet",
+            post(state::briefs_batch_get),
+        )
         .route("/agents/{agent_id}/briefs/{brief_id}", get(state::brief))
         .route("/agents/{agent_id}/state", get(state::agent_state))
         .route("/events/stream", get(events::global_events_stream))

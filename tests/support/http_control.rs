@@ -346,6 +346,39 @@ pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
     Ok(())
 }
 
+pub async fn agent_briefs_batch_get_returns_found_missing_and_scoped_briefs() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+    let first = BriefRecord::new("default", BriefKind::Result, "first brief", None, None);
+    let second = BriefRecord::new("default", BriefKind::Failure, "second brief", None, None);
+    let other_agent = BriefRecord::new("other-agent", BriefKind::Result, "scoped out", None, None);
+    runtime.storage().append_brief(&first)?;
+    runtime.storage().append_brief(&second)?;
+    runtime.storage().append_brief(&other_agent)?;
+
+    let response = client
+        .post(format!("{base}/api/agents/default/briefs:batchGet"))
+        .json(&serde_json::json!({
+            "brief_ids": [second.id, "missing-brief", other_agent.id, first.id, second.id, ""]
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await?;
+    let briefs = body["briefs"].as_array().expect("briefs array");
+    assert_eq!(briefs.len(), 2);
+    assert_eq!(briefs[0]["id"], second.id);
+    assert_eq!(briefs[1]["id"], first.id);
+    assert_eq!(
+        body["missing_brief_ids"],
+        serde_json::json!(["missing-brief", other_agent.id])
+    );
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let agent_id = host.config().default_agent_id.clone();

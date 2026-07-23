@@ -929,12 +929,15 @@ describe("createRuntimeClient", () => {
           missing_entry_ids: [],
         });
       }
-      if (url.endsWith("/agents/agent-one/briefs/brief-123")) {
+      if (url.endsWith("/agents/agent-one/briefs:batchGet")) {
         return Response.json({
-          id: "brief-123",
-          text: "Canonical persisted brief.",
-          kind: "result",
-          created_at: "2026-07-10T00:00:00Z",
+          briefs: [{
+            id: "brief-123",
+            text: "Canonical persisted brief.",
+            kind: "result",
+            created_at: "2026-07-10T00:00:00Z",
+          }],
+          missing_brief_ids: [],
         });
       }
       return new Response("not found", { status: 404 });
@@ -971,6 +974,6 @@ describe("createRuntimeClient", () => {
         body: "Canonical persisted brief.",
       }),
     );
-    expect(seen).toContain("http://example.test:7878/api/agents/agent-one/briefs/brief-123");
+    expect(seen).toContain("http://example.test:7878/api/agents/agent-one/briefs:batchGet");
   });
 });

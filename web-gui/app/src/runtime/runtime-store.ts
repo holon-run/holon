@@ -376,6 +376,7 @@ export interface RuntimeStoreState {
   ) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
+  retryBriefHydration: (agentId: string, briefId: string) => void;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
@@ -493,6 +494,7 @@ const globalEventRecovery = new EventGapRecoveryTracker();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
+const briefHydrationRetryTimers = new Map<string, number>();
 const inspectorDetailInFlight = new Set<string>();
 const workItemRefreshInFlight = new Set<string>();
 const workItemDetailInFlight = new Set<string>();
@@ -515,6 +517,7 @@ const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
 const GLOBAL_BACKFILL_LIMIT = 100;
 const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
+const BRIEF_HYDRATION_RETRY_DELAYS_MS = [1_000, 2_000] as const;
 
 function nextClientGeneration(): number {
   clientGeneration += 1;
@@ -544,6 +547,8 @@ function clearInFlightHydration(): void {
   messageHydrationInFlight.clear();
   transcriptHydrationInFlight.clear();
   briefHydrationInFlight.clear();
+  for (const timer of briefHydrationRetryTimers.values()) window.clearTimeout(timer);
+  briefHydrationRetryTimers.clear();
 }
 
 function cancelClientGenerationWork(): void {
@@ -2509,6 +2514,24 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  retryBriefHydration: (agentId, briefId) => {
+    const displayLevel = get().displayLevelsByAgentId[agentId] ?? get().displayLevel;
+    const trace = createRuntimeTrace("object.hydration", {
+      agentId,
+      trigger: "brief.hydration.manual_retry",
+    });
+    startRuntimeSpan(trace, "object.hydration", {
+      resource: "brief",
+      retry: "manual",
+      idCount: 1,
+    }).end("ok");
+    scheduleBriefHydration(get, set, agentId, displayLevel, {
+      forceIds: [briefId],
+      trace,
+      trigger: "manual",
+    });
+  },
+
   loadAgentWorkItemDetail: async (agentId, workItemId) => {
     if (!agentId || !workItemId) return;
     const request = captureClientRequest();
@@ -4380,9 +4403,14 @@ function scheduleBriefHydration(
   set: StoreSet,
   agentId: string,
   displayLevel: DisplayLevel,
+  options: {
+    forceIds?: string[];
+    trace?: RuntimeTraceContext;
+    trigger?: "automatic" | "manual" | "scheduled";
+  } = {},
 ): void {
   const session = get().sessionsByAgentId[agentId];
-  const briefIds = missingBriefIdsForHydration(session);
+  const briefIds = options.forceIds ?? missingBriefIdsForHydration(session);
   if (!briefIds.length) return;
 
   let inFlight = briefHydrationInFlight.get(agentId);
@@ -4393,11 +4421,18 @@ function scheduleBriefHydration(
   const requestIds = briefIds.filter((briefId) => !inFlight.has(briefId));
   if (!requestIds.length) return;
   requestIds.forEach((briefId) => inFlight.add(briefId));
+  set((state) => updateBriefHydrationState(state, agentId, {
+    type: "briefs_hydration_started",
+    briefIds: requestIds,
+  }, displayLevel));
 
   const hydrationSpan = startRuntimeSpan(
-    createRuntimeTrace("object.hydration", { agentId, trigger: "brief.hydration" }),
+    options.trace ?? createRuntimeTrace("object.hydration", {
+      agentId,
+      trigger: `brief.hydration.${options.trigger ?? "automatic"}`,
+    }),
     "object.hydration",
-    { resource: "brief", idCount: requestIds.length },
+    { resource: "brief", idCount: requestIds.length, retry: options.trigger ?? "automatic" },
   );
   const generation = clientGeneration;
   void runtimeClient
@@ -4405,19 +4440,21 @@ function scheduleBriefHydration(
     .then(({ recordsById, notFoundIds }) => {
       if (!isCurrentClientGeneration(generation)) return;
       set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, notFoundIds, displayLevel));
-      hydrationSpan.end("ok", { returnedCount: Object.keys(recordsById).length });
+      hydrationSpan.end("ok", {
+        returnedCount: Object.keys(recordsById).length,
+        notFoundCount: notFoundIds.length,
+      });
     })
     .catch((error) => {
       if (!isCurrentClientGeneration(generation)) return;
-      set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
-            historyError: error instanceof Error ? error.message : String(error),
-          },
-        },
-      }));
+      const errorKind = briefHydrationErrorKind(error);
+      set((state) => updateBriefHydrationState(state, agentId, {
+        type: "briefs_hydration_failed",
+        briefIds: requestIds,
+        errorKind,
+      }, displayLevel));
+      hydrationSpan.end("error", { errorKind });
+      scheduleAutomaticBriefHydrationRetry(get, set, agentId, requestIds, displayLevel);
     })
     .finally(() => {
       if (!isCurrentClientGeneration(generation)) return;
@@ -4426,6 +4463,55 @@ function scheduleBriefHydration(
       requestIds.forEach((briefId) => current.delete(briefId));
       if (!current.size) briefHydrationInFlight.delete(agentId);
     });
+}
+
+function updateBriefHydrationState(
+  state: RuntimeStoreState,
+  agentId: string,
+  action: Extract<SessionProjectionAction, { type: "briefs_hydration_started" | "briefs_hydration_failed" }>,
+  displayLevel: DisplayLevel,
+): Partial<RuntimeStoreState> {
+  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  return {
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: applyProjectionAction(current, action, displayLevel),
+    },
+  };
+}
+
+function scheduleAutomaticBriefHydrationRetry(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  briefIds: string[],
+  displayLevel: DisplayLevel,
+): void {
+  const retryIds = briefIds.filter((briefId) => {
+    const attempt = get().sessionsByAgentId[agentId]?.briefHydrationById[briefId]?.attempt ?? 1;
+    return attempt <= BRIEF_HYDRATION_RETRY_DELAYS_MS.length;
+  });
+  if (!retryIds.length) return;
+  const key = `${agentId}:${retryIds.join(",")}`;
+  if (briefHydrationRetryTimers.has(key)) return;
+  const attempt = Math.max(...retryIds.map((briefId) =>
+    get().sessionsByAgentId[agentId]?.briefHydrationById[briefId]?.attempt ?? 1
+  ));
+  const delay = BRIEF_HYDRATION_RETRY_DELAYS_MS[Math.max(0, attempt - 1)];
+  const timer = window.setTimeout(() => {
+    briefHydrationRetryTimers.delete(key);
+    scheduleBriefHydration(get, set, agentId, displayLevel, {
+      forceIds: retryIds,
+      trigger: "scheduled",
+    });
+  }, delay);
+  briefHydrationRetryTimers.set(key, timer);
+}
+
+function briefHydrationErrorKind(error: unknown): string {
+  if (error instanceof DOMException && error.name === "AbortError") return "timeout";
+  if (error instanceof Error && /timeout|aborted/i.test(error.message)) return "timeout";
+  return "request_failed";
 }
 
 export function agentBriefPatchFromEvents(

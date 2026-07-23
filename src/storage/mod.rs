@@ -550,6 +550,13 @@ impl AppStorage {
             .brief_by_id(&self.storage_agent_id()?, brief_id);
     }
 
+    pub fn read_briefs_by_ids(&self, brief_ids: &[String]) -> Result<Vec<BriefRecord>> {
+        let runtime_db = self.runtime_db.clone();
+        runtime_db
+            .evidence()
+            .briefs_by_ids(&self.storage_agent_id()?, brief_ids)
+    }
+
     pub fn read_recent_messages(&self, limit: usize) -> Result<Vec<MessageEnvelope>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db

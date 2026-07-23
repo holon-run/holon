@@ -494,6 +494,11 @@ interface AgentTranscriptEntriesBatchGetResponseDto {
   missing_entry_ids?: string[];
 }
 
+interface AgentBriefsBatchGetResponseDto {
+  briefs?: RuntimeBriefRecord[];
+  missing_brief_ids?: string[];
+}
+
 interface SkillCatalogEntryDto {
   skill_id?: string;
   root_id?: string;
@@ -1282,7 +1287,9 @@ async function fetchBriefRecordsForEvents(
     ),
   );
   if (!briefIds.length) return {};
-  return fetchBriefRecordsById(baseUrl, fetchImpl, headers, agentId, briefIds).then((r) => r.recordsById);
+  return fetchBriefRecordsById(baseUrl, fetchImpl, headers, agentId, briefIds)
+    .then((r) => r.recordsById)
+    .catch(() => ({}));
 }
 
 interface BriefFetchResult {
@@ -1297,29 +1304,17 @@ async function fetchBriefRecordsById(
   agentId: string,
   briefIds: string[],
 ): Promise<BriefFetchResult> {
-  const results = await Promise.all(
-    briefIds.map(async (briefId): Promise<{ briefId: string; record?: RuntimeBriefRecord; notFound?: boolean }> => {
-      const path = `/agents/${encodeURIComponent(agentId)}/briefs/${encodeURIComponent(briefId)}`;
-      try {
-        const record = await getJson<RuntimeBriefRecord>(fetchImpl, baseUrl, path, { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers });
-        return { briefId, record };
-      } catch (error) {
-        if (error instanceof RuntimeHttpError && error.status === 404) return { briefId, notFound: true };
-        // Transient failure (timeout, network, 5xx): leave absent for retry.
-        return { briefId };
-      }
-    }),
+  const response = await postJson<AgentBriefsBatchGetResponseDto>(
+    fetchImpl,
+    baseUrl,
+    `/agents/${encodeURIComponent(agentId)}/briefs:batchGet`,
+    { brief_ids: Array.from(new Set(briefIds)) },
+    headers,
   );
-  const recordsById: Record<string, RuntimeBriefRecord> = {};
-  const notFoundIds: string[] = [];
-  for (const result of results) {
-    if (result.notFound) {
-      notFoundIds.push(result.briefId);
-    } else if (result.record?.id) {
-      recordsById[result.record.id] = result.record;
-    }
-  }
-  return { recordsById, notFoundIds };
+  return {
+    recordsById: Object.fromEntries((response.briefs ?? []).flatMap((brief) => brief.id ? [[brief.id, brief]] : [])),
+    notFoundIds: response.missing_brief_ids ?? [],
+  };
 }
 
 function streamAgentEvents(

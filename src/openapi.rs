@@ -8,11 +8,11 @@ use serde_json::{json, Value};
 use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
-        BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
-        CompleteWorkItemRequest, CreateTimerRequest, MemoryGetRequest, ModelConfigMigrationRequest,
-        PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
-        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
-        UpdateWorkItemRequest,
+        BatchGetBriefsRequest, BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest,
+        CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest, MemoryGetRequest,
+        ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
+        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+        SearchRequest, SearchResponse, UpdateWorkItemRequest,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -73,6 +73,7 @@ const ROUTES: &[RouteSpec] = &[
     aide_route("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    route_with_response("post", "/agents/{agent_id}/briefs:batchGet", "agentBriefsBatchGet", "agents", "Batch get briefs", "Return persisted briefs for the selected agent. Missing or cross-agent ids are reported in missing_brief_ids.", Some("BatchGetBriefsRequest"), "BatchGetBriefsResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/briefs/{brief_id}", "agentBrief", "agents", "Brief detail", "Return a persisted user-facing delivery brief by id.", None, "BriefRecord", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the lightweight bootstrap snapshot for an agent. Heavy task, work-item, operator notification, and execution details are available through dedicated routes and events.", None, "AgentStateSnapshotDto", AuthKind::RemoteAccess),
     event_stream_route("get", "/events/stream", "eventsStream", "events", "Global event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor. If the receiver lags, the server closes the stream; clients must backfill each agent from its last contiguous event_seq before reconnecting.", None, AuthKind::RemoteAccess),
@@ -694,12 +695,34 @@ fn component_schemas() -> Value {
         component_schema::<AddSkillRequest>(),
     );
     schemas.insert(
+        "BatchGetBriefsRequest".into(),
+        component_schema::<BatchGetBriefsRequest>(),
+    );
+    schemas.insert(
         "BatchGetMessagesRequest".into(),
         component_schema::<BatchGetMessagesRequest>(),
     );
     schemas.insert(
         "BatchGetTranscriptEntriesRequest".into(),
         component_schema::<BatchGetTranscriptEntriesRequest>(),
+    );
+    schemas.insert(
+        "BatchGetBriefsResponse".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "briefs": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/BriefRecord" }
+                },
+                "missing_brief_ids": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            },
+            "required": ["briefs"],
+            "additionalProperties": false
+        }),
     );
     schemas.insert(
         "BatchGetMessagesResponse".into(),

@@ -2228,6 +2228,13 @@ impl EvidenceRepository<'_> {
             .transpose()
     }
 
+    pub fn briefs_by_ids(&self, agent_id: &str, brief_ids: &[String]) -> Result<Vec<BriefRecord>> {
+        self.payloads_by_ids(EvidenceKind::Brief, agent_id, brief_ids)?
+            .into_iter()
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .collect()
+    }
+
     pub fn recent_tool_executions(
         &self,
         agent_id: &str,

@@ -1052,6 +1052,50 @@ pub async fn brief(
     Ok(Json(brief))
 }
 
+pub async fn briefs_batch_get(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<BatchGetBriefsRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let brief_ids = request
+        .brief_ids
+        .into_iter()
+        .filter(|brief_id| !brief_id.is_empty())
+        .fold(Vec::new(), |mut brief_ids, brief_id| {
+            if !brief_ids.contains(&brief_id) {
+                brief_ids.push(brief_id);
+            }
+            brief_ids
+        });
+    let briefs_by_id = runtime
+        .briefs_by_ids(&brief_ids)
+        .await
+        .map_err(error_response)?
+        .into_iter()
+        .filter(|brief| brief.agent_id == agent_id)
+        .map(|brief| (brief.id.clone(), brief))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut briefs = Vec::new();
+    let mut missing_brief_ids = Vec::new();
+    for brief_id in brief_ids {
+        match briefs_by_id.get(&brief_id) {
+            Some(brief) => briefs.push(brief.clone()),
+            None => missing_brief_ids.push(brief_id),
+        }
+    }
+    Ok(Json(BatchGetBriefsResponse {
+        briefs,
+        missing_brief_ids,
+    }))
+}
+
 pub async fn transcript_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

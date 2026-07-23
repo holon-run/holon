@@ -66,6 +66,22 @@ export function renderDomainObject(
     detail: projection.detail,
     rawEvent: event,
     debug: ctx.includeDebug ? JSON.stringify(event, null, 2) : undefined,
+    briefHydration: briefHydrationForEvent(eventType, payload, ctx),
+  };
+}
+
+function briefHydrationForEvent(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+  ctx: RenderContext,
+): AgentTimelineItem["briefHydration"] {
+  if (eventType !== "brief_created") return undefined;
+  const briefId = stringField(payload, "brief_id") ?? stringField(payload, "id");
+  if (!briefId || stringField(payload, "text") || ctx.briefRecordsById?.[briefId]?.text) return undefined;
+  return ctx.briefHydrationById?.[briefId] ?? {
+    briefId,
+    status: "loading",
+    attempt: 0,
   };
 }
 
@@ -277,4 +293,12 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function stringField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
 }

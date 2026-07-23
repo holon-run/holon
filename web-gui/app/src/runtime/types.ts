@@ -774,6 +774,16 @@ export interface AgentTimelineItem {
   activities?: AgentTimelineActivity[];
   rawEvent?: unknown;
   debug?: string;
+  briefHydration?: BriefHydrationViewState;
+}
+
+export type BriefHydrationStatus = "loading" | "resolved" | "not_found" | "failed";
+
+export interface BriefHydrationViewState {
+  briefId: string;
+  status: BriefHydrationStatus;
+  attempt: number;
+  errorKind?: string;
 }
 
 export interface AgentDetail {
