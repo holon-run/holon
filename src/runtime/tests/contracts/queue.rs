@@ -1,5 +1,55 @@
 use super::super::support::*;
-use crate::types::{MessageEnvelope, QueueEntryRecord};
+use crate::types::{AdmissionContext, MessageDeliverySurface, MessageEnvelope, QueueEntryRecord};
+
+#[tokio::test]
+async fn legacy_work_queue_settlement_does_not_require_scheduler_partition() {
+    let harness = LifecycleHarness::new();
+    let message = harness
+        .runtime()
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::SystemTick,
+                MessageOrigin::System {
+                    subsystem: "work_queue".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "legacy work queue tick".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::RuntimeSystem,
+                AdmissionContext::RuntimeOwned,
+            ),
+        )
+        .await
+        .unwrap();
+    let mut processed = harness
+        .snapshot()
+        .queue_entries
+        .into_iter()
+        .find(|entry| entry.message_id == message.id)
+        .unwrap();
+    processed.status = QueueEntryStatus::Processed;
+    processed.updated_at = Utc::now();
+
+    assert!(harness
+        .runtime()
+        .commit_queue_settlement(processed.clone(), Vec::new(), true)
+        .await
+        .unwrap());
+    assert_eq!(
+        harness
+            .snapshot()
+            .queue_entries
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .unwrap(),
+        processed
+    );
+}
 
 #[tokio::test]
 async fn queue_runtime_path_rolls_back_each_pre_commit_fault() {

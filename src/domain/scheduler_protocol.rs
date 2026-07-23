@@ -3122,6 +3122,7 @@ fn settle(snapshot: &Snapshot, activation_id: &str, settlement: &Settlement) -> 
                     .expect("current wait generation exists");
                 if previous.state == WaitState::Consumed {
                     previous.state = WaitState::Resolved;
+                    previous.consuming_activation_id = None;
                     transitions.push(format!(
                         "wait:{}:generation:{}:consumed->resolved",
                         wait.id, record.current_generation
@@ -3247,6 +3248,7 @@ fn resolve_consumed_wait(
         .get_mut(&wait.current_generation)
         .expect("current wait generation exists");
     generation.state = WaitState::Resolved;
+    generation.consuming_activation_id = None;
     transitions.push(format!(
         "wait:{wait_id}:generation:{}:consumed->resolved",
         wait.current_generation

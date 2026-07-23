@@ -140,6 +140,34 @@ impl RuntimeHandle {
         )
     }
 
+    pub(super) fn new_offline_with_runtime_db(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        runtime_db: RuntimeDb,
+    ) -> Result<Self> {
+        Self::new_internal(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            String::new(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            String::new(),
+            ContextConfig::default(),
+            ContextConfig::default(),
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            Some(runtime_db),
+            None,
+            None,
+            Arc::new(SystemClock),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn new_with_clock(
         agent_id: impl Into<String>,

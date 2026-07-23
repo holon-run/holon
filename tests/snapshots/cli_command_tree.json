@@ -807,6 +807,61 @@
     "aliases": []
   },
   {
+    "path": "debug.scheduler-recovery-fixture",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "objective",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "debug.scheduler-rollout-apply",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "input",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "events",
     "positionals": [],
     "flags": [],

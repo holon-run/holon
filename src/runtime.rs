@@ -14,6 +14,7 @@ mod operator;
 mod operator_dispatch;
 mod provider_turn;
 mod scheduler;
+mod scheduler_acceptance;
 mod scheduler_executor;
 mod subagent;
 mod task_state_reducer;
@@ -29,6 +30,9 @@ mod worktree;
 
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
+pub use scheduler_acceptance::{
+    seed_scheduler_terminal_recovery_fixture, SchedulerTerminalRecoveryFixture,
+};
 pub use tasks::{
     PickedWorkItem, WorkItemContinuationSummary, WorkItemFocusTransition,
     WorkItemFocusTransitionWarning,
@@ -285,17 +289,85 @@ struct RuntimeInner {
 
 const SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV: &str =
     "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS";
+const SCHEDULER_ACCEPTANCE_FIXTURES_ENV: &str = "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES";
 
 fn scheduler_protocol_production_commands_enabled_from_env() -> Result<bool> {
-    let Some(value) = std::env::var_os(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV) else {
-        return Ok(false);
+    boolean_env(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV).map(|value| value.unwrap_or(false))
+}
+
+fn boolean_env(name: &str) -> Result<Option<bool>> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(None);
     };
-    match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(true),
-        "0" | "false" | "no" | "off" => Ok(false),
-        _ => Err(anyhow!(
-            "{SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV} expects a boolean"
-        )),
+    let value = match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => return Err(anyhow!("{name} expects a boolean")),
+    };
+    Ok(Some(value))
+}
+
+pub fn require_scheduler_acceptance_fixtures_enabled() -> Result<()> {
+    if boolean_env(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV)? != Some(true) {
+        return Err(anyhow!(
+            "scheduler acceptance fixtures require {SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV}=true"
+        ));
+    }
+    if boolean_env(SCHEDULER_ACCEPTANCE_FIXTURES_ENV)? != Some(true) {
+        return Err(anyhow!(
+            "scheduler acceptance fixtures require {SCHEDULER_ACCEPTANCE_FIXTURES_ENV}=true"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn scheduler_acceptance_fixtures_enabled_from_values(
+    production_commands: Option<&str>,
+    acceptance_fixtures: Option<&str>,
+) -> Result<bool> {
+    fn parse(name: &str, value: Option<&str>) -> Result<Option<bool>> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(Some(true)),
+            "0" | "false" | "no" | "off" => Ok(Some(false)),
+            _ => Err(anyhow!("{name} expects a boolean")),
+        }
+    }
+    Ok(parse(
+        SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV,
+        production_commands,
+    )? == Some(true)
+        && parse(SCHEDULER_ACCEPTANCE_FIXTURES_ENV, acceptance_fixtures)? == Some(true))
+}
+
+#[cfg(test)]
+mod scheduler_acceptance_gate_tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_acceptance_gate_requires_both_explicit_flags() {
+        assert!(
+            scheduler_acceptance_fixtures_enabled_from_values(Some("true"), Some("true")).unwrap()
+        );
+        assert!(!scheduler_acceptance_fixtures_enabled_from_values(Some("true"), None).unwrap());
+        assert!(!scheduler_acceptance_fixtures_enabled_from_values(None, Some("true")).unwrap());
+        assert!(
+            !scheduler_acceptance_fixtures_enabled_from_values(Some("false"), Some("true"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn scheduler_acceptance_gate_rejects_invalid_boolean() {
+        assert!(
+            scheduler_acceptance_fixtures_enabled_from_values(Some("sometimes"), Some("true"))
+                .unwrap_err()
+                .to_string()
+                .contains(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV)
+        );
     }
 }
 
@@ -315,28 +387,21 @@ fn canonical_queue_settlement_commands_from_facts(
     let Some(message) = storage.read_message_by_id(&record.message_id)? else {
         return Ok(Vec::new());
     };
-    if !matches!(
-        (&message.kind, &message.origin),
-        (MessageKind::SystemTick, MessageOrigin::System { subsystem })
-            if subsystem == "work_queue"
-    ) {
-        return Ok(Vec::new());
-    }
-
     use crate::domain::scheduler_protocol::{
         ActivationDisposition, ActivationSettlement, AgentDispatchDisposition,
-        MissingSettlementRecord, ProtocolCommand, SettleActivationCommand,
+        MissingSettlementRecord, ProtocolCommand, SettleActivationCommand, WaitIdentity,
     };
 
-    let snapshot = runtime_db
+    let Some(snapshot) = runtime_db
         .transitions()
         .load_scheduler_protocol_snapshot_if_initialized(&record.agent_id)?
-        .ok_or_else(|| anyhow!("canonical queue settlement has no scheduler partition"))?;
+    else {
+        return Ok(Vec::new());
+    };
     let activation_id = scheduler_executor::canonical_activation_id(&record.message_id);
-    let activation = snapshot
-        .activations
-        .get(&activation_id)
-        .ok_or_else(|| anyhow!("canonical queue settlement has no matching activation"))?;
+    let Some(activation) = snapshot.activations.get(&activation_id) else {
+        return Ok(Vec::new());
+    };
     let work_item_id = activation.work_item_id.clone();
     let work_queue = storage.work_queue_prompt_projection()?;
     let scheduling_state = work_queue
@@ -381,13 +446,17 @@ fn canonical_queue_settlement_commands_from_facts(
                 let Some(completion_intent) = work_item.completion_intent.as_ref() else {
                     return Ok(vec![missing_settlement()]);
                 };
+                let Some(admission) = snapshot.activation_admissions.get(&activation_id) else {
+                    return Ok(vec![missing_settlement()]);
+                };
                 if !(completion_intent.work_item_id == work_item_id
                     && completion_intent.source_activation_id.as_deref()
                         == Some(activation_id.as_str())
                     && completion_intent.source_message_id.as_deref()
                         == Some(record.message_id.as_str())
                     && completion_intent.source_turn_id.as_deref() == Some(turn_terminal.as_str())
-                    && completion_intent.expected_work_revision == activation.admitted_generation)
+                    && admission.activation.source_revision
+                        == Some(completion_intent.expected_work_revision))
                 {
                     return Ok(vec![missing_settlement()]);
                 }
@@ -423,6 +492,44 @@ fn canonical_queue_settlement_commands_from_facts(
                             format!("work_item:{work_item_id}"),
                             format!("turn:{turn_terminal}"),
                             format!("brief:{}", brief.id),
+                        ],
+                        created_at: record.updated_at.to_rfc3339(),
+                    },
+                })
+            }
+            Some(
+                crate::types::WorkItemSchedulingState::WaitingOperator
+                | crate::types::WorkItemSchedulingState::WaitingTask
+                | crate::types::WorkItemSchedulingState::WaitingExternal
+                | crate::types::WorkItemSchedulingState::WaitingTimer
+                | crate::types::WorkItemSchedulingState::WaitingSystem,
+            ) => {
+                let active_waits = storage
+                    .active_wait_conditions_for_work_item(&record.agent_id, &work_item_id)?;
+                let [active_wait] = active_waits.as_slice() else {
+                    return Ok(vec![missing_settlement()]);
+                };
+                let generation = activation
+                    .admitted_generation
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("canonical wait generation overflow"))?;
+                ProtocolCommand::SettleActivation(SettleActivationCommand {
+                    settlement: ActivationSettlement {
+                        id: canonical_settlement_id(&record.message_id),
+                        activation_id,
+                        turn_terminal: message.turn_id.clone(),
+                        disposition: ActivationDisposition::WorkWaits {
+                            wait: WaitIdentity {
+                                id: active_wait.id.clone(),
+                                generation,
+                            },
+                        },
+                        agent_dispatch: AgentDispatchDisposition::Open,
+                        operator_delivery: None,
+                        evidence: vec![
+                            format!("message:{}", record.message_id),
+                            format!("work_item:{work_item_id}"),
+                            format!("wait:{}", active_wait.id),
                         ],
                         created_at: record.updated_at.to_rfc3339(),
                     },

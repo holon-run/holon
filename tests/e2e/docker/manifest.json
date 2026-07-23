@@ -146,30 +146,68 @@
       ]
     },
     {
-      "id": "scheduler-autonomous-authoritative",
+      "id": "scheduler-rollout-authoritative-autonomous",
       "tier": "extended",
-      "tags": ["scheduler", "workitem", "authoritative", "restart", "persistence"],
-      "timeout_seconds": 600,
-      "description": "Verify the feature-flagged canonical production claim and settlement chain through a real-LLM autonomous WorkItem turn.",
-      "scheduler_protocol_commands_enabled": true,
+      "tags": ["scheduler", "workitem", "rollout", "shadow", "authoritative", "task-result", "wait", "restart", "rollback", "delivery"],
+      "timeout_seconds": 900,
+      "description": "Verify shadow evidence, per-scenario authoritative cutover, autonomous/task-result/external-wait continuation settlements, exact completion delivery binding, restart persistence, and rollback.",
       "runtime_env": {
-        "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS": "true"
+        "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS": "true",
+        "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES": "true"
       },
       "phases": [
         {
-          "id": "autonomous-complete",
+          "id": "shadow-wait-resume",
           "required_tools": [
             "CreateWorkItem",
-            "ListWorkItems",
+            "PickWorkItem",
+            "WaitFor",
+            "GetWorkItem",
             "UpdateWorkItem",
             "CompleteWorkItem"
           ],
           "forbidden_tools": [
             "ApplyPatch",
-            "ExecCommand",
-            "WaitFor"
+            "ExecCommand"
           ],
-          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: scheduler-seed completed, autonomous-completion pending. Do not PickWorkItem, UpdateWorkItem, CompleteWorkItem, or WaitFor in this operator-triggered turn. After CreateWorkItem succeeds, end this response with a concise acknowledgement. The objective governs the later autonomous work_queue turn. Do not modify files. The expected completion marker is {completion_marker}."
+          "prompt": "Scheduler rollout Docker E2E case {case_id}, shadow phase. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: shadow-wait pending, shadow-complete pending. Pick that WorkItem, then call WaitFor with wake=external, resource=docker-e2e-shadow, and a concrete reason. Do not complete it in this turn. When the external wake later resumes this exact WorkItem, call GetWorkItem, update both todos to completed, then emit a concise completion result containing {completion_marker} immediately followed by CompleteWorkItem for the exact current item. Do not create another WorkItem and do not modify files."
+        },
+        {
+          "id": "authoritative-continuations",
+          "required_tools": [
+            "CreateWorkItem",
+            "ExecCommand",
+            "WaitFor",
+            "GetWorkItem",
+            "UpdateWorkItem",
+            "CompleteWorkItem"
+          ],
+          "forbidden_tools": [
+            "ApplyPatch",
+            "TaskStatus",
+            "TaskOutput"
+          ],
+          "prompt": "Scheduler rollout Docker E2E case {case_id}, authoritative phase. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: task-continuation pending, external-continuation pending. Do not PickWorkItem, ExecCommand, WaitFor, UpdateWorkItem, or CompleteWorkItem in this operator-triggered turn. After CreateWorkItem succeeds, end this response with a concise acknowledgement. The objective governs all later autonomous continuation turns. Do not create another WorkItem and do not modify files. The expected final completion marker is {completion_marker}."
+        }
+      ]
+    },
+    {
+      "id": "scheduler-terminal-before-settlement-restart",
+      "tier": "extended",
+      "tags": ["scheduler", "rollout", "authoritative", "fault", "restart", "recovery", "settlement"],
+      "timeout_seconds": 600,
+      "requires_model": false,
+      "description": "Construct a controlled terminal-before-settlement crash cut through the hidden acceptance fixture and verify real serve bootstrap reconciliation plus second-restart idempotence.",
+      "runtime_env": {
+        "HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS": "true",
+        "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES": "true"
+      },
+      "phases": [
+        {
+          "id": "offline-fixture-and-restart-recovery",
+          "required_tools": [],
+          "forbidden_tools": [],
+          "prompt": "This phase is driven by the checked-in offline acceptance fixture and real holon serve restart path; no model prompt is issued."
         }
       ]
     }

@@ -344,6 +344,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scheduler_rollout_batch_rejection_rolls_back_prior_commands() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("runtime.sqlite"),
+            dir.path().join("runtime.lock"),
+        )?;
+        db.transitions()
+            .initialize_scheduler_protocol_partition("agent-a", &scheduler_protocol_snapshot(1))?;
+        let commands = vec![
+            (
+                "batch-open".to_string(),
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 1,
+                },
+            ),
+            (
+                "batch-conflict".to_string(),
+                RolloutCommand::OpenPreflight {
+                    expected_config_revision: 0,
+                    manifest_revision: 2,
+                },
+            ),
+        ];
+
+        let error = db
+            .apply_scheduler_rollout_commands(&commands)
+            .expect_err("second command should reject the whole batch");
+        assert!(error.to_string().contains("batch-conflict"));
+        let snapshot = db
+            .transitions()
+            .load_scheduler_protocol_snapshot("agent-a")?;
+        assert!(snapshot.rollout.preflights.is_empty());
+        let stored_results: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM scheduler_rollout_command_results",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(stored_results, 0);
+        Ok(())
+    }
+
     fn scheduler_protocol_authority_command(
         agent_id: &str,
         scheduling_generation: u64,

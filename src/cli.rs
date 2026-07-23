@@ -583,6 +583,22 @@ pub enum DebugCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(hide = true)]
+    SchedulerRolloutApply {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(hide = true)]
+    SchedulerRecoveryFixture {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        objective: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -120,8 +120,20 @@ jobs:
           args=(
             --image-digest "${CANDIDATE_IMAGE}"
             --skip-build
-            --suite core
             --env-file "${HOLON_E2E_DOCKER_ENV_FILE}"
+          )
+          while IFS= read -r case_id; do
+            args+=(--case "${case_id}")
+          done < <(
+            python3 -c '
+            import json
+            from pathlib import Path
+            manifest = json.loads(Path("tests/e2e/docker/manifest.json").read_text())
+            print("\n".join(
+                case["id"] for case in manifest["cases"]
+                if case["tier"] == "core" or "scheduler" in case.get("tags", [])
+            ))
+            '
           )
           if [ -n "${HOLON_E2E_PREVIOUS_IMAGE}" ]; then
             args+=(--previous-image "${HOLON_E2E_PREVIOUS_IMAGE}")
