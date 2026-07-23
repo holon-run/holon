@@ -360,89 +360,13 @@ impl RuntimeHandle {
                     break;
                 };
                 let expected_state = guard.state.clone();
-                let protocol_commands = if self.scheduler_protocol_production_commands_enabled()
-                    && self
-                        .inner
-                        .runtime_db
-                        .transitions()
-                        .scheduler_scenario_mode(scheduler::INTERJECTION_SCENARIO)?
-                        == crate::domain::scheduler_protocol::ScenarioMode::Authoritative
-                {
-                    let execution_binding = expected_state
-                        .current_execution_binding
-                        .as_ref()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "operator interjection requires a current execution binding"
-                            )
-                        })?;
-                    let activation_id =
-                        execution_binding.activation_id.as_deref().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "operator interjection requires a canonical running activation"
-                            )
-                        })?;
-                    let work_item_id =
-                        execution_binding.work_item_id.as_deref().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "operator interjection requires a WorkItem execution binding"
-                            )
-                        })?;
-                    let snapshot = self
-                        .inner
-                        .runtime_db
-                        .transitions()
-                        .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "operator interjection requires an initialized protocol partition"
-                            )
-                        })?;
-                    let activation = snapshot.activations.get(activation_id).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "operator interjection references an unknown canonical activation"
-                        )
-                    })?;
-                    if activation.work_item_id != work_item_id {
-                        return Err(anyhow::anyhow!(
-                            "operator interjection WorkItem binding disagrees with activation"
-                        ));
-                    }
-                    vec![
-                        crate::domain::scheduler_protocol::ProtocolCommand::AttachActivationInput(
-                            crate::domain::scheduler_protocol::AttachActivationInputCommand {
-                                attachment:
-                                    crate::domain::scheduler_protocol::ActivationInputAttachment {
-                                        id: format!("activation-input:{}", message.id),
-                                        activation_id: activation_id.to_string(),
-                                        work_item_id: work_item_id.to_string(),
-                                        expected_scheduling_generation:
-                                            activation.admitted_generation,
-                                        expected_dispatch_revision: snapshot.dispatch_revision,
-                                        message_id: message.id.clone(),
-                                        turn_id: execution_binding.turn_id.clone(),
-                                        boundary: boundary_str.to_string(),
-                                        round: u64::try_from(round).map_err(|_| {
-                                            anyhow::anyhow!(
-                                                "operator interjection round exceeds u64"
-                                            )
-                                        })?,
-                                        provenance:
-                                            crate::domain::scheduler_protocol::ActivationProvenance {
-                                                origin: crate::domain::scheduler_protocol::ActivationOrigin::Operator,
-                                                trust: crate::domain::scheduler_protocol::ActivationTrust::OperatorInstruction,
-                                                source_id: message.id.clone(),
-                                                correlation_id: message.correlation_id.clone(),
-                                                causation_id: message.causation_id.clone(),
-                                            },
-                                        created_at: message.created_at.to_rfc3339(),
-                                    },
-                            },
-                        ),
-                    ]
-                } else {
-                    Vec::new()
-                };
+                let protocol_commands = self.operator_interjection_protocol_commands(
+                    agent_id,
+                    &expected_state,
+                    &message,
+                    round,
+                    boundary_str,
+                )?;
                 let mut committed_state = expected_state.clone();
                 committed_state.pending = guard.queue.len().saturating_sub(1);
                 let text = render_operator_interjection_text(&message);
@@ -551,6 +475,85 @@ impl RuntimeHandle {
             follow_up_texts.push(committed.0);
         }
         Ok(follow_up_texts)
+    }
+
+    fn operator_interjection_protocol_commands(
+        &self,
+        agent_id: &str,
+        expected_state: &crate::types::AgentState,
+        message: &MessageEnvelope,
+        round: usize,
+        boundary: &str,
+    ) -> Result<Vec<crate::domain::scheduler_protocol::ProtocolCommand>> {
+        use crate::domain::scheduler_protocol::{
+            ActivationInputAttachment, ActivationOrigin, ActivationProvenance, ActivationTrust,
+            AttachActivationInputCommand, ProtocolCommand, ScenarioMode,
+        };
+
+        if !self.scheduler_protocol_production_commands_enabled()
+            || self
+                .inner
+                .runtime_db
+                .transitions()
+                .scheduler_scenario_mode(scheduler::INTERJECTION_SCENARIO)?
+                != ScenarioMode::Authoritative
+        {
+            return Ok(Vec::new());
+        }
+
+        let execution_binding = expected_state
+            .current_execution_binding
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow::anyhow!("operator interjection requires a current execution binding")
+            })?;
+        let activation_id = execution_binding.activation_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("operator interjection requires a canonical running activation")
+        })?;
+        let work_item_id = execution_binding.work_item_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("operator interjection requires a WorkItem execution binding")
+        })?;
+        let snapshot = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot_if_initialized(agent_id)?
+            .ok_or_else(|| {
+                anyhow::anyhow!("operator interjection requires an initialized protocol partition")
+            })?;
+        let activation = snapshot.activations.get(activation_id).ok_or_else(|| {
+            anyhow::anyhow!("operator interjection references an unknown canonical activation")
+        })?;
+        if activation.work_item_id != work_item_id {
+            return Err(anyhow::anyhow!(
+                "operator interjection WorkItem binding disagrees with activation"
+            ));
+        }
+
+        Ok(vec![ProtocolCommand::AttachActivationInput(
+            AttachActivationInputCommand {
+                attachment: ActivationInputAttachment {
+                    id: format!("activation-input:{}", message.id),
+                    activation_id: activation_id.to_string(),
+                    work_item_id: work_item_id.to_string(),
+                    expected_scheduling_generation: activation.admitted_generation,
+                    expected_dispatch_revision: snapshot.dispatch_revision,
+                    message_id: message.id.clone(),
+                    turn_id: execution_binding.turn_id.clone(),
+                    boundary: boundary.to_string(),
+                    round: u64::try_from(round)
+                        .map_err(|_| anyhow::anyhow!("operator interjection round exceeds u64"))?,
+                    provenance: ActivationProvenance {
+                        origin: ActivationOrigin::Operator,
+                        trust: ActivationTrust::OperatorInstruction,
+                        source_id: message.id.clone(),
+                        correlation_id: message.correlation_id.clone(),
+                        causation_id: message.causation_id.clone(),
+                    },
+                    created_at: message.created_at.to_rfc3339(),
+                },
+            },
+        )])
     }
 
     pub(super) async fn append_operator_interjections_to_last_round(

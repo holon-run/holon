@@ -2302,6 +2302,110 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
 }
 
 #[tokio::test]
+async fn ambiguous_task_rejoin_waits_remain_queued_with_deduplicated_advisory() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(&runtime, &[SchedulerScenarioClass::ExactTaskRejoin]);
+    let work_item = runtime
+        .create_work_item("ambiguous task rejoin".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-ambiguous".into()),
+            "waiting for task-ambiguous".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut duplicate_wait = registration.condition.clone();
+    duplicate_wait.id = "wait-task-ambiguous-duplicate".into();
+    runtime
+        .storage()
+        .append_wait_condition(&duplicate_wait)
+        .unwrap();
+
+    let mut message = task_result_message("task-ambiguous").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-ambiguous",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-ambiguous",
+        "work_item_id": work_item.id,
+    }));
+    let message = runtime.enqueue(message).await.unwrap();
+
+    for _ in 0..2 {
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap();
+        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Idle));
+    }
+
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+    let advisories = runtime
+        .storage()
+        .read_recent_events(64)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.kind == "scheduling_advisory"
+                && event.data["kind"] == "ambiguous_canonical_wait_binding"
+                && event.data["evidence"].as_array().is_some_and(|evidence| {
+                    evidence
+                        .iter()
+                        .any(|item| item == &format!("message_id={}", message.id))
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(advisories.len(), 1);
+    assert!(advisories[0].data["evidence"]
+        .as_array()
+        .is_some_and(|evidence| {
+            evidence.iter().any(|item| {
+                item.as_str().is_some_and(|item| {
+                    item.contains(&registration.condition.id) && item.contains(&duplicate_wait.id)
+                })
+            })
+        }));
+}
+
+#[tokio::test]
 async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent() {
     for fault in PRE_COMMIT_FAULTS {
         let dir = tempdir().unwrap();
