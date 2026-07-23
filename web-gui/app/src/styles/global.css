@@ -6132,3 +6132,161 @@ code {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+
+.runtime-trace-global-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface));
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.runtime-trace-global-indicator span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
+}
+
+.runtime-trace-panel,
+.runtime-trace-records {
+  display: grid;
+  gap: 12px;
+}
+
+.runtime-trace-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-trace-summary h2,
+.runtime-trace-summary p {
+  margin: 4px 0 0;
+}
+
+.runtime-trace-summary p,
+.runtime-trace-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.runtime-trace-recording,
+.runtime-trace-outcome {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.runtime-trace-recording.enabled,
+.runtime-trace-outcome.ok {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.runtime-trace-recording.disabled,
+.runtime-trace-outcome.error,
+.runtime-trace-outcome.cancelled {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.runtime-trace-outcome.deduped,
+.runtime-trace-outcome.skipped {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.runtime-trace-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.runtime-trace-toolbar input,
+.runtime-trace-toolbar select {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+.runtime-trace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-trace-record {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.runtime-trace-record header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-trace-record dl {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 0;
+}
+
+.runtime-trace-record dl div {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.runtime-trace-record dt {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.runtime-trace-record dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-trace-record details {
+  margin-top: 10px;
+}
+
+.runtime-trace-record pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-trace-setting {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}

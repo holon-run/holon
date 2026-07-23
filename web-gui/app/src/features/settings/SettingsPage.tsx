@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -8,6 +8,14 @@ import { LANGUAGE_MODE_OPTIONS } from "../../i18n/types";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
+import {
+  clearRuntimeTraceRecords,
+  getRuntimeTraceRecords,
+  getRuntimeTraceRevision,
+  isRuntimeTraceEnabled,
+  setRuntimeTraceEnabled,
+  subscribeRuntimeTrace,
+} from "../../runtime/runtime-trace";
 import type {
   CodexDeviceLoginState,
   CredentialStoreState,
@@ -160,6 +168,9 @@ export function SettingsPage({
   const unavailableCount = modelCatalog.options.length - availableCount;
   const { t } = useTranslation();
   const { languageMode, resolvedLanguageLabel, setLanguageMode } = useI18nSettings();
+  useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
+  const runtimeTraceEnabled = isRuntimeTraceEnabled();
+  const runtimeTraceRecordCount = getRuntimeTraceRecords().length;
   const surface = runtimeConfig.surface;
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState<string[]>([]);
@@ -1547,6 +1558,46 @@ export function SettingsPage({
               {providerSaveMessage ? <span className="settings-save-message">{providerSaveMessage}</span> : null}
             </div>
           )}
+        </Card>
+
+        <Card className="settings-card" hidden={activeTab !== "advanced"}>
+          <div className="settings-card-head">
+            <div>
+              <span className="eyebrow">{t("runtimeTrace.diagnostics")}</span>
+              <h2>{t("runtimeTrace.title")}</h2>
+            </div>
+            <StatusChip
+              className={`settings-status ${runtimeTraceEnabled ? "available" : "unavailable"}`}
+              tone={runtimeTraceEnabled ? "success" : "error"}
+              title={t(runtimeTraceEnabled ? "runtimeTrace.recording" : "runtimeTrace.off")}
+            />
+          </div>
+          <p className="settings-muted">{t("runtimeTrace.settingsDescription")}</p>
+          <label className="settings-checkbox runtime-trace-setting">
+            <input
+              checked={runtimeTraceEnabled}
+              type="checkbox"
+              onChange={(event) => setRuntimeTraceEnabled(event.target.checked)}
+            />
+            <span>{t("runtimeTrace.enableProduction")}</span>
+          </label>
+          <div className="settings-callout">
+            <strong>{t("runtimeTrace.privacyTitle")}</strong>
+            <span>{t("runtimeTrace.privacyDescription")}</span>
+          </div>
+          <div className="settings-actions">
+            <span className="settings-muted">
+              {t("runtimeTrace.totalRecordCount", { count: runtimeTraceRecordCount })}
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={runtimeTraceRecordCount === 0}
+              onClick={clearRuntimeTraceRecords}
+            >
+              {t("runtimeTrace.clear")}
+            </Button>
+          </div>
         </Card>
 
         <Card className="settings-card" hidden={activeTab !== "advanced"}>

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -34,6 +34,11 @@ import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
 import { TemplateDetailPage, TemplatesPage } from "../features/templates/TemplatesPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
+import {
+  getRuntimeTraceRevision,
+  isRuntimeTraceEnabled,
+  subscribeRuntimeTrace,
+} from "../runtime/runtime-trace";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { canUseRemoteRuntimeConnections, readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
@@ -54,6 +59,8 @@ const APP_WINDOW_TITLE = "Holon";
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const { t } = useTranslation();
+  useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
+  const runtimeTraceEnabled = isRuntimeTraceEnabled();
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [createAgentId, setCreateAgentId] = useState("");
   const [createAgentTemplate, setCreateAgentTemplate] = useState("");
@@ -549,6 +556,16 @@ export function App() {
               </div>
             </div>
             <div className="top-actions">
+              {runtimeTraceEnabled ? (
+                <button
+                  className="runtime-trace-global-indicator"
+                  type="button"
+                  onClick={() => navigateRoute("settings")}
+                >
+                  <span aria-hidden="true" />
+                  {t("runtimeTrace.recording")}
+                </button>
+              ) : null}
               {agentTopControls}
               <Button
                 type="button"
@@ -708,6 +725,7 @@ export function App() {
       {selectedAgent ? (
         <RightSidePanel
           agent={selectedAgent}
+          connection={bootstrap.connection}
           skillCatalog={agentSkillCatalog}
           availableSkillCatalog={skillCatalog}
           skillCatalogLoading={agentSkillCatalogLoading}
