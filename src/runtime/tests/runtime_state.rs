@@ -16,11 +16,42 @@ struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
 }
 
+struct GatedFailingProvider {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
 async fn finish_claimed_test_run(runtime: &RuntimeHandle) {
     let mut guard = runtime.inner.agent.lock().await;
     scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage).unwrap();
     guard.current_run_abort = None;
     guard.persist_state(&runtime.inner.storage).unwrap();
+}
+
+fn terminal_transition(
+    message: &MessageEnvelope,
+    work_item_id: Option<&str>,
+) -> super::super::turn::TurnTerminalTransition {
+    let turn_id = message.turn_id.clone().expect("test message turn id");
+    let terminal = crate::types::TurnTerminalRecord {
+        turn_id: turn_id.clone(),
+        turn_index: 1,
+        kind: crate::types::TurnTerminalKind::Completed,
+        reason: None,
+        last_assistant_message: Some("terminal transition committed".into()),
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    };
+    let mut turn_record = crate::types::TurnRecord::new(&message.agent_id, turn_id, 1);
+    turn_record.current_work_item_id = work_item_id.map(ToString::to_string);
+    turn_record.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
+    turn_record.input_message_ids = vec![message.id.clone()];
+    turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
+    super::super::turn::TurnTerminalTransition {
+        terminal,
+        turn_record,
+    }
 }
 
 fn enable_production_protocol_authority(runtime: &RuntimeHandle) {
@@ -403,6 +434,15 @@ impl AgentProvider for BlockingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         self.started.notify_waiters();
         std::future::pending::<Result<ProviderTurnResponse>>().await
+    }
+}
+
+#[async_trait]
+impl AgentProvider for GatedFailingProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Err(anyhow!("injected gated provider failure"))
     }
 }
 
@@ -1150,6 +1190,569 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
 }
 
 #[tokio::test]
+async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent() {
+    for fault in PRE_COMMIT_FAULTS {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        runtime.set_scheduler_protocol_production_commands_enabled(true);
+        enable_production_protocol_authority(&runtime);
+        let work_item = runtime
+            .create_work_item("atomic terminal settlement".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "commit terminal atomically".into(),
+            },
+        );
+        message.work_item_id = Some(work_item.id.clone());
+        message.turn_id = Some(format!("turn-terminal-fault-{fault:?}"));
+        let message = runtime.enqueue(message).await.unwrap();
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap();
+        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+        let claimed = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap();
+        finish_claimed_test_run(&runtime).await;
+
+        let processed = QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: message.agent_id.clone(),
+            priority: message.priority.clone(),
+            status: QueueEntryStatus::Processed,
+            created_at: message.created_at,
+            updated_at: Utc::now(),
+        };
+        let transition = terminal_transition(&message, Some(&work_item.id));
+        runtime.inject_next_transition_fault(fault);
+
+        let error = runtime
+            .commit_queue_terminal_settlement(
+                processed.clone(),
+                Vec::new(),
+                true,
+                Some(&transition),
+            )
+            .await
+            .unwrap_err();
+        assert_injected_transition_fault(&error);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_scheduler_protocol_snapshot("default")
+                .unwrap(),
+            claimed
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest_all()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.message_id == message.id)
+                .map(|entry| entry.status),
+            Some(QueueEntryStatus::Dequeued)
+        );
+        assert!(runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .last_turn_terminal
+            .is_none());
+        assert!(runtime
+            .storage()
+            .read_recent_turns(16)
+            .unwrap()
+            .iter()
+            .all(|turn| turn.turn_id != transition.terminal.turn_id));
+        assert!(runtime
+            .storage()
+            .read_recent_events(64)
+            .unwrap()
+            .iter()
+            .all(|event| {
+                !(event.kind == "turn_terminal"
+                    && event.data["turn_id"] == transition.terminal.turn_id)
+            }));
+
+        assert!(runtime
+            .commit_queue_terminal_settlement(
+                processed.clone(),
+                Vec::new(),
+                true,
+                Some(&transition),
+            )
+            .await
+            .unwrap());
+        let committed_events = runtime.storage().read_recent_events(128).unwrap();
+        let terminal_event_count = committed_events
+            .iter()
+            .filter(|event| {
+                event.kind == "turn_terminal"
+                    && event.data["turn_id"] == transition.terminal.turn_id
+            })
+            .count();
+        assert_eq!(terminal_event_count, 1);
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_turns(16)
+                .unwrap()
+                .iter()
+                .filter(|turn| turn.turn_id == transition.terminal.turn_id)
+                .count(),
+            1
+        );
+        let settled = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap();
+        assert_eq!(settled.slot, ActivationSlot::Idle);
+        assert!(settled
+            .settlements
+            .contains_key(&canonical_settlement_id(&message.id)));
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap()
+                .unwrap()
+                .last_turn_terminal,
+            Some(transition.terminal.clone())
+        );
+
+        assert!(!runtime
+            .commit_queue_terminal_settlement(processed, Vec::new(), true, Some(&transition),)
+            .await
+            .unwrap());
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(128)
+                .unwrap()
+                .iter()
+                .filter(|event| {
+                    event.kind == "turn_terminal"
+                        && event.data["turn_id"] == transition.terminal.turn_id
+                })
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_settlement_survives_post_commit_effect_faults() {
+    for (fault, expected_effect) in POST_COMMIT_FAULTS {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        runtime.set_scheduler_protocol_production_commands_enabled(true);
+        enable_production_protocol_authority(&runtime);
+        let work_item = runtime
+            .create_work_item(
+                "post-commit terminal settlement".into(),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "retain committed terminal".into(),
+            },
+        );
+        message.work_item_id = Some(work_item.id.clone());
+        message.turn_id = Some(format!("turn-terminal-post-commit-{fault:?}"));
+        let message = runtime.enqueue(message).await.unwrap();
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap();
+        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+        finish_claimed_test_run(&runtime).await;
+
+        let transition = terminal_transition(&message, Some(&work_item.id));
+        runtime.inject_next_transition_fault(fault);
+        assert!(runtime
+            .commit_queue_terminal_settlement(
+                QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: message.agent_id.clone(),
+                    priority: message.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+                Some(&transition),
+            )
+            .await
+            .unwrap());
+        let warnings = runtime.take_transition_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].effect, expected_effect);
+
+        let snapshot = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap();
+        assert_eq!(snapshot.slot, ActivationSlot::Idle);
+        assert!(snapshot
+            .settlements
+            .contains_key(&canonical_settlement_id(&message.id)));
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest_all()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.message_id == message.id)
+                .map(|entry| entry.status),
+            Some(QueueEntryStatus::Processed)
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap()
+                .unwrap()
+                .last_turn_terminal,
+            Some(transition.terminal.clone())
+        );
+        assert!(runtime
+            .storage()
+            .read_recent_turns(16)
+            .unwrap()
+            .iter()
+            .any(|turn| turn.turn_id == transition.terminal.turn_id));
+    }
+}
+
+#[tokio::test]
+async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_evidence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(GatedFailingProvider {
+            started: started.clone(),
+            release: release.clone(),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "runtime failure terminal rollback".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "fail after canonical claim".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id);
+    let message = runtime.enqueue(message).await.unwrap();
+    let turn_id = message.turn_id.clone().expect("enqueued turn id");
+
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .expect("provider should start");
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
+    );
+    release.notify_one();
+
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), runner)
+        .await
+        .expect("runtime should exit after terminal settlement fault")
+        .unwrap()
+        .unwrap_err();
+    assert_injected_transition_fault(&error);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        claimed
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap()
+        .last_turn_terminal
+        .is_none());
+    assert!(runtime
+        .storage()
+        .read_recent_turns(16)
+        .unwrap()
+        .iter()
+        .all(|turn| turn.turn_id != turn_id));
+    assert!(runtime
+        .storage()
+        .read_recent_briefs(16)
+        .unwrap()
+        .iter()
+        .all(|brief| brief.related_message_id.as_deref() != Some(message.id.as_str())));
+    assert!(runtime
+        .storage()
+        .read_recent_transcript(32)
+        .unwrap()
+        .iter()
+        .all(|entry| {
+            entry.kind != TranscriptEntryKind::RuntimeFailure
+                || entry.related_message_id.as_deref() != Some(message.id.as_str())
+        }));
+    assert!(runtime
+        .storage()
+        .read_recent_events(128)
+        .unwrap()
+        .iter()
+        .all(|event| {
+            event.data["message_id"] != message.id
+                || !matches!(
+                    event.kind.as_str(),
+                    "runtime_error" | "queue_entry_settled" | "turn_terminal"
+                )
+        }));
+}
+
+#[tokio::test]
+async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(BlockingProvider {
+            started: started.clone(),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "interrupted terminal rollback".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "abort after canonical claim".into(),
+        },
+    );
+    message.work_item_id = Some(work_item.id);
+    let message = runtime.enqueue(message).await.unwrap();
+    let turn_id = message.turn_id.clone().expect("enqueued turn id");
+
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .expect("provider should start");
+    let claimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let run_id = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_run_id
+        .expect("active run id");
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
+    );
+    runtime
+        .abort_current_run(CurrentRunAbortRequest {
+            run_id: Some(run_id),
+            mode: CurrentRunAbortMode::StopAfterAbort,
+        })
+        .await
+        .unwrap();
+
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), runner)
+        .await
+        .expect("runtime should exit after interrupted terminal settlement fault")
+        .unwrap()
+        .unwrap_err();
+    assert_injected_transition_fault(&error);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_scheduler_protocol_snapshot("default")
+            .unwrap(),
+        claimed
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap()
+        .last_turn_terminal
+        .is_none());
+    assert!(runtime
+        .storage()
+        .read_recent_turns(16)
+        .unwrap()
+        .iter()
+        .all(|turn| turn.turn_id != turn_id));
+    assert!(runtime
+        .storage()
+        .read_recent_events(128)
+        .unwrap()
+        .iter()
+        .all(|event| {
+            event.data["message_id"] != message.id
+                || !matches!(
+                    event.kind.as_str(),
+                    "message_processing_aborted" | "turn_terminal_aborted" | "turn_terminal"
+                )
+        }));
+}
+
+#[tokio::test]
 async fn completed_production_settlement_uses_exact_bound_result_brief() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1317,7 +1920,7 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
 }
 
 #[tokio::test]
-async fn completed_production_settlement_rejects_mismatched_completion_execution() {
+async fn completed_production_settlement_records_missing_for_mismatched_completion_execution() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1417,7 +2020,7 @@ async fn completed_production_settlement_rejects_mismatched_completion_execution
     runtime.apply_transition_commit(commit).await;
 
     finish_claimed_test_run(&runtime).await;
-    let error = runtime
+    assert!(runtime
         .commit_queue_settlement(
             QueueEntryRecord {
                 message_id: message.id.clone(),
@@ -1437,10 +2040,7 @@ async fn completed_production_settlement_rejects_mismatched_completion_execution
             true,
         )
         .await
-        .expect_err("settlement must reject a completion intent from another execution");
-    assert!(error
-        .to_string()
-        .contains("completion intent does not match the settling execution"));
+        .unwrap());
 
     let snapshot = runtime
         .inner
@@ -1448,9 +2048,18 @@ async fn completed_production_settlement_rejects_mismatched_completion_execution
         .transitions()
         .load_scheduler_protocol_snapshot("default")
         .unwrap();
-    assert!(!snapshot
-        .settlements
-        .contains_key(&canonical_settlement_id(&message.id)));
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    assert_eq!(snapshot.slot, ActivationSlot::Idle);
+    assert!(snapshot
+        .missing_settlements
+        .contains_key(&canonical_missing_settlement_id(&message.id)));
+    assert_eq!(
+        snapshot
+            .activations
+            .get(&activation_id)
+            .map(|activation| activation.state.clone()),
+        Some(crate::domain::scheduler_protocol::ActivationState::SettlementMissing)
+    );
     assert_eq!(
         runtime
             .inner
@@ -1461,7 +2070,113 @@ async fn completed_production_settlement_rejects_mismatched_completion_execution
             .into_iter()
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dequeued)
+        Some(QueueEntryStatus::Processed)
+    );
+}
+
+#[tokio::test]
+async fn completed_production_settlement_records_missing_without_result_report() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority(&runtime);
+    let work_item = runtime
+        .create_work_item(
+            "complete without result report".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete without delivery evidence".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+    message.turn_id = Some("turn-missing-completion-report".into());
+    let message = runtime.enqueue(message).await.unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    runtime
+        .complete_work_item(work_item.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    finish_claimed_test_run(&runtime).await;
+
+    assert!(runtime
+        .commit_queue_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+        )
+        .await
+        .unwrap());
+
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    assert_eq!(snapshot.slot, ActivationSlot::Idle);
+    assert!(snapshot
+        .missing_settlements
+        .contains_key(&canonical_missing_settlement_id(&message.id)));
+    assert_eq!(
+        snapshot
+            .activations
+            .get(&activation_id)
+            .map(|activation| activation.state.clone()),
+        Some(crate::domain::scheduler_protocol::ActivationState::SettlementMissing)
+    );
+    assert_eq!(
+        snapshot
+            .work
+            .get(&work_item.id)
+            .map(|demand| &demand.status),
+        Some(&WorkStatus::NeedsSettlement { activation_id })
     );
 }
 
@@ -5582,6 +6297,7 @@ async fn post_commit_agent_state_projection_does_not_overwrite_newer_memory() {
             }),
             message_evidence: Vec::new(),
             transcript_entries: Vec::new(),
+            turn_record: None,
             audit_events: Vec::new(),
             scheduler_semantic_shadow: None,
             scheduler_shadow_comparison: None,

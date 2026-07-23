@@ -814,6 +814,7 @@ impl RuntimeHandle {
                     }),
                     message_evidence: vec![message.clone()],
                     transcript_entries: Vec::new(),
+                    turn_record: None,
                     audit_events,
                     scheduler_shadow_comparison,
                     scheduler_delivery_shadow_comparison: None,

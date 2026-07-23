@@ -1346,7 +1346,7 @@ pub(crate) fn shadow_comparison_for_settlement(
         QueueEntryStatus::Dropped => "dropped",
         QueueEntryStatus::Queued | QueueEntryStatus::Dequeued => return None,
     };
-    let candidate_disposition = restricted_settlement_disposition(projection);
+    let candidate_disposition = restricted_settlement_disposition(projection, record);
     let input_identity = format!("message:{}", record.message_id);
     let observation = LegacySchedulerObservation::Settlement(LegacySettlementObservation {
         schema_version: 1,
@@ -1376,14 +1376,25 @@ pub(crate) fn shadow_comparison_for_settlement(
     })
 }
 
-fn restricted_settlement_disposition(projection: &SchedulerProjection) -> &'static str {
-    if matches!(projection.status, AgentStatus::Stopped) {
-        return "failed";
+fn restricted_settlement_disposition(
+    projection: &SchedulerProjection,
+    record: &QueueEntryRecord,
+) -> &'static str {
+    match record.status {
+        QueueEntryStatus::Aborted | QueueEntryStatus::Dropped => "failed",
+        QueueEntryStatus::Interrupted => "interrupted",
+        QueueEntryStatus::Interjected => "interjected",
+        QueueEntryStatus::Processed => {
+            if matches!(projection.status, AgentStatus::Stopped) {
+                "failed"
+            } else if projection.turn_in_progress {
+                "pending"
+            } else {
+                "complete"
+            }
+        }
+        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued => "pending",
     }
-    if projection.turn_in_progress {
-        return "pending";
-    }
-    "complete"
 }
 
 pub(crate) fn shadow_comparison_for_delivery(
@@ -1428,7 +1439,8 @@ pub(crate) fn shadow_comparison_for_delivery(
         delivery_disposition: candidate_disposition,
         resulting_posture: "open",
     });
-    let legacy_category = turn_terminal_delivery_category(projection.last_turn_terminal);
+    let legacy_category =
+        turn_terminal_delivery_category(projection.last_turn_terminal, &record.status);
     let matched = legacy_category == candidate_disposition;
     Some(SchedulerShadowComparison {
         scenario_class: DELIVERY_SCENARIO,
@@ -1442,16 +1454,38 @@ pub(crate) fn shadow_comparison_for_delivery(
     })
 }
 
-fn turn_terminal_delivery_category(kind: Option<TurnTerminalKind>) -> &'static str {
-    match kind {
-        Some(TurnTerminalKind::Completed) => "completed",
-        Some(
-            TurnTerminalKind::Aborted
-            | TurnTerminalKind::ProviderFailedNeedsRecovery
-            | TurnTerminalKind::BaselineOverBudget,
+fn turn_terminal_delivery_category(
+    kind: Option<TurnTerminalKind>,
+    queue_status: &QueueEntryStatus,
+) -> &'static str {
+    match (kind, queue_status) {
+        (
+            Some(
+                TurnTerminalKind::Aborted
+                | TurnTerminalKind::ProviderFailedNeedsRecovery
+                | TurnTerminalKind::BaselineOverBudget,
+            ),
+            QueueEntryStatus::Interrupted | QueueEntryStatus::Interjected,
+        ) => "interrupted",
+        (
+            Some(
+                TurnTerminalKind::Aborted
+                | TurnTerminalKind::ProviderFailedNeedsRecovery
+                | TurnTerminalKind::BaselineOverBudget,
+            ),
+            QueueEntryStatus::Aborted | QueueEntryStatus::Dropped,
         ) => "failed",
-        Some(TurnTerminalKind::DeferredToFallback) => "pending",
-        None => "none",
+        (Some(TurnTerminalKind::Completed), _) => "completed",
+        (
+            Some(
+                TurnTerminalKind::Aborted
+                | TurnTerminalKind::ProviderFailedNeedsRecovery
+                | TurnTerminalKind::BaselineOverBudget,
+            ),
+            _,
+        ) => "failed",
+        (Some(TurnTerminalKind::DeferredToFallback), _) => "pending",
+        (None, _) => "none",
     }
 }
 

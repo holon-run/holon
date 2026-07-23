@@ -2359,6 +2359,7 @@ mod tests {
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
+                turn_record: None,
                 audit_events: Vec::new(),
                 scheduler_semantic_shadow: None,
                 scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {
@@ -2596,6 +2597,7 @@ mod tests {
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
+                        turn_record: None,
                         audit_events: Vec::new(),
                         scheduler_semantic_shadow: None,
                         scheduler_shadow_comparison: Some(SchedulerShadowComparisonCommand {

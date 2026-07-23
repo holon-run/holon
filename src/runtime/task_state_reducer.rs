@@ -345,6 +345,7 @@ impl RuntimeHandle {
             .await
     }
 
+    #[cfg(test)]
     pub(super) async fn reduce_task_result_message(
         &self,
         message: &MessageEnvelope,
@@ -352,8 +353,29 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
+        if let Some(transition) = self
+            .reduce_task_result_message_deferred(
+                message,
+                task,
+                model_reentry,
+                continuation_resolution,
+            )
+            .await?
+        {
+            self.persist_terminal_transition(&transition).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn reduce_task_result_message_deferred(
+        &self,
+        message: &MessageEnvelope,
+        task: TaskRecord,
+        model_reentry: bool,
+        continuation_resolution: Option<&ContinuationResolution>,
+    ) -> Result<Option<turn::TurnTerminalTransition>> {
         if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
-            return Ok(());
+            return Ok(None);
         }
         self.persist_task_transition(&task, "task_result_received")
             .await?;
@@ -393,21 +415,23 @@ impl RuntimeHandle {
                 guard.state.current_turn_work_item_id = Some(work_item_id);
                 guard.persist_state(&self.inner.storage)?;
             }
-            self.process_interactive_message(
-                message,
-                continuation_resolution,
-                LoopControlOptions {
-                    max_tool_rounds: None,
-                },
-            )
-            .await?;
+            let transition = self
+                .process_interactive_message_deferred(
+                    message,
+                    continuation_resolution,
+                    LoopControlOptions {
+                        max_tool_rounds: None,
+                    },
+                )
+                .await?;
+            return Ok(Some(transition));
         } else {
             if emit_result_brief {
                 let brief = brief::make_result(&message.agent_id, message, result_text);
                 self.persist_brief(&brief).await?;
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -38,6 +38,27 @@ fn run_request(text: impl Into<String>) -> RunOnceRequest {
         wait_for_tasks: true,
         workspace_root: None,
         cwd: None,
+    }
+}
+
+fn run_on_large_stack<F, Fut>(name: &str, test: F) -> Result<()>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<()>> + 'static,
+{
+    let test_thread = std::thread::Builder::new()
+        .name(name.into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(test())
+        })?;
+
+    match test_thread.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
@@ -1064,8 +1085,7 @@ async fn run_once_no_wait_allows_short_command_tasks_to_finish_during_quiescence
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_prefers_parent_final_result_over_delegated_task_briefs() -> Result<()> {
+async fn assert_run_once_prefers_parent_final_result_over_delegated_task_briefs() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -1084,6 +1104,14 @@ async fn run_once_prefers_parent_final_result_over_delegated_task_briefs() -> Re
         "parent-facing final_text should not be selected from child task output"
     );
     Ok(())
+}
+
+#[test]
+fn run_once_prefers_parent_final_result_over_delegated_task_briefs() -> Result<()> {
+    run_on_large_stack(
+        "run-once-parent-final-result",
+        assert_run_once_prefers_parent_final_result_over_delegated_task_briefs,
+    )
 }
 
 struct TwoRoundProvider {
@@ -1483,8 +1511,7 @@ impl AgentProvider for WorktreeTaskProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_includes_worktree_task_metadata() -> Result<()> {
+async fn assert_run_once_includes_worktree_task_metadata() -> Result<()> {
     let test_config = test_config();
     let workspace_dir = test_config.workspace_dir().to_path_buf();
     init_git_repo(&workspace_dir)?;
@@ -1507,6 +1534,14 @@ async fn run_once_includes_worktree_task_metadata() -> Result<()> {
         format!("task-{}", response.tasks[0].task.task_id)
     );
     Ok(())
+}
+
+#[test]
+fn run_once_includes_worktree_task_metadata() -> Result<()> {
+    run_on_large_stack(
+        "run-once-worktree-metadata",
+        assert_run_once_includes_worktree_task_metadata,
+    )
 }
 
 #[tokio::test]

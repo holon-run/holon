@@ -1736,6 +1736,7 @@ impl RuntimeHandle {
                     }),
                     message_evidence: vec![message.clone()],
                     transcript_entries: Vec::new(),
+                    turn_record: None,
                     audit_events,
                     scheduler_shadow_comparison: None,
                     scheduler_delivery_shadow_comparison: None,
@@ -1763,19 +1764,67 @@ impl RuntimeHandle {
             .append_event(&AuditEvent::legacy(kind, data))
     }
 
+    #[cfg(test)]
     pub(crate) async fn commit_queue_settlement(
         &self,
         record: QueueEntryRecord,
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
     ) -> Result<bool> {
+        self.commit_queue_terminal_settlement(record, audit_events, notify_scheduler, None)
+            .await
+    }
+
+    async fn commit_queue_terminal_settlement(
+        &self,
+        record: QueueEntryRecord,
+        audit_events: Vec<AuditEvent>,
+        notify_scheduler: bool,
+        terminal_transition: Option<&turn::TurnTerminalTransition>,
+    ) -> Result<bool> {
+        self.commit_queue_terminal_settlement_with_evidence(
+            record,
+            audit_events,
+            notify_scheduler,
+            terminal_transition,
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn commit_queue_terminal_settlement_with_evidence(
+        &self,
+        record: QueueEntryRecord,
+        mut audit_events: Vec<AuditEvent>,
+        notify_scheduler: bool,
+        terminal_transition: Option<&turn::TurnTerminalTransition>,
+        committed_agent_state: Option<AgentState>,
+        transcript_entries: Vec<TranscriptEntry>,
+        brief_evidence: Vec<BriefRecord>,
+    ) -> Result<bool> {
         let scheduler_protocol_commands = self.canonical_queue_settlement_commands(&record).await?;
-        let shadow_comparison = {
+        let (projection_state, queue_len, agent_state) = {
             let guard = self.inner.agent.lock().await;
+            let mut state = committed_agent_state.unwrap_or_else(|| guard.state.clone());
+            let agent_state = if let Some(transition) = terminal_transition {
+                state.current_turn_id = Some(transition.terminal.turn_id.clone());
+                state.last_turn_terminal = Some(transition.terminal.clone());
+                Some(crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(guard.last_persisted_state.clone())),
+                    record: Box::new(state.clone()),
+                })
+            } else {
+                None
+            };
+            (state, guard.queue.len(), agent_state)
+        };
+        let shadow_comparison = {
             let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
                 &self.inner.storage,
-                &guard.state,
-                guard.queue.len(),
+                &projection_state,
+                queue_len,
                 self.now(),
             )?;
             scheduler::shadow_comparison_for_settlement(&projection, &record)
@@ -1783,17 +1832,23 @@ impl RuntimeHandle {
                 .transpose()?
         };
         let delivery_shadow_comparison = {
-            let guard = self.inner.agent.lock().await;
             let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
                 &self.inner.storage,
-                &guard.state,
-                guard.queue.len(),
+                &projection_state,
+                queue_len,
                 self.now(),
             )?;
             scheduler::shadow_comparison_for_delivery(&projection, &record)
                 .map(scheduler_executor::scheduler_shadow_comparison_command)
                 .transpose()?
         };
+        if let Some(transition) = terminal_transition {
+            audit_events.push(AuditEvent::legacy(
+                "turn_terminal",
+                serde_json::to_value(&transition.terminal)?,
+            ));
+            audit_events.push(Self::turn_record_audit_event(&transition.turn_record));
+        }
         let commit = self.inner.runtime_db.transitions().commit_queue(
             &crate::runtime_db::transitions::QueueTransitionCommand {
                 agent_id: record.agent_id.clone(),
@@ -1806,16 +1861,17 @@ impl RuntimeHandle {
                     scheduler::SETTLEMENT_SCENARIO,
                     scheduler::DELIVERY_SCENARIO,
                 ],
-                agent_state: None,
+                agent_state,
                 message_evidence: Vec::new(),
-                transcript_entries: Vec::new(),
+                transcript_entries,
+                turn_record: terminal_transition.map(|transition| transition.turn_record.clone()),
                 audit_events,
                 scheduler_shadow_comparison: shadow_comparison,
                 scheduler_delivery_shadow_comparison: delivery_shadow_comparison,
                 scheduler_semantic_shadow: None,
                 notify_scheduler,
                 fault: self.take_transition_fault(),
-                brief_evidence: Vec::new(),
+                brief_evidence,
             },
         )?;
         Ok(self.apply_transition_commit(commit).await.applied)
@@ -1871,6 +1927,13 @@ impl RuntimeHandle {
             .iter()
             .find(|candidate| candidate.id == work_item_id)
             .map(|candidate| candidate.scheduling_state);
+        let missing_settlement = || {
+            ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
+                id: canonical_missing_settlement_id(&record.message_id),
+                activation_id: activation_id.clone(),
+                created_at: record.updated_at.to_rfc3339(),
+            })
+        };
 
         let command = if record.status == QueueEntryStatus::Processed {
             match scheduling_state {
@@ -1892,45 +1955,39 @@ impl RuntimeHandle {
                     })
                 }
                 Some(crate::types::WorkItemSchedulingState::Completed) => {
-                    let work_item = self
-                        .inner
-                        .runtime_db
-                        .work_items()
-                        .latest(&work_item_id)?
-                        .ok_or_else(|| {
-                            anyhow!("canonical WorkItem completion references missing WorkItem")
-                        })?;
-                    let turn_terminal = message.turn_id.clone().ok_or_else(|| {
-                        anyhow!("canonical WorkItem completion requires a turn identity")
-                    })?;
-                    let completion_intent =
-                        work_item.completion_intent.as_ref().ok_or_else(|| {
-                            anyhow!(
-                                "canonical WorkItem completion requires a completion intent binding"
-                            )
-                        })?;
-                    anyhow::ensure!(
-                        completion_intent.work_item_id == work_item_id
-                            && completion_intent.source_activation_id.as_deref()
-                                == Some(activation_id.as_str())
-                            && completion_intent.source_message_id.as_deref()
-                                == Some(record.message_id.as_str())
-                            && completion_intent.source_turn_id.as_deref()
-                                == Some(turn_terminal.as_str())
-                            && completion_intent.expected_work_revision
-                                == activation.admitted_generation,
-                        "canonical WorkItem completion intent does not match the settling execution"
-                    );
-                    let result_brief_id = completion_intent
+                    let Some(work_item) =
+                        self.inner.runtime_db.work_items().latest(&work_item_id)?
+                    else {
+                        return Ok(vec![missing_settlement()]);
+                    };
+                    let Some(turn_terminal) = message.turn_id.clone() else {
+                        return Ok(vec![missing_settlement()]);
+                    };
+                    let Some(completion_intent) = work_item.completion_intent.as_ref() else {
+                        return Ok(vec![missing_settlement()]);
+                    };
+                    if !(completion_intent.work_item_id == work_item_id
+                        && completion_intent.source_activation_id.as_deref()
+                            == Some(activation_id.as_str())
+                        && completion_intent.source_message_id.as_deref()
+                            == Some(record.message_id.as_str())
+                        && completion_intent.source_turn_id.as_deref()
+                            == Some(turn_terminal.as_str())
+                        && completion_intent.expected_work_revision
+                            == activation.admitted_generation)
+                    {
+                        return Ok(vec![missing_settlement()]);
+                    }
+                    let Some(result_brief_id) = completion_intent
                         .result_brief_id
                         .as_deref()
                         .filter(|result_brief_id| {
                             work_item.result_brief_id.as_deref() == Some(*result_brief_id)
                         })
-                        .ok_or_else(|| {
-                            anyhow!("canonical WorkItem completion requires a result brief binding")
-                        })?;
-                    let brief = self
+                    else {
+                        return Ok(vec![missing_settlement()]);
+                    };
+                    let Some(brief) = self
                         .inner
                         .storage
                         .read_brief_by_id(result_brief_id)?
@@ -1942,9 +1999,9 @@ impl RuntimeHandle {
                                     == Some(record.message_id.as_str())
                                 && !brief.text.trim().is_empty()
                         })
-                        .ok_or_else(|| {
-                            anyhow!("canonical WorkItem completion result brief binding is invalid")
-                        })?;
+                    else {
+                        return Ok(vec![missing_settlement()]);
+                    };
                     ProtocolCommand::SettleActivation(SettleActivationCommand {
                         settlement: ActivationSettlement {
                             id: canonical_settlement_id(&record.message_id),
@@ -1965,18 +2022,10 @@ impl RuntimeHandle {
                         },
                     })
                 }
-                _ => ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
-                    id: canonical_missing_settlement_id(&record.message_id),
-                    activation_id,
-                    created_at: record.updated_at.to_rfc3339(),
-                }),
+                _ => missing_settlement(),
             }
         } else {
-            ProtocolCommand::RecordMissingSettlement(MissingSettlementRecord {
-                id: canonical_missing_settlement_id(&record.message_id),
-                activation_id,
-                created_at: record.updated_at.to_rfc3339(),
-            })
+            missing_settlement()
         };
         Ok(vec![command])
     }
@@ -2101,126 +2150,179 @@ impl RuntimeHandle {
             }
             self.append_state_changed_events(&scheduled.running_state)?;
 
-            if let Err(err) = self
-                .process_message_with_plan(
+            let terminal_transition = match self
+                .process_message_with_plan_deferred(
                     scheduled.message,
                     scheduled.dispatch_plan,
                     &scheduled.scheduler_decision,
                 )
                 .await
             {
-                let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
-                if let Some(aborted) = aborted.as_ref() {
-                    self.commit_queue_settlement(
-                        QueueEntryRecord {
-                            message_id: message.id.clone(),
-                            agent_id: message.agent_id.clone(),
-                            priority: message.priority.clone(),
-                            status: QueueEntryStatus::Interrupted,
-                            created_at: message.created_at,
-                            updated_at: Utc::now(),
-                        },
-                        vec![AuditEvent::legacy(
-                            "message_processing_aborted",
+                Ok(transition) => transition,
+                Err(err) => {
+                    let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
+                    let (terminal, queue_status, mut audit_events, failure_artifacts) =
+                        if let Some(aborted) = aborted.as_ref() {
+                            (
+                                self.build_turn_aborted_record(&aborted.reason, None, 0)
+                                    .await,
+                                QueueEntryStatus::Interrupted,
+                                vec![AuditEvent::legacy(
+                                    "message_processing_aborted",
+                                    serde_json::json!({
+                                        "message_id": message.id.clone(),
+                                        "message_kind": message.kind.clone(),
+                                        "run_id": aborted.run_id.clone(),
+                                        "reason": aborted.reason.clone(),
+                                    }),
+                                )],
+                                None,
+                            )
+                        } else {
+                            let descriptor = describe_runtime_error(&err);
+                            let terminal = self
+                                .build_turn_aborted_record("runtime_error", None, 0)
+                                .await;
+                            error!(
+                                message_id = %message.id,
+                                turn_id = %terminal.turn_id,
+                                domain = ?descriptor.domain,
+                                code = %descriptor.code,
+                                retryable = descriptor.retryable,
+                                error = %descriptor.operator_message,
+                                "failed to process message"
+                            );
+                            let (queue_status, settlement_reason) =
+                                runtime_error_queue_settlement(&message.kind, &err);
+                            let artifacts = self
+                                .build_runtime_failure_artifacts(&message, &err, &terminal)
+                                .await?;
+                            let terminal_turn_id = terminal.turn_id.clone();
+                            (
+                                terminal,
+                                queue_status.clone(),
+                                vec![
+                                    AuditEvent::legacy(
+                                        "runtime_error",
+                                        serde_json::json!({
+                                            "message_id": message.id.clone(),
+                                            "turn_id": terminal_turn_id,
+                                            "message_kind": message.kind.clone(),
+                                            "domain": descriptor.domain,
+                                            "code": descriptor.code,
+                                            "retryable": descriptor.retryable,
+                                            "error": descriptor.operator_message,
+                                            "recovery_hint": descriptor.recovery_hint,
+                                            "safe_context": descriptor.safe_context,
+                                            "source_chain": descriptor.source_chain,
+                                            "token_usage": provider_attempt_timeline(&err)
+                                                .and_then(|timeline| timeline.aggregated_token_usage.clone()),
+                                            "provider_attempt_timeline": provider_attempt_timeline(&err),
+                                        }),
+                                    ),
+                                    AuditEvent::legacy(
+                                        "queue_entry_settled",
+                                        serde_json::json!({
+                                            "message_id": message.id.clone(),
+                                            "message_kind": message.kind.clone(),
+                                            "status": queue_status,
+                                            "reason": settlement_reason,
+                                        }),
+                                    ),
+                                ],
+                                Some(artifacts),
+                            )
+                        };
+                    if let Some(aborted) = aborted.as_ref() {
+                        audit_events.push(AuditEvent::legacy(
+                            "turn_terminal_aborted",
                             serde_json::json!({
-                                "message_id": message.id,
-                                "message_kind": message.kind,
                                 "run_id": aborted.run_id,
                                 "reason": aborted.reason,
+                                "turn_id": terminal.turn_id,
+                                "turn_index": terminal.turn_index,
+                                "kind": terminal.kind,
+                                "completed_at": terminal.completed_at,
+                                "duration_ms": terminal.duration_ms,
                             }),
-                        )],
-                        true,
-                    )
-                    .await?;
-                } else {
-                    let descriptor = describe_runtime_error(&err);
-                    let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
-                    error!(
-                        message_id = %message.id,
-                        turn_id = %terminal.turn_id,
-                        domain = ?descriptor.domain,
-                        code = %descriptor.code,
-                        retryable = descriptor.retryable,
-                        error = %descriptor.operator_message,
-                        "failed to process message"
-                    );
-                    self.inner.storage.append_event(&AuditEvent::legacy(
-                        "runtime_error",
-                        serde_json::json!({
-                            "message_id": message.id,
-                            "turn_id": terminal.turn_id,
-                            "message_kind": message.kind,
-                            "domain": descriptor.domain,
-                            "code": descriptor.code,
-                            "retryable": descriptor.retryable,
-                            "error": descriptor.operator_message,
-                            "recovery_hint": descriptor.recovery_hint,
-                            "safe_context": descriptor.safe_context,
-                            "source_chain": descriptor.source_chain,
-                            "token_usage": provider_attempt_timeline(&err)
-                                .and_then(|timeline| timeline.aggregated_token_usage.clone()),
-                            "provider_attempt_timeline": provider_attempt_timeline(&err),
-                        }),
-                    ))?;
-                    self.persist_runtime_failure_artifacts(&message, &err)
-                        .await?;
-                    let (queue_status, settlement_reason) =
-                        runtime_error_queue_settlement(&message.kind, &err);
-                    self.commit_queue_settlement(
+                        ));
+                    }
+                    let mut turn_record = self.build_turn_record(&terminal).await?;
+                    if let Some(artifacts) = failure_artifacts.as_ref() {
+                        if !turn_record.produced_brief_ids.contains(&artifacts.brief.id) {
+                            turn_record
+                                .produced_brief_ids
+                                .push(artifacts.brief.id.clone());
+                        }
+                    }
+                    let terminal_transition = turn::TurnTerminalTransition {
+                        terminal,
+                        turn_record,
+                    };
+                    let committed_state = {
+                        let guard = self.inner.agent.lock().await;
+                        let mut state = guard.state.clone();
+                        if !matches!(state.status, AgentStatus::Stopped) {
+                            if state.pending_fallback_model.is_some() {
+                                let has_fallback = provider_attempt_timeline(&err)
+                                    .and_then(|timeline| {
+                                        timeline.pending_fallback_model_ref.as_deref()
+                                    })
+                                    .is_some();
+                                if !has_fallback {
+                                    state.pending_fallback_model = None;
+                                }
+                            }
+                            scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
+                        }
+                        if let Some(artifacts) = failure_artifacts.as_ref() {
+                            state.last_runtime_failure = Some(artifacts.failure_summary.clone());
+                        }
+                        state
+                    };
+                    self.commit_queue_terminal_settlement_with_evidence(
                         QueueEntryRecord {
                             message_id: message.id.clone(),
                             agent_id: message.agent_id.clone(),
                             priority: message.priority.clone(),
-                            status: queue_status.clone(),
+                            status: queue_status,
                             created_at: message.created_at,
                             updated_at: Utc::now(),
                         },
-                        vec![AuditEvent::legacy(
-                            "queue_entry_settled",
-                            serde_json::json!({
-                                "message_id": message.id,
-                                "message_kind": message.kind,
-                                "status": queue_status,
-                                "reason": settlement_reason,
-                            }),
-                        )],
+                        audit_events,
                         true,
+                        Some(&terminal_transition),
+                        Some(committed_state),
+                        failure_artifacts
+                            .as_ref()
+                            .map(|artifacts| vec![artifacts.transcript.clone()])
+                            .unwrap_or_default(),
+                        failure_artifacts
+                            .as_ref()
+                            .map(|artifacts| vec![artifacts.brief.clone()])
+                            .unwrap_or_default(),
                     )
                     .await?;
+                    let failed_state = {
+                        let mut guard = self.inner.agent.lock().await;
+                        guard.current_run_abort = None;
+                        guard.state.clone()
+                    };
+                    self.append_state_changed_events(&failed_state)?;
+                    self.maybe_commit_turn_end_work_item_transition().await?;
+                    self.record_closure_decision_event(Some(true)).await?;
+                    self.maybe_emit_pending_system_tick(None).await?;
+                    continue;
                 }
-                let failed_state = {
-                    let mut guard = self.inner.agent.lock().await;
-                    if !matches!(guard.state.status, AgentStatus::Stopped) {
-                        // Defense-in-depth: clear a stale pending_fallback_model when
-                        // the current error has no further fallback to delegate to.
-                        // This prevents the agent from becoming permanently stuck on
-                        // a fallback model that is unsupported or unavailable.
-                        if guard.state.pending_fallback_model.is_some() {
-                            let has_fallback = provider_attempt_timeline(&err)
-                                .and_then(|t| t.pending_fallback_model_ref.as_deref())
-                                .is_some();
-                            if !has_fallback {
-                                guard.state.pending_fallback_model = None;
-                            }
-                        }
-                        scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
-                    }
-                    guard.current_run_abort = None;
-                    guard.persist_state(&self.inner.storage)?;
-                    guard.state.clone()
-                };
-                self.append_state_changed_events(&failed_state)?;
-                self.maybe_commit_turn_end_work_item_transition().await?;
-                self.record_closure_decision_event(Some(true)).await?;
-                self.maybe_emit_pending_system_tick(None).await?;
-            } else {
+            };
+            {
                 let processed_state = {
                     let mut guard = self.inner.agent.lock().await;
                     guard.current_run_abort = None;
                     guard.state.clone()
                 };
                 self.append_state_changed_events(&processed_state)?;
-                self.commit_queue_settlement(
+                self.commit_queue_terminal_settlement(
                     QueueEntryRecord {
                         message_id: message.id.clone(),
                         agent_id: message.agent_id.clone(),
@@ -2238,6 +2340,7 @@ impl RuntimeHandle {
                         }),
                     )],
                     true,
+                    terminal_transition.as_ref(),
                 )
                 .await?;
             }
@@ -2336,6 +2439,7 @@ impl RuntimeHandle {
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
+                    turn_record: None,
                     audit_events: vec![AuditEvent::legacy(
                         "queue_claim_released_for_runtime_restart",
                         serde_json::json!({
@@ -2451,6 +2555,7 @@ impl RuntimeHandle {
                     agent_state: None,
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
+                    turn_record: None,
                     audit_events: vec![AuditEvent::legacy(
                         "scheduler_bootstrap_claim_recovered",
                         serde_json::json!({

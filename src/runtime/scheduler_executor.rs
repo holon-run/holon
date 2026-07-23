@@ -454,6 +454,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     }),
                     message_evidence: Vec::new(),
                     transcript_entries: Vec::new(),
+                    turn_record: None,
                     audit_events: vec![
                         scheduler_decision_events[0].clone(),
                         scheduler_decision_events[1].clone(),
