@@ -2562,6 +2562,96 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
 }
 
 #[tokio::test]
+async fn terminal_task_result_without_work_item_uses_ordinary_dispatch() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(&runtime, &[SchedulerScenarioClass::ExactTaskRejoin]);
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "task-without-work-item".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("task completed".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+
+    let mut message = task_result_message("task-without-work-item").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-without-work-item",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-without-work-item",
+    }));
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(message.work_item_id.is_none());
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized("default")
+        .unwrap()
+        .is_none());
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("task result without a WorkItem should use ordinary dispatch");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    assert!(scheduled
+        .dispatch_plan
+        .continuation_resolution
+        .as_ref()
+        .is_some_and(|resolution| resolution.model_reentry));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dequeued)
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot_if_initialized("default")
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn ambiguous_task_rejoin_waits_remain_queued_with_deduplicated_advisory() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
