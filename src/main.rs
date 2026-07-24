@@ -842,6 +842,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let runtime = host.default_runtime().await?;
     host.spawn_daemon_memory_indexer();
     host.spawn_daemon_runtime_db_retention();
+    host.spawn_daemon_deletion_coordinator();
     spawn_stale_agent_template_remote_source_sync(&config, &host);
     emit_first_run_intro(&config, &runtime).await;
     let runtime_service = RuntimeServiceHandle::new(&config)?;

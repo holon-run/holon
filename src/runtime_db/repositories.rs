@@ -507,6 +507,48 @@ impl AgentDeletionRepository<'_> {
             Ok((identity, job, true))
         })
     }
+
+    /// Persist an updated deletion job (phase advance, status change, etc.).
+    pub fn update(&self, job: &AgentDeletionJob) -> Result<()> {
+        self.db.transaction(|tx| {
+            let payload_json = serde_json::to_string(job)?;
+            let updated = tx.execute(
+                "UPDATE agent_deletion_jobs
+                 SET status = ?1, phase = ?2, updated_at = ?3,
+                     completed_at = ?4, payload_json = ?5
+                 WHERE deletion_id = ?6",
+                params![
+                    enum_string(&job.status)?,
+                    enum_string(&job.phase)?,
+                    timestamp(job.updated_at),
+                    job.completed_at.map(timestamp),
+                    payload_json,
+                    job.deletion_id,
+                ],
+            )?;
+            if updated == 0 {
+                return Err(anyhow!(
+                    "deletion job {} not found for update",
+                    job.deletion_id
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    /// Find all deletion jobs that are actionable (Pending, Running, or
+    /// RetryableFailed) and not yet Completed.
+    pub fn actionable_jobs(&self) -> Result<Vec<AgentDeletionJob>> {
+        let connection = self.db.connection()?;
+        let mut stmt = connection.prepare(
+            "SELECT payload_json FROM agent_deletion_jobs
+             WHERE status IN ('pending', 'running', 'retryable_failed')
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| serde_json::from_str(&row?).context("decoding agent deletion job payload"))
+            .collect()
+    }
 }
 
 impl WorkItemDelegationRepository<'_> {

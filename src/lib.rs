@@ -12,6 +12,7 @@ pub mod config;
 pub mod context;
 pub mod contract_inventory;
 pub mod daemon;
+pub mod deletion;
 pub mod diagnostics;
 pub mod domain;
 pub mod fd_limit;

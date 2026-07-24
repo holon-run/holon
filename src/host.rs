@@ -88,7 +88,7 @@ pub(crate) struct AgentStateReadProjection {
 
 #[derive(Clone)]
 pub struct RuntimeHost {
-    inner: Arc<HostInner>,
+    pub(crate) inner: Arc<HostInner>,
 }
 
 pub(crate) const TEMP_AGENT_PREFIX: &str = "tmp_";
@@ -134,7 +134,7 @@ impl std::fmt::Display for PublicAgentError {
 
 impl std::error::Error for PublicAgentError {}
 
-struct HostInner {
+pub(crate) struct HostInner {
     registry: RuntimeRegistry,
     runtime_db: RuntimeDb,
     event_bus: EventBus,
@@ -143,6 +143,7 @@ struct HostInner {
     daemon_indexer_handle: Mutex<Option<JoinHandle<()>>>,
     daemon_retention_token: CancellationToken,
     daemon_retention_handle: Mutex<Option<JoinHandle<()>>>,
+    pub(crate) daemon_deletion_token: CancellationToken,
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
@@ -266,6 +267,7 @@ impl RuntimeHost {
                 daemon_indexer_handle: Mutex::new(None),
                 daemon_retention_token: CancellationToken::new(),
                 daemon_retention_handle: Mutex::new(None),
+                daemon_deletion_token: CancellationToken::new(),
                 runtime_db_maintenance_lock: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider,
@@ -396,6 +398,11 @@ impl RuntimeHost {
             .lock()
             .unwrap()
             .take();
+    }
+
+    /// Signal the deletion coordinator to stop.
+    pub async fn shutdown_daemon_deletion_coordinator(&self) {
+        self.inner.daemon_deletion_token.cancel();
     }
 
     async fn run_daemon_runtime_db_retention(self) {
@@ -580,6 +587,7 @@ impl RuntimeHost {
     pub async fn shutdown(&self) -> Result<()> {
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
+        self.shutdown_daemon_deletion_coordinator().await;
         let entries = {
             let mut agents = self.inner.agents.write().await;
             agents.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
@@ -708,6 +716,13 @@ impl RuntimeHost {
         self.append_agent_identity(&updated_identity)
             .map_err(PublicAgentError::Runtime)?;
         self.unload_runtime(agent_id).await;
+        // Trigger the deletion coordinator inline for immediate progress.
+        if created {
+            let host = self.clone();
+            tokio::spawn(async move {
+                let _ = host.execute_pending_deletions().await;
+            });
+        }
         Ok((updated_identity, job, created))
     }
 
@@ -1152,7 +1167,7 @@ impl RuntimeHost {
         self.inner.registry.agent_identity_record(agent_id)
     }
 
-    fn agent_identity_records(&self) -> Result<Vec<AgentIdentityRecord>> {
+    pub(crate) fn agent_identity_records(&self) -> Result<Vec<AgentIdentityRecord>> {
         self.inner.registry.agent_identity_records()
     }
 
@@ -2603,10 +2618,10 @@ mod tests {
         storage::AppStorage,
         system::WorkspaceProjectionKind,
         types::{
-            AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
-            AgentVisibility, AuthorityClass, ControlAction, MessageBody, MessageEnvelope,
-            MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
-            TaskRecoverySpec, TaskStatus, TurnTerminalKind,
+            AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentOwnership, AgentProfilePreset,
+            AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, ControlAction,
+            MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
+            QueueEntryStatus, TaskRecord, TaskRecoverySpec, TaskStatus, TurnTerminalKind,
         },
     };
 
@@ -3841,6 +3856,7 @@ mod tests {
             Some("task-1".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let error = host
             .create_named_agent(agent_id, None)
@@ -3889,6 +3905,7 @@ mod tests {
             Some("task-1".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage = host.agent_storage("child_test").unwrap();
         let mut child_state = AgentState::new("child_test");
@@ -3979,6 +3996,7 @@ mod tests {
             Some("task-1".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage = host.agent_storage("child_test").unwrap();
         let mut child_state = AgentState::new("child_test");
@@ -4062,6 +4080,7 @@ mod tests {
         )
         .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage = host.agent_storage("child_recover").unwrap();
         let mut child_state = AgentState::new("child_recover");
@@ -4182,6 +4201,7 @@ mod tests {
         )
         .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage = host.agent_storage("child_recover_active_task").unwrap();
         let mut child_state = AgentState::new("child_recover_active_task");
@@ -4308,6 +4328,7 @@ mod tests {
         )
         .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage = host.agent_storage("child_recover_active_wait").unwrap();
         let mut child_state = AgentState::new("child_recover_active_wait");
@@ -4387,6 +4408,7 @@ mod tests {
             Some("missing-task".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage =
             AppStorage::new_for_agent_for_test(host.agent_data_dir("child_orphan"), "child_orphan")
@@ -4423,6 +4445,7 @@ mod tests {
             Some("task-1".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
         host.archive_private_agent("child_archived").await.unwrap();
 
         drop(host);
@@ -4451,6 +4474,10 @@ mod tests {
             None,
         );
         host.append_agent_identity(&parent).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&parent)
+            .unwrap();
 
         let child = AgentIdentityRecord::new(
             "child_parent_missing",
@@ -4462,6 +4489,7 @@ mod tests {
             Some("task-1".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage = AppStorage::new_for_agent_for_test(
             host.agent_data_dir("child_parent_missing"),
@@ -4525,6 +4553,7 @@ mod tests {
             Some("task-stop".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage =
             AppStorage::new_for_agent_for_test(host.agent_data_dir("child_stop"), "child_stop")
@@ -5080,6 +5109,7 @@ mod tests {
             Some("task-1".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let err = host
             .get_public_agent("child_private_1")
@@ -5108,6 +5138,7 @@ mod tests {
             Some("task-1".into()),
         );
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let child_storage = host.agent_storage("child_local_1").unwrap();
         let mut child_state = AgentState::new("child_local_1");
@@ -5139,6 +5170,7 @@ mod tests {
         );
         child.status = AgentRegistryStatus::Deleted;
         host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
 
         let err = host
             .get_agent_for_local_status("child_archived_1")
@@ -5182,5 +5214,174 @@ mod tests {
         let summary = runtime.agent_summary().await.unwrap();
         assert_eq!(summary.identity.agent_id, default_id);
         assert_eq!(summary.identity.visibility, AgentVisibility::Public);
+    }
+
+    #[tokio::test]
+    async fn deletion_coordinator_drives_job_to_completed() {
+        let (_home, host) = test_host();
+
+        // Create a public self-owned agent to delete.
+        let agent = AgentIdentityRecord::new(
+            "delete-me",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+
+        // Begin deletion.
+        let (identity, job, created) = host
+            .begin_public_agent_deletion("delete-me", false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleting);
+        assert_eq!(job.status, AgentDeletionStatus::Pending);
+
+        // Execute the deletion job.
+        match host.execute_deletion_job(job).await {
+            Ok(_) => {}
+            Err(e) => panic!("deletion failed: {e:#}"),
+        }
+
+        // Verify identity is Deleted.
+        let final_identity = host
+            .agent_identity_record("delete-me")
+            .unwrap()
+            .expect("identity should still exist");
+        assert_eq!(final_identity.status, AgentRegistryStatus::Deleted);
+        assert!(final_identity.deleted_at.is_some());
+
+        // Verify job is Completed.
+        let final_job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-me")
+            .unwrap()
+            .expect("job should exist");
+        assert_eq!(final_job.status, AgentDeletionStatus::Completed);
+        assert!(final_job.completed_at.is_some());
+
+        // Agent home should be removed.
+        assert!(!host.agent_data_dir("delete-me").exists());
+    }
+
+    #[tokio::test]
+    async fn deletion_coordinator_resumes_from_persisted_phase() {
+        let (_home, host) = test_host();
+
+        // Create a public self-owned agent.
+        let agent = AgentIdentityRecord::new(
+            "resume-me",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+
+        // Begin deletion.
+        let (_, job, _) = host
+            .begin_public_agent_deletion("resume-me", false, "operator")
+            .await
+            .unwrap();
+
+        // Simulate a crash after Quiesce by manually advancing the job phase.
+        let mut advanced_job = job.clone();
+        advanced_job.status = AgentDeletionStatus::Running;
+        advanced_job.phase = AgentDeletionPhase::Ingress;
+        advanced_job.updated_at = Utc::now();
+        host.runtime_db()
+            .agent_deletions()
+            .update(&advanced_job)
+            .unwrap();
+
+        // Execute should resume from Ingress.
+        host.execute_deletion_job(advanced_job).await.unwrap();
+
+        // Verify completion.
+        let final_job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("resume-me")
+            .unwrap()
+            .expect("job should exist");
+        assert_eq!(final_job.status, AgentDeletionStatus::Completed);
+        assert_eq!(
+            host.agent_identity_record("resume-me")
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+    }
+
+    #[tokio::test]
+    async fn deletion_cascade_private_children() {
+        let (_home, host) = test_host();
+        let parent_id = "cascade-parent";
+
+        // Create parent agent.
+        let parent = AgentIdentityRecord::new(
+            parent_id,
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&parent).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&parent)
+            .unwrap();
+
+        // Create a private child.
+        let child = AgentIdentityRecord::new(
+            "cascade-child",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id.to_string()),
+            Some("task-1".to_string()),
+        );
+        host.append_agent_identity(&child).unwrap();
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
+
+        // Begin deletion with cascade.
+        let (_, job, _) = host
+            .begin_public_agent_deletion(parent_id, true, "operator")
+            .await
+            .unwrap();
+
+        match host.execute_deletion_job(job).await {
+            Ok(_) => {}
+            Err(e) => panic!("deletion failed: {e:#}"),
+        }
+
+        // Both parent and child should be Deleted.
+        assert_eq!(
+            host.agent_identity_record(parent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert_eq!(
+            host.agent_identity_record("cascade-child")
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
     }
 }

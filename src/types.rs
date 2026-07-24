@@ -520,7 +520,9 @@ pub enum AgentDeletionStatus {
     Completed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDeletionPhase {
     Fence,
@@ -531,6 +533,26 @@ pub enum AgentDeletionPhase {
     Index,
     Home,
     Finalize,
+}
+
+impl AgentDeletionPhase {
+    /// All phases in execution order.
+    pub const ALL: [Self; 8] = [
+        Self::Fence,
+        Self::Quiesce,
+        Self::Ingress,
+        Self::Scheduler,
+        Self::Workspace,
+        Self::Index,
+        Self::Home,
+        Self::Finalize,
+    ];
+
+    /// The next phase in execution order, or `None` after `Finalize`.
+    pub fn next(self) -> Option<Self> {
+        let idx = Self::ALL.iter().position(|p| *p == self)?;
+        Self::ALL.get(idx + 1).copied()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
