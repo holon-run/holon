@@ -812,12 +812,12 @@ export function SettingsPage({
                      />
                      {fallbackInput && (
                        availableModels
-                         .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.routeRef))
+                        .filter((m) => (m.model.toLowerCase().includes(fallbackInput.toLowerCase()) || m.routeRef.toLowerCase().includes(fallbackInput.toLowerCase()) || m.displayName.toLowerCase().includes(fallbackInput.toLowerCase())) && !modelFallbacks.includes(m.routeRef))
                          .slice(0, 10)
                          .length > 0 && (
                          <div className="settings-chip-suggestions">
                            {availableModels
-                             .filter((m) => m.model.toLowerCase().includes(fallbackInput.toLowerCase()) && !modelFallbacks.includes(m.routeRef))
+                            .filter((m) => (m.model.toLowerCase().includes(fallbackInput.toLowerCase()) || m.routeRef.toLowerCase().includes(fallbackInput.toLowerCase()) || m.displayName.toLowerCase().includes(fallbackInput.toLowerCase())) && !modelFallbacks.includes(m.routeRef))
                              .slice(0, 10)
                              .map((model) => (
                                <button

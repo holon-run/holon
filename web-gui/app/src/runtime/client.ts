@@ -69,6 +69,7 @@ interface OperatorPromptResponseDto {
 const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
+const CONFIG_UPDATE_TIMEOUT_MS = 30_000;
 
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
@@ -953,7 +954,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates }, requestHeaders);
+      const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates }, requestHeaders, { timeoutMs: CONFIG_UPDATE_TIMEOUT_MS });
       return projectRuntimeConfigState(response);
     },
     async listCredentials(): Promise<CredentialStoreState> {
@@ -1652,9 +1653,10 @@ async function patchJson<T>(
   path: string,
   body: unknown,
   headers: Record<string, string> = {},
+  options: { timeoutMs?: number } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "PATCH",
     headers: {
