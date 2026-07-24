@@ -250,14 +250,20 @@ The apply layer should:
 - apply all hunks for a file atomically
 - write all files atomically for the whole tool call when practical
 - treat hunk line counts as advisory when context matching succeeds
-- merge duplicate plain modify patches for the same normalized path only when
-  their hunks touch distinct original locations
-- reject duplicate add/delete/rename patches and conflicting duplicate modify
-  hunks for the same normalized path
+- apply file patches in input order against tool-call-local file state
+- allow later file patches to target a path changed by an earlier file patch,
+  including delete-then-add, consecutive modify, and rename-then-modify
+- validate each operation against the state produced by all preceding
+  operations; invalid sequences fail before workspace writes
 
 This keeps the model-facing format standard while preserving agent-friendly
 robustness. Models can write familiar unified diff headers, but small line
 number drift does not need to make a valid contextual edit fail.
+
+An add operation accepts a missing path or an existing zero-byte file. The
+zero-byte case preserves compatibility with runtime-created placeholder files.
+An add operation still fails when the current tool-call-local state contains
+non-empty content.
 
 ## Metadata Policy
 
@@ -352,15 +358,21 @@ Examples:
 - `context_not_found`: hunk context does not match the current file
 - `ambiguous_context`: hunk context matches multiple locations; include more
   surrounding context
-- `duplicate_file_patch`: multiple file patches for the same normalized path
-  use add, delete, rename, or another unsupported duplicate operation
-- `conflicting_duplicate_file_patch`: duplicate modify patches for the same
-  normalized file path touch overlapping original hunk locations
+- `existing_file`: an add or rename target is not available in the current
+  tool-call-local state
+- `missing_file`: a delete, modify, or rename source does not exist in the
+  current tool-call-local state
 
-Plain modify patches for the same normalized file path may be merged
-automatically when their hunks touch distinct original locations. Duplicate
-add/delete/rename patches and overlapping duplicate modify hunks still fail
-before any workspace writes.
+Multiple file patches may resolve to the same normalized path. Holon applies
+them in input order, and errors are determined by the state at the operation
+that fails rather than by a duplicate-path precheck. For example,
+delete-then-add succeeds, while add-then-add fails with `existing_file`.
+Validation and hunk application complete in memory before workspace writes, so
+a later failure does not expose earlier operations as partial workspace edits.
+
+The canonical result preserves each operation in `changed_files`, including
+multiple entries for the same path. `changed_paths` and `changed_file_count`
+remain deduplicated by normalized physical path.
 
 Hunk count mismatches should not fail the patch when context matching succeeds.
 They should be recorded as advisory diagnostics in the canonical result.
@@ -428,10 +440,8 @@ Implementation should include:
 - Common mode metadata is accepted and ignored. V1 does not execute chmod or
   other metadata mutations.
 - Multiple hunks for the same file are allowed inside one file patch. Multiple
-  plain modify patches for the same normalized path may be merged when their
-  hunks touch distinct original locations; duplicate add/delete/rename patches
-  and conflicting duplicate modify hunks for the same normalized path are
-  rejected.
+  file patches for the same normalized path are applied in input order against
+  tool-call-local state.
 - Rename-only operations require `diff --git` plus `rename from` and
   `rename to`.
 - `similarity index` and `index` are accepted and ignored.
