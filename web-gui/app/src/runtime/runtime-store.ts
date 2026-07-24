@@ -4456,7 +4456,7 @@ async function catchUpAgentEvents(
   return request;
 }
 
-function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
+export function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
   const incomingEpoch = eventLogEpochFromEvents(events);
   const incomingEvents = events.filter(
     (event) =>
@@ -4551,8 +4551,8 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
   if (useRuntimeStore.getState().selectedAgentId === agentId) {
     scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
     scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
-    scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   }
+  scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleCacheWrite(useRuntimeStore.getState, agentId);
   if (events.some((event) => canApplySessionEvent(event) && isWorkItemCacheInvalidationEvent(event))) {
     void useRuntimeStore.getState().refreshAgentWorkItems(agentId);

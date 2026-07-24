@@ -38,13 +38,12 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
     const prevLevel = prevDisplayLevelRef.current;
     const levelRank: Record<DisplayLevel, number> = { info: 0, verbose: 1, debug: 2 };
     const levelIncreased = prevLevel != null && levelRank[displayLevel] > levelRank[prevLevel];
-    if (!detail || detail.error) {
-      void ensureAgentSession(agentId, displayLevel);
-    } else if (levelIncreased) {
+    void ensureAgentSession(agentId, displayLevel);
+    if (detail && !detail.error && levelIncreased) {
       void refreshAgentDetail(agentId, displayLevel, { trigger: "display_level.increased" });
     }
     prevDisplayLevelRef.current = displayLevel;
-  }, [agentId, displayLevel, ensureAgentSession, refreshAgentDetail, detail]);
+  }, [agentId, displayLevel, ensureAgentSession, refreshAgentDetail]);
 
   return { detail, loading, contentStatus, syncStatus, refresh };
 }
