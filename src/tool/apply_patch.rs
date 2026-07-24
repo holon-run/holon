@@ -182,7 +182,6 @@ pub(crate) async fn apply_patch(
             }
         }
     };
-    let patches = merge_same_file_modify_patches(workspace_root, patches)?;
     let file_count = patches.len();
     let hunk_count = patches.iter().map(|patch| patch.hunks.len()).sum::<usize>();
     let (changed_files, touched, ignored_metadata, diagnostics) =
@@ -226,71 +225,6 @@ fn parse_patch_for_format(input: &str, format: PatchFormat) -> Result<Vec<FilePa
             "submit the patch format advertised for this turn",
         )),
     }
-}
-
-fn merge_same_file_modify_patches(
-    workspace_root: &Path,
-    patches: Vec<FilePatch>,
-) -> Result<Vec<FilePatch>> {
-    let mut merged = Vec::<FilePatch>::new();
-    let mut modify_indexes = HashMap::<String, usize>::new();
-    let mut modify_touches = HashMap::<String, BTreeSet<HunkTouch>>::new();
-
-    for patch in patches {
-        let PatchOperationKind::Modify { path } = patch_operation_kind(&patch)? else {
-            merged.push(patch);
-            continue;
-        };
-
-        let resolved = resolve_patch_path(workspace_root, path)?;
-        let normalized = normalize_path(&resolved)?.display().to_string();
-        let touches = hunk_touches(&patch.hunks);
-        let existing_touches = modify_touches.entry(normalized.clone()).or_default();
-        if let Some(touch) = touches.intersection(existing_touches).next() {
-            return Err(conflicting_duplicate_file_patch(&normalized, *touch));
-        }
-        existing_touches.extend(touches);
-
-        if let Some(&index) = modify_indexes.get(&normalized) {
-            let existing = &mut merged[index];
-            existing.hunks.extend(patch.hunks);
-            existing.ignored_metadata.extend(patch.ignored_metadata);
-            existing.diagnostics.extend(patch.diagnostics);
-        } else {
-            modify_indexes.insert(normalized, merged.len());
-            merged.push(patch);
-        }
-    }
-
-    Ok(merged)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum HunkTouch {
-    OldLine(usize),
-    InsertBeforeOldLine(usize),
-}
-
-fn hunk_touches(hunks: &[PatchHunk]) -> BTreeSet<HunkTouch> {
-    let mut touches = BTreeSet::new();
-    for hunk in hunks {
-        let mut old_line = hunk.old_start;
-        for line in &hunk.lines {
-            match line.kind {
-                HunkLineKind::Context => {
-                    old_line += 1;
-                }
-                HunkLineKind::Add => {
-                    touches.insert(HunkTouch::InsertBeforeOldLine(old_line));
-                }
-                HunkLineKind::Remove => {
-                    touches.insert(HunkTouch::OldLine(old_line));
-                    old_line += 1;
-                }
-            }
-        }
-    }
-    touches
 }
 
 fn detect_patch_format(input: &str) -> PatchFormat {
@@ -983,9 +917,7 @@ async fn apply_file_patches(
     Vec<ApplyPatchIgnoredMetadata>,
     Vec<ApplyPatchDiagnostic>,
 )> {
-    let mut touched_paths = BTreeSet::new();
     for patch in patches {
-        let mut patch_paths = BTreeSet::<(String, String)>::new();
         for path in [
             patch.old_path.as_workspace_path(),
             patch.new_path.as_workspace_path(),
@@ -996,13 +928,7 @@ async fn apply_file_patches(
         .flatten()
         {
             let resolved = resolve_patch_path(workspace_root, path)?;
-            let normalized = normalize_path(&resolved)?;
-            patch_paths.insert((normalized.display().to_string(), path.to_string()));
-        }
-        for (normalized, _original) in patch_paths {
-            if !touched_paths.insert(normalized.clone()) {
-                return Err(duplicate_file_patch(&normalized));
-            }
+            normalize_path(&resolved)?;
         }
     }
 
@@ -1633,42 +1559,6 @@ fn unsupported_git_patch_feature(line: &str, path: Option<&str>) -> anyhow::Erro
     )
 }
 
-fn duplicate_file_patch(path: &str) -> anyhow::Error {
-    anyhow::Error::from(
-        ToolError::new(
-            "duplicate_file_patch",
-            format!("duplicate file patch for normalized path: {path}"),
-        )
-        .with_details(serde_json::json!({
-            "path": path,
-        }))
-        .with_recovery_hint(
-            "merge multiple hunks for the same file into one unified diff file patch",
-        ),
-    )
-}
-
-fn conflicting_duplicate_file_patch(path: &str, touch: HunkTouch) -> anyhow::Error {
-    let (touch_kind, old_line) = match touch {
-        HunkTouch::OldLine(line) => ("old_line", line),
-        HunkTouch::InsertBeforeOldLine(line) => ("insert_before_old_line", line),
-    };
-    anyhow::Error::from(
-        ToolError::new(
-            "conflicting_duplicate_file_patch",
-            format!("duplicate modify patches touch the same original location in {path}"),
-        )
-        .with_details(serde_json::json!({
-            "path": path,
-            "touch_kind": touch_kind,
-            "old_line": old_line,
-        }))
-        .with_recovery_hint(
-            "merge the same-file hunks into one ordered file patch, or read the file and submit a non-overlapping patch",
-        ),
-    )
-}
-
 fn context_not_found(
     path: &str,
     needle: &[String],
@@ -2098,6 +1988,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_patch_codex_dsl_applies_delete_then_add_for_same_relative_path() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = r#"*** Begin Patch
+*** Delete File: sample.txt
+*** Add File: sample.txt
++new
+*** End Patch
+"#;
+
+        let outcome = super::apply_patch(dir.path(), patch, ApplyPatchSurface::CodexDslFreeform)
+            .await
+            .unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        assert_eq!(outcome.changed_files.len(), 2);
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Delete);
+        assert_eq!(outcome.changed_files[1].action, ApplyPatchAction::Add);
+        assert_eq!(outcome.changed_paths, vec![file.display().to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_codex_dsl_applies_delete_then_add_for_same_absolute_path() {
+        let workspace = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        let file = external.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+        let path = file.display();
+        let patch = format!(
+            r#"*** Begin Patch
+*** Delete File: {path}
+*** Add File: {path}
++new
+*** End Patch
+"#
+        );
+
+        let outcome = super::apply_patch(
+            workspace.path(),
+            &patch,
+            ApplyPatchSurface::CodexDslFreeform,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        assert_eq!(outcome.changed_files.len(), 2);
+        assert_eq!(outcome.changed_paths, vec![file.display().to_string()]);
+    }
+
+    #[tokio::test]
     async fn apply_patch_compatibility_parses_non_active_known_format() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("sample.txt");
@@ -2169,6 +2112,57 @@ mod tests {
             "hello\n"
         );
         assert!(!tokio::fs::try_exists(&doomed).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_applies_delete_then_add_for_same_relative_path() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ /dev/null
+@@ -1,1 +0,0 @@
+-old
+--- /dev/null
++++ b/./sample.txt
+@@ -0,0 +1,1 @@
++new
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        assert_eq!(outcome.changed_files.len(), 2);
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Delete);
+        assert_eq!(outcome.changed_files[1].action, ApplyPatchAction::Add);
+        assert_eq!(outcome.changed_paths, vec![file.display().to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_applies_delete_then_add_for_same_absolute_path() {
+        let workspace = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        let file = external.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+        let path = file.display();
+        let patch = format!(
+            r#"--- {path}
++++ /dev/null
+@@ -1,1 +0,0 @@
+-old
+--- /dev/null
++++ {path}
+@@ -0,0 +1,1 @@
++new
+"#
+        );
+
+        let outcome = apply_patch(workspace.path(), &patch).await.unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        assert_eq!(outcome.changed_files.len(), 2);
+        assert_eq!(outcome.changed_paths, vec![file.display().to_string()]);
     }
 
     #[tokio::test]
@@ -2830,40 +2824,36 @@ foo
     }
 
     #[tokio::test]
-    async fn apply_patch_merges_duplicate_modify_file_patches() {
+    async fn apply_patch_applies_same_path_modify_patches_in_order() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("sample.txt");
-        tokio::fs::write(&file, "one\ntwo\nthree\nfour\n")
-            .await
-            .unwrap();
+        tokio::fs::write(&file, "one\ntwo\n").await.unwrap();
 
         let patch = r#"--- a/sample.txt
 +++ b/sample.txt
-@@ -1,2 +1,2 @@
+@@ -1,1 +1,1 @@
 -one
 +ONE
- two
 --- a/sample.txt
 +++ b/sample.txt
-@@ -3,2 +3,2 @@
- three
--four
-+FOUR
+@@ -1,1 +1,1 @@
+-ONE
++won
 "#;
 
         let outcome = apply_patch(dir.path(), patch).await.unwrap();
 
         assert_eq!(
             tokio::fs::read_to_string(&file).await.unwrap(),
-            "ONE\ntwo\nthree\nFOUR\n"
+            "won\ntwo\n"
         );
-        assert_eq!(outcome.changed_files.len(), 1);
+        assert_eq!(outcome.changed_files.len(), 2);
         assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Modify);
-        assert_eq!(outcome.changed_files[0].hunks.len(), 2);
+        assert_eq!(outcome.changed_files[1].action, ApplyPatchAction::Modify);
     }
 
     #[tokio::test]
-    async fn apply_patch_merges_normalized_duplicate_modify_paths() {
+    async fn apply_patch_applies_normalized_same_path_modify_patches_in_order() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("sample.txt");
         tokio::fs::write(&file, "one\ntwo\nthree\n").await.unwrap();
@@ -2886,16 +2876,15 @@ foo
             tokio::fs::read_to_string(&file).await.unwrap(),
             "ONE\ntwo\nTHREE\n"
         );
-        assert_eq!(outcome.changed_files.len(), 1);
+        assert_eq!(outcome.changed_files.len(), 2);
         assert_eq!(outcome.changed_paths.len(), 1);
     }
 
     #[tokio::test]
-    async fn apply_patch_rejects_conflicting_duplicate_modify_hunks() {
+    async fn apply_patch_rejects_stale_second_modify_without_partial_writes() {
         let dir = tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "one\ntwo\n")
-            .await
-            .unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "one\ntwo\n").await.unwrap();
 
         let patch = r#"--- a/sample.txt
 +++ b/sample.txt
@@ -2911,12 +2900,17 @@ foo
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
         let tool_error = ToolError::from_anyhow(&error);
-        assert_eq!(tool_error.kind, "conflicting_duplicate_file_patch");
+        assert_eq!(tool_error.kind, "context_not_found");
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "one\ntwo\n"
+        );
     }
 
     #[tokio::test]
-    async fn apply_patch_still_rejects_duplicate_add_file_patches() {
+    async fn apply_patch_rejects_second_add_from_current_state_without_partial_writes() {
         let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
 
         let patch = r#"--- /dev/null
 +++ b/sample.txt
@@ -2930,18 +2924,16 @@ foo
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
         let tool_error = ToolError::from_anyhow(&error);
-        assert_eq!(tool_error.kind, "duplicate_file_patch");
+        assert_eq!(tool_error.kind, "existing_file");
+        assert!(!tokio::fs::try_exists(&file).await.unwrap());
     }
 
     #[tokio::test]
-    async fn apply_patch_still_rejects_rename_and_modify_same_path() {
+    async fn apply_patch_applies_modify_after_rename_target_in_order() {
         let dir = tempdir().unwrap();
-        tokio::fs::write(dir.path().join("old.txt"), "old\n")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("new.txt"), "one\n")
-            .await
-            .unwrap();
+        let old = dir.path().join("old.txt");
+        let new = dir.path().join("new.txt");
+        tokio::fs::write(&old, "one\n").await.unwrap();
 
         let patch = r#"diff --git a/old.txt b/new.txt
 rename from old.txt
@@ -2954,9 +2946,14 @@ diff --git a/new.txt b/new.txt
 +two
 "#;
 
-        let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
-        assert_eq!(tool_error.kind, "duplicate_file_patch");
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert!(!tokio::fs::try_exists(&old).await.unwrap());
+        assert_eq!(tokio::fs::read_to_string(&new).await.unwrap(), "two\n");
+        assert_eq!(outcome.changed_files.len(), 2);
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Move);
+        assert_eq!(outcome.changed_files[1].action, ApplyPatchAction::Modify);
+        assert_eq!(outcome.changed_paths.len(), 2);
     }
 
     #[test]
