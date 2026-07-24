@@ -90,10 +90,18 @@ pub async fn control_agent_delete_fences_runtime_and_is_idempotent() -> Result<(
         .json(&serde_json::json!({ "text": "must be fenced" }))
         .send()
         .await?;
-    assert_eq!(prompt.status(), reqwest::StatusCode::CONFLICT);
-    assert_eq!(
-        prompt.json::<serde_json::Value>().await?["code"],
-        "agent_deleting"
+    // The inline deletion coordinator may advance the agent to Deleted before
+    // this assertion runs. Both 409 (deleting) and 410 (deleted) indicate the
+    // agent is correctly fenced from prompts.
+    let prompt_status = prompt.status();
+    let prompt_body = prompt.json::<serde_json::Value>().await?;
+    assert!(
+        prompt_status == reqwest::StatusCode::CONFLICT
+            || prompt_status == reqwest::StatusCode::GONE,
+        "expected 409 or 410, got {prompt_status}"
+    );
+    assert!(
+        ["agent_deleting", "agent_deleted"].contains(&prompt_body["code"].as_str().unwrap_or(""))
     );
 
     let status: serde_json::Value = client
@@ -102,7 +110,12 @@ pub async fn control_agent_delete_fences_runtime_and_is_idempotent() -> Result<(
         .await?
         .json()
         .await?;
-    assert_eq!(status["identity"]["status"], "deleting");
+    // The inline coordinator may have already completed the deletion.
+    assert!(
+        ["deleting", "deleted"].contains(&status["identity"]["status"].as_str().unwrap_or("")),
+        "expected deleting or deleted, got {:?}",
+        status["identity"]["status"]
+    );
     assert_eq!(status["job"]["deletion_id"], deletion_id);
     assert!(loaded
         .storage()
