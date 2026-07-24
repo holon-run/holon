@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agentBriefPatchFromEvents,
   agentDetailErrorKind,
+  applyStreamEvents,
   buildResumeRefreshes,
   canUseRemoteRuntimeConnections,
   hasEventIdentityConflict,
@@ -680,6 +681,76 @@ describe("roster activity unread state", () => {
 });
 
 describe("brief projection and hydration", () => {
+  afterEach(() => {
+    useRuntimeStore.setState({
+      sessionsByAgentId: {},
+      globalStreamStatus: "idle",
+      selectedAgentId: "",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("prefetches a brief for a non-selected agent without hydrating its messages or transcripts", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/agents/agent-b/briefs:batchGet")) {
+        return Promise.resolve(jsonResponse({
+          briefs: [{ id: "brief-b", text: "Background hydrated brief." }],
+          missing_brief_ids: [],
+        }));
+      }
+      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    useRuntimeStore.setState({
+      selectedAgentId: "agent-a",
+      sessionsByAgentId: {
+        "agent-a": sessionState(),
+        "agent-b": sessionState(),
+      },
+    });
+
+    const briefEvent: StreamEventEnvelopeDto = {
+      id: "event-brief-b",
+      event_seq: 1,
+      event_log_epoch: "epoch-b",
+      contract_version: 1,
+      ts: "2026-07-24T00:00:00Z",
+      agent_id: "agent-b",
+      type: "brief_created",
+      payload_schema: "holon.runtime_event.brief_created",
+      payload_schema_version: 1,
+      provenance: {},
+      payload: { brief_id: "brief-b" },
+    };
+
+    applyStreamEvents(useRuntimeStore.setState, "agent-b", [briefEvent]);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/agents/agent-b/briefs:batchGet");
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().sessionsByAgentId["agent-b"]?.briefRecordsById["brief-b"]?.text)
+        .toBe("Background hydrated brief.");
+    });
+
+    applyStreamEvents(useRuntimeStore.setState, "agent-b", [briefEvent]);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("uses persisted brief text for roster patches", () => {
     const patch = agentBriefPatchFromEvents(
       [
