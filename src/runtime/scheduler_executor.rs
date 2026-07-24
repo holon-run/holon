@@ -574,8 +574,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             return Ok(None);
         }
         let task = dispatch_plan.task.as_ref().ok().and_then(Option::as_ref);
-        let Some(mut scenario) = scheduler::canonical_activation_scenario(
-            projection,
+        let Some(candidate) = scheduler::canonical_activation_candidate(
             message,
             dispatch_plan.continuation_resolution.as_ref(),
             task,
@@ -589,7 +588,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .transitions()
             .scheduler_rollout_expectations(
-                &[scenario.scenario_class(), scheduler::SETTLEMENT_SCENARIO],
+                &[candidate.scenario_class(), scheduler::SETTLEMENT_SCENARIO],
                 production_commands_enabled,
             )?;
         if rollout_expectations.iter().any(|expectation| {
@@ -597,6 +596,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }) {
             return Ok(None);
         }
+        let Some(mut scenario) =
+            scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?
+        else {
+            return Ok(None);
+        };
 
         use crate::domain::scheduler_protocol::WorkStatus;
 

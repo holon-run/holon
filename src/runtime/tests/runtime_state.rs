@@ -269,6 +269,50 @@ fn enable_production_protocol_authority_for(
     }
 }
 
+fn set_scheduler_scenario_mode(
+    runtime: &RuntimeHandle,
+    scenario: SchedulerScenarioClass,
+    mode: ScenarioMode,
+) {
+    let mode = match mode {
+        ScenarioMode::Off => "off",
+        ScenarioMode::Shadow => "shadow",
+        ScenarioMode::Authoritative => "authoritative",
+    };
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE scheduler_scenario_authorities
+             SET mode = ?1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE scenario_class = ?2",
+            rusqlite::params![mode, scenario.as_str()],
+        )
+        .unwrap();
+}
+
+fn trusted_operator_prompt(work_item_id: Option<&str>, text: &str) -> MessageEnvelope {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text { text: text.into() },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    message.work_item_id = work_item_id.map(ToString::to_string);
+    message
+}
+
 struct OperatorInterjectionProbeProvider {
     calls: Mutex<usize>,
     requests: Mutex<Vec<ProviderTurnRequest>>,
@@ -2649,6 +2693,442 @@ async fn terminal_task_result_without_work_item_uses_ordinary_dispatch() {
         .load_scheduler_protocol_snapshot_if_initialized("default")
         .unwrap()
         .is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn restarted_interrupted_unbound_operator_prompt_uses_legacy_dispatch() {
+    let mut harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let first = runtime
+        .enqueue(trusted_operator_prompt(None, "first operator prompt"))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("initial operator prompt should be claimable");
+    };
+    assert_eq!(scheduled.message.id, first.id);
+    assert_eq!(
+        runtime
+            .release_claimed_messages_for_runtime_restart()
+            .await
+            .unwrap(),
+        1
+    );
+    finish_claimed_test_run(runtime).await;
+
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        runtime,
+        &[SchedulerScenarioClass::ExplicitlyBoundOperatorInput],
+    );
+    let work_item = runtime
+        .create_work_item("operator wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting on work item".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting on agent".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == first.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Interrupted)
+    );
+
+    harness.advance(std::time::Duration::from_millis(1)).await;
+    harness.restart();
+    let runtime = harness.runtime();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    let second = runtime
+        .enqueue(trusted_operator_prompt(None, "resent operator prompt"))
+        .await
+        .unwrap();
+
+    let first_poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = first_poll else {
+        panic!("restarted interrupted operator prompt should use legacy dispatch");
+    };
+    assert_eq!(scheduled.message.id, first.id);
+    finish_claimed_test_run(runtime).await;
+
+    let second_poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = second_poll else {
+        panic!("resent operator prompt should not remain behind the recovered queue head");
+    };
+    assert_eq!(scheduled.message.id, second.id);
+    assert!(!runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduling_advisory"
+                && event.data["kind"] == "ambiguous_canonical_wait_binding"
+        }));
+}
+
+#[tokio::test]
+async fn non_authoritative_explicit_operator_wait_ambiguity_uses_legacy_dispatch() {
+    for mode in [ScenarioMode::Off, ScenarioMode::Shadow] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        runtime.set_scheduler_protocol_production_commands_enabled(true);
+        enable_production_protocol_authority_for(
+            &runtime,
+            &[SchedulerScenarioClass::ExplicitlyBoundOperatorInput],
+        );
+        set_scheduler_scenario_mode(
+            &runtime,
+            SchedulerScenarioClass::ExplicitlyBoundOperatorInput,
+            mode,
+        );
+        let work_item = runtime
+            .create_work_item(format!("{mode:?} operator wait"), None, None, Vec::new())
+            .await
+            .unwrap();
+        let registration = runtime
+            .register_wait_for(
+                "default",
+                Some(work_item.id.clone()),
+                WaitForWakeKind::OperatorInput,
+                None,
+                "waiting for operator".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut duplicate = registration.condition.clone();
+        duplicate.id = format!("{}-duplicate", registration.condition.id);
+        runtime.storage().append_wait_condition(&duplicate).unwrap();
+        let message = runtime
+            .enqueue(trusted_operator_prompt(
+                Some(&work_item.id),
+                "explicit operator input",
+            ))
+            .await
+            .unwrap();
+
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("{mode:?} explicit operator input should use legacy dispatch");
+        };
+        assert_eq!(scheduled.message.id, message.id);
+        assert!(!runtime
+            .storage()
+            .read_recent_events(usize::MAX)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.kind == "scheduling_advisory"
+                    && event.data["kind"] == "ambiguous_canonical_wait_binding"
+            }));
+    }
+}
+
+#[tokio::test]
+async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::ExplicitlyBoundOperatorInput],
+    );
+    let target = runtime
+        .create_work_item("target operator wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let unrelated = runtime
+        .create_work_item("unrelated operator wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let target_wait = runtime
+        .register_wait_for(
+            "default",
+            Some(target.id.clone()),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting for target operator".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let unrelated_wait = runtime
+        .register_wait_for(
+            "default",
+            Some(unrelated.id.clone()),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting for unrelated operator".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent_wait = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting for any operator".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let target = runtime.latest_work_item(&target.id).await.unwrap().unwrap();
+    let unrelated = runtime
+        .latest_work_item(&unrelated.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut initial =
+        canonical_waiting_snapshot(&target, &target_wait.condition.id, target.revision);
+    initial.work.insert(
+        unrelated.id.clone(),
+        WorkDemand {
+            metadata_revision: unrelated.revision,
+            scheduling_generation: unrelated.revision,
+            status: WorkStatus::Waiting {
+                wait_id: unrelated_wait.condition.id.clone(),
+            },
+            capabilities: Default::default(),
+            locks: Default::default(),
+            locality: "runtime".into(),
+            cost_class: "default".into(),
+        },
+    );
+    initial.waits.insert(
+        unrelated_wait.condition.id.clone(),
+        WaitRecord {
+            current_generation: unrelated.revision,
+            generations: std::collections::BTreeMap::from([(
+                unrelated.revision,
+                WaitGenerationRecord {
+                    owner_work_item_id: unrelated.id,
+                    state: WaitState::Active,
+                    trigger: None,
+                    consuming_activation_id: None,
+                },
+            )]),
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .initialize_scheduler_protocol_partition("default", &initial)
+        .unwrap();
+    let message = runtime
+        .enqueue(trusted_operator_prompt(
+            Some(&target.id),
+            "resume target work item",
+        ))
+        .await
+        .unwrap();
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("authoritative explicit operator input should be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let snapshot = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_scheduler_protocol_snapshot("default")
+        .unwrap();
+    let admission = &snapshot.activation_admissions[&activation_id].activation;
+    assert!(matches!(
+        &admission.cause,
+        ActivationCause::OperatorInput {
+            message_id,
+            resume: Some(resume),
+        } if message_id == &message.id && resume.wait_id == target_wait.condition.id
+    ));
+    let target_generation = snapshot.waits[&target_wait.condition.id].current_generation;
+    assert_eq!(
+        snapshot.waits[&target_wait.condition.id].generations[&target_generation].state,
+        WaitState::Consumed
+    );
+    let unrelated_generation = snapshot.waits[&unrelated_wait.condition.id].current_generation;
+    assert_eq!(
+        snapshot.waits[&unrelated_wait.condition.id].generations[&unrelated_generation].state,
+        WaitState::Active
+    );
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == agent_wait.condition.id)
+            .map(|wait| wait.status),
+        Some(WaitConditionStatus::Active)
+    );
+}
+
+#[tokio::test]
+async fn authoritative_explicit_operator_wait_ambiguity_remains_queued() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_scheduler_protocol_production_commands_enabled(true);
+    enable_production_protocol_authority_for(
+        &runtime,
+        &[SchedulerScenarioClass::ExplicitlyBoundOperatorInput],
+    );
+    let work_item = runtime
+        .create_work_item("ambiguous operator wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting for operator".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut duplicate = registration.condition.clone();
+    duplicate.id = format!("{}-duplicate", registration.condition.id);
+    runtime.storage().append_wait_condition(&duplicate).unwrap();
+    let message = runtime
+        .enqueue(trusted_operator_prompt(
+            Some(&work_item.id),
+            "ambiguous explicit operator input",
+        ))
+        .await
+        .unwrap();
+
+    for _ in 0..2 {
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Idle
+        ));
+    }
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == message.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+    let advisories = runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.kind == "scheduling_advisory"
+                && event.data["kind"] == "ambiguous_canonical_wait_binding"
+                && event.data["evidence"].as_array().is_some_and(|evidence| {
+                    evidence
+                        .iter()
+                        .any(|item| item == &format!("message_id={}", message.id))
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(advisories.len(), 1);
+    assert!(advisories[0].data["evidence"]
+        .as_array()
+        .is_some_and(|evidence| {
+            evidence.iter().any(|item| {
+                item.as_str().is_some_and(|item| {
+                    item.contains(&registration.condition.id) && item.contains(&duplicate.id)
+                })
+            })
+        }));
 }
 
 #[tokio::test]

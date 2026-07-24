@@ -57,6 +57,23 @@ pub(crate) enum CanonicalActivationScenario {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CanonicalActivationCandidate {
+    WorkItemAutonomousContinuation {
+        work_item_id: String,
+    },
+    ExactTaskRejoin {
+        task_id: String,
+        work_item_id: String,
+    },
+    ExactWaitResume {
+        expected_work_item_id: Option<String>,
+    },
+    ExplicitlyBoundOperatorInput {
+        work_item_id: String,
+    },
+}
+
 #[derive(Debug)]
 pub(crate) struct AmbiguousCanonicalWaits {
     pub(crate) message_id: String,
@@ -84,7 +101,9 @@ impl CanonicalActivationScenario {
             | Self::ExplicitlyBoundOperatorInput { work_item_id, .. } => work_item_id,
         }
     }
+}
 
+impl CanonicalActivationCandidate {
     pub(crate) fn scenario_class(&self) -> SchedulerScenarioClass {
         match self {
             Self::WorkItemAutonomousContinuation { .. } => {
@@ -93,6 +112,17 @@ impl CanonicalActivationScenario {
             Self::ExactTaskRejoin { .. } => EXACT_TASK_REJOIN_SCENARIO,
             Self::ExactWaitResume { .. } => EXACT_WAIT_RESUME_SCENARIO,
             Self::ExplicitlyBoundOperatorInput { .. } => EXPLICITLY_BOUND_OPERATOR_INPUT_SCENARIO,
+        }
+    }
+
+    fn expected_work_item_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkItemAutonomousContinuation { work_item_id }
+            | Self::ExactTaskRejoin { work_item_id, .. }
+            | Self::ExplicitlyBoundOperatorInput { work_item_id } => Some(work_item_id),
+            Self::ExactWaitResume {
+                expected_work_item_id,
+            } => expected_work_item_id.as_deref(),
         }
     }
 }
@@ -1318,33 +1348,23 @@ pub(crate) fn authority_scenarios_for_message_claim(
     scenarios
 }
 
-pub(crate) fn canonical_activation_scenario(
-    projection: &SchedulerProjection,
+pub(crate) fn canonical_activation_candidate(
     message: &MessageEnvelope,
     continuation_resolution: Option<&ContinuationResolution>,
     task: Option<&TaskRecord>,
-) -> Result<Option<CanonicalActivationScenario>> {
+) -> Result<Option<CanonicalActivationCandidate>> {
     if matches!(
         (&message.kind, &message.origin),
         (MessageKind::SystemTick, MessageOrigin::System { subsystem })
             if subsystem == "work_queue"
     ) {
         return Ok(message.work_item_id.clone().map(|work_item_id| {
-            CanonicalActivationScenario::WorkItemAutonomousContinuation { work_item_id }
+            CanonicalActivationCandidate::WorkItemAutonomousContinuation { work_item_id }
         }));
     }
     if !continuation_resolution.is_some_and(|resolution| resolution.model_reentry) {
         return Ok(None);
     }
-
-    let matching_waits = matching_wait_conditions(projection, message);
-    if matching_waits.len() > 1 {
-        return Err(anyhow::Error::new(AmbiguousCanonicalWaits {
-            message_id: message.id.clone(),
-            wait_condition_ids: matching_waits.iter().map(|wait| wait.id.clone()).collect(),
-        }));
-    }
-    let matching_wait = matching_waits.first().copied();
 
     if message.kind == MessageKind::TaskResult {
         let MessageOrigin::Task { task_id } = &message.origin else {
@@ -1372,22 +1392,9 @@ pub(crate) fn canonical_activation_scenario(
         if message.work_item_id.as_deref() != Some(work_item_id) {
             bail!("canonical task rejoin has inconsistent WorkItem binding");
         }
-        if matching_wait.is_some_and(|wait| wait.work_item_id.as_deref() != Some(work_item_id)) {
-            bail!("canonical task rejoin wait owner does not match task WorkItem");
-        }
-        if matching_wait.is_none()
-            && projection
-                .canonical_work_statuses
-                .as_ref()
-                .and_then(|statuses| statuses.get(work_item_id))
-                .is_some_and(|status| matches!(status, WorkStatus::Waiting { .. }))
-        {
-            return Ok(None);
-        }
-        return Ok(Some(CanonicalActivationScenario::ExactTaskRejoin {
+        return Ok(Some(CanonicalActivationCandidate::ExactTaskRejoin {
             task_id: task_id.clone(),
             work_item_id: work_item_id.to_string(),
-            wait_id: matching_wait.map(|wait| wait.id.clone()),
         }));
     }
 
@@ -1399,11 +1406,74 @@ pub(crate) fn canonical_activation_scenario(
             .work_item_id
             .clone()
             .ok_or_else(|| anyhow!("explicit operator input requires a WorkItem binding"))?;
-        if matching_wait
-            .is_some_and(|wait| wait.work_item_id.as_deref() != Some(work_item_id.as_str()))
+        return Ok(Some(
+            CanonicalActivationCandidate::ExplicitlyBoundOperatorInput { work_item_id },
+        ));
+    }
+
+    if matches!(
+        (&message.kind, &message.origin),
+        (
+            MessageKind::CallbackEvent | MessageKind::WebhookEvent | MessageKind::ChannelEvent,
+            _
+        ) | (MessageKind::TimerTick, MessageOrigin::Timer { .. })
+            | (MessageKind::SystemTick, MessageOrigin::System { .. })
+    ) {
+        return Ok(Some(CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: message.work_item_id.clone(),
+        }));
+    }
+
+    Ok(None)
+}
+
+pub(crate) fn resolve_canonical_activation_scenario(
+    projection: &SchedulerProjection,
+    message: &MessageEnvelope,
+    candidate: CanonicalActivationCandidate,
+) -> Result<Option<CanonicalActivationScenario>> {
+    if let CanonicalActivationCandidate::WorkItemAutonomousContinuation { work_item_id } = candidate
+    {
+        return Ok(Some(
+            CanonicalActivationScenario::WorkItemAutonomousContinuation { work_item_id },
+        ));
+    }
+
+    let matching_waits = matching_wait_conditions_for_work_item(
+        projection,
+        message,
+        candidate.expected_work_item_id(),
+    );
+    if matching_waits.len() > 1 {
+        return Err(anyhow::Error::new(AmbiguousCanonicalWaits {
+            message_id: message.id.clone(),
+            wait_condition_ids: matching_waits.iter().map(|wait| wait.id.clone()).collect(),
+        }));
+    }
+    let matching_wait = matching_waits.first().copied();
+
+    if let CanonicalActivationCandidate::ExactTaskRejoin {
+        task_id,
+        work_item_id,
+    } = candidate
+    {
+        if matching_wait.is_none()
+            && projection
+                .canonical_work_statuses
+                .as_ref()
+                .and_then(|statuses| statuses.get(&work_item_id))
+                .is_some_and(|status| matches!(status, WorkStatus::Waiting { .. }))
         {
-            bail!("explicit operator input wait owner does not match WorkItem binding");
+            return Ok(None);
         }
+        return Ok(Some(CanonicalActivationScenario::ExactTaskRejoin {
+            task_id,
+            work_item_id,
+            wait_id: matching_wait.map(|wait| wait.id.clone()),
+        }));
+    }
+
+    if let CanonicalActivationCandidate::ExplicitlyBoundOperatorInput { work_item_id } = candidate {
         return Ok(Some(
             CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
                 work_item_id,
@@ -1419,13 +1489,6 @@ pub(crate) fn canonical_activation_scenario(
         .work_item_id
         .clone()
         .ok_or_else(|| anyhow!("canonical wait resume requires a WorkItem-owned wait"))?;
-    if message
-        .work_item_id
-        .as_ref()
-        .is_some_and(|binding| binding != &work_item_id)
-    {
-        bail!("canonical wait resume has inconsistent WorkItem binding");
-    }
     Ok(Some(CanonicalActivationScenario::ExactWaitResume {
         work_item_id,
         wait_id: wait.id.clone(),
@@ -1436,16 +1499,26 @@ fn matching_wait_conditions<'a>(
     projection: &'a SchedulerProjection,
     message: &MessageEnvelope,
 ) -> Vec<&'a WaitConditionRecord> {
+    matching_wait_conditions_for_work_item(projection, message, None)
+}
+
+fn matching_wait_conditions_for_work_item<'a>(
+    projection: &'a SchedulerProjection,
+    message: &MessageEnvelope,
+    expected_work_item_id: Option<&str>,
+) -> Vec<&'a WaitConditionRecord> {
     projection
         .activation_waits
         .iter()
         .filter(|condition| {
-            (condition.status == WaitConditionStatus::Active
-                || (message.kind == MessageKind::TaskResult
-                    && condition.status == WaitConditionStatus::Resolved
-                    && condition.kind == WaitConditionKind::Task
-                    && condition.work_item_id == message.work_item_id
-                    && resolved_task_wait_is_current(projection, condition)))
+            expected_work_item_id
+                .is_none_or(|work_item_id| condition.work_item_id.as_deref() == Some(work_item_id))
+                && (condition.status == WaitConditionStatus::Active
+                    || (message.kind == MessageKind::TaskResult
+                        && condition.status == WaitConditionStatus::Resolved
+                        && condition.kind == WaitConditionKind::Task
+                        && condition.work_item_id == message.work_item_id
+                        && resolved_task_wait_is_current(projection, condition)))
                 && message_matches_wait_condition(message, condition)
         })
         .collect()
