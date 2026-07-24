@@ -126,7 +126,15 @@ fail startup. The older
 supported for existing rollout tooling when `HOLON_SCHEDULER` is unset; new
 deployments should use only `HOLON_SCHEDULER`. When neither variable is set,
 Holon preserves the persisted rollout state; a fresh database is already
-legacy by default.
+legacy by default. When both variables are set, `HOLON_SCHEDULER` also takes
+precedence for production-command and acceptance-fixture capability checks, so
+`legacy` or `shadow` cannot be overridden by the older boolean switch.
+
+If startup finds an open rollout preflight without an installed manifest, it
+fails closed and reports that preflight revision instead of fabricating a
+completion for a potentially operator-managed maintenance window. A completed
+preflight with its manifest intact is resumed by installing that exact
+manifest.
 
 ## Credential Management
 

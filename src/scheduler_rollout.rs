@@ -103,7 +103,7 @@ fn boolean_from_value(name: &str, value: Option<&OsStr>) -> Result<Option<bool>>
     }
 }
 
-fn production_commands_enabled_from_values(
+pub(crate) fn production_commands_enabled_from_values(
     desired: Option<&OsStr>,
     legacy_production_commands: Option<&OsStr>,
 ) -> Result<bool> {
@@ -163,9 +163,9 @@ fn reconciliation_commands_for_state(
         }
     }
     match desired {
-        SchedulerDesiredMode::Legacy => planner.plan_legacy(),
-        SchedulerDesiredMode::Shadow => planner.plan_shadow(),
-        SchedulerDesiredMode::Authoritative => planner.plan_authoritative(),
+        SchedulerDesiredMode::Legacy => planner.plan_legacy()?,
+        SchedulerDesiredMode::Shadow => planner.plan_shadow()?,
+        SchedulerDesiredMode::Authoritative => planner.plan_authoritative()?,
     }
     Ok(planner.finish())
 }
@@ -224,6 +224,8 @@ impl ReconciliationPlanner {
             expected_config_revision: self.config_revision,
             manifest: manifest.clone(),
         });
+        // Opening and completing preserve the config fence; installation advances
+        // it once for the whole bootstrap sequence.
         self.config_revision += 1;
         self.manifest = Some(manifest);
     }
@@ -237,40 +239,43 @@ impl ReconciliationPlanner {
         self.manifest = Some(manifest);
     }
 
-    fn plan_legacy(&mut self) {
-        self.lower_authoritative_scenarios();
-        self.lower_shadow_scenarios();
+    fn plan_legacy(&mut self) -> Result<()> {
+        self.lower_authoritative_scenarios()?;
+        self.lower_shadow_scenarios()?;
         self.configure_protocol(ProtocolMode::Legacy);
+        Ok(())
     }
 
-    fn plan_shadow(&mut self) {
-        self.lower_authoritative_scenarios();
+    fn plan_shadow(&mut self) -> Result<()> {
+        self.lower_authoritative_scenarios()?;
         self.configure_protocol(ProtocolMode::Shadow);
-        self.converge_manifest_scenarios(false);
+        self.converge_manifest_scenarios(false)
     }
 
-    fn plan_authoritative(&mut self) {
+    fn plan_authoritative(&mut self) -> Result<()> {
         self.configure_protocol(ProtocolMode::Authoritative);
-        self.converge_manifest_scenarios(true);
+        self.converge_manifest_scenarios(true)
     }
 
-    fn lower_authoritative_scenarios(&mut self) {
+    fn lower_authoritative_scenarios(&mut self) -> Result<()> {
         for scenario in self.known_scenarios() {
             if self.scenario_mode(&scenario) == ScenarioMode::Authoritative {
-                self.change_scenario(&scenario, ScenarioMode::Shadow);
+                self.change_scenario(&scenario, ScenarioMode::Shadow)?;
             }
         }
+        Ok(())
     }
 
-    fn lower_shadow_scenarios(&mut self) {
+    fn lower_shadow_scenarios(&mut self) -> Result<()> {
         for scenario in self.known_scenarios() {
             if self.scenario_mode(&scenario) == ScenarioMode::Shadow {
-                self.change_scenario(&scenario, ScenarioMode::Off);
+                self.change_scenario(&scenario, ScenarioMode::Off)?;
             }
         }
+        Ok(())
     }
 
-    fn converge_manifest_scenarios(&mut self, allow_authoritative: bool) {
+    fn converge_manifest_scenarios(&mut self, allow_authoritative: bool) -> Result<()> {
         let manifest_classes = self
             .manifest
             .as_ref()
@@ -282,15 +287,15 @@ impl ReconciliationPlanner {
                 .map(|class| class.configured_mode);
             if configured.is_none() {
                 if self.scenario_mode(&scenario) == ScenarioMode::Authoritative {
-                    self.change_scenario(&scenario, ScenarioMode::Shadow);
+                    self.change_scenario(&scenario, ScenarioMode::Shadow)?;
                 }
                 if self.scenario_mode(&scenario) == ScenarioMode::Shadow {
-                    self.change_scenario(&scenario, ScenarioMode::Off);
+                    self.change_scenario(&scenario, ScenarioMode::Off)?;
                 }
                 continue;
             }
             if self.scenario_mode(&scenario) == ScenarioMode::Off {
-                self.change_scenario(&scenario, ScenarioMode::Shadow);
+                self.change_scenario(&scenario, ScenarioMode::Shadow)?;
             }
             if allow_authoritative
                 && configured == Some(ScenarioMode::Authoritative)
@@ -300,13 +305,14 @@ impl ReconciliationPlanner {
                     .is_some_and(|class| rollout_class_evidence_is_complete(&scenario, class))
                 && !self.has_hard_blocker(&scenario)
             {
-                self.change_scenario(&scenario, ScenarioMode::Authoritative);
+                self.change_scenario(&scenario, ScenarioMode::Authoritative)?;
             } else if !allow_authoritative
                 && self.scenario_mode(&scenario) == ScenarioMode::Authoritative
             {
-                self.change_scenario(&scenario, ScenarioMode::Shadow);
+                self.change_scenario(&scenario, ScenarioMode::Shadow)?;
             }
         }
+        Ok(())
     }
 
     fn configure_protocol(&mut self, mode: ProtocolMode) {
@@ -321,14 +327,20 @@ impl ReconciliationPlanner {
         self.protocol_mode = mode;
     }
 
-    fn change_scenario(&mut self, scenario: &str, mode: ScenarioMode) {
+    fn change_scenario(&mut self, scenario: &str, mode: ScenarioMode) -> Result<()> {
         if self.scenario_mode(scenario) == mode {
-            return;
+            return Ok(());
         }
         let manifest = self
             .manifest
             .as_ref()
-            .expect("non-legacy scenario transition requires a manifest");
+            .ok_or_else(|| {
+                anyhow!(
+                    "cannot reconcile {SCHEDULER_ENV}={} because scenario {scenario} is {:?} without an installed manifest",
+                    self.desired.token(),
+                    self.scenario_mode(scenario)
+                )
+            })?;
         self.commands.push(RolloutCommand::ChangeScenarioAuthority {
             scenario_class: scenario.to_string(),
             expected_config_revision: self.config_revision,
@@ -338,6 +350,7 @@ impl ReconciliationPlanner {
         });
         self.config_revision += 1;
         self.scenario_modes.insert(scenario.to_string(), mode);
+        Ok(())
     }
 
     fn scenario_mode(&self, scenario: &str) -> ScenarioMode {
@@ -611,6 +624,26 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn legacy_downgrade_reports_missing_manifest_without_panicking() {
+        let rollout = RolloutState {
+            scenarios: BTreeMap::from([(
+                SchedulerScenarioClass::ExactWaitResume.as_str().to_string(),
+                ScenarioAuthority {
+                    mode: ScenarioMode::Shadow,
+                    rollback_target: ScenarioMode::Off,
+                    manifest_revision: None,
+                    preflight_revision: None,
+                },
+            )]),
+            ..RolloutState::default()
+        };
+
+        let error = reconciliation_commands_for_state(SchedulerDesiredMode::Legacy, &rollout, 7)
+            .unwrap_err();
+        assert!(error.to_string().contains("without an installed manifest"));
     }
 
     #[test]
