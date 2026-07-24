@@ -982,6 +982,116 @@ describe("runtime client generation", () => {
   });
 });
 
+describe("agent event catch-up", () => {
+  afterEach(() => {
+    useRuntimeStore.setState({
+      sessionsByAgentId: {},
+      globalStreamStatus: "idle",
+      selectedAgentId: "",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("loads every newer page without treating the server high watermark as consumed", async () => {
+    const localStorage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage,
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const event = (eventSeq: number) => ({
+      id: `event-${eventSeq}`,
+      event_seq: eventSeq,
+      event_log_epoch: "epoch-1",
+      contract_version: 1,
+      ts: "2026-07-24T00:00:00Z",
+      agent_id: "agent-a",
+      type: "legacy_event",
+      payload_schema: "holon.runtime_event.legacy",
+      payload_schema_version: 1,
+      provenance: {},
+      payload: {},
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
+      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        const afterSeq = Number(url.searchParams.get("after_seq"));
+        if (afterSeq === 1) {
+          return Promise.resolve(jsonResponse({
+            events: Array.from({ length: 100 }, (_, index) => event(index + 2)),
+            event_log_epoch: "epoch-1",
+            cursor_seq: 1428,
+            newest_seq: 101,
+            oldest_seq: 2,
+            has_older: false,
+            has_newer: true,
+            order: "asc",
+            limit: 100,
+          }));
+        }
+        if (afterSeq === 101) {
+          return Promise.resolve(jsonResponse({
+            events: Array.from({ length: 49 }, (_, index) => event(index + 102)),
+            event_log_epoch: "epoch-1",
+            cursor_seq: 1428,
+            newest_seq: 150,
+            oldest_seq: 102,
+            has_older: false,
+            has_newer: false,
+            order: "asc",
+            limit: 100,
+          }));
+        }
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    const now = Date.now();
+    useRuntimeStore.setState({
+      globalStreamStatus: "idle",
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          cacheStatus: "hit",
+          contentStatus: "available",
+          syncStatus: "stale",
+          detailValidatedAt: now,
+          eventsValidatedAt: now,
+          detail: {
+            agent: agentSummary({ id: "agent-a" }),
+            source: "http",
+            timeline: [],
+          },
+          eventsBySeq: { 1: event(1) },
+          eventSeqs: [1],
+          newestSeq: 1,
+          oldestSeq: 1,
+          eventLogEpoch: "epoch-1",
+        }),
+      },
+    });
+
+    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
+
+    const eventRequests = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
+    expect(eventRequests.map((url) => url.searchParams.get("after_seq"))).toEqual(["1", "101"]);
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
+      eventSeqs: Array.from({ length: 150 }, (_, index) => index + 1),
+      newestSeq: 150,
+      syncStatus: "idle",
+    });
+  });
+});
+
 describe("brief hydration retry limits", () => {
   afterEach(() => {
     useRuntimeStore.setState({

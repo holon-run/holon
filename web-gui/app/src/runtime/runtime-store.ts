@@ -4411,27 +4411,48 @@ async function catchUpAgentEvents(
   const span = startRuntimeSpan(trace, "events.catch_up");
   const request = (async () => {
     const generation = clientGeneration;
-    const afterSeq = get().sessionsByAgentId[agentId]?.newestSeq;
-    const page = await runtimeClient.getAgentEvents(agentId, {
-      afterSeq,
-      limit: 100,
-      order: "asc",
-    });
-    if (!isCurrentClientGeneration(generation)) {
-      span.end("cancelled");
-      return;
+    const initialAfterSeq = get().sessionsByAgentId[agentId]?.newestSeq;
+    let afterSeq = initialAfterSeq;
+    let eventCount = 0;
+    let pageCount = 0;
+    let refreshWorkItems = false;
+    let refreshAgentState = false;
+    while (true) {
+      const page = await runtimeClient.getAgentEvents(agentId, {
+        afterSeq,
+        limit: 100,
+        order: "asc",
+      });
+      if (!isCurrentClientGeneration(generation)) {
+        span.end("cancelled");
+        return;
+      }
+      const pageEvents = page.events ?? [];
+      const consumedSeq = Math.max(
+        page.newest_seq ?? 0,
+        ...pageEvents.map((event) => event.event_seq ?? 0),
+      ) || undefined;
+      set((state) =>
+        mergeEventPageIntoSession(state, agentId, pageEvents, page.oldest_seq ?? undefined, page.has_older, "debug", {
+          newestSeq: consumedSeq,
+          append: true,
+          eventLogEpoch: page.event_log_epoch,
+        }),
+      );
+      eventCount += pageEvents.length;
+      pageCount += 1;
+      refreshWorkItems ||= pageEvents.some(isWorkItemCacheInvalidationEvent);
+      refreshAgentState ||= pageEvents.some(isAgentStateCacheInvalidationEvent);
+      if (!page.has_newer) break;
+      if (consumedSeq == null || (afterSeq != null && consumedSeq <= afterSeq)) {
+        throw new Error("Agent event catch-up page did not advance its consumed cursor.");
+      }
+      afterSeq = consumedSeq;
     }
-    set((state) =>
-      mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq ?? undefined, page.has_older, "debug", {
-        newestSeq: page.cursor_seq ?? page.newest_seq ?? undefined,
-        append: true,
-        eventLogEpoch: page.event_log_epoch,
-      }),
-    );
-    if ((page.events ?? []).some(isWorkItemCacheInvalidationEvent)) {
+    if (refreshWorkItems) {
       void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
     }
-    if ((page.events ?? []).some(isAgentStateCacheInvalidationEvent)) {
+    if (refreshAgentState) {
       void useRuntimeStore.getState().refreshAgentState(agentId);
     }
     if (get().selectedAgentId === agentId) {
@@ -4441,8 +4462,9 @@ async function catchUpAgentEvents(
     }
     scheduleCacheWrite(get, agentId);
     span.end("ok", {
-      afterSeq,
-      eventCount: page.events?.length ?? 0,
+      afterSeq: initialAfterSeq,
+      eventCount,
+      pageCount,
     });
   })().catch((error) => {
     span.end("error", { errorKind: agentDetailErrorKind(error) });
