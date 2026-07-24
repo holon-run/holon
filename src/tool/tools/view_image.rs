@@ -326,6 +326,7 @@ fn optional_value_array(value: Option<&Value>, field: &str) -> Vec<Value> {
         Some(Value::Array(values)) => values.clone(),
         Some(Value::Object(object)) => vec![Value::Object(object.clone())],
         Some(Value::String(text)) if !text.trim().is_empty() => {
+            // OCR entries expose text; every other current observation array describes an item.
             let text_field = if field == "ocr" {
                 "text"
             } else {
