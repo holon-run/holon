@@ -88,7 +88,7 @@ use crate::{
         transitions::{
             PostCommitWarning, TransitionApplyResult, TransitionCommit, TransitionFaultPoint,
         },
-        RuntimeDb,
+        RuntimeDb, RuntimeStateTransitionConflict,
     },
     runtime_error::describe_runtime_error,
     runtime_event::RuntimeEventKind,
@@ -128,6 +128,8 @@ use continuation::{resolve_continuation, ContinuationTrigger};
 #[cfg(test)]
 use subagent::sanitize_subagent_result;
 use turn::LoopControlOptions;
+
+const ENQUEUE_AGENT_STATE_MAX_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub(super) struct WorkItemCompletionReportPromotion {
@@ -2109,6 +2111,33 @@ impl RuntimeHandle {
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
+        for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            match self.enqueue_attempt(&message).await {
+                Ok(mut commit) => {
+                    commit.effects.notify_scheduler = true;
+                    self.apply_transition_commit(commit).await;
+                    return Ok(message);
+                }
+                Err(error) => {
+                    let can_retry = attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                        && retryable_enqueue_agent_state_conflict(
+                            &error,
+                            message.agent_id.as_str(),
+                        );
+                    if !can_retry
+                        || !self
+                            .refresh_enqueue_agent_state_baseline(&message.agent_id)
+                            .await?
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        unreachable!("enqueue attempts always return or retry")
+    }
+
+    async fn enqueue_attempt(&self, message: &MessageEnvelope) -> Result<TransitionCommit> {
         let message_is_new = self
             .inner
             .storage
@@ -2138,7 +2167,7 @@ impl RuntimeHandle {
                 &MessageLifecycleAuditEvent::from_message(&message),
             )?,
         ];
-        let mut commit = {
+        let commit = {
             let mut guard = self.inner.agent.lock().await;
             let expected_persisted_state = guard.last_persisted_state.clone();
             let mut committed_state = guard.state.clone();
@@ -2167,7 +2196,7 @@ impl RuntimeHandle {
                     }),
                 ));
             }
-            let commit = self.inner.runtime_db.transitions().commit_queue(
+            let mut commit = self.inner.runtime_db.transitions().commit_queue(
                 &crate::runtime_db::transitions::QueueTransitionCommand {
                     agent_id: message.agent_id.clone(),
                     operation: crate::runtime_db::transitions::QueueOperation::Admit,
@@ -2205,13 +2234,27 @@ impl RuntimeHandle {
             guard.queue.push(message.clone());
             guard.state = committed_state.clone();
             guard.last_persisted_state = committed_state;
-            let mut commit = commit;
             commit.effects.agent_state = None;
             commit
         };
-        commit.effects.notify_scheduler = true;
-        self.apply_transition_commit(commit).await;
-        Ok(message)
+        Ok(commit)
+    }
+
+    async fn refresh_enqueue_agent_state_baseline(&self, agent_id: &str) -> Result<bool> {
+        let mut guard = self.inner.agent.lock().await;
+        let Some(latest_persisted_state) = self.inner.runtime_db.agent_states().latest(agent_id)?
+        else {
+            return Ok(false);
+        };
+        if latest_persisted_state.id != agent_id
+            || guard.state != guard.last_persisted_state
+            || latest_persisted_state.pending != guard.queue.len()
+        {
+            return Ok(false);
+        }
+        guard.state = latest_persisted_state.clone();
+        guard.last_persisted_state = latest_persisted_state;
+        Ok(true)
     }
 
     pub(crate) fn append_audit_event(&self, kind: &str, data: serde_json::Value) -> Result<()> {
@@ -3363,6 +3406,18 @@ fn normalized_turn_id(turn_id: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|turn_id| !turn_id.is_empty())
         .map(ToString::to_string)
+}
+
+fn retryable_enqueue_agent_state_conflict(error: &anyhow::Error, agent_id: &str) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some_and(|conflict| {
+                conflict.retryable()
+                    && conflict.domain() == "agent_state"
+                    && conflict.record_id() == agent_id
+            })
+    })
 }
 
 #[cfg(test)]

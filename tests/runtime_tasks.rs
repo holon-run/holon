@@ -47,6 +47,7 @@ runtime_async_tests!(
     command_task_output_truncation_preserves_path_artifact_reference,
     command_task_stop_cancels_running_command,
     background_command_task_persists_terminal_state_while_runtime_stopped,
+    command_task_result_enqueue_retries_stale_agent_state,
     blocking_command_task_clears_active_state_while_runtime_stopped,
     command_task_result_is_canonical_follow_up_on_completion,
     task_result_rejoin_preserves_runtime_provenance_not_operator_authority,
