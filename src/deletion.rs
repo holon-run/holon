@@ -62,9 +62,11 @@ impl RuntimeHost {
     pub(crate) async fn execute_pending_deletions(&self) -> Result<()> {
         let jobs = self.runtime_db().agent_deletions().actionable_jobs()?;
         for job in jobs {
+            let agent_id = job.agent_id.clone();
             if let Err(err) = self.execute_deletion_job(job).await {
                 warn!(
-                    agent_id = %err,
+                    agent_id = %agent_id,
+                    error = %err,
                     "deletion job execution failed"
                 );
             }
@@ -74,6 +76,22 @@ impl RuntimeHost {
 
     /// Drive a single deletion job through its remaining phases.
     pub(crate) async fn execute_deletion_job(&self, mut job: AgentDeletionJob) -> Result<()> {
+        // Optimistic concurrency guard: re-read the job from the database and
+        // check if it's still actionable. If another coordinator already picked
+        // it up (status changed to Running or Completed), skip it.
+        if let Some(fresh) = self
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&job.agent_id)?
+        {
+            if fresh.status == AgentDeletionStatus::Running
+                || fresh.status == AgentDeletionStatus::Completed
+            {
+                debug!(agent_id = %job.agent_id, "deletion job already claimed by another coordinator");
+                return Ok(());
+            }
+            job = fresh;
+        }
         let agent_id = job.agent_id.clone();
         info!(
             agent_id = %agent_id,
