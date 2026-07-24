@@ -95,7 +95,10 @@ docker run --rm \
 
 Replace the model and credential environment variable when using another
 provider. Holon validates that the configured model provider is available
-before the service starts.
+before the service starts. `HOLON_SCHEDULER` accepts `legacy` (the default),
+`shadow`, or `authoritative`; authoritative scenario ownership remains gated
+by installed rollout evidence and hard-blocker checks. See the
+[Configuration Reference](docs/website/reference/configuration.md#scheduler-rollout).
 
 The base image includes Git and common shell/network utilities. Mount a
 writable workspace at `/workspace`, or derive a project-specific image when

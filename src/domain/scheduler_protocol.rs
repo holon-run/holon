@@ -3397,7 +3397,7 @@ fn complete_rollout_preflight(
     if !manifest.preflight_succeeded {
         return rejected(snapshot, "rollout_preflight_failed");
     }
-    if !rollout_manifest_is_complete(manifest) {
+    if !rollout_manifest_is_installable(manifest) {
         return rejected(snapshot, "rollout_manifest_incomplete");
     }
 
@@ -3439,7 +3439,7 @@ fn install_rollout_manifest(
     if !manifest.preflight_succeeded {
         return rejected(snapshot, "rollout_preflight_failed");
     }
-    if !rollout_manifest_is_complete(manifest) {
+    if !rollout_manifest_is_installable(manifest) {
         return rejected(snapshot, "rollout_manifest_incomplete");
     }
     let Some(preflight) = snapshot
@@ -3546,6 +3546,16 @@ fn change_scenario_authority(
         };
         if class.configured_mode != ScenarioMode::Authoritative {
             return rejected(snapshot, "scenario_not_approved_for_authority");
+        }
+        if !rollout_class_evidence_is_complete(scenario_class, class) {
+            return rejected(snapshot, "rollout_class_evidence_incomplete");
+        }
+        if snapshot.rollout.hard_blockers.iter().any(|blocker| {
+            blocker.scenario_class == scenario_class
+                && blocker.manifest_revision == manifest.revision
+                && blocker.preflight_revision == manifest.preflight_revision
+        }) {
+            return rejected(snapshot, "scenario_has_unresolved_hard_blocker");
         }
     }
     let rollback_target = manifest
@@ -3757,7 +3767,43 @@ fn rollout_class_gate(scenario_class: &str) -> Option<RolloutClassGate> {
     Some(gate)
 }
 
-fn rollout_class_evidence_is_complete(scenario_class: &str, class: &RolloutClassEvidence) -> bool {
+fn rollout_class_evidence_is_installable(
+    scenario_class: &str,
+    class: &RolloutClassEvidence,
+) -> bool {
+    let Some(gate) = rollout_class_gate(scenario_class) else {
+        return false;
+    };
+    let mandatory_evidence: BTreeSet<&str> = UNIVERSAL_ROLLOUT_EVIDENCE
+        .iter()
+        .chain(gate.required_evidence.iter())
+        .copied()
+        .collect();
+
+    matches!(
+        class.configured_mode,
+        ScenarioMode::Shadow | ScenarioMode::Authoritative
+    ) && class.minimum_shadow_samples >= gate.minimum_shadow_samples
+        && class.minimum_shadow_duration_secs >= gate.minimum_shadow_duration_secs
+        && class.maximum_p99_latency_regression_bps <= MAXIMUM_P99_LATENCY_REGRESSION_BPS
+        && class.observed_p99_latency_regression_bps <= class.maximum_p99_latency_regression_bps
+        && mandatory_evidence
+            .iter()
+            .all(|evidence| class.required_evidence.contains(*evidence))
+        && class
+            .verified_evidence
+            .iter()
+            .all(|evidence| class.required_evidence.contains(evidence))
+        && class.rollback_policy.trigger == RollbackTrigger::AnyHardBlocker
+        && rollback_target(&class.rollback_policy) != ScenarioMode::Authoritative
+        && (class.configured_mode == ScenarioMode::Shadow
+            || rollout_class_evidence_is_complete(scenario_class, class))
+}
+
+pub(crate) fn rollout_class_evidence_is_complete(
+    scenario_class: &str,
+    class: &RolloutClassEvidence,
+) -> bool {
     let Some(gate) = rollout_class_gate(scenario_class) else {
         return false;
     };
@@ -3789,7 +3835,7 @@ fn rollout_class_evidence_is_complete(scenario_class: &str, class: &RolloutClass
         && rollback_target(&class.rollback_policy) != ScenarioMode::Authoritative
 }
 
-fn rollout_manifest_is_complete(manifest: &RolloutManifest) -> bool {
+fn rollout_manifest_is_installable(manifest: &RolloutManifest) -> bool {
     manifest.preflight_for_manifest_revision == manifest.revision
         && manifest.preflight_succeeded
         && !manifest.protocol_build.is_empty()
@@ -3798,7 +3844,7 @@ fn rollout_manifest_is_complete(manifest: &RolloutManifest) -> bool {
         && !manifest.fixture_corpus_revision.is_empty()
         && !manifest.classes.is_empty()
         && manifest.classes.iter().all(|(scenario_class, class)| {
-            rollout_class_evidence_is_complete(scenario_class, class)
+            rollout_class_evidence_is_installable(scenario_class, class)
         })
         && manifest.safety_divergence_bps == 0
         && manifest.canonical_state_divergence_bps == 0
@@ -3812,6 +3858,65 @@ fn rollout_manifest_is_complete(manifest: &RolloutManifest) -> bool {
             })
         && !manifest.approver.is_empty()
         && !manifest.approved_at.is_empty()
+}
+
+pub(crate) fn managed_shadow_rollout_manifest(
+    revision: u64,
+    preflight_revision: u64,
+    protocol_build: String,
+    schema_build: String,
+    schema_revision: u64,
+) -> RolloutManifest {
+    let classes = SchedulerScenarioClass::PRODUCTION_AUTHORITY
+        .into_iter()
+        .map(|scenario_class| {
+            let gate = rollout_class_gate(scenario_class.as_str())
+                .expect("production scheduler scenario has a rollout gate");
+            let required_evidence = UNIVERSAL_ROLLOUT_EVIDENCE
+                .iter()
+                .chain(gate.required_evidence.iter())
+                .map(|evidence| (*evidence).to_string())
+                .collect();
+            (
+                scenario_class.as_str().to_string(),
+                RolloutClassEvidence {
+                    configured_mode: ScenarioMode::Shadow,
+                    minimum_shadow_samples: gate.minimum_shadow_samples,
+                    minimum_shadow_duration_secs: gate.minimum_shadow_duration_secs,
+                    observed_shadow_samples: 0,
+                    observed_shadow_duration_secs: 0,
+                    maximum_p99_latency_regression_bps: MAXIMUM_P99_LATENCY_REGRESSION_BPS,
+                    observed_p99_latency_regression_bps: 0,
+                    hard_blocker_count: 0,
+                    unresolved_divergence_count: 0,
+                    required_evidence,
+                    verified_evidence: BTreeSet::new(),
+                    rollback_policy: RollbackPolicy {
+                        trigger: RollbackTrigger::AnyHardBlocker,
+                        action: RollbackAction::StopAdmissionsAndRevert {
+                            target: ScenarioMode::Shadow,
+                        },
+                    },
+                },
+            )
+        })
+        .collect();
+    RolloutManifest {
+        revision,
+        preflight_revision,
+        preflight_for_manifest_revision: revision,
+        preflight_succeeded: true,
+        protocol_build,
+        schema_build,
+        schema_revision,
+        fixture_corpus_revision: "runtime-managed-shadow-v1".into(),
+        classes,
+        safety_divergence_bps: 0,
+        canonical_state_divergence_bps: 0,
+        allowed_observational_divergence: BTreeMap::new(),
+        approver: "operator:HOLON_SCHEDULER".into(),
+        approved_at: "runtime-managed-shadow".into(),
+    }
 }
 
 fn rejected(snapshot: &Snapshot, diagnostic: &str) -> Outcome {
@@ -4253,7 +4358,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
         return Err("non-legacy protocol has no rollout manifest".into());
     }
     if let Some(manifest) = &snapshot.rollout.manifest {
-        if !rollout_manifest_is_complete(manifest) {
+        if !rollout_manifest_is_installable(manifest) {
             return Err("rollout manifest is incomplete".into());
         }
         let preflight = snapshot
@@ -4321,6 +4426,7 @@ pub fn assert_invariants(snapshot: &Snapshot) -> Result<(), String> {
                     .ok_or_else(|| "authoritative scenario has no class evidence".to_string())?;
                 if !manifest.preflight_succeeded
                     || class.configured_mode != ScenarioMode::Authoritative
+                    || !rollout_class_evidence_is_complete(scenario_class, class)
                     || scenario.manifest_revision != Some(manifest.revision)
                     || scenario.preflight_revision != Some(manifest.preflight_revision)
                     || scenario.rollback_target != rollback_target(&class.rollback_policy)

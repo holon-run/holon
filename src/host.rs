@@ -35,6 +35,7 @@ use crate::{
     provider::{build_provider_from_config, AgentProvider},
     runtime::{InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle},
     runtime_db::RuntimeDb,
+    scheduler_rollout,
     skills::{
         effective_skill_root_registrations, skills_runtime_view_from_catalog, SkillVisibility,
         SkillsRegistry,
@@ -244,6 +245,7 @@ impl RuntimeHost {
     ) -> Result<Self> {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+        scheduler_rollout::reconcile_from_env(&runtime_db)?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
         let host = Self {
             inner: Arc::new(HostInner {

@@ -46,7 +46,8 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
     )?;
     if !runtime.scheduler_protocol_production_commands_enabled() {
         return Err(anyhow!(
-            "scheduler recovery fixture requires HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true"
+            "scheduler recovery fixture requires HOLON_SCHEDULER=authoritative or \
+             HOLON_SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS=true"
         ));
     }
 

@@ -292,7 +292,7 @@ const SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV: &str =
 const SCHEDULER_ACCEPTANCE_FIXTURES_ENV: &str = "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES";
 
 fn scheduler_protocol_production_commands_enabled_from_env() -> Result<bool> {
-    boolean_env(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV).map(|value| value.unwrap_or(false))
+    crate::scheduler_rollout::production_commands_enabled_from_env()
 }
 
 fn boolean_env(name: &str) -> Result<Option<bool>> {
@@ -308,9 +308,10 @@ fn boolean_env(name: &str) -> Result<Option<bool>> {
 }
 
 pub fn require_scheduler_acceptance_fixtures_enabled() -> Result<()> {
-    if boolean_env(SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV)? != Some(true) {
+    if !scheduler_protocol_production_commands_enabled_from_env()? {
         return Err(anyhow!(
-            "scheduler acceptance fixtures require {SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV}=true"
+            "scheduler acceptance fixtures require HOLON_SCHEDULER=authoritative or \
+             {SCHEDULER_PROTOCOL_PRODUCTION_COMMANDS_ENV}=true"
         ));
     }
     if boolean_env(SCHEDULER_ACCEPTANCE_FIXTURES_ENV)? != Some(true) {
